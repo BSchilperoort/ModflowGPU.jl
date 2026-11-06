@@ -18,12 +18,17 @@
 #   layer array IRCH/IEVT starts at 1 (`default_nodelist`, `nlarray_to_nodelist`).
 # - Mf6FileStoInput.f90 `sto_rp` (STO STEADY-STATE/TRANSIENT) and Mf6FileSetting.f90 with
 #   OutputControl.f90 `oc_rp` and TimeStepSelect.f90 `read` (OC SAVE/PRINT records).
+# - DisConnExchange.f90 `source_data` (GWF-GWF EXCHANGEDATA, static struct array): two
+#   cellids, one per model grid, then IHC, CL1, CL2, HWVA, aux, boundname.
 #
 # List rules (checked against the Fortran):
 # - Each line is one record, read column by column with `GetInteger` / `GetDouble` /
-#   `GetString` (URWORD words). A missing value is an error, except a missing optional
-#   double in the last column (`TryGetDouble`), which is DNODATA (3.0e30), and a missing
-#   boundname, which is blank. Words after the last column are ignored (comments).
+#   `GetString` (URWORD words). A missing value is an error, with two exceptions: a
+#   missing boundname is blank, and the last column, when it is an optional scalar
+#   double that cannot hold a time series (or TS6 is not active), is read with
+#   `TryGetDouble` and is DNODATA (3.0e30) when missing (`read_param` tests the
+#   time-series branch first; vector columns such as EVT `petm(nseg-1)` always use
+#   `GetDouble`). Words after the last column are ignored (comments).
 # - Integers (cellid) are Fortran integers (`1.0` is an error). A cellid outside the
 #   model shape is an error (`check_cellid`).
 # - More records than MAXBOUND is an error ("line count exceeds input dimension").
@@ -132,17 +137,24 @@ _shape_string(v) = "(" * join(v, ",") * ")"
 """
     ListColumn
 
-One column of a list record, from the DFN record of the PERIOD block.
+One column of a list record, from the DFN record of the PERIOD block (or of another
+list block, such as the GWF-GWF EXCHANGEDATA).
 
-- `name`: the DFN name (`"cellid"`, `"head"`, `"pxdp"`, `"aux"`, `"boundname"`).
-- `kind`: `:cellid` (integers), `:double` (rows of `bound`), `:aux` (rows of `auxvar`)
-  or `:boundname`.
+- `name`: the DFN name (`"cellid"`, `"head"`, `"pxdp"`, `"aux"`, `"boundname"`,
+  `"cellidm1"`, `"ihc"`).
+- `kind`: `:cellid` (integers converted to a user node of `grid`), `:int` (integers,
+  rows of the integer columns), `:double` (rows of `bound`), `:aux` (rows of `auxvar`) or
+  `:boundname`.
 - `width`: the number of values (`ncelldim`, 1, `nseg-1`, `naux`).
-- `first`: the first row of `bound` (`:double`) or `auxvar` (`:aux`) it fills (0 for the
-  others).
+- `first`: the first row it fills: of `bound` (`:double`), `auxvar` (`:aux`), the
+  integer columns (`:int`), or the index of the cellid column (`:cellid`, 1 for the
+  first one); 0 for `:boundname`.
 - `time_series`: the DFN allows a time-series name instead of a number.
-- `optional_last`: an optional double in the last column: a missing value is
-  `DNODATA` (`TryGetDouble`).
+- `optional_last`: a scalar optional double in the last column that cannot hold a
+  time series: a missing value (or a word that is not a number) is `DNODATA`
+  (`StructArray.read_param`, `TryGetDouble`).
+- `grid`: the grid of a `:cellid` column (exchanges connect two grids); `nothing`
+  otherwise.
 """
 struct ListColumn
     name::String
@@ -151,16 +163,21 @@ struct ListColumn
     first::Int
     time_series::Bool
     optional_last::Bool
+    grid::Union{Nothing, GridDims}
 end
+
+ListColumn(name, kind, width, first, time_series, optional_last) =
+    ListColumn(name, kind, width, first, time_series, optional_last, nothing)
 
 """
     ListSchema
 
 How the records of a list package are read: the columns in scope (`columns`, in input
-order), the grid (`grid`), MAXBOUND (`maxbound`), the auxiliary variable names
-(`auxnames`, upper case), whether boundnames are read (`boundnames`), whether
-time-series names are allowed (`ts_active`: TS6 FILEIN in OPTIONS), and the number of
-rows of `bound` (`nbound_rows`). Build one with `list_schema`.
+order), the grid (`grid`), MAXBOUND (`maxbound`, NEXG for exchanges), the auxiliary
+variable names (`auxnames`, upper case), whether boundnames are read (`boundnames`),
+whether time-series names are allowed (`ts_active`: TS6 FILEIN in OPTIONS), the number
+of rows of `bound` (`nbound_rows`), of the integer columns (`nint_rows`) and the number
+of cellid columns (`ncellid`). Build one with `list_schema`.
 """
 struct ListSchema
     package::String
@@ -171,6 +188,8 @@ struct ListSchema
     boundnames::Bool
     ts_active::Bool
     nbound_rows::Int
+    nint_rows::Int
+    ncellid::Int
 end
 
 function Base.show(io::IO, s::ListSchema)
@@ -284,7 +303,7 @@ function list_schema(dfn::DfnDefinition, g::GridDims, o::PackageOptions)
         v = dfn_variable(pb, m)
         isnothing(v) && throw(ArgumentError("$(dfn.name): record member $m is not a variable"))
         if m == "cellid"
-            push!(cols, ListColumn(m, :cellid, ncelldim(g), 0, false, false))
+            push!(cols, ListColumn(m, :cellid, ncelldim(g), 1, false, false, g))
         elseif m == "boundname"
             o.boundnames && push!(cols, ListColumn(m, :boundname, 1, 0, false, false))
         elseif v.shape == "(naux)"
@@ -309,13 +328,23 @@ function list_schema(dfn::DfnDefinition, g::GridDims, o::PackageOptions)
             throw(ArgumentError("$(dfn.name): list column $m of type $(v.type) is not supported"))
         end
     end
-    # StructArray.read_param: TryGetDouble for an optional double in the last column.
+    ts_active = !isempty(o.ts_files)
+    _mark_optional_last!(cols, pb, ts_active)
+    return ListSchema(dfn.name, g, cols, o.maxbound, copy(o.auxnames), o.boundnames, ts_active, nb, 0, 1)
+end
+
+# StructArray.read_param: the last column, when it is an optional scalar double (MTYPE_DBL,
+# no shape), is read with TryGetDouble (DNODATA when missing), unless it may hold a time
+# series and TS6 is active: that branch is tested first and always reads a word
+# (`read_token`). Vector columns (`pxdp(nseg-1)`) always use GetDouble.
+function _mark_optional_last!(cols, db::DfnBlock, ts_active::Bool)
     last = cols[end]
-    if last.kind === :double
-        v = dfn_variable(pb, last.name)
-        v.optional && (cols[end] = ListColumn(last.name, last.kind, last.width, last.first, last.time_series, true))
+    last.kind === :double || return cols
+    v = dfn_variable(db, last.name)
+    if v.optional && v.shape == "" && !(v.time_series && ts_active)
+        cols[end] = ListColumn(last.name, last.kind, last.width, last.first, last.time_series, true, nothing)
     end
-    return ListSchema(dfn.name, g, cols, o.maxbound, copy(o.auxnames), o.boundnames, !isempty(o.ts_files), nb)
+    return cols
 end
 
 function list_schema(f::InputFile, g::GridDims)
@@ -374,24 +403,38 @@ nbound(p::PeriodList) = length(p.nodeu)
 Base.show(io::IO, p::PeriodList) =
     print(io, "PeriodList(", length(p.nodeu), " records, ", size(p.bound, 1), " columns, ", size(p.auxvar, 1), " aux, ", length(p.ts), " time-series references)")
 
-_empty_list(s::ListSchema, n::Int) = PeriodList(
-    Vector{Int32}(undef, n), Matrix{Float64}(undef, s.nbound_rows, n),
-    Matrix{Float64}(undef, length(s.auxnames), n), s.boundnames ? fill("", n) : String[], TsRef[],
+# The columns of `n` records while they are read (one row of `nodes` per cellid column).
+struct _Records
+    nodes::Matrix{Int32}
+    ints::Matrix{Int32}
+    bound::Matrix{Float64}
+    auxvar::Matrix{Float64}
+    boundname::Vector{String}
+    ts::Vector{TsRef}
+end
+
+_records(s::ListSchema, n::Int) = _Records(
+    Matrix{Int32}(undef, s.ncellid, n), Matrix{Int32}(undef, s.nint_rows, n),
+    Matrix{Float64}(undef, s.nbound_rows, n), Matrix{Float64}(undef, length(s.auxnames), n),
+    s.boundnames ? fill("", n) : String[], TsRef[],
 )
 
+# One cellid column: `vec` of a 1×n matrix shares its memory.
+PeriodList(r::_Records) = PeriodList(vec(r.nodes), r.bound, r.auxvar, r.boundname, r.ts)
+
 @noinline _missing_value(l::InputLine, c::ListColumn, irow) =
-    input_error(l, "list record $irow: missing $(c.name) ($(c.kind === :cellid ? "integer" : "double precision"))")
+    input_error(l, "list record $irow: missing $(c.name) ($(c.kind in (:cellid, :int) ? "integer" : "double precision"))")
 
 @noinline function _bad_double(l::InputLine, c::ListColumn, t, irow, s::ListSchema)
     hint = c.time_series && !s.ts_active ? " (a time-series name needs TS6 FILEIN in the OPTIONS block)" : ""
     return input_error(l, "list record $irow: could not read $(c.name) as a double precision real from \"$t\"$hint")
 end
 
-@noinline _bad_cellid(l::InputLine, t, irow) =
-    input_error(l, "list record $irow: could not read cellid as an integer from \"$t\"")
+@noinline _bad_int(l::InputLine, c::ListColumn, t, irow) =
+    input_error(l, "list record $irow: could not read $(c.name) as an integer from \"$t\"")
 
-@noinline _cellid_error(l::InputLine, s::ListSchema, irow, c) = input_error(
-    l, "List entry $irow contains cellid $(_shape_string(c)) but this cellid is invalid for model with shape $(_shape_string(s.grid.mshape))",
+@noinline _cellid_error(l::InputLine, c::ListColumn, irow, cid) = input_error(
+    l, "List entry $irow contains $(c.name) $(_shape_string(cid)) but this cellid is invalid for model with shape $(_shape_string(c.grid.mshape))",
 )
 
 # A boundname as MF6 stores it (upper case, at most LENBOUNDNAME characters). `names`
@@ -407,7 +450,7 @@ function _boundname!(names::Dict{String, String}, t::SubString{String})
 end
 
 # Read record `irow` from line `l` into `p` (StructArray.read_param per column).
-function _read_record!(p::PeriodList, s::ListSchema, l::InputLine, irow::Int, names::Dict{String, String})
+function _read_record!(p::_Records, s::ListSchema, l::InputLine, irow::Int, names::Dict{String, String})
     toks = eachtoken(l)
     st = iterate(toks)
     for c in s.columns
@@ -417,13 +460,23 @@ function _read_record!(p::PeriodList, s::ListSchema, l::InputLine, irow::Int, na
                 isnothing(st) && _missing_value(l, c, irow)
                 t = st[1]
                 v = parse_int(t)
-                isnothing(v) && _bad_cellid(l, t, irow)
+                isnothing(v) && _bad_int(l, c, t, irow)
                 d == 1 ? (c1 = v) : d == 2 ? (c2 = v) : (c3 = v)
                 st = iterate(toks, st[2])
             end
             cid = (c1, c2, c3)
-            valid_cellid(s.grid, cid) || _cellid_error(l, s, irow, cid[1:c.width])
-            p.nodeu[irow] = user_node(s.grid, cid)
+            g = c.grid::GridDims
+            valid_cellid(g, cid) || _cellid_error(l, c, irow, cid[1:c.width])
+            p.nodes[c.first, irow] = user_node(g, cid)
+        elseif c.kind === :int
+            for d in 0:(c.width - 1)
+                isnothing(st) && _missing_value(l, c, irow)
+                t = st[1]
+                v = parse_int(t)
+                (isnothing(v) || v < typemin(Int32) || v > typemax(Int32)) && _bad_int(l, c, t, irow)
+                p.ints[c.first + d, irow] = v
+                st = iterate(toks, st[2])
+            end
         elseif c.kind === :double || c.kind === :aux
             M = c.kind === :double ? p.bound : p.auxvar
             for d in 0:(c.width - 1)
@@ -435,11 +488,12 @@ function _read_record!(p::PeriodList, s::ListSchema, l::InputLine, irow::Int, na
                 t = st[1]
                 v = parse_double(t)
                 if isnothing(v)
-                    if c.optional_last
-                        v = DNODATA  # TryGetDouble: not a number (a comment) is no data
-                    elseif c.time_series && s.ts_active
+                    # read_param tests the time-series branch first.
+                    if c.time_series && s.ts_active
                         push!(p.ts, TsRef(irow, c.first + d, c.kind === :aux, Symbol(uppercase(t))))
                         v = NaN
+                    elseif c.optional_last
+                        v = DNODATA  # TryGetDouble: not a number (a comment) is no data
                     else
                         _bad_double(l, c, t, irow, s)
                     end
@@ -477,7 +531,12 @@ function read_list_block(b::InputBlock, s::ListSchema; simdir::AbstractString = 
     end
     n = length(lines)
     n > s.maxbound && input_error(lines[s.maxbound + 1], "Input error: line count exceeds input dimension. Expected rows=$(s.maxbound)")
-    p = _empty_list(s, n)
+    return PeriodList(_read_records(lines, s))
+end
+
+function _read_records(lines, s::ListSchema)
+    n = length(lines)
+    p = _records(s, n)
     names = Dict{String, String}()
     for i in 1:n
         _read_record!(p, s, lines[i], i, names)
@@ -523,7 +582,7 @@ function _read_binary_list(l::InputLine, s::ListSchema, simdir)
     nd = ncelldim(s.grid)
     recsize = 4 * nd + 8 * (s.nbound_rows + length(s.auxnames))
     n = min(s.maxbound, div(filesize(path), recsize))
-    p = _empty_list(s, n)
+    p = _records(s, n)
     cid = zeros(Int, nd)
     open(path, "r") do io
         for i in 1:n
@@ -532,8 +591,8 @@ function _read_binary_list(l::InputLine, s::ListSchema, simdir)
                     for d in 1:nd
                         cid[d] = ltoh(read(io, Int32))
                     end
-                    valid_cellid(s.grid, cid) || _cellid_error(l, s, i, cid)
-                    p.nodeu[i] = user_node(s.grid, cid)
+                    valid_cellid(s.grid, cid) || _cellid_error(l, c, i, cid)
+                    p.nodes[1, i] = user_node(s.grid, cid)
                 elseif c.kind === :double
                     for d in 0:(c.width - 1)
                         p.bound[c.first + d, i] = ltoh(read(io, Float64))
@@ -546,7 +605,7 @@ function _read_binary_list(l::InputLine, s::ListSchema, simdir)
             end
         end
     end
-    return p
+    return PeriodList(p)
 end
 
 # ---------------------------------------------------------------------------------------
@@ -622,8 +681,11 @@ previous state are not copied):
 - `auxvar::Matrix{Float64}` `(naux, ncpl)`.
 - `tas::Dict{String, Symbol}`: `TIMEARRAYSERIES` references given in this block, from
   the variable (`"recharge"`, or an auxiliary name in upper case) to the series name
-  (upper case). MF6 links them for the periods of this block only; the array keeps the
-  last interpolated values after that (T6.3).
+  (upper case). MF6 links them for the periods of this block only (`tasmanager%reset`
+  in `rp`); in a later block that does not give the variable, the array keeps the last
+  values the series set. Here such an array holds NaN (the state shared from the TAS
+  block), so T6.3 must carry the last interpolated TAS values forward into the
+  following blocks.
 - `given::Vector{String}`: the variables given in this block (DFN names, or auxiliary
   names), in input order.
 """
@@ -827,6 +889,11 @@ end
 
 The OC PERIOD blocks (`oc_rp`): the records of each block replace all settings of the
 previous one, and an empty block turns output off (an empty vector).
+
+Within a block the records are cumulative, not exclusive: consumers must OR all records
+with the same `rtype` and `action` (`PrintSaveManager%set` adds to one time-step
+selection: `SAVE HEAD FIRST` and `SAVE HEAD LAST` select both steps, STEPS lists are
+appended, ALL/FIRST/LAST flags accumulate and a later FREQUENCY replaces an earlier one).
 """
 function read_oc_periods(f::InputFile)
     blocks = find_blocks(f, "PERIOD")
@@ -854,6 +921,10 @@ function read_records(b::InputBlock, dfn::DfnDefinition; nrow::Integer = 0)
     isnothing(i) && input_error(b, "block $(b.name) of $(dfn.name) is not a list")
     vars = [dfn_variable(db, m) for m in db.variables[i].members]
     for v in vars
+        # A cellid is ncelldim integers (one DFN member): a scalar reader would misread it.
+        startswith(v.name, "cellid") && throw(
+            ArgumentError("read_records: unsupported: cellid columns ($(v.name) of $(dfn.name) $(b.name)), use the list reader (list_schema, read_exchange_data)"),
+        )
         (v.shape == "" && v.type in (:integer, :double, :string)) ||
             throw(ArgumentError("read_records: member $(v.name) of $(dfn.name) $(b.name) is not a scalar"))
     end
@@ -897,6 +968,119 @@ function read_tdis_perioddata(f::InputFile)
     isnothing(b) && throw(MF6InputError(f.path, 0, "PERIODDATA block not found"))
     r = read_records(b, f.dfn; nrow = nper)
     return (; perlen = r["perlen"]::Vector{Float64}, nstp = r["nstp"]::Vector{Int}, tsmult = r["tsmult"]::Vector{Float64})
+end
+
+# ---------------------------------------------------------------------------------------
+# GWF-GWF exchange data
+# ---------------------------------------------------------------------------------------
+
+"""
+    ExchangeData
+
+The EXCHANGEDATA of a GWF6-GWF6 exchange file (`nexg` connections), as
+DisConnExchange.f90 `source_data` takes it from the input context:
+
+- `nodem1`, `nodem2::Vector{Int32}`: user node numbers of `cellidm1` in model 1 and
+  `cellidm2` in model 2 (reduced node numbers depend on IDOMAIN: the loader converts
+  them and reports MF6's "Cell is outside active grid domain").
+- `ihc::Vector{Int32}`, `cl1`, `cl2`, `hwva::Vector{Float64}`.
+- `auxvar::Matrix{Float64}` `(naux, nexg)`, `auxnames` (upper case).
+- `boundname::Vector{String}` (upper case; empty without BOUNDNAMES).
+"""
+struct ExchangeData
+    nodem1::Vector{Int32}
+    nodem2::Vector{Int32}
+    ihc::Vector{Int32}
+    cl1::Vector{Float64}
+    cl2::Vector{Float64}
+    hwva::Vector{Float64}
+    auxvar::Matrix{Float64}
+    auxnames::Vector{String}
+    boundname::Vector{String}
+end
+
+Base.show(io::IO, e::ExchangeData) =
+    print(io, "ExchangeData(", length(e.nodem1), " connections, aux ", e.auxnames, ")")
+
+"""
+    exchange_schema(dfn::DfnDefinition, g1::GridDims, g2::GridDims, opts::PackageOptions, nexg)
+        -> ListSchema
+
+The record schema of the EXCHANGEDATA block of a GWF-GWF exchange: `cellidm1` (cellid of
+grid `g1`), `cellidm2` (of `g2`), `ihc` (integer), `cl1 cl2 hwva`, then `aux` with
+AUXILIARY and `boundname` with BOUNDNAMES (`LoadContext.in_scope`). Time series are not
+allowed in exchange data.
+"""
+function exchange_schema(dfn::DfnDefinition, g1::GridDims, g2::GridDims, o::PackageOptions, nexg::Integer)
+    db = dfn_block(dfn, "EXCHANGEDATA")
+    isnothing(db) && throw(ArgumentError("$(dfn.name) has no EXCHANGEDATA block"))
+    rec = db.variables[findfirst(v -> v.type === :recarray, db.variables)]
+    cols = ListColumn[]
+    nb = ni = nc = na = 0
+    for m in rec.members
+        v = dfn_variable(db, m)
+        if startswith(m, "cellid")
+            g = nc == 0 ? g1 : g2
+            nc += 1
+            push!(cols, ListColumn(m, :cellid, ncelldim(g), nc, false, false, g))
+        elseif m == "boundname"
+            o.boundnames && push!(cols, ListColumn(m, :boundname, 1, 0, false, false))
+        elseif v.shape == "(naux)"
+            isempty(o.auxnames) && continue
+            push!(cols, ListColumn(m, :aux, length(o.auxnames), na + 1, false, false))
+            na += length(o.auxnames)
+        elseif v.shape == "" && v.type === :integer
+            push!(cols, ListColumn(m, :int, 1, ni + 1, false, false))
+            ni += 1
+        elseif v.shape == "" && v.type === :double
+            v.optional && continue
+            push!(cols, ListColumn(m, :double, 1, nb + 1, false, false))
+            nb += 1
+        else
+            throw(ArgumentError("$(dfn.name): exchange column $m is not supported"))
+        end
+    end
+    nc == 2 || throw(ArgumentError("$(dfn.name): expected two cellid columns"))
+    _mark_optional_last!(cols, db, false)
+    return ListSchema(dfn.name, g1, cols, nexg, copy(o.auxnames), o.boundnames, false, nb, ni, nc)
+end
+
+"""
+    read_exchange_data(f::InputFile, g1::GridDims, g2::GridDims) -> ExchangeData
+
+Read the EXCHANGEDATA of the GWF6-GWF6 exchange file `f` (DFN `exg-gwfgwf`), connecting
+a model with grid `g1` (`cellidm1`) to one with grid `g2` (`cellidm2`; the same grid for
+an exchange of a model with itself, such as `ex-gwf-spbc`). The records follow the list
+rules of `lists.jl` (StructArray.read_param: GetInteger for the cellids and IHC,
+GetDouble for CL1, CL2, HWVA and the aux values, GetString for the boundname). There
+must be exactly NEXG records (StructArray `read_from_parser` errors on more; fewer would
+leave cellids of zero, which MF6 rejects). A cellid outside its model's shape is an
+error (MF6 rejects it when it converts it to a node number; the message here is that
+of `check_cellid`).
+"""
+function read_exchange_data(f::InputFile, g1::GridDims, g2::GridDims)
+    (isnothing(f.dfn) || f.dfn.name != "exg-gwfgwf") &&
+        throw(ArgumentError("read_exchange_data: $(f.path) was not read as a GWF6-GWF6 exchange file"))
+    o = package_options(f)
+    nexg = 0
+    d = find_block(f, "DIMENSIONS")
+    if !isnothing(d)
+        for l in d.lines
+            keyword(l, 1) == "NEXG" && (nexg = get_int(l, 2; name = "NEXG"))
+        end
+    end
+    b = find_block(f, "EXCHANGEDATA")
+    isnothing(b) && throw(MF6InputError(f.path, 0, "EXCHANGEDATA block not found"))
+    s = exchange_schema(f.dfn, g1, g2, o, nexg)
+    n = length(b.lines)
+    n > nexg && input_error(b.lines[nexg + 1], "Input error: line count exceeds input dimension. Expected rows=$nexg")
+    n < nexg && input_error(b, "found $n exchange records, expected NEXG = $nexg")
+    r = _read_records(b.lines, s)
+    col(name) = r.bound[list_column(s, name).first, :]
+    return ExchangeData(
+        r.nodes[1, :], r.nodes[2, :], r.ints[list_column(s, "ihc").first, :],
+        col("cl1"), col("cl2"), col("hwva"), r.auxvar, copy(s.auxnames), r.boundname,
+    )
 end
 
 # ---------------------------------------------------------------------------------------

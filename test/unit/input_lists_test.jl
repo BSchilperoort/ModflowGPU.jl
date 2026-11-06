@@ -5,7 +5,8 @@ using ModflowGPU: MF6InputError, read_input_file, find_blocks, dis_dims, disv_di
     ListSchema, list_schema, list_column, package_options, PackageOptions, PeriodList, TsRef,
     nbound, read_list_block, read_list_periods, write_binary_list, StressPeriods,
     period_block, period_data, ArrayPeriod, array_nodes, read_array_periods, read_sto_periods,
-    OcRecord, read_oc_periods, read_records, read_tdis_perioddata, read_period_data
+    OcRecord, read_oc_periods, read_records, read_tdis_perioddata, read_period_data,
+    ExchangeData, read_exchange_data, find_block
 
 "Write package `name` (DFN `dfn`) with `text` into `dir` and read it."
 pkg(dir, name, dfn, text) = read_input_file(write_input(dir, name, text); dfn, simdir = dir)
@@ -123,6 +124,22 @@ lists(dir, name, dfn, text, g) = read_list_periods(pkg(dir, name, dfn, text), g;
             # The optional column is not last with BOUNDNAMES: then it is required.
             text = header(1; options = "SURF_RATE_SPECIFIED\nBOUNDNAMES", dims = "NSEG 1") * "BEGIN PERIOD 1\n 1 1 1 50 4e-4 10\nEND PERIOD\n"
             @test occursin("missing petm0", input_error_of(() -> lists(dir, "c.evt", "gwf-evt", text, G)).msg)
+            # Vector columns (petm(nseg-1)) are never "optional last": GetDouble or, with
+            # TS6, read_token. A series name in the last petm is a reference, a missing
+            # value an error (with and without TS6).
+            ts = "BEGIN OPTIONS\n TS6 FILEIN e.ts\nEND OPTIONS\nBEGIN DIMENSIONS\n MAXBOUND 1\n NSEG 3\nEND DIMENSIONS\n"
+            s, sp = lists(dir, "d.evt", "gwf-evt", ts * "BEGIN PERIOD 1\n 1 1 1 50 4e-4 10 0.2 0.5 0.3 petmseries\nEND PERIOD\n", G)
+            @test !any(c -> c.optional_last, s.columns)
+            @test sp.data[1].ts == [TsRef(1, 7, false, :PETMSERIES)] && isnan(sp.data[1].bound[7, 1]) && sp.data[1].bound[6, 1] == 0.3
+            text = "BEGIN PERIOD 1\n 1 1 1 50 4e-4 10 0.2 0.5 0.3\nEND PERIOD\n"
+            @test occursin("missing petm", input_error_of(() -> lists(dir, "e.evt", "gwf-evt", ts * text, G)).msg)
+            @test occursin("missing petm", input_error_of(() -> lists(dir, "f.evt", "gwf-evt", header(1; dims = "NSEG 3") * text, G)).msg)
+            # petm0 with TS6 active: the time-series branch comes first, so it is required
+            # and may be a series name.
+            ts0 = "BEGIN OPTIONS\n TS6 FILEIN e.ts\n SURF_RATE_SPECIFIED\nEND OPTIONS\nBEGIN DIMENSIONS\n MAXBOUND 1\n NSEG 1\nEND DIMENSIONS\n"
+            s, sp = lists(dir, "g.evt", "gwf-evt", ts0 * "BEGIN PERIOD 1\n 1 1 1 50 4e-4 10 p0series\nEND PERIOD\n", G)
+            @test !s.columns[end].optional_last && sp.data[1].ts == [TsRef(1, 4, false, :P0SERIES)]
+            @test occursin("missing petm0", input_error_of(() -> lists(dir, "h.evt", "gwf-evt", ts0 * "BEGIN PERIOD 1\n 1 1 1 50 4e-4 10\nEND PERIOD\n", G)).msg)
         end
     end
 
@@ -323,6 +340,53 @@ lists(dir, name, dfn, text, g) = read_list_periods(pkg(dir, name, dfn, text), g;
     end
 end
 
+@testset "GWF-GWF exchange data" begin
+    mktempdir() do dir
+        g1 = dis_dims(1, 3, 4)
+        g2 = disv_dims(2, 5)
+        text = """
+        BEGIN OPTIONS
+          AUXILIARY angldegx cdist
+          BOUNDNAMES
+        END OPTIONS
+        BEGIN DIMENSIONS
+          NEXG 3
+        END DIMENSIONS
+        BEGIN EXCHANGEDATA
+          1 2 3  2 5  1  10.0 5.0 2.5  90.0 15.0 west
+          1 3 4  1 1  0  1d0 2.0 3.0  0.0 3.0
+          1 1 1  2 1  1  1.0 2.0 3.0  180 4.0 'b c'  # comment
+        END EXCHANGEDATA
+        """
+        f = pkg(dir, "a.gwfgwf", "exg-gwfgwf", text)
+        e = read_exchange_data(f, g1, g2)
+        @test e.nodem1 == Int32[user_node(g1, (1, 2, 3)), 12, 1] && e.nodem2 == Int32[10, 1, 6]
+        @test e.ihc == Int32[1, 0, 1] && e.cl1 == [10.0, 1.0, 1.0] && e.cl2 == [5.0, 2.0, 2.0] && e.hwva == [2.5, 3.0, 3.0]
+        @test e.auxnames == ["ANGLDEGX", "CDIST"] && e.auxvar == [90.0 0.0 180.0; 15.0 3.0 4.0]
+        @test e.boundname == ["WEST", "", "B C"]
+        # Without aux and boundnames, trailing words are ignored.
+        plain = "BEGIN DIMENSIONS\n NEXG 1\nEND DIMENSIONS\nBEGIN EXCHANGEDATA\n 1 1 1  1 1  1  1.0 2.0 3.0 extra\nEND EXCHANGEDATA\n"
+        e = read_exchange_data(pkg(dir, "b.gwfgwf", "exg-gwfgwf", plain), g1, g2)
+        @test size(e.auxvar) == (0, 1) && isempty(e.boundname) && e.hwva == [3.0]
+        # Errors: record count, cellid outside its model, non-integer IHC, missing value.
+        @test occursin("expected NEXG = 2", input_error_of(() -> read_exchange_data(pkg(dir, "c.gwfgwf", "exg-gwfgwf", replace(plain, "NEXG 1" => "NEXG 2")), g1, g2)).msg)
+        two = replace(plain, " 1 1 1  1 1  1  1.0 2.0 3.0 extra\n" => " 1 1 1  1 1  1  1.0 2.0 3.0\n 1 1 2  1 2  1  1.0 2.0 3.0\n")
+        @test occursin("Expected rows=1", input_error_of(() -> read_exchange_data(pkg(dir, "d.gwfgwf", "exg-gwfgwf", two), g1, g2)).msg)
+        bad = replace(plain, "1 1 1  1 1  1" => "1 1 1  3 1  1")
+        err = input_error_of(() -> read_exchange_data(pkg(dir, "e.gwfgwf", "exg-gwfgwf", bad), g1, g2))
+        @test occursin("List entry 1 contains cellidm2 (3,1) but this cellid is invalid for model with shape (2,5)", err.msg)
+        bad = replace(plain, "1 1 1  1 1  1" => "1 4 1  1 1  1")
+        @test occursin("cellidm1 (1,4,1)", input_error_of(() -> read_exchange_data(pkg(dir, "f.gwfgwf", "exg-gwfgwf", bad), g1, g2)).msg)
+        bad = replace(plain, "1  1.0 2.0 3.0" => "1.5  1.0 2.0 3.0")
+        @test occursin("could not read ihc as an integer", input_error_of(() -> read_exchange_data(pkg(dir, "g.gwfgwf", "exg-gwfgwf", bad), g1, g2)).msg)
+        bad = replace(plain, "1.0 2.0 3.0 extra" => "1.0 2.0")
+        @test occursin("missing hwva", input_error_of(() -> read_exchange_data(pkg(dir, "h.gwfgwf", "exg-gwfgwf", bad), g1, g2)).msg)
+        # The static record reader refuses cellid columns.
+        f = pkg(dir, "b.gwfgwf", "exg-gwfgwf", plain)
+        @test_throws "unsupported: cellid columns" read_records(find_block(f, "EXCHANGEDATA"), f.dfn)
+    end
+end
+
 # Done-when test of T1.3: hand-checked values of the period data of advtidal, twri01 and
 # fhb (read from the files in reference/mf6examples), and every PERIOD block of every
 # in-scope example's GWF packages reads without error.
@@ -437,6 +501,46 @@ end
             end
             @test npkg > 100
             @info "MF6 examples: period data of $npkg packages, $nblock PERIOD blocks"
+        end
+
+        @testset "GWF-GWF exchanges" begin
+            # Every GWF6-GWF6 exchange of the in-scope examples (Tier 7), read with the
+            # grids of its two models (mfsim.nam EXCHANGES: type, file, model 1, model 2).
+            exchanges = Dict{String, ExchangeData}()
+            for (name, simdir) in in_scope_examples(; tiers = 0:7)
+                sim = read_input_file(joinpath(simdir, "mfsim.nam"); ftype = "SIM", component = "SIM", simdir)
+                blk = find_block(sim, "EXCHANGES")
+                isnothing(blk) && continue
+                grids = Dict(
+                    lowercase(m) => grid_dims(only(filter(f -> f.dfn.subcomponent in ("DIS", "DISV", "DISU"), files)))
+                        for (m, files) in model_package_files(simdir)
+                )
+                for l in blk.lines
+                    keyword(l, 1) == "GWF6-GWF6" || continue
+                    f = read_input_file(joinpath(simdir, l[2]); ftype = "GWF6-GWF6", component = "EXG", simdir)
+                    e = read_exchange_data(f, grids[lowercase(l[3])], grids[lowercase(l[4])])
+                    @test length(e.nodem1) == length(e.nodem2) == length(e.ihc) > 0
+                    exchanges[name] = e
+                end
+            end
+            @test issubset(
+                ["ex-gwf-u1gwfgwf-s1", "ex-gwf-u1gwfgwf-s2", "ex-gwf-u1gwfgwf-s3", "ex-gwf-u1gwfgwf-s4", "ex-gwf-lgrv-lgr", "ex-gwf-spbc"],
+                keys(exchanges),
+            )
+            # Hand-checked rows. u1gwfgwf-s1: outer 1×7×7 → inner 1×9×9, aux and boundnames.
+            e = exchanges["ex-gwf-u1gwfgwf-s1"]
+            @test length(e.ihc) == 36 && e.auxnames == ["ANGLDEGX", "CDIST"]
+            @test (e.nodem1[1], e.nodem2[1], e.ihc[1]) == (16, 1, 1) && (e.cl1[1], e.cl2[1], e.hwva[1]) == (50.0, 16.66666667, 33.33333333)
+            @test e.auxvar[:, 1] == [0.0, 74.53559925] && e.boundname[1] == "LEFT"
+            @test (e.nodem1[10], e.nodem2[10]) == (38, 73) && e.auxvar[1, 10] == 90.0 && e.boundname[10] == "BOTTOM"
+            # spbc: a model (190×1×100) exchanging with itself: column 1 to column 100.
+            e = exchanges["ex-gwf-spbc"]
+            @test length(e.ihc) == 190 && (e.nodem1[10], e.nodem2[10]) == (901, 1000)
+            @test (e.cl1[10], e.cl2[10], e.hwva[10]) == (0.03, 0.03, 1.0) && e.auxvar[:, 10] == [90.0, 0.06] && isempty(e.boundname)
+            # lgrv-lgr: parent 9×61×49 → child 25×90×78.
+            e = exchanges["ex-gwf-lgrv-lgr"]
+            @test length(e.ihc) == 8400 && (e.nodem1[2], e.nodem2[2]) == (18 * 49 + 16, 1)
+            @test (e.cl1[2], e.cl2[2], e.hwva[2]) == (37.5, 12.5, 35.0) && e.auxvar[:, 2] == [270.0, 61.03277808]
         end
     end
 end
