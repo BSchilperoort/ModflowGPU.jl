@@ -2,6 +2,7 @@
 AMDGPU = "21141c5a-9bdb-4563-92ae-f87d6854732e"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 ModflowGPU = "80579596-0efa-413b-aeef-37d798abb369"
+TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [sources]

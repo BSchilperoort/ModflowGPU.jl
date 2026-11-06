@@ -11,4 +11,9 @@ using KernelAbstractions: KernelAbstractions, Backend, CPU, get_backend
 include("backend_setup.jl")
 include("precision.jl")
 
+# MF6 input (host only)
+include("input/tokenizer.jl")
+include("input/dfn/schema.jl")
+include("input/blocks.jl")
+
 end
