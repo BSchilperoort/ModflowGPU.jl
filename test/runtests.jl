@@ -33,6 +33,7 @@ include("testutils.jl")
 @testset "ModflowGPU" begin
     include("unit/backend_test.jl")
     include("unit/precision_test.jl")
+    include("unit/kernel_test.jl")
     if !(TEST_BACKEND isa CPU)
         include("gpu/backend_gpu_test.jl")
     end

@@ -54,4 +54,4 @@ function resolve_precision(backend::Backend, preset::Symbol = :auto)
     end
 end
 
-resolve_precision(backend::Backend, preset::AbstractString) = resolve_precision(backend, Symbol(preset))
+resolve_precision(backend::Backend, preset::AbstractString) = resolve_precision(backend, Symbol(lowercase(preset)))

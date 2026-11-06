@@ -25,6 +25,19 @@ MFGPU_TEST_BACKEND=rocm julia --project=test test/runtests.jl # GPU tests, local
 julia --project=@runic -m Runic --inplace .                   # format (or `runic --inplace .`)
 ```
 
+CI also runs the CPU tests on KernelAbstractions 0.9 (the version mGV allows; its CPU
+backend is native Julia, while KA 0.10's is POCL). The local equivalent temporarily adds a
+compat entry to `test/Project.toml`. `Pkg.resolve` does not downgrade an existing
+manifest, so delete the shared root `Manifest.toml` (not committed) first, and again after
+reverting the compat entry so the next resolve returns to KA 0.10:
+
+```sh
+rm -f Manifest.toml
+julia --project=test -e 'using Pkg; Pkg.compat("KernelAbstractions", "0.9"); Pkg.resolve()'
+julia --project=test test/runtests.jl                          # (MFGPU_TEST_BACKEND=rocm works too)
+git checkout test/Project.toml && rm Manifest.toml             # undo
+```
+
 `test/` is a workspace project of the package (`[workspace]` in `Project.toml`), so there is
 one `Manifest.toml` at the root (not committed). It includes AMDGPU, so the GPU test command
 above works without extra setup. CI (`.github/workflows/`) runs only the CPU tests and Runic.

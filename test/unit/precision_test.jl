@@ -19,6 +19,7 @@ ModflowGPU.supports_float64(::FakeNoFloat64Backend) = false
             @test ModflowGPU.resolve_precision(backend, :double) == double
             @test ModflowGPU.resolve_precision(backend, :single) == single
             @test ModflowGPU.resolve_precision(backend, "single") == single
+            @test ModflowGPU.resolve_precision(backend, "Double") == double
         end
         T, Ts, Tp = ModflowGPU.resolve_precision(CPU(), :single)
         @test (T, Ts, Tp) == (Float32, Float32, Float32)
