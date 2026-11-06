@@ -13,9 +13,14 @@ scripts/apply_coupling_patches.sh             # reset ModflowCoupling clone + gi
 validation/setup_libmf6_envs.sh               # two Julia envs for libmf6 6.3.0 / 6.8.2
 ```
 
-All three are idempotent and stop on the first error. `fetch_reference.sh` puts every
-download and every extraction in its own new directory, checks sha256 digests, and
-rejects zip files with absolute or `..` paths. Result (about 1.1 GB):
+All three (`fetch_reference.sh`, `apply_coupling_patches.sh`, `setup_libmf6_envs.sh`)
+are idempotent and stop on the first error. `fetch_reference.sh` puts every download
+and every extraction in its own new directory, checks sha256 digests, rejects zip files
+with absolute or `..` paths or symbolic links, removes its temporary directory on
+error or interrupt, and writes `reference/.gitignore` (`*`) so git never tracks the
+data. To refresh the rolling examples release, remove both `reference/archives/mf6examples`
+and `reference/mf6examples` (an existing extraction is never overwritten) and rerun;
+the recorded checksum is replaced. Result (about 1.1 GB):
 
 | Path | What | Size |
 | --- | --- | --- |
@@ -117,7 +122,7 @@ var-name list; "read" = `get_value_ptr` returns an array of the expected length.
 | --- | --- | --- | --- | --- |
 | `SLN_1/IA` | listed, read | listed, read | Int32, neq+1 = 20001 | 1-based CSR row pointers |
 | `SLN_1/JA` | listed, read | listed, read | Int32, nja = 99400 | diagonal first in every row |
-| `SLN_1/AMAT` | listed, read | listed, read | Float64, nja | valid only after the first `solve` (garbage, even NaN, before) |
+| `SLN_1/AMAT` | listed, read | listed, read | Float64, nja | valid only after the first `solve`; undefined before it (seen zeros and NaN) |
 | `SLN_1/RHS` | listed, read | listed, read | Float64, neq | valid after the first `solve` |
 | `SLN_1/X` | listed, read | listed, read | Float64, neq | |
 | `<MODEL>/CON/IA` | listed, read | listed, read | Int32, nodes+1 | same as `SLN_1/IA` for one model |

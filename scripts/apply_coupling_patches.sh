@@ -28,7 +28,12 @@ die() {
     exit 1
 }
 
+# Make sure every git command below acts on the clone, not on an inherited repository.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 [[ -d "$CLONE/.git" ]] || die "$CLONE is not a git clone; run validation/fetch_reference.sh first"
+CLONE="$(cd "$CLONE" && pwd -P)"
+toplevel="$(git -C "$CLONE" rev-parse --show-toplevel)" || die "git rev-parse failed in $CLONE"
+[[ "$toplevel" == "$CLONE" ]] || die "$CLONE is not the top level of its git repository ($toplevel)"
 git -C "$CLONE" cat-file -e "$COUPLING_BASE^{commit}" 2>/dev/null ||
     die "base commit $COUPLING_BASE not found in $CLONE"
 

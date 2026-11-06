@@ -31,7 +31,9 @@ BIN682="$REFERENCE_DIR/mf6.8.2_linux/bin/mf6"
 
 make_env() {
     local dir="$1"
-    if [[ -f "$dir/Manifest.toml" ]]; then
+    # The marker is written only after the packages were added and load; an env
+    # left half-built by an interrupted run is rebuilt.
+    if [[ -f "$dir/.setup-complete" ]]; then
         echo "[setup_libmf6_envs] keep $dir" >&2
         return
     fi
@@ -47,6 +49,8 @@ make_env() {
         ])
         Pkg.pin("Modflow6_jll")
     '
+    julia --startup-file=no --project="$dir" -e 'using ModflowInterface, BasicModelInterface, Modflow6_jll'
+    touch "$dir/.setup-complete"
 }
 
 make_env "$REFERENCE_DIR/julia-env/mf6.3.0"

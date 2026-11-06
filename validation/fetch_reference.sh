@@ -12,6 +12,10 @@
 #   modflow6/                                       shallow clone of MODFLOW-ORG/modflow6 at tag 6.8.2
 #   Modflow-coupling/                               clone of SWIFT-WUR/Modflow-coupling at the patch base commit
 #   checksums.txt                                   sha256 of every downloaded archive
+#   .gitignore                                      `*`, so git never tracks any of this
+#
+# To refresh the rolling examples release, remove both archives/mf6examples and
+# mf6examples (an existing extraction is never overwritten) and rerun.
 #
 # Every download and every extraction goes into its own new directory: archives are
 # untrusted data, so they are never unpacked on top of existing files. The script is
@@ -58,6 +62,16 @@ done
 
 mkdir -p "$REFERENCE_DIR/archives"
 REFERENCE_DIR="$(cd "$REFERENCE_DIR" && pwd)"
+# Keep git from ever tracking the reference data, even before the repository's own
+# .gitignore lists reference/.
+[[ -f "$REFERENCE_DIR/.gitignore" ]] || printf '*\n' >"$REFERENCE_DIR/.gitignore"
+
+# The in-progress temporary directory, removed on exit or interrupt.
+CURRENT_TMP=""
+cleanup() { if [[ -n "$CURRENT_TMP" ]]; then rm -rf "$CURRENT_TMP"; fi; }
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
 CHECKSUMS="$REFERENCE_DIR/checksums.txt"
 touch "$CHECKSUMS"
 log "reference directory: $REFERENCE_DIR"
@@ -96,6 +110,7 @@ fetch_archive() {
     else
         [[ -e "$dir" ]] && die "archives/$name exists but has no $file; remove it and rerun"
         tmp="$(mktemp -d "$REFERENCE_DIR/archives/.tmp.$name.XXXXXX")"
+        CURRENT_TMP="$tmp"
         log "download $url"
         curl -fL --retry 3 --progress-bar -o "$tmp/$file" "$url" || {
             rm -rf "$tmp"
@@ -106,12 +121,21 @@ fetch_archive() {
             die "sha256 mismatch for $file (expected $sha)"
         }
         mv "$tmp" "$dir"
+        CURRENT_TMP=""
     fi
     # Verify again on every run (cheap) so a corrupted archive is caught.
     echo "$sha  $dir/$file" | sha256sum --check --quiet - ||
         die "sha256 mismatch for archives/$name/$file (expected $sha)"
-    grep -q "  archives/$name/$file\$" "$CHECKSUMS" ||
-        echo "$sha  archives/$name/$file" >>"$CHECKSUMS"
+    # Record the digest, replacing any stale line for this archive (for example after
+    # a refresh of the rolling examples release).
+    local entry="$sha  archives/$name/$file"
+    if ! grep -qxF "$entry" "$CHECKSUMS"; then
+        {
+            grep -vF "  archives/$name/$file" "$CHECKSUMS" || true
+            echo "$entry"
+        } >"$CHECKSUMS.new"
+        mv "$CHECKSUMS.new" "$CHECKSUMS"
+    fi
 }
 
 # extract_archive <name> <zipfile>
@@ -128,7 +152,12 @@ extract_archive() {
     if unzip -Z1 "$zip" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
         die "$zip contains unsafe paths"
     fi
+    # Refuse symbolic-link entries (zipinfo permission column starts with 'l').
+    if unzip -Z "$zip" | grep -q '^l'; then
+        die "$zip contains symbolic links"
+    fi
     tmp="$(mktemp -d "$REFERENCE_DIR/.tmp.$name.XXXXXX")"
+    CURRENT_TMP="$tmp"
     log "extract $(basename "$zip") -> $name/"
     unzip -q "$zip" -d "$tmp/x" || {
         rm -rf "$tmp"
@@ -141,6 +170,7 @@ extract_archive() {
         mv "$tmp/x" "$dest"
     fi
     rm -rf "$tmp"
+    CURRENT_TMP=""
 }
 
 # --- MODFLOW 6.8.2 binaries and dfns -----------------------------------------------
@@ -185,12 +215,14 @@ if [[ -e "$mf6_src" ]]; then
 else
     log "clone $MF6_GIT_URL at tag $MF6_VERSION (shallow)"
     tmp="$(mktemp -d "$REFERENCE_DIR/.tmp.modflow6.XXXXXX")"
+    CURRENT_TMP="$tmp"
     git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$MF6_VERSION" "$MF6_GIT_URL" "$tmp/modflow6" || {
         rm -rf "$tmp"
         die "clone of $MF6_GIT_URL failed"
     }
     mv "$tmp/modflow6" "$mf6_src"
     rm -rf "$tmp"
+    CURRENT_TMP=""
 fi
 
 # --- ModflowCoupling at the patch base commit ----------------------------------------
@@ -204,6 +236,7 @@ if [[ -e "$coupling" ]]; then
 else
     log "clone $COUPLING_GIT_URL at $COUPLING_BASE"
     tmp="$(mktemp -d "$REFERENCE_DIR/.tmp.Modflow-coupling.XXXXXX")"
+    CURRENT_TMP="$tmp"
     {
         git clone --quiet "$COUPLING_GIT_URL" "$tmp/Modflow-coupling" &&
             git -C "$tmp/Modflow-coupling" -c advice.detachedHead=false checkout --quiet "$COUPLING_BASE"
@@ -213,6 +246,7 @@ else
     }
     mv "$tmp/Modflow-coupling" "$coupling"
     rm -rf "$tmp"
+    CURRENT_TMP=""
 fi
 
 log "done. Contents of $REFERENCE_DIR:"

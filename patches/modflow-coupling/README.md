@@ -13,15 +13,24 @@ owner's checkout (`/home/bart/data/modflow/ModflowCoupling`). See PLAN.md sectio
 1. `validation/fetch_reference.sh` clones the upstream repository into
    `reference/Modflow-coupling` at the base commit.
 2. `scripts/apply_coupling_patches.sh` resets that clone to the base commit (local
-   branch `modflowgpu`, uncommitted changes discarded) and applies `*.patch` from this
-   directory in lexical order with `git am`.
+   branch `modflowgpu`) and applies `*.patch` from this directory in lexical order with
+   `git am`. It discards uncommitted changes and runs `git clean -fdx`, which also
+   deletes **ignored** files in the clone (for example a local `Manifest.toml` or
+   test output).
 3. Make your change in the clone as commits on top of the applied patches, then export
-   all of them again:
+   all of them again, removing the old patch files first so renamed or dropped
+   commits do not leave stale patches behind:
 
    ```sh
+   rm -f patches/modflow-coupling/*.patch
    cd reference/Modflow-coupling
-   git format-patch 8dd8c010796fd3648b855bed51195c0f2e61dd60..HEAD -o ../../patches/modflow-coupling/
+   git format-patch --zero-commit --no-signature \
+       8dd8c010796fd3648b855bed51195c0f2e61dd60..HEAD -o ../../patches/modflow-coupling/
    ```
+
+   (`--zero-commit --no-signature` keep the patch files stable between exports. The
+   `../../patches` path assumes the default `REFERENCE_DIR=<repo root>/reference`;
+   with another `REFERENCE_DIR`, pass the absolute path of `patches/modflow-coupling/`.)
 
    Use one numbered patch per card, named after the card
    (`0001-T5.1-engine-switch.patch`, ...): start the commit subject with the card id.
