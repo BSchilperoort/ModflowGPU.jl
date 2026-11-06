@@ -357,23 +357,26 @@ source code.
 
 ### 4.1 Example ladder (MF6 examples, `mf6examples.zip` release asset)
 
-Package lists come from a scan of the 2026-10-29 build of the examples.
-"Convertible" is a heuristic from the scan; T0.3 must confirm it.
+Package lists come from a scan of the 2026-10-29 build of the examples,
+checked against the inputs in T0.3 (`validation/examples.toml`, whose
+`requires` field lists the features each example needs; filter on it rather
+than on the tier alone).
 
 | Tier | Feature focus | Examples (directory names in the zip) |
 | --- | --- | --- |
 | 0 | Confined, steady, CHD/WEL, anisotropy | `ex-gwf-toth` (DIS 200×1×100, CHD), `ex-gwf-hanic`, `ex-gwf-hanir` (K22/ANGLE1, CHD, WEL) |
 | 1 | Coupling package set | **synthetic coupling models** (T3.4) at several sizes; Indus via ModflowCoupling's writer (needs data) |
-| 2 | Time series, transient | `ex-gwf-fhb` (TS on CHD/WEL, STO), `ex-gwf-advtidal` (GHB, WEL, RIV, 3× RCH, EVT NSEG 3, TS, steady→transient) |
-| 3 | Convertible / standard formulation / rewetting | `ex-gwf-twri01` (VARIABLECV DEWATERED PERCHED, DRN, RCHA), `ex-gwf-bcf2ss-p01a` (REWET, RIV, CG), `ex-gwf-bump-p01b`, `ex-gwf-nwt-p02b` (14 lay, REWET), `ex-gwf-lgrv-gc`, `ex-gwf-lgrv-gr` (25×183×147, RIV, RCH; good size test) |
+| 2 | Time series, transient | `ex-gwf-fhb` (TS on CHD/WEL, STO) |
+| 3 | Convertible / standard formulation / rewetting | `ex-gwf-twri01` (VARIABLECV DEWATERED PERCHED, DRN, RCHA), `ex-gwf-advtidal` (convertible layer 1, VARIABLECV DEWATERED PERCHED; GHB, WEL, RIV, 3× RCH, EVT NSEG 3, TS, steady→transient; also needs T6.3), `ex-gwf-bcf2ss-p01a` (REWET, RIV, CG), `ex-gwf-bump-p01b`, `ex-gwf-nwt-p02b` (14 lay, REWET); size tests that are confined (ICELLTYPE 0) despite their tier: `ex-gwf-lgrv-gc`, `ex-gwf-lgrv-gr` (25×183×147, RIV, RCH) |
 | 4 | Newton | `ex-gwf-bcf2ss-p02a`, `ex-gwf-bump-p01a/c`, `ex-gwf-nwt-p02a`, `ex-gwf-nwt-p03a/b`, `ex-gwf-zaidel`, `ex-gwf-capture` |
 | 5 | DISV / DISU | `ex-gwf-u1disv`, `ex-gwf-curve-90`, `ex-gwf-curvilin`, `ex-gwf-rad-disu` (DISU, STO, WEL, OBS) |
 | 6 | XT3D | `ex-gwf-hanix`, `ex-gwf-u1disv-x`, `ex-gwf-whirl`, `ex-gwf-disvmesh` (DISV + XT3D, GHB, RCH) |
-| 7 | Multi-model / exchanges | `ex-gwf-u1gwfgwf-s1`, `-s4` (no XT3D), `-s2`, `-s3` (XT3D), `ex-gwf-lgrv-lgr`, **`ex-gwf-spbc`** (GWF–GWF exchange of a model with itself = periodic boundary; the template for global longitude wrap) |
+| 7 | Multi-model / exchanges | `ex-gwf-u1gwfgwf-s1` (no XT3D), `-s2` (XT3D in NPF), `-s3` (NPF and exchange), `-s4` (XT3D on the exchange only), `ex-gwf-lgrv-lgr`, **`ex-gwf-spbc`** (GWF–GWF exchange of a model with itself = periodic boundary; the template for global longitude wrap) |
 | — | Out of scope | anything with SFR, LAK, MAW, UZF, MVR, CSUB (`sfr-*`, `lak-*`, `maw-*`, `drn-p01*`, `sagehen`, `csub-*`, `lgr`, `hwell-b`), all GWT/GWE/PRT |
 
-`ex-gwf-hwell-a` (11×118×118, STO, WEL) and `ex-gwf-maw-p03a/c` (no MAW
-package in those variants) are extra Tier 0–2 size tests once STO is done.
+`ex-gwf-hwell/ex-gwf-hwell-a` (11×118×118, STO, WEL) is an extra Tier 2 size
+test once STO is done. `ex-gwf-maw-p03a/c` (no MAW package in those variants;
+steady state without STO, convertible layer 1) are extra Tier 3 size tests.
 
 ---
 
@@ -565,8 +568,12 @@ the same code on the GPU.
 - Deliver: the three packages, with head-dependent `hcof`/`rhs` recomputed in the
   formulate kernel every outer iteration.
 - Done when: unit tests check each branch (stage above/below RBOT, drain on/off,
-  EVT above surface / within extinction depth / below it, multi-segment), and the
-  advtidal residual test passes once T2.5 (STO) is in.
+  EVT above surface / within extinction depth / below it, multi-segment), and,
+  once T2.5 (STO) is in, the residual test passes on fhb (TS replaced by
+  constants in a test copy) and on a small synthetic coupling model with RIV,
+  DRN and EVT (confined, steady and transient; MF6 files in `test/`, reference
+  heads from mf6 6.8.2; T3.4 later generalises it). advtidal needs convertible
+  cells and moves to T6.1.
 
 **T2.5 STO and IC (S) ‖ with T2.4**
 - Depends: T2.3.
