@@ -3,6 +3,9 @@
 #     julia --project=benchmark benchmark/hardware.jl rocm
 #     JULIA_KA_CPU_THREADS=8 julia -t 8 --project=benchmark benchmark/hardware.jl cpu
 #
+# The script loads AMDGPU (for `allowscalar` and the ISA check), so AMDGPU must be installed
+# even for the `cpu` run; the `benchmark/` workspace project provides it.
+#
 # Optional second argument `quick` uses small sizes (smoke test). Results are printed as
 # Markdown tables and also written to `benchmark/out/hardware_<backend>.md`; the numbers
 # worth keeping are copied into `benchmark/results/hardware.md`.

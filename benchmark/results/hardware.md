@@ -1,6 +1,7 @@
 # Hardware baseline (T0.4)
 
-Measured 2026-11-06 with `benchmark/hardware.jl`:
+Measured 2026-11-06 with `benchmark/hardware.jl` (it loads AMDGPU, so AMDGPU must be
+installed even for the `cpu` run; the `benchmark/` project provides it):
 
 ```sh
 julia --project=benchmark benchmark/hardware.jl rocm
@@ -42,8 +43,8 @@ Bytes = 3 × array size (no write-allocate counted).
 | cpu | Float64 | KA kernel | 20.31 | 20.12 | **39.7** | 40.0 |
 | cpu | Float64 | broadcast | 22.91 | 22.46 | 35.1 | 35.9 |
 
-GPU: 71–75% of the 624 GB/s spec at the median, 81–85% at best. A KA kernel and the
-broadcast are equal on the GPU.
+GPU: 71–75% of the 624 GB/s spec at the median (the reference; best-of times do not
+reproduce well). A KA kernel and the broadcast are equal on the GPU.
 
 ## 2. CSR SpMV, 3-D 7-point Laplacian, scalar CSR
 
@@ -94,10 +95,15 @@ Bytes = 2 n × sizeof(data).
 | rocm | 33.5 M | F32 → F32 | 584 | 575 | 460 | 4.1e-9 |
 | rocm | 33.5 M | F32 → F64 | 658 | 645 | 408 | 0 |
 | rocm | 33.5 M | F64 → F64 | 1041 | 1032 | 516 | 0 |
-| cpu | 1 M | F32 → F32 | 593 | 190 | 13.5 | 1.5e-8 |
-| cpu | 1 M | F64 → F64 | 636 | 597 | 25 | 0 |
-| cpu | 10 M | F32 → F64 | 29633 | 28725 | 2.7 | 0 |
-| cpu | 10 M | F64 → F64 | 32872 | 31894 | 4.9 | 0 |
+| cpu | 1 M | F32 → F32 | 1421 | 266 | 5.6 | 1.5e-8 |
+| cpu | 1 M | F32 → F64 | 2682 | 2614 | 3.0 | 0 |
+| cpu | 1 M | F64 → F64 | 2836 | 613 | 5.6 | 0 |
+| cpu | 10 M | F32 → F32 | 4260 | 4038 | 18.8 | 1.7e-8 |
+| cpu | 10 M | F32 → F64 | 6640 | 6257 | 12.0 | 0 |
+| cpu | 10 M | F64 → F64 | 34910 | 8280 | 4.6 | 0 |
+| cpu | 33.5 M | F32 → F32 | 80711 | 13986 | 3.3 | 4.1e-9 |
+| cpu | 33.5 M | F32 → F64 | 134694 | 97500 | 2.0 | 0 |
+| cpu | 33.5 M | F64 → F64 | 141831 | 104896 | 3.8 | 0 |
 
 - GPU: a `mapreduce` call costs **≈ 45–50 µs** even for small n (launches + scalar copy to
   host). With 2–3 dots per Krylov iteration that is ~0.15 ms of latency per iteration, which
@@ -106,8 +112,10 @@ Bytes = 2 n × sizeof(data).
 - F32 data accumulated in F64 costs 12–20% over plain F32 on the GPU: cheap enough for
   rule 4 of section 3.7.
 - CPU: on `Array`, Base's multi-array `mapreduce` materialises `map(*, x, y)` (allocates
-  76 MB at 10 M) and runs single-threaded, so it is ~8× below memory speed. CPU engine code
-  needs a KA reduction kernel instead; these CPU dot numbers are not a target.
+  76 MB at 10 M) and runs single-threaded, so it is 2–10× below memory speed. CPU engine
+  code needs a KA reduction kernel instead. The CPU dot rows (idle machine) vary strongly
+  from run to run because of GC of the `map` temporary (e.g. 10 M F64: 35 ms and 8.4 ms
+  medians in two runs; median ≫ min); they are indicative only and not a target.
 
 ## 4. Atomic add `Atomix.@atomic y[idx[i]] += v[i]`
 
@@ -126,10 +134,13 @@ non-atomic `+=` (racy; timing reference).
 | rocm | none | Float64 | 18.0 | 18.0 | yes |
 | cpu | 16 targets | Float32 | 0.06 | 0.92 | yes |
 | cpu | 16 targets | Float64 | 0.06 | 0.45 | yes |
-| cpu | n/8, hashed | Float32 | 0.89 | 5.6 | yes |
-| cpu | n/8, hashed | Float64 | 0.55 | 2.7 | yes |
-| cpu | none | Float32 | 2.3 | 3.4 | yes |
-| cpu | none | Float64 | 1.9 | 1.9 | yes |
+| cpu | n/8, hashed | Float32 | 1.26 | 5.6 | yes |
+| cpu | n/8, hashed | Float64 | 0.47 | 3.0 | yes |
+| cpu | none | Float32 | 3.2 | 3.4 | yes |
+| cpu | none | Float64 | 1.9 | 2.0 | yes |
+
+CPU rows are from a run on the idle machine; between runs the hashed and no-collision
+atomic rows vary by up to ~25% (contention, scheduling), so they are indicative only.
 
 **Verdict:** Float64 `Atomix.@atomic` add is **correct** on the RX 7800 XT (and on POCL)
 in every pattern. gfx1101 has no Float64 atomic-add instruction: the ISA shows
@@ -141,20 +152,24 @@ or reductions. Float64 atomics are acceptable only for rare, low-contention upda
 
 ## Speed-of-light targets for Phase 4
 
-Global 5′: n ≈ 6 M active rows, nnz ≈ 7 n = 42 M, Int32 indices, min byte model. "Triad"
-uses the measured triad bandwidth (466 GB/s Float64, 445 GB/s Float32); "measured" uses the
-scalar CSR bandwidth at 10 M rows (333 / 423 GB/s).
+Global 5′: n ≈ 6 M active rows, two layers, so nnz ≈ 6 n = 36 M (diagonal, 4 horizontal,
+1 vertical neighbour), Int32 indices, min byte model. "Triad" uses the measured triad
+bandwidth (466 GB/s Float64, 445 GB/s Float32); "measured" uses the scalar CSR bandwidth at
+10 M rows (333 / 423 GB/s). The 216³ 3-D Laplacian is only a proxy: the 2-layer pattern
+has fewer non-zeros per row and different x reuse, so its achieved bandwidth may differ.
 
 | kernel (n = 6 M) | precision | bytes | at triad | at measured scalar CSR / dot |
 | --- | --- | --- | --- | --- |
-| SpMV | Float64 | 624 MB | **1.34 ms** | 1.87 ms |
-| SpMV | Float32 | 408 MB | **0.92 ms** | 0.96 ms |
+| SpMV | Float64 | 552 MB | **1.18 ms** | 1.66 ms |
+| SpMV | Float32 | 360 MB | **0.81 ms** | 0.85 ms |
 | dot | Float64 | 96 MB | 0.21 ms | 0.21 ms (+ ~50 µs latency) |
 | dot | Float32 → Float64 | 48 MB | 0.11 ms | 0.14 ms |
 | axpy `y = a x + y` | Float64 | 144 MB | 0.31 ms | |
 | axpy | Float32 | 72 MB | 0.16 ms | |
 
-A Jacobi-preconditioned CG iteration (1 SpMV, 2 dots, 3 axpy, 1 diagonal scaling; no
-fusion) on global 5′ is therefore ≈ **3.5 ms in Float64** and ≈ **1.9 ms in Float32**
-(Float64 dots) at the measured rates; fusing the vector updates lowers this. The CPU
-(POCL, 8 threads) is 8–12× slower (40 GB/s triad, 43–48 GB/s SpMV): SpMV ≈ 15 ms (Float64) / 8.5 ms (Float32) at 6 M rows.
+A Jacobi-preconditioned CG iteration (1 SpMV, 2 dots, 3 axpy, 1 diagonal scaling counted
+as an axpy; no fusion) on global 5′ is therefore ≈ **3.3 ms in Float64**
+(1.66 + 2 × 0.21 + 4 × 0.31) and ≈ **1.8 ms in Float32** with Float64 dots
+(0.85 + 2 × 0.14 + 4 × 0.16) at the measured rates; fusing the vector updates lowers this.
+The CPU (POCL, 8 threads) is 8–12× slower (40 GB/s triad, 43–48 GB/s SpMV): SpMV
+≈ 13 ms (Float64) / 7.5 ms (Float32) at 6 M rows.
