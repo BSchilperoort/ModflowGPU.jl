@@ -528,7 +528,7 @@ line `lines[k]` (`K`, `BOTM LAYERED`), as MF6's input data model does (`load_dou
 `LAYERED` and `v` is layered, one control record per layer follows (`layered_shape`);
 otherwise one control record for the whole array (LAYERED on an array that is not
 layered is ignored, as in MF6). NETCDF input is not supported, and `TIMEARRAYSERIES`
-after the name is an error here (period data, T1.3).
+after the name is an error here (period data, `read_array_periods`).
 """
 function read_grid_array(
         lines::AbstractVector{InputLine}, k::Integer, v::DfnVariable, g::GridDims;
@@ -548,7 +548,7 @@ function read_grid_array(
     opt == "NETCDF" && input_error(l, "NETCDF array input is not supported")
     # Mf6FileLayerArray.f90: `RECHARGE TIMEARRAYSERIES name` (READASARRAYS PERIOD blocks).
     opt == "TIMEARRAYSERIES" &&
-        input_error(l, "$name TIMEARRAYSERIES: time-array series are read with the period data (T1.3), not by read_grid_array")
+        input_error(l, "$name TIMEARRAYSERIES: time-array series are read with the period data (read_array_periods), not by read_grid_array")
     if opt == "LAYERED" && v.layered
         nlay, lshape = layered_shape(g)
         ncpl = prod(lshape)

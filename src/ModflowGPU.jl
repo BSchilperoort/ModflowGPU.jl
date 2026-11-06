@@ -16,5 +16,6 @@ include("input/tokenizer.jl")
 include("input/dfn/schema.jl")
 include("input/blocks.jl")
 include("input/arrays.jl")
+include("input/lists.jl")
 
 end
