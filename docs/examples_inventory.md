@@ -28,6 +28,7 @@ GWF6-GWF6, or an exchange with MVR6, or if it belongs to an `ex-gwt-*`, `ex-gwe-
 or `ex-prt-*` example. Those are listed under `[out_of_scope.<name>]` with `path`,
 `reason`, and, for GWF-only flow sub-simulations of transport/particle examples,
 `gwf_only = true` and their package list (candidates for extra tests later).
+A simulation that cannot be scanned is an error: the script stops and writes nothing.
 
 `[examples.<name>]` (one per in-scope simulation, sorted by tier):
 
@@ -36,6 +37,7 @@ or `ex-prt-*` example. Those are listed under `[out_of_scope.<name>]` with `path
 | `path` | directory relative to `mf6examples/` |
 | `tier` | PLAN.md section 4.1 tier; `in_plan = false` would mark a tier derived from the features (none at present) |
 | `notes` | hand-checked remarks, including disagreements with section 4.1 |
+| `requires` | sorted list of features beyond a confined, steady, single-model DIS model, for filtering (below) |
 | `grid`, `nmodels`, `nexchanges`, `ncells`, `packages` | summary over all GWF models |
 | `convertible` | some active cell has NPF `ICELLTYPE /= 0` (read from the actual arrays) |
 | `storage_convertible` | some STO `ICONVERT /= 0` and at least one transient period |
@@ -43,12 +45,42 @@ or `ex-prt-*` example. Those are listed under `[out_of_scope.<name>]` with `path
 | `xt3d`, `xt3d_npf`, `xt3d_exchange` | XT3D in an NPF package and/or on a GWF-GWF exchange |
 | `uses_ts`, `uses_tas`, `uses_obs` | TS6 / TAS6 / OBS6 files (package level, or a model OBS6 package) |
 | `transient`, `nper`, `nstp_total`, `periods` | steady/transient per period, run-length encoded (`"1:SS 2-4:TR"`); without STO every period is steady state, with STO the default is transient (`gwf-sto.f90`) |
-| `[examples.<name>.models.<model>]` | per model: `nlay/nrow/ncol` (DIS), `nlay/ncpl/nvert` (DISV), `nodes/nja` (DISU), `nactive` (IDOMAIN > 0), `packages` (RCH/EVT with READASARRAYS shown as RCHA/EVTA), `newton`, `ts_packages`, `obs_packages` |
+| `[examples.<name>.models.<model>]` | per model: `nlay/nrow/ncol` (DIS), `nlay/ncpl/nvert` (DISV), `nodes/nja` (DISU), `nactive` (IDOMAIN > 0), `packages` (RCH/EVT with READASARRAYS shown as RCHA/EVTA), `newton`, `ts_packages`, `obs_packages`; output files relative to the simulation directory: `head_file`, `budget_file` (OC `HEAD/BUDGET FILEOUT`, if set) and `grb_file` (GRB6 FILEOUT, else the discretization file name plus `.grb`; absent with NOGRB) |
 | `....npf` | NPF options as given (ALTERNATIVE_CELL_AVERAGING, THICKSTRT, VARIABLECV, PERCHED, REWET, XT3D, K22OVERK, ...), counts of active cells with ICELLTYPE 0 / >0 / <0, `icelltype_by_layer`, which arrays are given, whether K22/K33 differ from K, whether ANGLE1-3 are non-zero, the number of non-zero WETDRY cells |
 | `....sto` | STO options, ICONVERT counts |
 | `....boundaries.<pkg>` | stress package type, MAXBOUND, NSEG, AUXILIARY, BOUNDNAMES and similar options |
 | `[[examples.<name>.ims]]` | per solution: file, models, and the IMS options/nonlinear/linear settings as written (defaults are not filled in) |
 | `[[examples.<name>.exchanges]]` | type, models, NEXG, options (XT3D, NEWTON, AUXILIARY, ...) |
+
+### `requires` and filtering
+
+Values (per example, the union over its models and exchanges):
+
+| Value | When |
+| --- | --- |
+| `disv`, `disu` | grid other than DIS |
+| `convertible` | NPF ICELLTYPE /= 0 in some active cell |
+| `convertible_storage` | STO ICONVERT /= 0 and a transient period |
+| `transient` | some period is transient (STO) |
+| `newton` | NEWTON in a model name file |
+| `xt3d` | XT3D in an NPF package or on an exchange |
+| `anisotropy` | K22 /= K or a non-zero ANGLE1-3 (horizontal anisotropy; K33 /= K is not listed) |
+| `rewet`, `variablecv`, `perched`, `thickstrt`, `alternative_cell_averaging` | the NPF option is set |
+| `ts`, `tas`, `obs` | TS6 / TAS6 / OBS6 input |
+| `evt_nseg` | an EVT package with NSEG > 1 |
+| `multi_model`, `exchange` | more than one GWF model; a GWF-GWF exchange (incl. `ex-gwf-spbc`, a model exchanging with itself) |
+
+The tier stays as in PLAN.md section 4.1; `requires` decides what a card can run.
+Rule for the Phase 2 confined cards: use examples with `tier <= 2` whose `requires`
+contains none of `convertible`, `convertible_storage`, `newton`, `xt3d`, `disv`,
+`disu`, `exchange`, `multi_model`, `rewet`, `variablecv`, `perched`, `thickstrt`,
+`alternative_cell_averaging`; `transient` is allowed once STO is done, and `ts`/`tas`
+once time series are done (before that, the copy of the example with the time series
+replaced by constants, per T2.5). `anisotropy` (K22/ANGLE1 with the standard
+formulation) and `obs` are fine. Later cards add the value they implement to the
+allowed set. With the 2026-10-29 zip this gives: `toth`, `hanic`, `hanir` (steady),
+`hwell-a` (transient, STO), `fhb` (transient, STO, TS). `advtidal`, `maw-p03a` and
+`maw-p03c` need `convertible` despite being Tier 2.
 
 ## `validation/run_reference.jl`
 
@@ -63,7 +95,8 @@ For every example in `examples.toml` the simulation directory is copied to
   `RELATIVE_RCLOSE`) is kept, so the criterion keeps its meaning; most examples
   use `STRICT` (absolute infinity norm, and the outer iteration only converges when
   the inner solve converged in its first iteration). Patched lines carry a
-  `# patched by run_reference.jl` comment; missing keys and blocks are added.
+  `# patched by run_reference.jl` comment; missing keys and blocks are added. The
+  deprecated `OUTER_HCLOSE` / `INNER_HCLOSE` are replaced by the DVCLOSE keys.
 - `tight-relative` (only when `tight` fails): as `tight` but
   `INNER_RCLOSE 1e-10 RELATIVE_RCLOSE`. MF6 then ends the inner solve on
   `INNER_DVCLOSE` alone (`ims_base_testcnvg`, option 3).
@@ -78,14 +111,19 @@ Each run directory has `run.toml`: `status` (`ok` = exit code 0, "Normal termina
 of simulation." in `mfsim.lst` and no "Solution Group ... did not converge" message;
 else `nonconverged`, `error` or `timeout`), `exit_code`, `wall_s`,
 `normal_termination`, `converged`, `nonconverged_steps`, `outer_iterations` and
-`inner_iterations` (summed over time steps, when printed),
-`max_abs_percent_discrepancy` (all budgets in all listing files), the IMS values
-set, and the first lines of an MF6 `ERROR REPORT`. `runs/summary.toml` and
+`inner_iterations` (summed over time steps; only present when the listing prints
+them), `max_abs_percent_discrepancy` (all budgets in all listing files, cumulative and
+rate, recomputed as `100 (in - out) / ((in + out) / 2)` from the printed `TOTAL IN` and
+`TOTAL OUT`, which have 4 decimals; MF6's own `PERCENT DISCREPANCY` line has only
+0.01 % resolution), the IMS values set, and the first lines of an MF6 `ERROR REPORT`. `runs/summary.toml` and
 `runs/summary.md` collect all runs and give each example a `reference_mode`: the
-first successful mode of `tight`, `tight-relative`, `relaxed`. **Parity tests read
-the converged heads from `runs/<name>/<reference_mode>/`.**
+first successful mode of `tight`, `tight-relative`, `relaxed`, and its run directory
+as `path` (relative to `REFERENCE_DIR`, e.g. `runs/ex-gwf-fhb/tight-relative`).
+**Parity tests read the converged heads from that directory** (file names:
+`head_file`, `budget_file`, `grb_file` in `examples.toml`).
 
-Options: `--force` (rerun existing runs), `--jobs N` (parallel mf6 processes,
+Options: `--force` (rerun existing runs), `--summary-only` (run no mf6; re-derive
+the listing checks of the existing runs and rewrite `run.toml` and the summaries), `--jobs N` (parallel mf6 processes,
 default half the CPU threads; the largest models start first), `--modes raw,tight`,
 `--no-relaxed` (no fallbacks), `--tiers 0,1,2`, `--timeout S` (default 3600 s), and
 example names to run only those.
@@ -109,8 +147,10 @@ examples). All 36 `raw` runs succeed. 30 succeed with `tight`. The other six
 (`ex-gwf-advtidal`, `ex-gwf-fhb`, `ex-gwf-maw-p03c`, `ex-gwf-bcf2ss-p01a`,
 `ex-gwf-bcf2ss-p02a`, `ex-gwf-rad-disu`) fail on the absolute residual criterion
 above and succeed with `tight-relative`; `relaxed` (absolute 1e-8) succeeds only for
-`bcf2ss-p01a`, `bcf2ss-p02a` and `rad-disu`. The `tight-relative` heads agree with
-the `raw`/`relaxed` heads to 3e-9 or better in these six. So every example has a
+`bcf2ss-p01a`, `bcf2ss-p02a` and `rad-disu`. The final `tight-relative` heads agree
+to 3e-9 or better with the `relaxed` heads where relaxed converged (`bcf2ss-p01a`
+4.6e-10, `rad-disu` 1.3e-10) and otherwise with the `raw` heads (`fhb` 1.5e-14,
+`advtidal` 1.6e-10, `maw-p03c` 3.0e-9; `bcf2ss-p02a` not compared). So every example has a
 tight reference run (`reference_mode` = `tight` or `tight-relative`). The full
 table with wall times and iteration counts is in `reference/runs/summary.md`.
 

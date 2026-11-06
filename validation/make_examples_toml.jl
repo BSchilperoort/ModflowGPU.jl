@@ -161,6 +161,7 @@ struct ModelScan
     tas::Bool
     obs::Bool
     storage_convertible::Bool
+    requires::Vector{String}
     oos::Vector{String}
 end
 
@@ -207,6 +208,20 @@ function scan_gwf(dir, namfile, mname, tdis)
     dopts = option_lines(dbs)
     for k in ("XORIGIN", "YORIGIN", "ANGROT")
         (v = option_value(dopts, k)) === nothing || push!(t, lowercase(k) => parse(Float64, v[1]))
+    end
+    # output files (paths relative to the simulation directory)
+    if !has_option(dopts, "NOGRB")
+        g = option_value(dopts, "GRB6")
+        # default: the discretization file name plus ".grb" (gwf-dis.dfn, grb6_filename)
+        push!(t, "grb_file" => g !== nothing && length(g) >= 2 && upper(g[1]) == "FILEOUT" ? g[2] : dfile * ".grb")
+    end
+    oi = findfirst(p -> p[1] == "OC6", pk)
+    if oi !== nothing
+        oco = option_lines(read_blocks(joinpath(dir, pk[oi][2])))
+        for (k, key) in (("HEAD", "head_file"), ("BUDGET", "budget_file"))
+            v = option_value(oco, k)
+            v !== nothing && length(v) >= 2 && upper(v[1]) == "FILEOUT" && push!(t, key => v[2])
+        end
     end
 
     # packages
@@ -336,9 +351,30 @@ function scan_gwf(dir, namfile, mname, tdis)
     isempty(pkdetail) || push!(t, "boundaries" => pkdetail)
     # convertible storage only matters in transient periods
     storage_convertible = si !== nothing && sto_conv && any(==("TR"), periods)
+    # features beyond a confined, steady, single-model DIS model (see REQUIRES_DOC)
+    req = String[]
+    grid == "DIS" || push!(req, lowercase(grid))
+    convertible && push!(req, "convertible")
+    storage_convertible && push!(req, "convertible_storage")
+    any(==("TR"), periods) && push!(req, "transient")
+    newton && push!(req, "newton")
+    xt3d && push!(req, "xt3d")
+    isempty(ts) || push!(req, "ts")
+    isempty(tas) || push!(req, "tas")
+    isempty(obsp) || push!(req, "obs")
+    for (k, r) in (
+            ("rewet", "rewet"), ("variablecv", "variablecv"), ("perched", "perched"),
+            ("thickstrt", "thickstrt"), ("alternative_cell_averaging", "alternative_cell_averaging"),
+        )
+        any(p -> p[1] == k, npf) && push!(req, r)
+    end
+    getb(tb, k) = (i = findfirst(p -> p[1] == k, tb); i !== nothing && tb[i][2] === true)
+    any(k -> getb(npf, k), ("k22_differs_from_k", "angle1_nonzero", "angle2_nonzero", "angle3_nonzero")) &&
+        push!(req, "anisotropy")
+    any(p -> p[2] isa Tbl && any(q -> q[1] == "nseg" && q[2] > 1, p[2]), pkdetail) && push!(req, "evt_nseg")
     return ModelScan(
         t, grid, nodes, convertible, newton, xt3d, periods,
-        !isempty(ts), !isempty(tas), !isempty(obsp), storage_convertible, oos
+        !isempty(ts), !isempty(tas), !isempty(obsp), storage_convertible, req, oos
     )
 end
 
@@ -427,6 +463,13 @@ function scan_sim(dir, rel)
     push!(t, "tier" => tier)
     push!(t, "in_plan" => haskey(TIERS, name))
     haskey(NOTES, name) && push!(t, "notes" => NOTES[name])
+    req = Set{String}()
+    foreach(m -> union!(req, m.requires), ms)
+    length(ms) > 1 && push!(req, "multi_model")
+    isempty(exs) || push!(req, "exchange")
+    any(x -> any(p -> p[1] == "xt3d", x), exs) && push!(req, "xt3d")
+    any(x -> any(p -> p[1] == "obs6", x), exs) && push!(req, "obs")
+    push!(t, "requires" => sort!(collect(req)))
     grids = unique([m.grid for m in ms])
     push!(t, "grid" => join(grids, "+"))
     push!(t, "nmodels" => length(ms))
@@ -472,15 +515,18 @@ function main(out = joinpath(@__DIR__, "examples.toml"))
     sort!(sims)
     inscope = Pair{String, Tbl}[]
     oos = Pair{String, Tbl}[]
+    failed = String[]
     for rel in sims
         name, ok, t = try
             scan_sim(joinpath(EXAMPLES, rel), rel)
         catch err
-            @warn "scan failed" rel exception = err
-            sim_name(rel), false, Tbl("path" => rel, "reason" => "scan failed: $(sprint(showerror, err))")
+            @error "scan failed" rel exception = err
+            push!(failed, rel)
+            continue
         end
         push!(ok ? inscope : oos, name => t)
     end
+    isempty(failed) || error("$(length(failed)) simulation(s) could not be scanned: $(join(failed, ", ")); examples.toml not written")
     sort!(inscope; by = p -> (p[2][findfirst(x -> x[1] == "tier", p[2])][2], p[1]))
     checksum = ""
     ck = joinpath(REFERENCE_DIR, "checksums.txt")

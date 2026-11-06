@@ -27,6 +27,8 @@
 #
 # Options:
 #   --force          rerun even if run.toml exists
+#   --summary-only   run nothing: re-derive the listing checks of existing runs
+#                    and rewrite run.toml and the summaries
 #   --jobs N         parallel mf6 processes (default: number of CPU threads ÷ 2)
 #   --modes a,b      modes to run (default raw,tight; relaxed follows a failed tight)
 #   --no-relaxed     do not run the fallbacks
@@ -59,6 +61,8 @@ const MIN_INNER = 1000
 # the default complexity is SIMPLE.
 const DEFAULT_OUTER = Dict("SIMPLE" => 25, "MODERATE" => 50, "COMPLEX" => 100)
 const DEFAULT_INNER = Dict("SIMPLE" => 50, "MODERATE" => 100, "COMPLEX" => 500)
+# deprecated IMS names, replaced by the DVCLOSE keys when patching
+const DEPRECATED = Dict("OUTER_HCLOSE" => "OUTER_DVCLOSE", "INNER_HCLOSE" => "INNER_DVCLOSE")
 
 # ---------------------------------------------------------------------------
 # IMS patching
@@ -114,6 +118,7 @@ function patch_ims(path, c)
     for l in lines
         t = tok(l)
         k = isempty(t) ? "" : uppercase(t[1])
+        k = get(DEPRECATED, k, k)
         if k == "BEGIN"
             block = uppercase(t[2])
             push!(seen_blocks, block)
@@ -171,8 +176,10 @@ function check_listings(dir)
     sim = joinpath(dir, "mfsim.lst")
     r = Dict{String, Any}(
         "normal_termination" => false, "converged" => false, "nonconverged_steps" => 0,
-        "outer_iterations" => 0, "inner_iterations" => 0, "max_abs_percent_discrepancy" => 0.0,
+        "max_abs_percent_discrepancy" => 0.0,
     )
+    outer = inner = 0
+    found = false
     isfile(sim) || return r
     txt = read(sim, String)
     r["normal_termination"] = occursin("Normal termination of simulation", txt)
@@ -184,13 +191,26 @@ function check_listings(dir)
         t = f == sim ? txt : read(f, String)
         f == sim || (nfail = max(nfail, count("FAILED TO MEET SOLVER CONVERGENCE CRITERIA", t)))
         for m in eachmatch(r"(\d+) CALLS TO NUMERICAL SOLUTION IN TIME STEP \d+ STRESS PERIOD \d+\s*\n\s*(\d+) TOTAL ITERATIONS", t)
-            r["outer_iterations"] += parse(Int, m[1])
-            r["inner_iterations"] += parse(Int, m[2])
+            outer += parse(Int, m[1])
+            inner += parse(Int, m[2])
+            found = true
         end
-        for m in eachmatch(r"PERCENT DISCREPANCY\s*=\s*([-+0-9.Ee]+)", t)
-            v = tryparse(Float64, m[1])
-            v === nothing || (r["max_abs_percent_discrepancy"] = max(r["max_abs_percent_discrepancy"], abs(v)))
+        # percent discrepancy recomputed from the printed TOTAL IN / TOTAL OUT
+        # (cumulative and rate columns), as MF6 does: 100 (in - out) / ((in + out) / 2).
+        # The listing prints the totals with 4 decimals, which bounds the resolution;
+        # MF6's own PERCENT DISCREPANCY line has only 0.01 % resolution.
+        num = "([-+0-9.Ee]+)"
+        tin = [parse.(Float64, (m[1], m[2])) for m in eachmatch(Regex("TOTAL IN =\\s*$num\\s+TOTAL IN =\\s*$num"), t)]
+        tout = [parse.(Float64, (m[1], m[2])) for m in eachmatch(Regex("TOTAL OUT =\\s*$num\\s+TOTAL OUT =\\s*$num"), t)]
+        for (a, b) in zip(tin, tout), j in 1:2
+            s = a[j] + b[j]
+            s > 0 && (r["max_abs_percent_discrepancy"] = max(r["max_abs_percent_discrepancy"], abs(200 * (a[j] - b[j]) / s)))
         end
+    end
+    # iteration counts are printed only with an IMS PRINT_OPTION
+    if found
+        r["outer_iterations"] = outer
+        r["inner_iterations"] = inner
     end
     r["nonconverged_steps"] = nfail
     r["converged"] = r["normal_termination"] && nfail == 0
@@ -239,13 +259,28 @@ function run_one(ex, mode; timeout)
     info["wall_s"] = round(time() - t0; digits = 3)
     info["exit_code"] = p.exitcode
     info["timed_out"] = timed_out
+    update_listing_fields!(info, dest)
+    @info @sprintf(
+        "%-22s %-8s %-12s exit=%s %8.2f s outer=%s", name, mode, info["status"], p.exitcode,
+        info["wall_s"], get(info, "outer_iterations", "-")
+    )
+    return info
+end
+
+const LISTING_KEYS = (
+    "normal_termination", "converged", "nonconverged_steps", "outer_iterations",
+    "inner_iterations", "max_abs_percent_discrepancy", "errors", "status",
+)
+
+"(Re)derive the listing checks and the status of a finished run; rewrite run.toml."
+function update_listing_fields!(info, dest)
+    foreach(k -> delete!(info, k), LISTING_KEYS)
     merge!(info, check_listings(dest))
-    info["status"] = timed_out ? "timeout" :
-        (p.exitcode == 0 && info["converged"]) ? "ok" :
+    info["status"] = info["timed_out"] ? "timeout" :
+        (info["exit_code"] == 0 && info["converged"]) ? "ok" :
         info["normal_termination"] ? "nonconverged" :
         info["nonconverged_steps"] > 0 ? "nonconverged" : "error"
     open(io -> TOML.print(io, info; sorted = true), joinpath(dest, "run.toml"), "w")
-    @info @sprintf("%-22s %-8s %-12s exit=%s %8.2f s outer=%d", name, mode, info["status"], p.exitcode, info["wall_s"], info["outer_iterations"])
     return info
 end
 
@@ -258,12 +293,15 @@ function parse_args(args)
     o = Dict{String, Any}(
         "force" => false, "jobs" => max(1, Sys.CPU_THREADS ÷ 2), "modes" => ["raw", "tight"],
         "relaxed" => true, "tiers" => nothing, "timeout" => 3600.0, "names" => String[],
+        "summary_only" => false,
     )
     i = 1
     while i <= length(args)
         a = args[i]
         if a == "--force"
             o["force"] = true
+        elseif a == "--summary-only"
+            o["summary_only"] = true
         elseif a == "--no-relaxed"
             o["relaxed"] = false
         elseif a == "--jobs"
@@ -301,13 +339,16 @@ function write_summary(examples)
         end
         i = findfirst(m -> haskey(r, m) && r[m]["status"] == "ok", REFERENCE_ORDER)
         r["reference_mode"] = i === nothing ? "none" : REFERENCE_ORDER[i]
+        # run directory with the reference heads, relative to REFERENCE_DIR
+        i === nothing || (r["path"] = join(["runs", ex["name"], REFERENCE_ORDER[i]], "/"))
         push!(rows, r)
     end
     open(joinpath(RUNS, "summary.toml"), "w") do io
         println(io, "# Written by validation/run_reference.jl on $(now())")
         TOML.print(io, Dict("mf6" => MF6, "runs" => rows); sorted = true)
     end
-    cell(r, m) = haskey(r, m) ? @sprintf("%s (%.1f s, %d outer)", r[m]["status"], r[m]["wall_s"], r[m]["outer_iterations"]) : "-"
+    cell(r, m) = haskey(r, m) ?
+        @sprintf("%s (%.1f s, %s outer)", r[m]["status"], r[m]["wall_s"], get(r[m], "outer_iterations", "-")) : "-"
     open(joinpath(RUNS, "summary.md"), "w") do io
         println(io, "# mf6 reference runs\n\nmf6: `$MF6`, written $(now())\n")
         println(io, "| Example | Tier | raw | tight | tight-relative | relaxed | reference |")
@@ -333,6 +374,14 @@ function main(args)
     isempty(examples) && error("no examples selected")
     # largest first so the long runs start early
     order = sort(examples; by = e -> -e["ncells"] * max(1, e["nstp_total"]))
+    if o["summary_only"]
+        # no mf6 runs: re-derive the listing checks of the existing runs
+        for ex in examples, mode in ("raw", REFERENCE_ORDER...)
+            info = load_run(ex["name"], mode)
+            info === nothing || update_listing_fields!(info, joinpath(RUNS, ex["name"], mode))
+        end
+        empty!(order)
+    end
     sem = Base.Semaphore(o["jobs"])
     @sync for ex in order
         @async begin
