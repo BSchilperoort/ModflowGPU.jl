@@ -212,6 +212,7 @@ function read_input_lines(path::AbstractString)
     buf = read(file, String)
     n = ncodeunits(buf)
     lines = InputLine[]
+    sizehint!(lines, count(==(UInt8('\n')), codeunits(buf)) + 1)
     i = 1
     lineno = 0
     while i <= n
@@ -327,7 +328,9 @@ end
 
 Iterate over the words of `l` from word `first` on as real numbers (`parse_double`),
 without allocating; a word that is not a number throws an `MF6InputError` naming `name`.
-For array data read straight from the line text (T1.2).
+For numbers on a list or keyword line (URWORD rules). Not for READARRAY data: array
+values follow Fortran list-directed rules (repeat counts `3*1.0`, values spanning lines,
+rows starting on new lines), which `list_read!` in `arrays.jl` implements.
 """
 each_double(l::InputLine; first::Integer = 1, name::AbstractString = "value") =
     EachDouble(l, Int(first), String(name))

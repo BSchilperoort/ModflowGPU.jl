@@ -15,5 +15,6 @@ include("precision.jl")
 include("input/tokenizer.jl")
 include("input/dfn/schema.jl")
 include("input/blocks.jl")
+include("input/arrays.jl")
 
 end

@@ -134,14 +134,34 @@ _resolve_path(fname, simdir) = isabspath(fname) ? String(fname) : normpath(joinp
 _eof_error(l::InputLine, name) =
     throw(MF6InputError(l.file, l.line, "unexpected end of file: BEGIN $name has no END $name"))
 
+# Whether word `i` of `l` is `kw` (upper-case ASCII) ignoring ASCII case, as
+# `keyword(l, i) == kw` but without allocating (called for every line of a block).
+function _keyword_is(l::InputLine, i::Integer, kw::String)
+    k = 0
+    for t in eachtoken(l)
+        k += 1
+        k == i && return _ascii_upper_equal(t, kw)
+    end
+    return isempty(kw)
+end
+
+function _ascii_upper_equal(t::SubString{String}, kw::String)
+    ncodeunits(t) == ncodeunits(kw) || return false
+    @inbounds for j in 1:ncodeunits(kw)
+        c = codeunit(t, j)
+        UInt8('a') <= c <= UInt8('z') && (c -= 0x20)
+        c == codeunit(kw, j) || return false
+    end
+    return true
+end
+
 # Handle the END line `bl` of block `name`; true when it ends the block.
 function _check_end(bl::InputLine, name)
-    k = keyword(bl, 1)
-    if k == "END"
-        keyword(bl, 2) == name ||
+    if _keyword_is(bl, 1, "END")
+        _keyword_is(bl, 2, name) ||
             input_error(bl, "END $(keyword(bl, 2)) detected without END $name; END $name must be used to end $name")
         return true
-    elseif k == "BEGIN"
+    elseif _keyword_is(bl, 1, "BEGIN")
         input_error(bl, "BEGIN detected before END $name; END $name must be used to end $name")
     end
     return false
@@ -156,12 +176,11 @@ function _parse_blocks(path::AbstractString, simdir::AbstractString, dfn)
     i = 1
     while i <= n
         l = lines[i]
-        key = keyword(l, 1)
         i += 1
-        if key == "END"
+        if _keyword_is(l, 1, "END")
             push!(strays, l)
             continue
-        elseif key != "BEGIN"
+        elseif !_keyword_is(l, 1, "BEGIN")
             continue  # outside a block: skipped, as in uget_block
         end
         name = keyword(l, 2)
@@ -170,7 +189,7 @@ function _parse_blocks(path::AbstractString, simdir::AbstractString, dfn)
         body = InputLine[]
         oc = nothing
         ended = false
-        if i <= n && keyword(lines[i], 1) == "OPEN/CLOSE" && _supports_open_close(dfn, name) &&
+        if i <= n && _keyword_is(lines[i], 1, "OPEN/CLOSE") && _supports_open_close(dfn, name) &&
                 !any(t -> uppercase(t) in ("(BINARY)", "SFAC"), Iterators.drop(eachtoken(lines[i]), 2))
             ocl = lines[i]
             fname = token(ocl, 2)
@@ -187,12 +206,14 @@ function _parse_blocks(path::AbstractString, simdir::AbstractString, dfn)
             end
         end
         # GetNextLine: read until END name (after an OPEN/CLOSE file, from the package file).
-        while !ended
-            i <= n || _eof_error(l, name)
-            bl = lines[i]
-            i += 1
-            ended = _check_end(bl, name)
-            ended || push!(body, bl)
+        if !ended
+            first = i
+            while true
+                i <= n || _eof_error(l, name)
+                i += 1
+                _check_end(lines[i - 1], name) && break
+            end
+            append!(body, view(lines, first:(i - 2)))  # one allocation per block
         end
         push!(blocks, InputBlock(name, suffix, body, l, oc, strays))
         strays = InputLine[]

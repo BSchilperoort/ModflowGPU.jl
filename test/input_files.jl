@@ -74,3 +74,25 @@ function simulation_input_files(simdir::AbstractString)
     end
     return collect(values(done))
 end
+
+"""
+    model_package_files(simdir) -> Vector{Pair{String, Vector{ModflowGPU.InputFile}}}
+
+`model name => package files` (with their DFN definitions, discretization included) of
+every GWF model of the simulation in `simdir`, in `mfsim.nam` order.
+"""
+function model_package_files(simdir::AbstractString)
+    M = ModflowGPU
+    sim = M.read_input_file(joinpath(simdir, "mfsim.nam"); ftype = "SIM", component = "SIM", simdir)
+    out = Pair{String, Vector{M.InputFile}}[]
+    for l in M.find_block(sim, "MODELS").lines
+        M.keyword(l, 1) == "GWF6" || continue
+        nam = M.read_input_file(joinpath(simdir, l[2]); ftype = "GWF6", component = "GWF", simdir)
+        files = [
+            M.read_input_file(joinpath(simdir, p[2]); ftype = M.keyword(p, 1), component = "GWF", simdir)
+                for p in M.find_block(nam, "PACKAGES").lines
+        ]
+        push!(out, String(l[3]) => files)
+    end
+    return out
+end
