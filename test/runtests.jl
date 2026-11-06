@@ -29,11 +29,15 @@ end
 @info "Running tests on backend $(ModflowGPU.backend_name(TEST_BACKEND))"
 
 include("testutils.jl")
+include("input_files.jl")
 
 @testset "ModflowGPU" begin
     include("unit/backend_test.jl")
     include("unit/precision_test.jl")
     include("unit/kernel_test.jl")
+    include("unit/input_tokenizer_test.jl")
+    include("unit/input_blocks_test.jl")
+    include("unit/input_examples_test.jl")
     if !(TEST_BACKEND isa CPU)
         include("gpu/backend_gpu_test.jl")
     end
