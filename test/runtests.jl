@@ -39,6 +39,7 @@ include("input_files.jl")
     include("unit/input_blocks_test.jl")
     include("unit/input_examples_test.jl")
     include("unit/input_arrays_test.jl")
+    include("unit/input_lists_test.jl")
     if !(TEST_BACKEND isa CPU)
         include("gpu/backend_gpu_test.jl")
     end
