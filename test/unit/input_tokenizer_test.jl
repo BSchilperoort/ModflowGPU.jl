@@ -1,6 +1,7 @@
 # MF6 input tokenizer (T1.1): comment lines, URWORD word rules, numbers.
 using ModflowGPU: MF6InputError, InputLine, is_comment_line, tokenize_line, read_input_lines,
-    keyword, parse_double, parse_int, get_double, get_int, input_error
+    keyword, parse_double, parse_int, get_double, get_int, input_error, eachtoken, tokens, ntokens,
+    token, each_double
 
 "Write `text` to `name` in `dir` and return the path."
 function write_input(dir, name, text)
@@ -8,6 +9,26 @@ function write_input(dir, name, text)
     mkpath(dirname(path))
     write(path, text)
     return path
+end
+
+# Helpers to check that iterating over words and numbers does not allocate.
+function token_bytes(l)
+    n = 0
+    for t in ModflowGPU.eachtoken(l)
+        n += ncodeunits(t)
+    end
+    return n
+end
+function allocations(f, x)
+    f(x)
+    return @allocated f(x)
+end
+function sum_doubles(l)
+    s = 0.0
+    for v in ModflowGPU.each_double(l)
+        s += v
+    end
+    return s
 end
 
 @testset "Tokenizer" begin
@@ -41,6 +62,23 @@ end
         @test tokenize_line("1 2 3 -1.0 # a comment") == ["1", "2", "3", "-1.0", "#", "a", "comment"]
         @test tokenize_line("välue ü") == ["välue", "ü"]
         @test eltype(tokenize_line("a")) == SubString{String}
+
+        # Lazy tokens: views of the line, found without allocating.
+        l = InputLine("  BEGIN period 1 'a b' ", "f", 3)
+        @test collect(eachtoken(l)) == ["BEGIN", "period", "1", "a b"]
+        @test tokens(l) == ["BEGIN", "period", "1", "a b"]
+        @test ntokens(l) == 4 && length(l) == 4
+        @test l[4] == "a b" && token(l, 2) == "period" && isnothing(token(l, 5))
+        @test_throws BoundsError l[5]
+        @test all(t -> t.string === l.text.string, eachtoken(l))
+        @test token_bytes(l) == 15
+        @test allocations(token_bytes, l) == 0
+        d = InputLine("1.0 2d0 3", "f", 1)
+        @test collect(each_double(d)) == [1.0, 2.0, 3.0]
+        @test collect(each_double(d; first = 2)) == [2.0, 3.0]
+        @test_throws MF6InputError collect(each_double(InputLine("1.0 x", "f", 1)))
+        @test sum_doubles(d) == 6.0
+        @test allocations(sum_doubles, InputLine("1.0 2.5e1 -3", "f", 1)) == 0  # plain numbers: fast path
     end
 
     @testset "numbers (list-directed read)" begin
@@ -64,6 +102,12 @@ end
         @test isnothing(parse_int("5.0"))
         @test isnothing(parse_int("1e3"))
         @test isnothing(parse_int("x"))
+        # Fortran has no radix prefixes or hexadecimal floats.
+        for h in ("0x10", "-0x10", "0b1", "0o7", "0x1p3", "+0X1")
+            @test isnothing(parse_int(h))
+            @test isnothing(parse_double(h))
+        end
+        @test parse_int("0") == 0 && parse_double("0") == 0.0 && parse_double("-0.5") == -0.5
     end
 
     @testset "lines and errors" begin
@@ -76,14 +120,14 @@ end
             @test [l.line for l in lines] == [3, 5, 6, 7]
             @test all(l -> l.file == path, lines)
             @test lines[1].text == "BEGIN options"  # carriage return removed
-            @test lines[3].tokens == ["a", "b c", "#", "trailing"]
+            @test tokens(lines[3]) == ["a", "b c", "#", "trailing"]
             @test length(lines[3]) == 4
             @test lines[3][2] == "b c"
             @test collect(lines[2]) == ["SAVE_FLOWS"]
             @test keyword(lines[1], 2) == "OPTIONS"
             @test keyword(lines[1], 3) == ""
 
-            l = InputLine(tokenize_line("x 12 3.5 abc 4.0"), "x 12 3.5 abc 4.0", path, 9)
+            l = InputLine("x 12 3.5 abc 4.0", path, 9)
             @test get_int(l, 2) == 12
             @test get_double(l, 3) == 3.5
             @test get_double(l, 2) == 12.0

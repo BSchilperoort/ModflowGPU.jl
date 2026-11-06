@@ -46,7 +46,7 @@ end
             @test [b.name for b in bs] == ["OPTIONS", "DIMENSIONS", "PERIOD", "PERIOD", "CONTINUOUS"]
             opt = bs[1]
             @test isempty(opt.suffix)
-            @test [l.tokens for l in opt.lines] == [["BOUNDNAMES"], ["ts6", "filein", "My.TS"]]
+            @test tokens.(opt.lines) == [["BOUNDNAMES"], ["ts6", "filein", "My.TS"]]
             @test opt.header.line == 3 && opt.header.file == path
             @test [l.line for l in opt.lines] == [5, 6]
             @test isnothing(opt.open_close)
@@ -75,7 +75,6 @@ end
                 ("noname", "BEGIN options\n  A\nEND\n", 3, "END OPTIONS must be used"),
                 ("nested", "BEGIN options\nBEGIN dimensions\nEND dimensions\n", 2, "BEGIN detected before END OPTIONS"),
                 ("beginname", "\n\nBEGIN\nEND\n", 3, "block name missing"),
-                ("strayend", "BEGIN options\nEND options\nEND options\n", 3, "without a matching BEGIN"),
             ]
             for (name, text, line, msg) in cases
                 path = write_input(dir, name, text)
@@ -84,6 +83,11 @@ end
                 @test err.line == line
                 @test occursin(msg, sprint(showerror, err))
             end
+            # An END line outside a block is skipped (MF6 only rejects it while searching
+            # for that block, see the DFN tests).
+            path = write_input(dir, "strayend", "BEGIN options\nEND options\nEND options\n")
+            bs = @test_logs (:warn, r"strayend:3: END OPTIONS outside a block") parse_blocks(path)
+            @test length(bs) == 1
         end
     end
 
@@ -114,12 +118,13 @@ end
                 """,
             )
             write_input(simdir, "data/opts.txt", "BOUNDNAMES\n")
-            bs = parse_blocks(path; simdir)
+            # The END PERIOD after the OPEN/CLOSE line of period 4 is outside the block.
+            bs = @test_logs (:warn, r"x.wel:16: END PERIOD outside") parse_blocks(path; simdir)
             @test bs[1].open_close == normpath(joinpath(simdir, "data/opts.txt"))
-            @test [l.tokens for l in bs[1].lines] == [["BOUNDNAMES"]]
+            @test tokens.(bs[1].lines) == [["BOUNDNAMES"]]
             p1 = bs[2]
             @test p1.open_close == normpath(joinpath(simdir, "data/Period1.txt"))  # case kept
-            @test [l.tokens for l in p1.lines] == [["1", "1", "1", "-5.0"], ["1", "1", "2", "-6.0"]]
+            @test tokens.(p1.lines) == [["1", "1", "1", "-5.0"], ["1", "1", "2", "-6.0"]]
             @test [l.line for l in p1.lines] == [2, 4]
             @test all(l -> l.file == p1.open_close, p1.lines)
             @test p1.header.file == path
@@ -128,13 +133,13 @@ end
             @test keyword(bs[3].lines[1], 1) == "OPEN/CLOSE" && length(bs[3].lines) == 1
             @test isnothing(bs[4].open_close) && length(bs[4].lines) == 2
             # END in the OPEN/CLOSE file ends the block.
-            @test [l.tokens for l in bs[5].lines] == [["2", "2", "2", "1.0"]]
+            @test tokens.(bs[5].lines) == [["2", "2", "2", "1.0"]]
 
             # Relative to the package file's directory by default.
             write_input(simdir, "model/data/opts.txt", "PRINT_INPUT\n")
             path2 = write_input(simdir, "model/y.wel", "BEGIN options\n  OPEN/CLOSE data/opts.txt\nEND options\n")
             bs2 = parse_blocks(path2)
-            @test [l.tokens for l in bs2[1].lines] == [["PRINT_INPUT"]]
+            @test tokens.(bs2[1].lines) == [["PRINT_INPUT"]]
 
             # GRIDDATA and time-array-series TIME blocks: OPEN/CLOSE is an array control.
             g = write_input(simdir, "g.npf", "BEGIN griddata\n  OPEN/CLOSE k.txt\nEND griddata\nBEGIN time 1.0\n  OPEN/CLOSE r.txt FACTOR 1.0\nEND time\n")
@@ -145,7 +150,6 @@ end
             cases = [
                 ("missing", "BEGIN period 1\n  OPEN/CLOSE nofile.txt\nEND period\n", 2, "not found"),
                 ("noname", "BEGIN period 1\n  OPEN/CLOSE\nEND period\n", 2, "missing file name"),
-                ("extra", "BEGIN period 1\n  OPEN/CLOSE data/Period1.txt\n  1 1 1 2.0\nEND period\n", 3, "must be END PERIOD"),
                 ("eof", "BEGIN period 1\n  OPEN/CLOSE data/Period1.txt\n", 1, "unexpected end of file"),
             ]
             for (name, text, line, msg) in cases
@@ -154,6 +158,18 @@ end
                 @test err.line == line
                 @test occursin(msg, sprint(showerror, err))
             end
+            # After the OPEN/CLOSE file, the block goes on in the package file (GetNextLine).
+            p = write_input(simdir, "extra", "BEGIN period 1\n  OPEN/CLOSE data/Period1.txt\n  1 1 1 2.0\nEND period\n")
+            b = only(parse_blocks(p; simdir))
+            @test tokens.(b.lines) == [["1", "1", "1", "-5.0"], ["1", "1", "2", "-6.0"], ["1", "1", "1", "2.0"]]
+            @test b.lines[3].file == p && b.lines[3].line == 3
+            # With the DFN, the stray END PERIOD is read by the search for the next PERIOD.
+            p = write_input(
+                simdir, "strayper",
+                "BEGIN dimensions\nEND dimensions\nBEGIN period 1\n  OPEN/CLOSE data/with_end.txt\nEND period\nBEGIN period 2\nEND period\n",
+            )
+            err = input_error_of(() -> read_input_file(p; dfn = "gwf-wel", simdir))
+            @test err.line == 5 && occursin("found END PERIOD", err.msg)
             write_input(simdir, "data/nested.txt", "1 1 1 1.0\nBEGIN period 2\n")
             p = write_input(simdir, "nested", "BEGIN period 1\n  OPEN/CLOSE data/nested.txt\nEND period\n")
             err = input_error_of(() -> parse_blocks(p; simdir))
@@ -187,7 +203,7 @@ end
         wel = dfn_definition("gwf-wel")
         @test wel.multi_package && wel.package_type == "stress-package"
         per = dfn_block(wel, "PERIOD")
-        @test per.aggregate && !per.required && per.open_close
+        @test per.aggregate && per.open_close
         @test per.block_variable.name == "iper" && per.block_variable.type === :integer
         spd = dfn_variable(per, "stress_period_data")
         @test spd.type === :recarray && spd.members == ["cellid", "q", "aux", "boundname"]
@@ -241,16 +257,24 @@ end
             @test f.dfn.name == "sln-ims"
 
             dis = "BEGIN options\nEND options\nBEGIN dimensions\n NLAY 1\nEND dimensions\n"
+            sim = "BEGIN options\nEND options\nBEGIN timing\n TDIS6 x.tdis\nEND timing\nBEGIN models\nEND models\nBEGIN exchanges\nEND exchanges\n"
+            wel = "BEGIN dimensions\nEND dimensions\n"
+            # What MF6 rejects: an error naming file and line.
             cases = [
-                ("unknown", "gwf-wel", "BEGIN options\nEND options\n\nBEGIN griddata\nEND griddata\n", 4, "unknown block GRIDDATA"),
-                ("order", "gwf-wel", "BEGIN dimensions\nEND dimensions\nBEGIN options\nEND options\n", 3, "must come before block DIMENSIONS"),
-                ("twice", "gwf-wel", "BEGIN options\nEND options\nBEGIN options\nEND options\n", 3, "more than once"),
-                ("noper", "gwf-wel", "BEGIN dimensions\nEND dimensions\nBEGIN period\nEND period\n", 3, "missing stress period number"),
-                ("badper", "gwf-wel", "BEGIN dimensions\nEND dimensions\nBEGIN period one\nEND period\n", 3, "stress period number"),
-                ("zeroper", "gwf-wel", "BEGIN dimensions\nEND dimensions\nBEGIN period 0\nEND period\n", 3, "at least 1"),
-                ("decper", "gwf-wel", "BEGIN dimensions\nEND dimensions\nBEGIN period 3\nEND period\nBEGIN period 2\nEND period\n", 5, "not increasing"),
-                ("required", "gwf-dis", dis, 0, "required block GRIDDATA"),
+                ("unknown", "gwf-wel", "BEGIN options\nEND options\n\nBEGIN griddata\nEND griddata\n", 4, "required block DIMENSIONS not found; found block GRIDDATA"),
+                ("order", "gwf-wel", "BEGIN dimensions\nEND dimensions\nBEGIN options\nEND options\n", 3, "looking for BEGIN PERIOD; found block OPTIONS"),
+                ("noper", "gwf-wel", wel * "BEGIN period\nEND period\n", 3, "missing stress period number"),
+                ("badper", "gwf-wel", wel * "BEGIN period one\nEND period\n", 3, "stress period number"),
+                ("zeroper", "gwf-wel", wel * "BEGIN period 0\nEND period\n", 3, "not increasing"),
+                ("decper", "gwf-wel", wel * "BEGIN period 3\nEND period\nBEGIN period 2\nEND period\n", 5, "not increasing"),
+                ("strayend", "gwf-wel", "BEGIN options\nEND options\nEND dimensions\nBEGIN dimensions\nEND dimensions\n", 3, "found END DIMENSIONS"),
+                ("required", "gwf-dis", dis, 0, "required block GRIDDATA not found; found end of file"),
+                ("nosg", "sim-nam", sim, 0, "required block SOLUTIONGROUP"),
+                ("sgnum", "sim-nam", sim * "BEGIN solutiongroup\nEND solutiongroup\n", 10, "group_num"),
                 ("tastime", "utl-tas", "BEGIN attributes\nEND attributes\nBEGIN time x\nEND time\n", 3, "double precision"),
+                ("obsblock", "utl-obs", "BEGIN options\nEND options\nBEGIN single\nEND single\n", 3, "looking for BEGIN CONTINUOUS"),
+                ("obsfileout", "utl-obs", "BEGIN continuous out.csv\nEND continuous\n", 1, "FILEOUT"),
+                ("tsorder", "utl-ts", "BEGIN timeseries\nEND timeseries\n", 1, "required block ATTRIBUTES"),
             ]
             for (name, dfn, text, line, msg) in cases
                 path = write_input(dir, name, text)
@@ -259,6 +283,20 @@ end
                 @test err.line == line
                 @test occursin(msg, sprint(showerror, err))
             end
+
+            # What MF6 never reads: dropped with a warning naming file and line.
+            p = write_input(dir, "x.npf", "BEGIN griddata\n icelltype\n constant 0\nEND griddata\nBEGIN options\nEND options\n")
+            f = @test_logs (:warn, r"x.npf:5: block OPTIONS is ignored: out of order") read_input_file(p; dfn = "gwf-npf")
+            @test [b.name for b in f.blocks] == ["GRIDDATA"]
+            p = write_input(dir, "y.ims", "BEGIN linear\nEND linear\nBEGIN nonlinear\nEND nonlinear\n")
+            f = @test_logs (:warn, r"y.ims:3: block NONLINEAR is ignored") read_input_file(p; ftype = "IMS6")
+            @test [b.name for b in f.blocks] == ["LINEAR"]
+            p = write_input(dir, "x.dis", dis * "BEGIN griddata\nEND griddata\nBEGIN griddata\nEND griddata\nEND foo\nBEGIN foo\nEND foo\n")
+            f = @test_logs (:warn, r"x.dis:8: block GRIDDATA is ignored") (:warn, r"x.dis:10: END FOO outside") (:warn, r"x.dis:11: block FOO is ignored: unknown block") read_input_file(p; dfn = "gwf-dis")
+            @test [b.name for b in f.blocks] == ["OPTIONS", "DIMENSIONS", "GRIDDATA"]
+            p = write_input(dir, "z.wel", "END dimensions\nBEGIN options\nEND options\n" * wel)
+            f = @test_logs (:warn, r"z.wel:1: END DIMENSIONS outside") read_input_file(p; dfn = "gwf-wel")
+            @test [b.name for b in f.blocks] == ["OPTIONS", "DIMENSIONS"]
         end
     end
 end

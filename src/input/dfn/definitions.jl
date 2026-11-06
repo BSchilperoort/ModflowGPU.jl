@@ -649,6 +649,7 @@ const DFN_GWF_CHD = DfnDefinition(
         ),
         DfnBlock(
             name = "PERIOD",
+            required = true,
             aggregate = true,
             block_variable = DfnVariable(
                 name = "iper",
@@ -833,6 +834,7 @@ const DFN_GWF_CHDG = DfnDefinition(
         ),
         DfnBlock(
             name = "PERIOD",
+            required = true,
             block_variable = DfnVariable(
                 name = "iper",
                 block = "PERIOD",
@@ -1492,6 +1494,7 @@ const DFN_GWF_CSUB = DfnDefinition(
         ),
         DfnBlock(
             name = "PERIOD",
+            required = true,
             aggregate = true,
             block_variable = DfnVariable(
                 name = "iper",
@@ -2530,6 +2533,7 @@ const DFN_GWF_DRN = DfnDefinition(
         ),
         DfnBlock(
             name = "PERIOD",
+            required = true,
             aggregate = true,
             block_variable = DfnVariable(
                 name = "iper",
@@ -2736,6 +2740,7 @@ const DFN_GWF_DRNG = DfnDefinition(
         ),
         DfnBlock(
             name = "PERIOD",
+            required = true,
             block_variable = DfnVariable(
                 name = "iper",
                 block = "PERIOD",
@@ -2931,6 +2936,7 @@ const DFN_GWF_EVT = DfnDefinition(
         ),
         DfnBlock(
             name = "PERIOD",
+            required = true,
             aggregate = true,
             block_variable = DfnVariable(
                 name = "iper",
@@ -3175,6 +3181,7 @@ const DFN_GWF_EVTA = DfnDefinition(
         ),
         DfnBlock(
             name = "PERIOD",
+            required = true,
             block_variable = DfnVariable(
                 name = "iper",
                 block = "PERIOD",
@@ -3374,6 +3381,7 @@ const DFN_GWF_GHB = DfnDefinition(
         ),
         DfnBlock(
             name = "PERIOD",
+            required = true,
             aggregate = true,
             block_variable = DfnVariable(
                 name = "iper",
@@ -3565,6 +3573,7 @@ const DFN_GWF_GHBG = DfnDefinition(
         ),
         DfnBlock(
             name = "PERIOD",
+            required = true,
             block_variable = DfnVariable(
                 name = "iper",
                 block = "PERIOD",
@@ -3750,6 +3759,7 @@ const DFN_GWF_HFB = DfnDefinition(
         ),
         DfnBlock(
             name = "PERIOD",
+            required = true,
             aggregate = true,
             block_variable = DfnVariable(
                 name = "iper",
@@ -4475,6 +4485,7 @@ const DFN_GWF_LAK = DfnDefinition(
         ),
         DfnBlock(
             name = "PERIOD",
+            required = true,
             aggregate = true,
             block_variable = DfnVariable(
                 name = "iper",
@@ -5148,6 +5159,7 @@ const DFN_GWF_MAW = DfnDefinition(
         ),
         DfnBlock(
             name = "PERIOD",
+            required = true,
             aggregate = true,
             block_variable = DfnVariable(
                 name = "iper",
@@ -5483,6 +5495,7 @@ const DFN_GWF_MVR = DfnDefinition(
         ),
         DfnBlock(
             name = "PERIOD",
+            required = true,
             aggregate = true,
             block_variable = DfnVariable(
                 name = "iper",
@@ -6255,6 +6268,7 @@ const DFN_GWF_OC = DfnDefinition(
         ),
         DfnBlock(
             name = "PERIOD",
+            required = true,
             aggregate = true,
             block_variable = DfnVariable(
                 name = "iper",
@@ -6480,6 +6494,7 @@ const DFN_GWF_RCH = DfnDefinition(
         ),
         DfnBlock(
             name = "PERIOD",
+            required = true,
             aggregate = true,
             block_variable = DfnVariable(
                 name = "iper",
@@ -6674,6 +6689,7 @@ const DFN_GWF_RCHA = DfnDefinition(
         ),
         DfnBlock(
             name = "PERIOD",
+            required = true,
             block_variable = DfnVariable(
                 name = "iper",
                 block = "PERIOD",
@@ -6854,6 +6870,7 @@ const DFN_GWF_RIV = DfnDefinition(
         ),
         DfnBlock(
             name = "PERIOD",
+            required = true,
             aggregate = true,
             block_variable = DfnVariable(
                 name = "iper",
@@ -7054,6 +7071,7 @@ const DFN_GWF_RIVG = DfnDefinition(
         ),
         DfnBlock(
             name = "PERIOD",
+            required = true,
             block_variable = DfnVariable(
                 name = "iper",
                 block = "PERIOD",
@@ -7740,6 +7758,7 @@ const DFN_GWF_SFR = DfnDefinition(
         ),
         DfnBlock(
             name = "PERIOD",
+            required = true,
             aggregate = true,
             block_variable = DfnVariable(
                 name = "iper",
@@ -8529,6 +8548,7 @@ const DFN_GWF_UZF = DfnDefinition(
         ),
         DfnBlock(
             name = "PERIOD",
+            required = true,
             aggregate = true,
             block_variable = DfnVariable(
                 name = "iper",
@@ -8982,6 +9002,7 @@ const DFN_GWF_WEL = DfnDefinition(
         ),
         DfnBlock(
             name = "PERIOD",
+            required = true,
             aggregate = true,
             block_variable = DfnVariable(
                 name = "iper",
@@ -9212,6 +9233,7 @@ const DFN_GWF_WELG = DfnDefinition(
         ),
         DfnBlock(
             name = "PERIOD",
+            required = true,
             block_variable = DfnVariable(
                 name = "iper",
                 block = "PERIOD",
@@ -9438,6 +9460,7 @@ const DFN_SIM_NAM = DfnDefinition(
         ),
         DfnBlock(
             name = "SOLUTIONGROUP",
+            required = true,
             aggregate = true,
             block_variable = DfnVariable(
                 name = "group_num",
@@ -10155,6 +10178,11 @@ const DFN_UTL_LAKTAB = DfnDefinition(
     multi_package = true,
     blocks = [
         DfnBlock(
+            name = "OPTIONS",
+            variables = [
+            ],
+        ),
+        DfnBlock(
             name = "DIMENSIONS",
             required = true,
             variables = [
@@ -10371,6 +10399,7 @@ const DFN_UTL_OBS = DfnDefinition(
         ),
         DfnBlock(
             name = "CONTINUOUS",
+            required = true,
             aggregate = true,
             block_variable = DfnVariable(
                 name = "output",
@@ -10455,6 +10484,11 @@ const DFN_UTL_SFRTAB = DfnDefinition(
     idm = true,
     multi_package = true,
     blocks = [
+        DfnBlock(
+            name = "OPTIONS",
+            variables = [
+            ],
+        ),
         DfnBlock(
             name = "DIMENSIONS",
             required = true,
@@ -10578,6 +10612,7 @@ const DFN_UTL_SPC = DfnDefinition(
         ),
         DfnBlock(
             name = "PERIOD",
+            required = true,
             aggregate = true,
             block_variable = DfnVariable(
                 name = "iper",
@@ -10805,6 +10840,7 @@ const DFN_UTL_TAS = DfnDefinition(
         ),
         DfnBlock(
             name = "TIME",
+            required = true,
             block_variable = DfnVariable(
                 name = "time_from_model_start",
                 block = "TIME",
@@ -11024,6 +11060,7 @@ const DFN_UTL_TVK = DfnDefinition(
         ),
         DfnBlock(
             name = "PERIOD",
+            required = true,
             aggregate = true,
             block_variable = DfnVariable(
                 name = "iper",
@@ -11145,6 +11182,7 @@ const DFN_UTL_TVS = DfnDefinition(
         ),
         DfnBlock(
             name = "PERIOD",
+            required = true,
             aggregate = true,
             block_variable = DfnVariable(
                 name = "iper",

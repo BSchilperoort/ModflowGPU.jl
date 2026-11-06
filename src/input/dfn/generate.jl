@@ -22,10 +22,9 @@
 # to true; a block is required when one of its top-level non-aggregate variables (or
 # its aggregate) is not optional, and it is aggregate when it holds a `recarray` or
 # `keystring`. As in dfn2f90.py an empty OPTIONS block is prepended to DFNs without one
-# (utl-ats: `ats.f90` reads an OPTIONS block), except for the files MF6 reads without
-# looking for OPTIONS (NO_OPTIONS: utl-ts, utl-tas, utl-laktab, utl-sfrtab), where an
-# OPTIONS block is an error.
-# Descriptions are dropped.
+# (utl-ats: `ats.f90` reads an OPTIONS block; utl-laktab, utl-sfrtab: IDM), except for
+# the time-series files, which MF6 reads without looking for OPTIONS (NO_OPTIONS:
+# utl-ts, utl-tas). Descriptions are dropped.
 
 const REPO_ROOT = normpath(joinpath(@__DIR__, "..", "..", ".."))
 const REFERENCE_DIR = get(ENV, "REFERENCE_DIR", joinpath(REPO_ROOT, "reference"))
@@ -43,7 +42,7 @@ const KNOWN_KEYS = Set(
     ]
 )
 
-const NO_OPTIONS = ("utl-ts", "utl-tas", "utl-laktab", "utl-sfrtab")
+const NO_OPTIONS = ("utl-ts", "utl-tas")
 
 const TYPE_MAP = Dict(
     "keyword" => :keyword, "integer" => :integer, "double" => :double,
@@ -168,9 +167,9 @@ function parse_dfn(path, idm_set)
         length(bvar) <= 1 || error("$path: block $bn has more than one block variable")
         aggregates = filter(v -> v.type in (:recarray, :keystring) && !v.block_variable, bvars)
         aggregate = !isempty(aggregates)
-        required = if !isempty(bvar)
-            false  # repeating blocks (PERIOD, ...) are never required
-        elseif aggregate
+        # As in dfn2f90.py, also for blocks with a block variable (SOLUTIONGROUP is
+        # required; PERIOD blocks are read by the dynamic loader, never as required).
+        required = if aggregate
             any(v -> !v.optional, aggregates)
         else
             any(v -> !v.in_record && !v.block_variable && !v.optional, bvars)

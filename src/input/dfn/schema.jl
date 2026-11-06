@@ -58,8 +58,8 @@ end
 One block of a DFN file, in DFN order. `name` is upper case.
 
 - `required`: the block must be present (rule of `dfn2f90.py`: some top-level variable
-  is not optional; never for blocks with a block variable). MF6 enforces it for
-  definitions with `idm = true`.
+  or the list is not optional). MF6 enforces it for definitions with `idm = true`, except
+  for PERIOD blocks (read by the dynamic loader, never required); see `read_plan`.
 - `aggregate`: the block holds a list (`recarray`) or keystring data.
 - `block_variable`: the variable on the `BEGIN` line (`iper`, `group_num`, ...), or
   `nothing`. Blocks with a block variable may repeat (`BEGIN PERIOD 1`, `BEGIN PERIOD 5`).
