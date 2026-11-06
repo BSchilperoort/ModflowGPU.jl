@@ -263,6 +263,64 @@ END DIMENSIONS
         end
     end
 
+    @testset "DISU GRIDDATA and CONNECTIONDATA" begin
+        mktempdir() do dir
+            # Three cells in a row: 1 - 2 - 3 (nja = 3 diagonals + 4 connections).
+            path = write_input(
+                dir, "x.disu", """
+                BEGIN DIMENSIONS
+                  NODES 3
+                  NJA 7
+                END DIMENSIONS
+                BEGIN GRIDDATA
+                  top
+                    constant 10.0
+                  bot
+                    internal
+                    0.0 -1.0 -2.0
+                  area
+                    constant 100.0
+                  idomain
+                    internal
+                    1 1 0
+                END GRIDDATA
+                BEGIN CONNECTIONDATA
+                  iac
+                    internal
+                    2 3 2
+                  ja
+                    internal
+                    1 2
+                    2 1 3
+                    3 2
+                  ihc
+                    internal
+                    1 1 1 1 1 1 1
+                  cl12
+                    internal
+                    0 5 0 5 5 0 5
+                  hwva
+                    internal factor 2
+                    0 10 0 10 10 0 10
+                END CONNECTIONDATA
+                """,
+            )
+            f = read_input_file(path; dfn = "gwf-disu")
+            g = grid_dims(f)
+            @test g.mshape == [3] && g.dims["NJA"] == 7
+            a = read_array_block(find_block(f, "GRIDDATA"), f.dfn, g)
+            @test a["top"] == fill(10.0, 3) && a["bot"] == [0.0, -1.0, -2.0] && a["area"] == fill(100.0, 3)
+            @test a["idomain"] == Int32[1, 1, 0]
+            c = read_array_block(find_block(f, "CONNECTIONDATA"), f.dfn, g)
+            @test c["iac"] == Int32[2, 3, 2] && eltype(c["iac"]) == Int32
+            @test cumsum([1; c["iac"]]) == [1, 3, 6, 8]  # IA
+            @test c["ja"] == Int32[1, 2, 2, 1, 3, 3, 2]
+            @test c["ihc"] == ones(Int32, 7)
+            @test c["cl12"] == [0, 5, 0, 5, 5, 0, 5]
+            @test c["hwva"] == [0, 20, 0, 20, 20, 0, 20]
+        end
+    end
+
     @testset "GRIDDATA block errors" begin
         mktempdir() do dir
             g = dis_dims(1, 1, 3)
@@ -280,6 +338,8 @@ END DIMENSIONS
             @test occursin("missing control record", e.msg)
             e = input_error_of(() -> griddata(dir, "gwf-npf", g, "  k netcdf\n"))
             @test occursin("NETCDF", e.msg)
+            e = input_error_of(() -> griddata(dir, "gwf-npf", g, "  k timearrayseries ts1\n    constant 1\n"))
+            @test occursin("TIMEARRAYSERIES", e.msg)
             # grid_dims from a DIS file
             path = write_input(dir, "m.dis", DIS_2x3x4 * "BEGIN GRIDDATA\n  top\n    constant 1\n  botm\n    constant 0\nEND GRIDDATA\n")
             gd = grid_dims(read_input_file(path; dfn = "gwf-dis"))
@@ -340,5 +400,81 @@ end
             end
         end
         @info "MF6 example arrays: $(length(examples)) simulations, $nblocks blocks, $narrays arrays, $nvalues values"
+    end
+end
+
+"""
+    read_grb(path) -> Dict{String, Vector}
+
+The arrays of an MF6 binary grid file (`.grb`): four 50-character header lines (GRID,
+VERSION, NTXT, LENTXT), NTXT definitions of LENTXT characters (`NAME TYPE NDIM n dims`),
+then the data (INTEGER as Int32, DOUBLE as Float64; scalars as one-element vectors).
+"""
+function read_grb(path)
+    return open(path) do io
+        hdr = [String(read(io, 50)) for _ in 1:4]
+        ntxt = parse(Int, split(hdr[3])[2])
+        lentxt = parse(Int, split(hdr[4])[2])
+        defs = [split(String(read(io, lentxt))) for _ in 1:ntxt]
+        d = Dict{String, Vector}()
+        for df in defs
+            ndim = parse(Int, df[4])
+            n = ndim == 0 ? 1 : prod(parse.(Int, df[5:(4 + ndim)]))
+            v = Vector{df[2] == "INTEGER" ? Int32 : Float64}(undef, n)
+            read!(io, v)
+            d[df[1]] = v
+        end
+        return d
+    end
+end
+
+# The discretization arrays (TOP, BOTM/BOT, IDOMAIN, DISU IA/JA) and ICELLTYPE on active
+# cells agree with the binary grid file MF6 wrote in the reference run of every in-scope
+# example (reference/runs/<example>/raw, validation/run_reference.jl).
+@testset "MF6 example arrays vs .grb" begin
+    examples = in_scope_examples(; tiers = 0:7)
+    runs = joinpath(REFERENCE_DIR, "runs")
+    if isempty(examples) || !isdir(runs)
+        @info "Skipping the .grb comparison: $(joinpath(REFERENCE_DIR, "mf6examples")) or $runs not found (validation/fetch_reference.sh, validation/run_reference.jl)"
+    else
+        inventory = TOML.parsefile(joinpath(@__DIR__, "..", "..", "validation", "examples.toml"))["examples"]
+        ncompared = 0
+        for (name, simdir) in examples
+            rdir = joinpath(runs, name, "raw")
+            if !isdir(rdir)
+                @info "No reference run for $name: .grb comparison skipped"
+                continue
+            end
+            @testset "$name" begin
+                models = inventory[name]["models"]
+                for (mname, files) in model_package_files(simdir)
+                    m = models[only(filter(k -> lowercase(k) == lowercase(mname), keys(models)))]
+                    haskey(m, "grb_file") || continue  # NOGRB
+                    G = read_grb(joinpath(rdir, m["grb_file"]))
+                    dis = only(filter(f -> f.dfn.subcomponent in ("DIS", "DISV", "DISU"), files))
+                    g = grid_dims(dis)
+                    A = read_array_block(find_block(dis, "GRIDDATA"), dis.dfn, g; simdir)
+                    cd = find_block(dis, "CONNECTIONDATA")
+                    isnothing(cd) || merge!(A, read_array_block(cd, dis.dfn, g; simdir))
+                    npf = only(filter(f -> f.dfn.subcomponent == "NPF", files))
+                    N = read_array_block(find_block(npf, "GRIDDATA"), npf.dfn, g; simdir)
+                    nodes = prod(g.mshape)
+                    idomain = haskey(A, "idomain") ? vec(A["idomain"]) : ones(Int32, nodes)
+                    @test vec(A["top"]) == G["TOP"]
+                    haskey(G, "BOTM") && @test vec(A["botm"]) == G["BOTM"]
+                    haskey(G, "BOT") && @test vec(A["bot"]) == G["BOT"]
+                    haskey(G, "IDOMAIN") && @test idomain == G["IDOMAIN"]
+                    if haskey(A, "ja")
+                        @test vec(A["ja"]) == G["JA"]
+                        @test cumsum([1; A["iac"]]) == G["IA"]
+                    end
+                    active = idomain .> 0
+                    ict = vec(get(N, "icelltype", zeros(Int32, nodes)))
+                    @test ict[active] == G["ICELLTYPE"][active]
+                    ncompared += 1
+                end
+            end
+        end
+        @info "MF6 example arrays vs .grb: $ncompared models compared"
     end
 end
