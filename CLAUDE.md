@@ -23,6 +23,7 @@ Read the card you are working on and the sections it references before starting.
 julia --project -e 'using Pkg; Pkg.test()'                    # CPU tests (this is what CI runs)
 MFGPU_TEST_BACKEND=rocm julia --project=test test/runtests.jl # GPU tests, local machine only
 julia --project=@runic -m Runic --inplace .                   # format (or `runic --inplace .`)
+julia --project=benchmark benchmark/hardware.jl rocm          # hardware baseline (T0.4), also `cpu`
 ```
 
 CI also runs the CPU tests on KernelAbstractions 0.9 (the version mGV allows; its CPU
@@ -38,7 +39,7 @@ julia --project=test test/runtests.jl                          # (MFGPU_TEST_BAC
 git checkout test/Project.toml && rm Manifest.toml             # undo
 ```
 
-`test/` is a workspace project of the package (`[workspace]` in `Project.toml`), so there is
+`test/` and `benchmark/` are workspace projects of the package (`[workspace]` in `Project.toml`), so there is
 one `Manifest.toml` at the root (not committed). It includes AMDGPU, so the GPU test command
 above works without extra setup. CI (`.github/workflows/`) runs only the CPU tests and Runic.
 
