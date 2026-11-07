@@ -620,7 +620,13 @@ the same code on the GPU.
   `sln_underrelax`, `sln_backtracking`, convergence tables), `src/Timing/tdis.f90`
   (`nstp`, `tsmult`), `gwf.f90` (`gwf_cq`, `gwf_bd`), `gwf-oc.f90`, `Budget.f90`.
 - Deliver: `src/solver/picard.jl` with the correction solve (section 3.7,
-  rule 3), `underrelax.jl` (SIMPLE, COOLEY, DBD), conversion of offsets to
+  rule 3), `underrelax.jl` (SIMPLE, COOLEY, DBD). **Backtracking is not
+  implemented here; it comes with T6.2.** IMS `COMPLEXITY MODERATE`/`COMPLEX`
+  (used by the coupling model) enable backtracking by default
+  (`backtracking_number > 0`), so tests on such models may differ from MF6
+  until T6.2. Log a warning when an input would backtrack, and record any such
+  difference (and whether MF6's run actually backtracked) in the test and
+  `docs/precision.md` rather than failing on it. Also conversion of offsets to
   absolute Float64 heads on the host for all output,
   `src/budget.jl` (FLOW-JA-FACE, per-package in/out, storage, percent
   discrepancy), OC (SAVE/PRINT HEAD/BUDGET ALL/LAST/FREQUENCY/STEPS), HDS/CBC
@@ -835,7 +841,9 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
   `SmoothingFunctions.f90`, `NumericalSolution.f90` (Newton under-relaxation,
   backtracking, `UNDER_RELAXATION DBD`).
 - Deliver: Newton terms (nonsymmetric → BiCGSTAB, AMG/ILU preconditioning of the
-  nonsymmetric matrix), backtracking, and `NEWTON UNDER_RELAXATION`.
+  nonsymmetric matrix), backtracking (also for non-Newton models with
+  `COMPLEXITY MODERATE`/`COMPLEX`, deferred from T2.8), and `NEWTON
+  UNDER_RELAXATION`.
 - Done when: Tier 4 examples pass parity.
 
 **T6.3 Time series and time-array series (M) ‖**
