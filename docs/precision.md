@@ -221,3 +221,9 @@ optimised device IR except in the Float64-accumulating `mapreduce_kernel!` and
 **Backends.** ROCm and the CPU backend give bitwise identical heads in both presets on
 every Phase 2 parity model (run and assembly parity groups), well within the section 4
 tolerances.
+
+## Synthetic coupling models (T3.4)
+
+Parity, device memory per preset and precision, and the `:single` BiCGSTAB + Jacobi
+divergence on the synthetic models: docs/scaling.md. The section 4 thresholds hold
+unchanged (`:single` tiny 1.7e-4 m, indus 1.0e-4 m; pd <= 2.7e-3 %).

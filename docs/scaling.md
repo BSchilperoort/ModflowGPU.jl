@@ -55,7 +55,17 @@ directory; about 1 min on the CPU backend; `MFGPU_TEST_SYNTHETIC=tiny` for tiny 
 total in, max |percent discrepancy|, outer/inner iterations summed over the steps (mf6
 with ILU0, ours with Jacobi). Times include compilation on the first model.
 
-PARITY_TABLE
+| Model | preset | max \|Δh\| (m) | CBC | listing | pd | outer/inner (mf6) | time CPU / ROCm |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| tiny (2,690 nodes) | `:double` | 1.4e-9 | 4.6e-12 | 6.3e-12 | 4.2e-10 % | 68/10696 (68/413) | 5.8 s / 0.7 s |
+| tiny | `:single` | 1.7e-4 | 8.7e-6 | 2.8e-5 | 2.7e-3 % | 38/5893 | 8.6 s / 0.4 s |
+| indus (32,972 nodes) | `:double` | 1.3e-9 | 1.6e-13 | 1.5e-12 | 2.8e-11 % | 99/14915 (100/585) | 9.5 s / 1.6 s |
+| indus | `:single` | 1.0e-4 | 2.9e-7 | 2.8e-6 | 2.8e-4 % | 49/7867 | 5.4 s / 0.8 s |
+
+ROCm and the CPU backend give bitwise identical heads (max |Δh| = 0) in both presets;
+`:single` vs `:double` final heads differ by 1.7e-4 m (tiny) and 9.5e-5 m (indus). The
+`:double` outer counts equal mf6's (within one). mf6 itself takes 0.17 s (tiny) and 2.1 s
+(indus). The CPU times of the first model include compilation.
 
 ## Build times and device memory
 
@@ -94,8 +104,16 @@ decomposition of T7.5.
 
 **Speed (first outer iteration of the steady state, ROCm, CG + Jacobi):** about 290 µs
 per inner iteration at continental, 940 µs (`:single`) / 1470 µs (`:double`) at
-regional30s, and 2.3 ms / 3.2 ms at global5m (outer iteration 2). Full runs with Jacobi
-need hundreds to thousands of inner iterations per outer iteration at these sizes; time to
-solution with a real preconditioner is for Phase 4 (T4.1 harness).
+regional30s, and 2.3 ms / 3.2 ms at global5m (outer iteration 2). Full runs: below.
 
-FULLRUN
+**Full runs on ROCm** (13 steps, `synthetic_ims(:parity)`, no output;
+`ModflowGPU.run` of the in-memory spec; measured while a CPU test suite ran on the host):
+
+| Preset | `:double` | `:single` |
+| --- | --- | --- |
+| continental (888,300 nodes) | 18.3 s, 119 outer / 15185 inner (steady step 18 / 13993), pd 4.7e-12 % | 9.1 s, 65 / 7239 (12 / 6810), pd 8.9e-6 % |
+| global5m (6,592,790 nodes) | 48.5 s, 113 / 9447 (13 / 8134), pd 1.4e-11 % | 20.3 s, 72 / 4047 (10 / 3573), pd 3.6e-6 % |
+
+Both converge with CG + Jacobi: the dense coastline (CHD rim) and the strong DRN/RIV
+conductances keep the synthetic steady state well conditioned; the real global model
+(fewer drains, larger connected land masses) may be harder.
