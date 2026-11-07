@@ -25,6 +25,7 @@ before starting.
 ```sh
 julia --project -e 'using Pkg; Pkg.test()'                    # CPU tests (this is what CI runs)
 MFGPU_TEST_BACKEND=rocm julia --project=test test/runtests.jl # GPU tests, local machine only
+MFGPU_TEST_GROUPS=connectivity,npf julia --project=test test/runtests.jl # only these test groups
 julia --project=@runic -m Runic --inplace .                   # format (or `runic --inplace .`)
 julia --project=benchmark benchmark/hardware.jl rocm          # hardware baseline (T0.4), also `cpu`
 ```
@@ -48,6 +49,9 @@ above works without extra setup. CI (`.github/workflows/`) runs only the CPU tes
 
 ## Conventions (PLAN.md section 2)
 
+- **Find your way first:** read `docs/api_map.md` (map of `src/` and the test group of each
+  file) before exploring `src/`. While iterating, run only your card's test groups
+  (`MFGPU_TEST_GROUPS`, names in `test/runtests.jl`); run the full suite once at the end.
 - **Read before you write:** read the MF6 Fortran source for the feature
   (`reference/modflow6`, fetched by `validation/fetch_reference.sh`, T0.2). Port behaviour,
   not structure, and cite the Fortran routine in a comment where a formula comes from.

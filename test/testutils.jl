@@ -32,3 +32,23 @@ function for_each_precision(f; backend = TEST_BACKEND, presets = TEST_PRESETS)
     end
     return nothing
 end
+
+"Write `text` to `name` in `dir` and return the path."
+function write_input(dir, name, text)
+    path = joinpath(dir, name)
+    mkpath(dirname(path))
+    write(path, text)
+    return path
+end
+
+"The `ModflowGPU.MF6InputError` thrown by `f()` (test fails if there is none)."
+function input_error_of(f)
+    try
+        f()
+    catch e
+        e isa ModflowGPU.MF6InputError && return e
+        rethrow()
+    end
+    @test false
+    return nothing
+end

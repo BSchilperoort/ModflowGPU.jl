@@ -1,5 +1,4 @@
-# MF6 array input, READARRAY (T1.2). Uses `write_input` from input_tokenizer_test.jl and
-# `input_error_of` from input_blocks_test.jl.
+# MF6 array input, READARRAY (T1.2).
 using ModflowGPU: MF6InputError, InputLine, read_input_file, find_block, dfn_definition,
     dfn_block, dfn_variable, GridDims, dis_dims, disv_dims, disu_dims, grid_dims, array_size,
     layered_shape, read_control_record, ArrayControl, list_read!, read_array!, read_grid_array,
