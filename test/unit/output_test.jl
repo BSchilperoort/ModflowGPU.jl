@@ -262,6 +262,16 @@ function _files_equal(a, b)
     end
 end
 
+# Write `x` (read from `path`) with `writer` to a temporary file and compare the bytes.
+function _rewrite_identical(writer, x, path)
+    tmp = tempname()
+    try
+        return _files_equal(writer(tmp, x), path)
+    finally
+        rm(tmp; force = true)
+    end
+end
+
 # FLOW-JA-FACE is antisymmetric: flowja(n→m) = -flowja(m→n).
 function _flowja_antisymmetric(flowja, ia, ja)
     for n in 1:(length(ia) - 1), ij in (ia[n] + 1):(ia[n + 1] - 1)
@@ -289,7 +299,7 @@ function _check_reference_model(rdir, mname, m, nam, stats; rewrite)
     idomain = haskey(g, "IDOMAIN") ? vec(g["IDOMAIN"]) : ones(Int32, nodes)
     @test lowercase(g.grid) == lowercase(m["grid"])
     @test length(idomain) == nodes
-    rewrite && @test _files_equal(MO.write_grb(tempname(), g), joinpath(rdir, m["grb_file"]))
+    rewrite && @test _rewrite_identical(MO.write_grb, g, joinpath(rdir, m["grb_file"]))
     stats[:grb] += 1
 
     if haskey(m, "head_file")
@@ -310,7 +320,7 @@ function _check_reference_model(rdir, mname, m, nam, stats; rewrite)
             stats[:head_arrays] += 1
         end
         if rewrite
-            @test _files_equal(MO.write_head_file(tempname(), hf), path)
+            @test _rewrite_identical(MO.write_head_file, hf, path)
             stats[:rewritten] += 1
         end
         stats[:hds] += 1
@@ -338,7 +348,7 @@ function _check_reference_model(rdir, mname, m, nam, stats; rewrite)
             stats[:cbc_records] += 1
         end
         if rewrite
-            @test _files_equal(MO.write_budget_file(tempname(), bf), path)
+            @test _rewrite_identical(MO.write_budget_file, bf, path)
             stats[:rewritten] += 1
         end
         stats[:cbc] += 1
