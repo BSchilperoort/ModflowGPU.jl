@@ -599,8 +599,12 @@ end
 
 const _CG_UPDATE_OPS = (_MaxAbsOp(), _MaxAbsOp(), _SumOp(), _SumOp())
 
-# SIGN(DPREC, d) added to a denominator (ims_base_cg, ims_base_bcgs).
-_guard(d) = d + copysign(eps(Float64), d)
+# `num / d` with a guarded denominator. MF6 adds the absolute SIGN(DPREC, d) (ims_base_cg,
+# ims_base_bcgs), which is not scale invariant: in the correction solves the dot products
+# fall to |r|^2 ~ 1e-16 well before INNER_RCLOSE, and the guard then stalls BiCGSTAB and CG
+# (ex-gwf-hanir :double: 16 outer / 14402 inner iterations instead of 4 / 222). The guard
+# here is relative to the numerator, so |num/d| <= 1/eps as in MF6 for O(1) values.
+_safe_div(num, d) = num / (d + copysign(max(eps(Float64) * abs(num), floatmin(Float64)), d))
 
 """
     solve!(δ, solver::KrylovSolver, amat, res; kstp = 1) -> KrylovResult
@@ -658,7 +662,7 @@ function _solve_cg!(s::KrylovSolver{Ts}, amat, kstp, res) where {Ts}
         beta = iiter == 1 ? 0.0 : rho / rho0
         _map!(backend, _cg_direction, n, s.p, s.z, Ts(beta))
         pq = _mapreduce!(red, backend, _apply_dot, _SUM4, n, s.q, s.p, s.p, amat, csr.ia, csr.ja, s.rowfac, s.colfac)[1]
-        alpha = rho / _guard(pq)
+        alpha = _safe_div(rho, pq)
         deltax, rmax, l2sq, rho_next = _mapreduce!(
             red, backend, _cg_update, _CG_UPDATE_OPS, n, s.x, s.r, s.z, s.p, s.q, s.minv, Ts(alpha),
         )
@@ -705,10 +709,10 @@ function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res) where {Ts}
         beta = iiter == 1 ? 0.0 : (rho / rho0) * (alpha0 / omega0)
         _map!(backend, _bcgs_direction, n, s.p, s.phat, s.r, s.v, s.minv, Ts(beta), Ts(omega0))
         dv = _mapreduce!(red, backend, _apply_dot, _SUM4, n, s.v, s.phat, s.dhat, amat, csr.ia, csr.ja, s.rowfac, s.colfac)[1]
-        alpha = rho / _guard(dv)
+        alpha = _safe_div(rho, dv)
         _map!(backend, _bcgs_half, n, s.q, s.qhat, s.r, s.v, s.minv, Ts(alpha))
         tq, tt, _, _ = _mapreduce!(red, backend, _bcgs_apply_t, _SUM4, n, s.t, s.qhat, s.q, amat, csr.ia, csr.ja, s.rowfac, s.colfac)
-        omega = tq / _guard(tt)
+        omega = _safe_div(tq, tt)
         deltax, rmax, l2sq, rho_next = _mapreduce!(
             red, backend, _bcgs_update, _CG_UPDATE_OPS, n, s.x, s.r, s.dhat, s.phat, s.qhat, s.q, s.t, s.rowfac,
             Ts(alpha), Ts(omega),

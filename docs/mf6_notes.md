@@ -99,8 +99,12 @@ Semantics kept from MF6:
   column factor DSCALE2). `L2NORM0` is the scaled initial norm in both, so with L2NORM
   scaling BiCGSTAB compares an unscaled norm with a scaled `L2NORM0`.
 - Stagnation exits: CG stops when `is_close(rho, rho0)` or `rho == 0`; BiCGSTAB when rho,
-  alpha or omega repeat (`is_close`, rtol 100·eps) or `rho·omega == 0`. Denominators get
-  `+ SIGN(DPREC, d)`.
+  alpha or omega repeat (`is_close`, rtol 100·eps) or `rho·omega == 0`. Deviation: MF6
+  adds the absolute `SIGN(DPREC, d)` to denominators; we add `SIGN(eps·|numerator|, d)`
+  (`_safe_div`). The absolute guard stalls the correction solves once the dot products
+  reach ~1e-16 (|r| ~ 1e-8), so the inner solve hit INNER_MAXIMUM every outer iteration
+  (ex-gwf-hanir `:double`: 16 outer / 14402 inner with it, 4 / 222 without; coupling_rde 226 / 215792
+  → 103 / 5722).
 - `L2NORM0 == 0` gives zero iterations and convergence.
 
 ## Outer iterations, time steps, budgets and output (T2.8)

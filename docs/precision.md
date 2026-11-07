@@ -17,9 +17,9 @@ rounding the offset heads to `T`. CPU and ROCm (RX 7800 XT) give bitwise identic
 
 | Model | nodes, steps | `:double` | `:single` | `:single` rounding bound |
 | --- | --- | --- | --- | --- |
-| ex-gwf-toth | 20000, 1 | 5.7e-13 | 4.6e-5 | 1.3e-4 |
-| ex-gwf-hanic | 2601, 1 | 3.4e-11 | 2.1e-7 | 1.2e-6 |
-| ex-gwf-hanir | 2601, 1 | 3.4e-11 | 2.1e-7 | 1.2e-6 |
+| ex-gwf-toth | 1 | 5.6e-9 | 4.9e-5 | 4.9e-5 | 3.4e-13 / 3.2e-7 | 1.3e-7 | 2.5e-5 % | 3/1247, 3/1435, 2/254 |
+| ex-gwf-hanic | 1 | 1.5e-9 | 5.1e-7 | 4.6e-7 | 9.4e-10 / 4.0e-7 | 0 | 1.0e-3 % | 3/199, 3/146, 2/39 |
+| ex-gwf-hanir | 1 | 1.4e-9 | 5.0e-7 | 5.3e-7 | 9.0e-10 / 4.9e-7 | 0 | 1.2e-3 % | 4/222, 3/151, 2/39 |
 | ex-gwf-hwell-a | 153164, 60 | 1.6e-12 | 8.0e-5 | 4.8e-4 |
 | fhb_const (synthetic) | 30, 20 | 2.5e-12 | 7.2e-7 | 3.7e-6 |
 | coupling_rde (synthetic) | 337, 10 | 8.0e-13 | 2.7e-7 | 8.1e-7 |
@@ -143,21 +143,25 @@ the steps (MF6 with ILU0, ours with Jacobi until Phase 4).
 
 | Model | steps | `:double` max \|Δh\| | `:single` max \|Δh\| | `:single` vs `:double` (final) | CBC `:double` / `:single` | listing `:single` | pd `:single` | outer/inner `:double`, `:single`, MF6 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| ex-gwf-toth | 1 | 4.0e-8 | 4.9e-5 | 4.9e-5 | 9.8e-13 / 3.2e-7 | 1.3e-7 | 2.5e-5 % | 3/1846, 3/1435, 2/254 |
-| ex-gwf-hanic | 1 | 1.4e-9 | 4.6e-7 | 4.6e-7 | 1.0e-9 / 4.5e-7 | 0 | 8.1e-4 % | 6/4005, 3/156, 2/39 |
-| ex-gwf-hanir | 1 | 1.9e-9 | 5.3e-7 | 5.3e-7 | 1.2e-9 / 4.0e-7 | 0 | 1.5e-3 % | 16/14402, 3/156, 2/39 |
-| fhb_const | 20 | 2.1e-11 | 5.9e-6 | 4.1e-7 | 1.0e-11 / 1.4e-6 | 6.7e-8 | 2.3e-4 % | 29/6145, 28/149, 29/2251 |
-| coupling_rde | 10 | 2.7e-11 | 1.1e-5 | 1.5e-6 | 5.9e-13 / 2.0e-7 | 8.2e-7 | 2.5e-4 % | 226/215792, 56/1111, 142/107439 |
-| coupling_rde, SIMPLE 0.8 | 10 | 2.0e-10 | 3.8e-5 | 1.7e-5 | 2.5e-12 / 5.5e-7 | 3.4e-6 | 5.2e-4 % | 139/67129, 75/1830, 137/3807 |
-| coupling_rde, COOLEY 0.5 | 10 | 3.1e-10 | 1.7e-5 | 1.7e-5 | 7.2e-12 / 2.0e-7 | 9.7e-7 | 2.1e-4 % | 97/49327, 58/1186, 94/5483 |
-| coupling_rde, DBD | 10 | 1.7e-10 | 1.5e-5 | 8.5e-6 | 2.8e-12 / 3.1e-7 | 1.2e-6 | 2.9e-4 % | 118/65162, 66/1286, 113/5346 |
-| coupling_rde, MODERATE | 10 | 1.4e-10 | 1.8e-5 | 6.3e-6 | 2.5e-12 / 3.2e-7 | 1.1e-6 | 4.3e-4 % | 110/63268, 55/1129, 94/1028 |
-| coupling_rde, COMPLEX | 10 | 1.8e-10 | 1.9e-5 | 1.5e-5 | 3.5e-12 / 3.4e-7 | 1.3e-6 | 3.7e-4 % | 139/94366, 69/3428, 125/4019 |
+| ex-gwf-toth | 1 | 5.6e-9 | 4.9e-5 | 4.9e-5 | 3.4e-13 / 3.2e-7 | 1.3e-7 | 2.5e-5 % | 3/1247, 3/1435, 2/254 |
+| ex-gwf-hanic | 1 | 1.5e-9 | 5.1e-7 | 4.6e-7 | 9.4e-10 / 4.0e-7 | 0 | 1.0e-3 % | 3/199, 3/146, 2/39 |
+| ex-gwf-hanir | 1 | 1.4e-9 | 5.0e-7 | 5.3e-7 | 9.0e-10 / 4.9e-7 | 0 | 1.2e-3 % | 4/222, 3/151, 2/39 |
+| fhb_const | 20 | 5.0e-11 | 5.9e-6 | 4.1e-7 | 1.6e-11 / 1.4e-6 | 6.7e-8 | 2.3e-4 % | 29/190, 28/149, 29/2251 |
+| coupling_rde | 10 | 1.2e-11 | 1.2e-5 | 1.5e-6 | 9.2e-13 / 1.5e-7 | 7.7e-7 | 1.9e-4 % | 103/5722, 55/1101, 142/107439 |
+| coupling_rde, SIMPLE 0.8 | 10 | 8.4e-11 | 3.8e-5 | 1.7e-5 | 1.4e-12 / 5.8e-7 | 3.4e-6 | 4.9e-4 % | 137/6402, 75/1825, 137/3807 |
+| coupling_rde, COOLEY 0.5 | 10 | 1.3e-10 | 1.3e-5 | 1.7e-5 | 2.4e-12 / 1.7e-7 | 9.6e-7 | 2.2e-4 % | 94/4460, 58/1202, 94/5483 |
+| coupling_rde, DBD | 10 | 1.5e-10 | 1.7e-5 | 8.5e-6 | 3.0e-12 / 3.4e-7 | 1.3e-6 | 3.4e-4 % | 112/5363, 66/1295, 113/5346 |
+| coupling_rde, MODERATE | 10 | 1.1e-10 | 3.1e-5 | 6.3e-6 | 2.1e-12 / 4.5e-7 | 2.6e-6 | 5.1e-4 % | 94/4351, 55/1086, 94/1028 |
+| coupling_rde, COMPLEX | 10 | 1.5e-10 | 2.2e-5 | 1.5e-5 | 3.0e-12 / 3.1e-7 | 1.5e-6 | 3.7e-4 % | 125/5750, 70/3548, 125/4019 |
 
 The under-relaxation variants run with OUTER_DVCLOSE 1e-9, INNER_DVCLOSE 1e-11 and
-INNER_RCLOSE 1e-9; their `:double` outer counts are within 2–17 % of MF6's (the
-remaining difference is the inner solver: with Jacobi the inner solve hits
-INNER_MAXIMUM where ILU0 converges). COMPLEXITY COMPLEX enables backtracking, which MF6
+INNER_RCLOSE 1e-9; their `:double` outer counts equal MF6's within one iteration.
+The inner counts reflect Jacobi vs ILU0 and the relative denominator guard of the Krylov
+solvers (`_safe_div`, docs/mf6_notes.md): with MF6's absolute `DPREC` guard the
+correction solves stalled at |r| ~ 1e-8 and hit INNER_MAXIMUM every outer iteration
+(hanir `:double` 16/14402, coupling_rde 226/215792; MF6's own 107439 inner iterations on
+coupling_rde show the same stall). Columns other than `:single` vs `:double` were
+re-measured after that change. COMPLEXITY COMPLEX enables backtracking, which MF6
 used in 3 of 125 outer iterations; ModflowGPU warns and does not backtrack (T6.2), and the
 converged heads agree as above. In `:single` the outer loop stops at the Float32 floors,
 hence fewer outer iterations than MF6.
