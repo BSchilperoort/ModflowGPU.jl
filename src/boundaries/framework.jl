@@ -12,7 +12,7 @@
 # 3. `calc_simvals!` computes the flow into the model per record (`bnd_cq_simrate`).
 #
 # Heads are offsets from the per-cell references `r` (section 3.7, rule 1). Head-like
-# columns of `bound` (CHD head, GHB bhead) are converted to offsets on the host in Float64
+# columns of `bound` (CHD head, GHB bhead, RIV stage and rbot, DRN elev, EVT surface) are converted to offsets on the host in Float64
 # when period data are applied (`to_offsets`), so `rhs` holds `rhs_mf6 − hcof·r[n]` and
 # `hcof·h' − rhs` equals MF6's `hcof·h − rhs`. The MULTIPLIER auxiliary variable
 # (`AUXMULTNAME`) is applied on the host in Float64 at the same time, before the offset
@@ -74,8 +74,9 @@ mult_column(::BoundaryKind) = 1
     check_boundary_spec(spec::BoundarySpec)
 
 Throw `MF6UnsupportedError` for options of a stress package that the engine does not
-support yet (WEL `AUTO_FLOW_REDUCE`, MVR) and `ArgumentError` for kinds without a
-formulation.
+support yet (WEL `AUTO_FLOW_REDUCE`, MVR), `MF6InputError` for invalid EVT dimensions
+(NSEG < 1, NSEG > 1 or SURF_RATE_SPECIFIED with READASARRAYS) and `ArgumentError` for
+kinds without a formulation.
 """
 function check_boundary_spec(spec::BoundarySpec{K}) where {K}
     K in (:CHD, :WEL, :RCH, :GHB, :RIV, :DRN, :EVT) ||
