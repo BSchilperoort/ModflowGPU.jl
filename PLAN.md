@@ -284,7 +284,12 @@ device without Float64 is an error that names `:single`.
 and make Float32 accurate.
 
 1. **Reference offsets.** On the host, compute per cell
-   `r_n = clamp(STRT_n, bot_n, top_n)` in Float64. The device stores heads as
+   `r_n` in Float64: `r_n = STRT_n` for confined cells (ICELLTYPE 0), falling
+   back to `clamp(STRT_n, bot_n, top_n)` when STRT is implausibly far from the cell
+   (threshold chosen in T2.8); `clamp(STRT_n, bot_n, top_n)` for convertible cells
+   (revisit in T6.1). Decided 2026-11-07 after T2.6: the clamp gave offsets up to
+   10600 m on toth. `r` is not re-referenced between stress periods (revisit only if
+   long transient runs drift; T4.4). The device stores heads as
    offsets `h'_n = h_n − r_n`. Every head-like value (CHD/GHB head, RIV stage
    and RBOT, DRN elevation, EVT surface, cell top and bottom, IC, old heads) is
    converted to its cell's offset on the host in Float64 before it is cast to

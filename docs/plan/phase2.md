@@ -132,6 +132,11 @@ the same code on the GPU.
   per-connection split over connections to active cells, the CBC CHD `q` is the
   per-cell net, and the rate is added to `flowja(idiag)`), OC (SAVE/PRINT HEAD/BUDGET ALL/LAST/FREQUENCY/STEPS), HDS/CBC
   writers, a short listing file with budget tables, and `ModflowGPU.run(simdir)`.
+- First implement the revised rule 1 (section 3.7, owner decision after T2.6): no
+  clamp of `r` for ICELLTYPE 0 cells, with a clamp fallback for implausible STRT
+  (pick and document the threshold); re-measure toth/hwell-a `:single` residuals.
+  From the T2.6 review: call `apply_period!` once per period, and remove the duplicate
+  `dev` helper in `src/gwf/npf.jl` (use `_device_copy`).
 - Also deliver `docs/precision.md`: the Float32 closures (section 3.7), and the
   measured `:single` vs `:double` and `:single` vs MF6 differences on every
   parity model. These confirm or revise the `:single` thresholds of section 4.
