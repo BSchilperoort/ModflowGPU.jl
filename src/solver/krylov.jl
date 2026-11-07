@@ -91,24 +91,8 @@ end
 
 @inline _zeros4(::Type{Ta}) where {Ta} = (zero(Ta), zero(Ta), zero(Ta), zero(Ta))
 
-@inline function _tree!(shared, sloc, ops, li)
-    _tree_step!(shared, sloc, ops, li, 128)
-    @synchronize
-    _tree_step!(shared, sloc, ops, li, 64)
-    @synchronize
-    _tree_step!(shared, sloc, ops, li, 32)
-    @synchronize
-    _tree_step!(shared, sloc, ops, li, 16)
-    @synchronize
-    _tree_step!(shared, sloc, ops, li, 8)
-    @synchronize
-    _tree_step!(shared, sloc, ops, li, 4)
-    @synchronize
-    _tree_step!(shared, sloc, ops, li, 2)
-    @synchronize
-    _tree_step!(shared, sloc, ops, li, 1)
-    return nothing
-end
+# The tree is written out in each kernel: KA 0.9's CPU backend only accepts `@synchronize`
+# in the kernel body itself.
 
 # Stage 1: work item `i` evaluates `f(Ta, i, args...)` (which may also write vectors) and
 # returns 4 values in `Ta`; each work group reduces them in local memory (a pairwise tree)
@@ -126,7 +110,21 @@ end
         @inbounds sloc[li] = vals[1] != zero(Ta) ? i % Int32 : Int32(0)
     end
     @synchronize
-    _tree!(shared, sloc, ops, li)
+    _tree_step!(shared, sloc, ops, li, 128)
+    @synchronize
+    _tree_step!(shared, sloc, ops, li, 64)
+    @synchronize
+    _tree_step!(shared, sloc, ops, li, 32)
+    @synchronize
+    _tree_step!(shared, sloc, ops, li, 16)
+    @synchronize
+    _tree_step!(shared, sloc, ops, li, 8)
+    @synchronize
+    _tree_step!(shared, sloc, ops, li, 4)
+    @synchronize
+    _tree_step!(shared, sloc, ops, li, 2)
+    @synchronize
+    _tree_step!(shared, sloc, ops, li, 1)
     @synchronize
     if li == 1
         g = @index(Group, Linear)
@@ -173,7 +171,21 @@ end
         @inbounds sloc[li] = loc
     end
     @synchronize
-    _tree!(shared, sloc, ops, li)
+    _tree_step!(shared, sloc, ops, li, 128)
+    @synchronize
+    _tree_step!(shared, sloc, ops, li, 64)
+    @synchronize
+    _tree_step!(shared, sloc, ops, li, 32)
+    @synchronize
+    _tree_step!(shared, sloc, ops, li, 16)
+    @synchronize
+    _tree_step!(shared, sloc, ops, li, 8)
+    @synchronize
+    _tree_step!(shared, sloc, ops, li, 4)
+    @synchronize
+    _tree_step!(shared, sloc, ops, li, 2)
+    @synchronize
+    _tree_step!(shared, sloc, ops, li, 1)
     @synchronize
     if li == 1
         @inbounds for k in 1:_RED_K

@@ -173,7 +173,7 @@ BiCGSTAB solve does not converge in 1000 iterations and returns a correction of 
 for a residual of 0.93, after which the outer iterations diverge (NaN by iteration 8).
 Until T2.8's last fix the max-abs reduction skipped NaN and the step was reported as
 converged; it now propagates NaN and the outer loop stops with a warning (and
-`ConvergenceError`). `:double` on ROCm converges in all 60 steps (231 s; 2 outer and 12–30 inner iterations per step in the first steps), within 2.0e-10 m of MF6 in the last step, percent discrepancy 2.8e-8 %. The cure is the Phase 4 preconditioner (MF6 needs 2 outer
+`ConvergenceError`). `:double` on ROCm converges in all 60 steps (231 s at T2.8 merge time; 3.7 s after T3.1, see below; 2 outer and 12–30 inner iterations per step in the first steps), within 2.0e-10 m of MF6 in the last step, percent discrepancy 2.8e-8 %. The cure is the Phase 4 preconditioner (MF6 needs 2 outer
 and 7–10 inner iterations per step with ILU0).
 
 **Section 4 thresholds.** Confirmed for `:single` on Tier 0 and the synthetic models:
@@ -183,3 +183,40 @@ percent discrepancy < 0.01 % (largest 1.5e-3 %), and `:single` vs `:double` head
 < 1e-3 m. The `:double` criteria hold with large margins (heads ≤ 4.0e-8 m, flows
 ≤ 1.0e-9 × total in). No threshold is changed; the measured values leave about a factor
 20 on heads and 7 on percent discrepancy for the larger models of T3.4 and T5.3.
+
+## Device execution (T3.1)
+
+**Host synchronisations.** Every reduction (2 per CG iteration, 3 per BiCGSTAB iteration,
+1 per outer iteration) launches two kernels, synchronises, and reads 4 values on the
+host. Measured on the RX 7800 XT for a 360-row vector: kernels plus synchronisation
+30 µs, the 4-value device-to-host `copyto!` (unpinned, staged) another 32 µs. The
+reduction results now go to host memory registered with HIP (`host_mapped_zeros`, an
+extension hook; the CPU backend aliases the same `Array`), so the copy is gone and a
+reduction costs about 30 µs. The algorithms, the number of synchronisations and the
+convergence checks per iteration are unchanged (MF6 semantics), and the results are
+bitwise the same.
+
+| `:double` on ROCm | before | after | outer / inner iterations |
+| --- | --- | --- | --- |
+| coupling_rde (360 cells, 10 steps) | 1.15 s (201 µs per inner it.) | 0.63 s (110 µs) | 103 / 5722 |
+| ex-gwf-hwell-a (153164 cells, 60 steps) | 4.9 s (338 µs) | 3.7 s (254 µs) | 120 / 14532 |
+
+`:single` coupling_rde: 0.24 s → 0.13 s. The remaining cost is launch latency (about
+22 µs from launch to a completed synchronisation). Fewer synchronisations would need the
+Krylov scalars (alpha, beta, omega) on the device, with one host check per iteration;
+that changes where those scalars are rounded and is left open (Phase 4).
+
+**Argmax.** `sln_get_dxmax` also returns `lrch`, the node of the largest change, for the
+IMS convergence tables: the outer-iteration reduction carries the first index of the
+largest magnitude (ties go to the lowest index, as MF6's sequential loop; 0 when every
+change is zero), `OuterResult.lrch`. The tables themselves are not written yet.
+
+**Kernel hygiene** (rule 5, test group `kernel_hygiene`, ROCm): 50 kernel
+specialisations of the 19 kernels compiled by a `:single` workload; no `double` in the
+optimised device IR except in the Float64-accumulating `mapreduce_kernel!` and
+`finalize_reduction_kernel!`, and none at all when the backend reports no Float64
+(`Ta = Float32`).
+
+**Backends.** ROCm and the CPU backend give bitwise identical heads in both presets on
+every Phase 2 parity model (run and assembly parity groups), well within the section 4
+tolerances.

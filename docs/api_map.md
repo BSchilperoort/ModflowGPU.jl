@@ -10,10 +10,11 @@ it. Underscore-prefixed helpers are omitted.
 
 - **backend_setup.jl**: backend registry, adapted from mGV. `select_backend` (name → KA
   backend), `register_backend!` (called by `ext/*Ext.jl`), `backend_options`,
-  `backend_name`, `known_backend_package`, `pin_memory!` (extension hook), `BackendEntry`, `BACKEND_REGISTRY`, `KNOWN_BACKENDS`; `_device_copy` (host array → new device array). Tests: backend.
+  `backend_name`, `known_backend_package`, `pin_memory!` (extension hook), `host_mapped_zeros`
+  (extension hook, T3.1: device view of a host vector for reduction results; CPU, ROCm), `BackendEntry`, `BACKEND_REGISTRY`, `KNOWN_BACKENDS`; `_device_copy` (host array → new device array). Tests: backend.
 - **ext/*Ext.jl** (AMDGPU, CUDA, Metal, oneAPI, OpenCL): `__init__` registers the backend;
-  overrides `supports_float64` where needed. Tests: backend (GPU file with
-  `MFGPU_TEST_BACKEND`).
+  overrides `supports_float64` where needed; AMDGPUExt adds `host_mapped_zeros` (registered
+  host memory). Tests: backend (GPU file with `MFGPU_TEST_BACKEND`).
 - **precision.jl**: precision presets (PLAN.md 3.7). `resolve_precision(backend, preset)`
   → `(; T, Ts, Tp)`, `PRECISION_PRESETS`, `supports_float64` (extension hook). Tests: precision, kernel.
 
@@ -97,7 +98,7 @@ it. Underscore-prefixed helpers are omitted.
 - **gwf/sto.jl**: confined storage (gwf-sto.f90 `sto_rp`/`sto_fc`/`sto_cq`/`sto_bd`,
   GwfStorageUtils.f90 `SsCapacity`/`SsTerms`). `storage_capacity`, `check_storage_spec`
   (rejects convertible cells with a transient period, T6.1, and TVS6), `StoragePackage{T}`
-  (device `rho = sc/delt`, `strgss`), `apply_period!` (steady/transient), `set_timestep!`
+  (device `rho = sc/delt`, `strgss`; Adapt), `apply_period!` (steady/transient), `set_timestep!`
   (`rho` from Float64 `delt`), `add_to_system!` (diagonal and `b`), `calc_storage_rates!`
   (STO-SS), `add_storage_flowja!`, `storage_budget` (rin/rout, host Float64). Tests: sto
   (parity: residual test on fhb with constant stresses, mf6 run at test time).
@@ -106,7 +107,8 @@ it. Underscore-prefixed helpers are omitted.
 
 - **boundaries/framework.jl**: boundary framework (PLAN.md 3.4; BoundaryPackage.f90
   `bnd_rp`/`bnd_fc`/`bnd_cq`). `BoundaryKind{K}`, `BoundaryPackage{K,T}` (device
-  `nodelist`, `bound`, `hcof`, `rhs`, `simvals`, node→record map; host copies),
+  `nodelist`, `bound`, `hcof`, `rhs`, `simvals`, node→record map; host copies; Adapt moves the device
+  arrays and copies the host period state),
   `bound_columns` / `head_columns` / `mult_column` (per kind), `bound_layout` (per spec:
   list columns, aux variables, constants), `check_records` (`*_ck` hook),
   `check_boundary_spec` (rejects WEL AUTO_FLOW_REDUCE; EVT NSEG / READASARRAYS checks),
@@ -149,8 +151,11 @@ it. Underscore-prefixed helpers are omitted.
   (`resolve_ipc`), `ims_testcnvg`, `ims_epfact`, `KrylovSolver{Ts,Tp,Ta}` (device
   workspace), `solve!(δ, solver, amat, res; kstp)` → `KrylovResult` (converged,
   iterations, status, dvmax, rmax, l2norm0, l2norm). Device reductions: `Reducer`,
-  `accumulation_type`, `device_dot`, `device_maxabs` (fused map-reduce kernels
-  `mapreduce_kernel!` / `finalize_reduction_kernel!`, `map_kernel!`). IMS mapping in
+  `accumulation_type`, `device_dot`, `device_maxabs`, `device_argmaxabs` (T3.1; fused
+  map-reduce kernels `mapreduce_kernel!` / `finalize_reduction_kernel!`, `map_kernel!`;
+  `_ArgMaxAbsOp` as the first op also returns the first index of the largest magnitude,
+  `_mapreduce_loc!`; results land in host-mapped memory where `host_mapped_zeros` allows).
+  Adapt rules on `KrylovSolver` and `Reducer` (a new one on the target). IMS mapping in
   docs/mf6_notes.md, accuracy and timing in docs/precision.md. Tests: krylov.
 
 ## Time stepping, outer iterations, flows and budgets (T2.8)
@@ -160,22 +165,23 @@ it. Underscore-prefixed helpers are omitted.
   picard.
 - **gwf/model.jl**: one model on a device. `GwfModel{T}` (spec, conn, NpfSetup, CSR,
   NpfModel, LinearSystem, boundary packages, STO, ibound, offset heads `h`/`hold`, `res`,
-  `δ`, `flowja`), `apply_period!(::GwfModel, kper)` (once per period: package period
+  `δ`, `flowja`; Adapt, e.g. `adapt(backend, m)`, T3.1), `apply_period!(::GwfModel, kper)` (once per period: package period
   data, STO, CHD ibound), `start_timestep!` (`rho`, `hold ← h`, CHD heads), `formulate!`
   (formulate, assemble, flux residual), `absolute_heads` (host Float64 `r + h'`). Tests:
   picard, run.
 - **solver/underrelax.jl**: `sln_underrelax`. `UnderRelaxation` (SIMPLE, COOLEY host
   scalars, DBD device state), `underrelax!` (`relax_update_kernel!`,
-  `dbd_update_kernel!`). Tests: picard (vs a host port), run (variants vs MF6).
+  `dbd_update_kernel!`); Adapt. Tests: picard (vs a host port), run (variants vs MF6).
 - **solver/picard.jl**: outer loop (`sln_ca`/`solve`; PLAN.md 3.7 rule 3). `PicardSettings`
   (from `ImsSpec`, `closures` overrides, Float32 floors `FLOAT32_CLOSURES`, backtracking
-  warning), `PicardSolver` (KrylovSolver, UnderRelaxation, Reducer), `solve_timestep!` →
-  `OuterResult` (converged, outer and inner iterations, hncg, the dvclose/rclose used).
+  warning), `PicardSolver` (KrylovSolver, UnderRelaxation, Reducer; Adapt), `solve_timestep!` →
+  `OuterResult` (converged, outer and inner iterations, hncg and its node `lrch` from one
+  argmax reduction, the dvclose/rclose used).
   Tests: picard, run.
 - **budget.jl**: `gwf_cq`/`gwf_bd`. `npf_flowja!`, `calc_flows!` (NPF, STO, packages with
   `bnd_cf` + `simvals`, CHD `calc_chd_rate!`, `csr_diagsum`), `BudgetTerm`, `ModelBudget`
   (`total_rate_in`/`_out`, `total_cum_in`/`_out`, `percent_discrepancy`,
-  `cum_percent_discrepancy`), `BudgetAccumulator`, `model_budget!` (device reductions,
+  `cum_percent_discrepancy`), `BudgetAccumulator` (Adapt), `model_budget!` (device reductions,
   host cumulative volumes), `budget_text` (CBC text per package). Tests: picard, run.
 
 ## MF6 output files (host)
@@ -224,3 +230,15 @@ it. Underscore-prefixed helpers are omitted.
   (riv_drn_evt parity test).
 - **models/fhb_const/**: ex-gwf-fhb with the CHD/WEL time series replaced by constants per
   period (sto parity test).
+
+## GPU tests (`test/gpu/`, T3.1)
+
+- **runtests.jl**: GPU entry, the full suite with `MFGPU_TEST_BACKEND` (default rocm);
+  every parity test runs on the GPU, run and assembly parity also compare with the CPU.
+- **backend_gpu_test.jl**: backend registry on the GPU (group backend).
+- **kernel_hygiene_test.jl** + **kernel_hygiene_workload.jl**: rule 5 (group
+  kernel_hygiene, ROCm only): a subprocess runs `:single` work under
+  `AMDGPU.@device_code_llvm` with Float64 and with Float32 accumulation and reports the
+  `double`s per kernel; every `gpu_*` kernel of the package must be compiled by the
+  workload. Exempt with Float64 accumulation: `mapreduce_kernel!`,
+  `finalize_reduction_kernel!`.
