@@ -1,0 +1,18 @@
+BEGIN options
+  SAVE_FLOWS
+END options
+
+BEGIN packages
+  DIS6  rde.dis  dis
+  NPF6  rde.npf  npf
+  IC6  rde.ic  ic
+  STO6  rde.sto  sto
+  CHD6  rde.chd  chd
+  WEL6  rde.wel  wel
+  RCH6  rde.rcha  rcha
+  RIV6  rde.riv  riv
+  DRN6  rde.drn  drn
+  EVT6  rde.evt  evt
+  EVT6  rde.evta  evta
+  OC6  rde.oc  oc
+END packages

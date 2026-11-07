@@ -1,0 +1,19 @@
+# Synthetic coupling-like model for the RIV/DRN/EVT residual test (T2.4), generated
+# by a script; confined, 2 layers, 12 x 15 cells.
+BEGIN options
+END options
+
+BEGIN timing
+  TDIS6  rde.tdis
+END timing
+
+BEGIN models
+  gwf6  rde.nam  rde
+END models
+
+BEGIN exchanges
+END exchanges
+
+BEGIN solutiongroup  1
+  ims6  rde.ims  rde
+END solutiongroup  1
