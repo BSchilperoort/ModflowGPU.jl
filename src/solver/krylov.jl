@@ -34,7 +34,10 @@
 # Device reductions
 
 # Work-group size and number of values reduced at once (every reduction carries 4 values;
-# unused ones are zero). The tree below is unrolled for _RED_WG = 256.
+# unused ones are zero). The tree below is unrolled for _RED_WG = 256, and the kernels
+# write `@localmem eltype(partials) (256, 4)` literally: `@localmem` with the element type
+# in a kernel-local variable fails at run time on KA 0.10's POCL backend ("undefined
+# variable").
 const _RED_WG = 256
 const _RED_K = 4
 
@@ -121,7 +124,6 @@ end
 
 # Stage 2: one work group reduces the columns of `partials` into `out` (4 values).
 @kernel function finalize_reduction_kernel!(out, @Const(partials), ops, ngroups)
-    Ta = eltype(out)
     shared = @localmem eltype(partials) (256, 4)
     _store4!(shared, @index(Local, Linear), _fold_partials(partials, ops, @index(Local, Linear), ngroups))
     @synchronize
@@ -285,6 +287,9 @@ function KrylovSettings(ims::ImsSpec)
     @warn "IMS preconditioner $(uppercase(String(pc))) is not available until Phase 4; using Jacobi" ims.file
     ims.reordering_method === :none ||
         @info "IMS REORDERING_METHOD $(uppercase(String(ims.reordering_method))) has no effect with the Jacobi preconditioner" ims.file
+    # As in MF6 this is allowed, but L2NORM scaling makes the scaled matrix nonsymmetric.
+    ims.linear_acceleration === :cg && ims.scaling_method === :l2norm &&
+        @warn "IMS SCALING_METHOD L2NORM with LINEAR_ACCELERATION CG: the scaled matrix is not symmetric, CG may not converge" ims.file
     return KrylovSettings(;
         method = ims.linear_acceleration, maxiter = ims.inner_maximum, dvclose = ims.inner_dvclose,
         rclose = ims.inner_rclose, rclose_option = ims.rclose_option, north = ims.number_orthogonalizations,

@@ -25,9 +25,9 @@ function _csr_from_neighbours(nbrs::Vector{Vector{Int}})
     return ia, ja, isym
 end
 
-function _device_csr(ia, ja, isym)
+function _device_csr(ia, ja, isym; backend = TEST_BACKEND)
     n = length(ia) - 1
-    d(x) = to_test_device(Int32.(x))
+    d(x) = copyto!(KernelAbstractions.allocate(backend, Int32, length(x)), Int32.(x))
     return CsrStructure(Int32(n), Int32(length(ja)), d(ia), d(ja), d(zeros(Int32, length(ja))), d(isym), d(ia[1:n]), d(1:n))
 end
 
@@ -359,6 +359,22 @@ _tight(T, method; kw...) = KrylovSettings(;
                 cfg.rclose_option === :strict && @test !r.converged && r.status === :criterion
                 cfg.rclose_option === :relative && @test r.status === :criterion && r.l2norm <= 1.0e-4 * r.l2norm0
                 get(cfg, :maxiter, 0) == 7 && @test r.iterations == 7 && r.status === :maxiter
+            end
+        end
+        # GPU backend vs the CPU backend (PLAN.md section 4): same iterations, δ within
+        # 1e-10 relative (:double) or 1e-4 (:single).
+        if !(TEST_BACKEND isa CPU)
+            for method in (:cg, :bicgstab)
+                a = method === :cg ? asym : anon
+                st = KrylovSettings(; method, maxiter = 200, dvclose = 1.0e-9, rclose = 1.0e-8)
+                for_each_precision() do p
+                    x, r = _device_solve(p, csr, a, b, st)
+                    cpu = KrylovSolver(CPU(), _device_csr(ia, ja, isym; backend = CPU()), st; Ts = p.Ts, Tp = p.Tp)
+                    δ = zeros(p.T, n)
+                    rc = solve!(δ, cpu, p.T.(a), p.T.(b))
+                    @test _relerr(x, Float64.(δ)) < (p.Ts == Float64 ? 1.0e-10 : 1.0e-4)
+                    p.Ts == Float64 && @test r.iterations == rc.iterations
+                end
             end
         end
         # zero right-hand side: no iterations, converged
