@@ -44,12 +44,13 @@
 #   done by `build_connectivity` (`check_dis_grid`; DISV/DISU in T6.4); missing
 #   DELR/DELC/TOP/BOTM (DIS), TOP/BOTM (DISV) or TOP/BOT/AREA (DISU) arrays are an error
 #   here (MF6 does not check that they were given and would run with unset values).
-#   Value checks of NPF arrays (K <= 0, ...) are done by MF6 in `npf_ar`/
-#   `preprocess_input` and are deferred to T2.2.
+#   Value checks of NPF arrays (K <= 0, ...), done by MF6 in `prepcheck`, are done by
+#   `npf_properties` (src/gwf/npf.jl, T2.2).
 # - READARRAYGRID input (CHDG, WELG, ...) is rejected also with `strict = false`: there is
 #   no period-data reader for it yet (an explicit exception to the strict/non-strict rule).
-# - NPF option combinations rejected in `npf_ar` (NEWTON with PERCHED, XT3D with
-#   ALTERNATIVE_CELL_AVERAGING, ...) are not checked here (T2.2/T6.x).
+# - NPF option combinations rejected in `check_options` (NEWTON with PERCHED, XT3D with
+#   ALTERNATIVE_CELL_AVERAGING, ...) are checked by `check_npf_options` (src/gwf/npf.jl,
+#   T2.2), not here.
 # - File references (TS6, TAS6, OBS6) must exist; their contents are read by T6.3/T6.7.
 
 const LENMODELNAME = 16    # ConstantsModule
