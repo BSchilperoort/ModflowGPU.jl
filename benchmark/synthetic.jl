@@ -21,8 +21,10 @@
 # As a script (build times, sizes, device memory; `rocm` also measures the device):
 #
 #     julia --project=benchmark benchmark/synthetic.jl cpu tiny indus continental
-#     julia --project=benchmark benchmark/synthetic.jl rocm global5m regional30s
-#     julia --project=benchmark benchmark/synthetic.jl cpu global30s   # estimate only
+#     julia --project=benchmark benchmark/synthetic.jl rocm indus global5m regional30s global30s
+#     julia --project=benchmark benchmark/synthetic.jl rocm indus global5m outer=2
+#
+# `global30s` is only estimated (from `indus`'s bytes per unit and `global5m`'s counts).
 module SyntheticModels
 
 using ModflowGPU
@@ -31,7 +33,7 @@ using ModflowGPU: build_dis, build_npf, build_ic, build_sto, build_oc, build_bou
 using ModflowGPU.Adapt: Adapt
 
 export SYNTHETIC_PRESETS, synthetic_fields, synthetic_simulation, write_synthetic, synthetic_counts,
-    device_bytes, memory_coefficients, estimate_device_bytes
+    device_bytes, memory_coefficients, estimate_device_bytes, scaled_counts, synthetic_main
 
 """
     SYNTHETIC_PRESETS
@@ -363,13 +365,6 @@ function synthetic_simulation(
     idomain = Int32[k == 0x00 ? 0 : 1 for k in f.kind]
     dis = build_dis(; delr = f.cellsize, delc = f.cellsize, top = f.top, botm = f.botm, idomain, length_units = :meters)
     npf = build_npf(dis; icelltype = 0, k = f.k, k33 = f.k .* 0.1, save_flows = true)
-    strt = Array{Float64}(undef, ncol, nrow, 2)
-    for c in 1:ncpl
-        h0 = f.kind[c] == 0x01 ? f.top[c] - f.ddrn[c] : 0.0
-        strt[c] = h0
-        strt[c + ncpl] = h0
-    end
-    ic = build_ic(dis; strt)
     sc = Array{Float64}(undef, ncol, nrow, 2)
     sc[:, :, 1] .= f.sc
     sc[:, :, 2] .= f.sc
@@ -397,6 +392,17 @@ function synthetic_simulation(
         depth[r] = min(0.5 + 0.1 * sqrt(a), 5.0)
     end
     rivp = [kper => (; cells = riv, values = hcat(rbot .+ depth .* _stage_factor(kper), cond, rbot)) for kper in 1:nper]
+    # Starting heads: 0.5 m above the drain level on land (drains active from the start),
+    # the stage in river cells (a river cell below its bed infiltrates cond · depth, up to
+    # 3e7 m³/d, which sends the first Picard iteration kilometres up), 0 on the rim.
+    strt = zeros(ncol, nrow, 2)
+    for c in land
+        strt[c] = strt[c + ncpl] = f.top[c] - f.ddrn[c] + 0.5
+    end
+    for (r, c) in enumerate(riv)
+        strt[c] = strt[c + ncpl] = rbot[r] + depth[r]
+    end
+    ic = build_ic(dis; strt)
     rivb = build_boundary(:RIV, dis; name = "riv", save_flows = true, periods = rivp)
     # DRN: land cells off the river network, ddrn below the DEM, conductance
     # KQ3 · SC · area with KQ3 = 0.02 / d (ModflowCoupling's linear reservoir).
@@ -570,6 +576,78 @@ estimate_device_bytes(coef::AbstractDict, c::NamedTuple) = round(
         sum(coef[k] * getfield(c, k) for k in (:chd, :riv, :drn, :evt, :rch))
 )
 
+# ---------------------------------------------------------------------------------------
+# Benchmark driver (the script at the end of this file)
+# ---------------------------------------------------------------------------------------
+
+_r(x, d = 2) = string(round(x; digits = d))
+_gib(b) = _r(b / 2.0^30, 3)
+
+"""
+    synthetic_main(args, devfree = () -> 0)
+
+The benchmark script: `args` = backend name, preset names (default all), optional
+`outer=N` (run N outer iterations of the first, steady-state, time step). Prints build
+times, counts and device bytes per preset and precision; `devfree()` returns the free
+device memory (ROCm) for a measured figure. Presets that are not buildable are estimated
+from `indus`'s per-unit bytes and `global5m`'s counts, so list them after those.
+"""
+function synthetic_main(args, devfree = () -> 0)
+    bname = isempty(args) ? "cpu" : args[1]
+    backend = ModflowGPU.select_backend(bname)
+    names = Symbol[Symbol(a) for a in args[2:end] if !occursin('=', a)]
+    isempty(names) && (names = collect(keys(SYNTHETIC_PRESETS)))
+    m = match(r"outer=(\d+)", join(args, " "))
+    nouter = isnothing(m) ? 0 : parse(Int, m.captures[1])
+    measured = devfree() != 0
+    coef = Dict{Symbol, Any}()
+    counts5m = nothing
+    for name in names
+        p = SYNTHETIC_PRESETS[name]
+        if !p.buildable
+            c5 = something(counts5m, synthetic_counts(synthetic_fields(:global5m)))
+            c = scaled_counts(c5, name)
+            println("$name: estimated $(c.nodes) nodes, $(c.nja) nja, land $(c.nland), rim $(c.nrim), riv $(c.riv)")
+            for pre in (:single, :double)
+                haskey(coef, pre) && println("$name $pre: estimated device arrays $(_gib(estimate_device_bytes(coef[pre], c))) GiB")
+            end
+            haskey(coef, :single) || println("$name: list `indus` before it for the per-unit bytes")
+            continue
+        end
+        tf = @elapsed f = synthetic_fields(name)
+        ts = @elapsed spec = synthetic_simulation(name; fields = f, output = false)
+        c = synthetic_counts(f)
+        name === :global5m && (counts5m = c)
+        println("$name: fields $(_r(tf)) s, spec $(_r(ts)) s; $(c.ncol) × $(c.nrow), $(c.nodes) nodes, $(c.nja) nja, land $(c.nland), rim $(c.nrim), riv $(c.riv)")
+        for pre in (:single, :double)
+            (pre === :single || ModflowGPU.supports_float64(backend)) || continue
+            GC.gc(true)
+            f0 = devfree()
+            ti = @elapsed sim = ModflowGPU.initialize(spec; backend, precision = pre, write_output = false)
+            f1 = devfree()
+            b = device_bytes(sim)
+            name === :indus && (coef[pre] = memory_coefficients(sim))
+            est = haskey(coef, pre) ? " (estimate from indus $(_gib(estimate_device_bytes(coef[pre], c))) GiB)" : ""
+            mes = measured ? ", measured $(_gib(f0 - f1)) GiB" : ""
+            println("$name $pre: initialize $(_r(ti)) s, device arrays $(_gib(b.total)) GiB, $(_r(b.total / c.nodes, 1)) B/node$est$mes")
+            if nouter > 0
+                ModflowGPU.prepare_time_step(sim)
+                ModflowGPU.prepare_solve(sim)
+                prev = 0
+                for k in 1:nouter
+                    t = @elapsed ModflowGPU.solve(sim)
+                    o = sim.outer
+                    ni = o.inner - prev
+                    prev = o.inner
+                    println("    outer $k: $ni inner, $(_r(t)) s ($(_r(1.0e6 * t / max(ni, 1), 0)) µs per inner), max change $(_r(o.hncg, 4))")
+                end
+            end
+            sim = nothing
+        end
+    end
+    return nothing
+end
+
 end # module SyntheticModels
 
 # ---------------------------------------------------------------------------------------
@@ -577,5 +655,13 @@ end # module SyntheticModels
 # ---------------------------------------------------------------------------------------
 
 if abspath(PROGRAM_FILE) == @__FILE__
-    include(joinpath(@__DIR__, "synthetic_main.jl"))
+    let backend = isempty(ARGS) ? "cpu" : ARGS[1], devfree = () -> 0
+        if backend == "rocm"
+            @eval using AMDGPU
+            devfree = () -> (GC.gc(true); Base.invokelatest(AMDGPU.synchronize); first(Base.invokelatest(AMDGPU.Mem.info)))
+        elseif backend != "cpu"
+            @eval using $(Symbol(ModflowGPU.known_backend_package(backend)))
+        end
+        Base.invokelatest(SyntheticModels.synthetic_main, ARGS, devfree)
+    end
 end
