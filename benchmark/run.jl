@@ -243,7 +243,7 @@ end
 
 function mf6_case(preset, mf6exe, workdir; nsteps, ims)
     dir = mktempdir(workdir; prefix = "mf6_$(preset)_", cleanup = false)
-    tw = @elapsed spec = write_synthetic(dir, preset; maxcells = 10^8, output = false, ntransient = nsteps, ims = synthetic_ims(ims))
+    tw = @elapsed spec = write_synthetic(dir, preset; maxcells = 10^8, output = :none, ntransient = nsteps, ims = synthetic_ims(ims))
     c = synthetic_counts(spec)
     stamps = Float64[]
     last_lines = String[]

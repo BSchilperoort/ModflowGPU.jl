@@ -350,13 +350,14 @@ module SyntheticModels
 
     The synthetic coupling-like model of `preset` as a `SimulationSpec` (builder API). `output`
     adds OC with SAVE HEAD/BUDGET ALL (`<name>.hds`, `<name>.cbc`). Pass `fields` (from
-    `synthetic_fields`) to reuse them. `ntransient`: the number of daily transient periods
+    `synthetic_fields`) to reuse them. `output = :none`: an OC without output records (mf6
+    then writes no head arrays to its listing; `false` omits OC). `ntransient`: the number of daily transient periods
     after the steady state (the seasonal RCH and stage factors repeat every 12 periods; the
     benchmark, benchmark/run.jl, uses 30).
     """
     function synthetic_simulation(
             preset = :tiny; seed::UInt64 = DEFAULT_SEED, name::AbstractString = "syn", ims = synthetic_ims(),
-            output::Bool = true, fields = nothing, ntransient::Integer = NPER_TRANSIENT,
+            output::Union{Bool, Symbol} = true, fields = nothing, ntransient::Integer = NPER_TRANSIENT,
         )
         p = _preset(preset)
         p.buildable || throw(ArgumentError("preset $(preset) is not built in memory (use estimate_device_bytes)"))
@@ -430,7 +431,10 @@ module SyntheticModels
         r0 = f.rch[land]
         rchb = build_boundary(:RCH, dis; name = "rch", fixed_cell = true, save_flows = true, periods = [kper => (; cells = land, values = r0 .* _rch_factor(kper)) for kper in 1:nper])
         base = lowercase(name)
-        oc = output ? build_oc(; head_file = "$base.hds", budget_file = "$base.cbc", periods = [1 => ["SAVE HEAD ALL", "SAVE BUDGET ALL"]]) : nothing
+        # `output = :none`: an OC file with an empty PERIOD 1 block, so mf6 neither saves nor
+        # prints (without any OC file mf6 prints the heads of every period to the listing).
+        oc = output === true ? build_oc(; head_file = "$base.hds", budget_file = "$base.cbc", periods = [1 => ["SAVE HEAD ALL", "SAVE BUDGET ALL"]]) :
+            output === :none ? build_oc(; periods = [1 => String[]]) : nothing
         model = build_model(name; dis, npf, ic, sto, oc, boundaries = [chd, rivb, drnb, evtb, rchb], save_flows = true)
         tdis = build_tdis(; perlen = ones(nper), nstp = 1, tsmult = 1.0, time_units = :days)
         return build_simulation(model; tdis, ims)
