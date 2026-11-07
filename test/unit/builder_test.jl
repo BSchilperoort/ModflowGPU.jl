@@ -60,7 +60,7 @@ function _build_coupling_rde(; simdir = "")
     )
     ecells = [(1, i, j) for i in 1:2:nrow for j in 1:ncol if active(1, i, j) && !(j in (6, 7, 8))]
     evals(petm0) = [
-        hcat([r(top[j, i]) for (_, i, j) in ecells], [r(0.002 + 0.0001 * j) for (_, _, j) in ecells], [i < 7 ? 3.0 : 1.5 for (_, i, _) in ecells])  repeat([0.25 0.6 0.65 0.3 petm0], length(ecells))
+    hcat([r(top[j, i]) for (_, i, j) in ecells], [r(0.002 + 0.0001 * j) for (_, _, j) in ecells], [i < 7 ? 3.0 : 1.5 for (_, i, _) in ecells])  repeat([0.25 0.6 0.65 0.3 petm0], length(ecells))
     ]
     evt = build_boundary(
         :EVT, dis; name = "evt", nseg = 3, surf_rate_specified = true,

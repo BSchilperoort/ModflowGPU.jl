@@ -81,6 +81,21 @@ it. Underscore-prefixed helpers are omitted.
   with IDOMAIN 0 / pass-through cells, `check_dis_grid`. Tests: connectivity (parity vs
   libmf6 and `.grb`).
 
+## In-memory models and the MF6 writer (host, T3.2)
+
+- **builder.jl**: `SimulationSpec` from Julia arrays (grid arrays `(ncol, nrow[, nlay])`
+  as ModflowCoupling, or scalar / per layer / by user node; boundary records as cell lists
+  + value matrices `(nrecords, ncolumns)`), validated with `ArgumentError`s. `build_dis`,
+  `build_npf`, `build_ic`, `build_sto`, `oc_record`, `build_oc`, `build_boundary` (list
+  packages), `build_array_boundary` (RCHA/EVTA), `build_model` (package entries, default
+  names and files `<model>.<ext>`, MF6 package order), `build_tdis`, `build_ims` (`given`
+  = keywords passed), `build_simulation`; structural equality `spec_difference` /
+  `spec_identical` (types, shapes, order, Float64 bits; `ignore` fields). Tests: builder.
+- **mf6_writer.jl**: `write_simulation(dir, spec)`: MF6 input files of a spec (DIS grids,
+  NPF, IC, STO, OC, `BOUNDARY_KINDS` lists and arrays, TDIS, IMS; generalised from
+  ModflowCoupling's `mf6_writer.jl`), round trip `load_simulation` → identical spec.
+  Tests: builder (round trip; mf6 runs the written model, needs `reference/`).
+
 ## GWF engine
 
 - **gwf/offsets.jl**: heads as offsets from per-cell references (PLAN.md 3.7 rule 1).
@@ -227,7 +242,7 @@ it. Underscore-prefixed helpers are omitted.
   bound)), `residual_stats`, `host_flux_residual` (the T2.3 host loop, validates the kernel).
 - **models/coupling_rde/**: synthetic coupling-like model (2 × 12 × 15, confined, steady +
   transient) with CHD, WEL, RCHA, RIV, DRN, EVT, EVTA; `generate.jl` writes it
-  (riv_drn_evt parity test).
+  (riv_drn_evt parity test); test/unit/builder_test.jl builds it in memory.
 - **models/fhb_const/**: ex-gwf-fhb with the CHD/WEL time series replaced by constants per
   period (sto parity test).
 

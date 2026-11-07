@@ -253,8 +253,10 @@ function _write_tdis(io, t::TdisSpec)
 end
 
 const _IMS_BLOCK = Dict(
-    f => (f in (:print_option, :complexity, :csv_outer_output, :csv_inner_output, :no_ptc, :ats_outer_maximum_fraction) ? "OPTIONS" :
-        startswith(String(f), "outer_") || startswith(String(f), "under_") || startswith(String(f), "backtracking_") ? "NONLINEAR" : "LINEAR")
+    f => (
+        f in (:print_option, :complexity, :csv_outer_output, :csv_inner_output, :no_ptc, :ats_outer_maximum_fraction) ? "OPTIONS" :
+            startswith(String(f), "outer_") || startswith(String(f), "under_") || startswith(String(f), "backtracking_") ? "NONLINEAR" : "LINEAR"
+    )
         for f in fieldnames(ImsSpec) if !(f in _IMS_NOT_KEYWORDS)
 )
 
