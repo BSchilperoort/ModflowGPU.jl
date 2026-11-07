@@ -1,16 +1,5 @@
 # Running a simulation: `ModflowGPU.run(simdir)` (the time loop of MF6's `Sim`, with
-# `tdis_set_timestep`, `sln_ca` and `gwf_ot` per step).
-
-"""
-    StepResult
-
-Per time step of a run: the `step` (`TimeStep`) and the `outer` result (`OuterResult`:
-convergence, outer and inner iterations).
-"""
-struct StepResult
-    step::TimeStep
-    outer::OuterResult
-end
+# `tdis_set_timestep`, `sln_ca` and `gwf_ot` per step), on the stepping API (src/stepping.jl).
 
 """
     RunResult
@@ -80,41 +69,18 @@ function run(
         sim::SimulationSpec; backend::Backend = CPU(), precision::Symbol = :auto, outdir::AbstractString = sim.simdir,
         closures = nothing, write_output::Bool = true,
     )
-    (length(sim.models) == 1 && isempty(sim.exchanges)) ||
-        throw(MF6UnsupportedError(sim.simdir, "unsupported: $(length(sim.models)) models and $(length(sim.exchanges)) exchanges (multi-model simulations arrive in Phase 3)"))
-    spec = only(sim.models)
-    ims = only(only(sim.solution_groups).solutions)
-    T, Ts, Tp = resolve_precision(backend, precision)
-    steps = time_steps(sim.tdis)
-    m = GwfModel(backend, T, spec, nper(sim.tdis))
-    ps = PicardSolver(m, PicardSettings(ims, T; closures); Ts, Tp)
-    acc = BudgetAccumulator(m)
-    out = write_output ? ModelOutput(m, sim.simdir, outdir) : nothing
-    results = StepResult[]
-    budgets = ModelBudget[]
-    allconv = true
+    s = initialize(sim; backend, precision, outdir, closures, write_output)
     try
-        isnothing(out) || _listing_header(out.listing, m, ps, T, Ts, Tp, backend)
-        for step in steps
-            step.kstp == 1 && apply_period!(m, step.kper)
-            start_timestep!(m, step.delt)
-            r = solve_timestep!(ps, m, step.kstp)
-            calc_flows!(m)
-            b = model_budget!(acc, m, step)
-            push!(results, StepResult(step, r))
-            push!(budgets, b)
-            allconv &= r.converged
-            isnothing(out) || _write_step(out, m, step, r, b, sim)
-            if !r.converged
-                sim.continue_on_nonconvergence || throw(ConvergenceError(step.kper, step.kstp, r.iterations))
-                @warn "Time step $(step.kstp) of stress period $(step.kper) did not converge ($(r.iterations) outer iterations); continuing (CONTINUE)"
-            end
+        while s.istep < length(s.steps)
+            update(s) || (r = last(s.results); throw(ConvergenceError(r.step.kper, r.step.kstp, r.outer.iterations)))
         end
     finally
-        isnothing(out) || close(out)
+        finalize(s)
     end
+    out = s.output
     paths = isnothing(out) ? ("", "", "") : (out.head_path, out.budget_path, out.listing_path)
-    return RunResult(m, T, Ts, Tp, results, budgets, absolute_heads(m), allconv, paths...)
+    allconv = all(r -> r.outer.converged, s.results)
+    return RunResult(s.model, s.T, s.Ts, s.Tp, s.results, s.budgets, absolute_heads(s.model), allconv, paths...)
 end
 
 function _listing_header(io::IO, m::GwfModel, ps::PicardSolver, T, Ts, Tp, backend)

@@ -71,6 +71,8 @@ include("output/listing.jl")
 include("output/oc.jl")
 
 # Running a simulation
+include("stepping.jl")
 include("run.jl")
+include("bmi.jl")
 
 end
