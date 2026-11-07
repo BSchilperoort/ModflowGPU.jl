@@ -83,13 +83,29 @@ it. Underscore-prefixed helpers are omitted.
 ## GWF engine
 
 - **gwf/offsets.jl**: heads as offsets from per-cell references (PLAN.md 3.7 rule 1).
-  `reference_heads`, `reference_differences`, `reference_difference` (device-safe).
-  Tests: npf.
+  `reference_heads`, `reference_differences`, `reference_difference` (device-safe),
+  `to_offsets` (Float64 head-like values → offsets, per node or per record). Tests: npf,
+  boundaries.
 - **gwf/npf.jl**: NPF, confined: saturated conductance per connection (NPF.f90). Device-safe
   `logmean`, `condmean`, `staggered_thkfrac`; host `hyeff` / `hy_eff` (anisotropic K),
   `NpfProperties` / `npf_properties`, `check_npf_options`, `calc_condsat`, `NpfSetup` /
   `npf_setup(::GwfSpec)`, device struct `NpfModel{T}`, `CCOND_*` averaging codes. Tests:
   npf (parity vs libmf6 CONDSAT).
+
+## Boundary packages
+
+- **boundaries/framework.jl**: boundary framework (PLAN.md 3.4; BoundaryPackage.f90
+  `bnd_rp`/`bnd_fc`/`bnd_cq`). `BoundaryKind{K}`, `BoundaryPackage{K,T}` (device
+  `nodelist`, `bound`, `hcof`, `rhs`, `simvals`, node→record map; host copies),
+  `bound_columns` / `head_columns` (per kind), `check_boundary_spec` (rejects WEL
+  AUTO_FLOW_REDUCE), `apply_period!` (period data, MULTIPLIER aux, head columns →
+  offsets, RCH highest active cell), `highest_active`, `boundary_ibound` (CHD → IBOUND
+  −1), `formulate!` / `formulate_record`, `add_to_system!`, `calc_simvals!`,
+  `boundary_kind`. Tests: boundaries.
+- **boundaries/chd.jl**: CHD (gwf-chd.f90; see `docs/mf6_notes.md`). `apply_chd_heads!`,
+  `calc_chd_rate!`. Tests: boundaries (parity vs MF6 CBC).
+- **boundaries/wel.jl**, **rch.jl**, **ghb.jl**: WEL, RCH (list and RCHA arrays, cell
+  area), GHB formulations (`formulate_record` methods). Tests: boundaries.
 
 ## MF6 output files (host)
 

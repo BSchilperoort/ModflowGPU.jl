@@ -51,6 +51,7 @@ const TEST_GROUPS = [
     "simulation_loader" => ["unit/simulation_loader_test.jl"],
     "connectivity" => ["unit/connectivity_test.jl", "parity/connectivity_test.jl"],
     "npf" => ["unit/npf_test.jl", "parity/npf_test.jl"],
+    "boundaries" => ["unit/boundaries_test.jl", "parity/boundaries_test.jl"],
 ]
 
 const SELECTED_GROUPS = let
