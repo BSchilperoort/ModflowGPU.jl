@@ -94,8 +94,8 @@ const BASE_SIM = Dict(
             INTERNAL
             0 1 1 1
             1 1 1 1
-            1 1 1 1
-            1 1 1 1
+            1 1 1 -1
+            2 1 1 1
             1 1 1 1
             1 1 1 1
         END griddata
@@ -141,7 +141,7 @@ const BASE_SIM = Dict(
           MAXBOUND 1
         END dimensions
         BEGIN period 2
-          2 2 2 PUMPING well1
+          2 2 2 -2.5 well1
         END period
         """,
     "gwf.wel.ts" => "BEGIN attributes\n  NAME pumping\n  METHOD stepwise\nEND attributes\nBEGIN timeseries\n  0.0 -1.0\nEND timeseries\n",
@@ -284,7 +284,7 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
             d = m.dis
             @test d isa DisSpec && (d.nlay, d.nrow, d.ncol) == (2, 3, 4)
             @test d.delr == fill(10.0, 4) && d.delc == [1.0, 2.0, 3.0] && size(d.top) == (4, 3) && size(d.botm) == (4, 3, 2)
-            @test d.botm[:, :, 1] == fill(20.0, 4, 3) && d.idomain[1, 1, 1] == 0 && sum(d.idomain) == 23
+            @test d.botm[:, :, 1] == fill(20.0, 4, 3) && d.idomain[1, 1, 1] == 0 && sum(d.idomain) == 22 && d.idomain[4, 3, 1] == -1 && d.idomain[1, 1, 2] == 2
             @test d.length_units === :meters && d.nogrb && d.xorigin == 100.0 && d.yorigin == 0.0
             @test nodes_user(d) == 24 && grid_dims(d).mshape == [2, 3, 4]
             @test m.npf.k == fill(5.0, 24) && m.npf.k33 == fill(0.5, 24) && isnothing(m.npf.k22) && m.npf.cell_averaging === :harmonic
@@ -301,7 +301,7 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
             wel = m.boundaries[1]
             @test wel.boundnames && wel.ts_files == ["gwf.wel.ts"] && wel.periods.iper == [2]
             p = wel.periods.data[1]
-            @test p.nodeu == Int32[12 + 4 + 2] && isnan(p.bound[1, 1]) && p.ts == [TsRef(1, 1, false, :PUMPING)] && p.boundname == ["WELL1"]
+            @test p.nodeu == Int32[12 + 4 + 2] && p.bound == fill(-2.5, 1, 1) && isempty(p.ts) && p.boundname == ["WELL1"]
             riv = m.boundaries[4]
             @test riv.auxnames == ["WIDTH", "MULT"] && riv.auxmultname == "MULT" && riv.auxmultcol == 2 && riv.save_flows
             @test riv.periods.data[1].bound == reshape([45.0, 100.0, 40.0], 3, 1) && riv.periods.data[1].auxvar == reshape([5.0, 0.5], 2, 1)
@@ -334,6 +334,8 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
         cases = [
             # MF6 cellid_to_nlist: list cellid in an inactive cell (IDOMAIN 0).
             (edit("gwf.chd", "1 1 2 40.0", "1 1 1 40.0"), "Cell is outside active grid domain: (1,1,1)", "gwf.chd", 5),
+            # IDOMAIN -1 (vertical pass-through) is not an active cell either.
+            (edit("gwf.chd", "1 1 2 40.0", "1 3 4 40.0"), "Cell is outside active grid domain: (1,3,4)", "gwf.chd", 5),
             (Dict{String, Any}("gwf.drn" => nothing), "DRN6 input file not found", "gwf.drn", 0),
             (edit("gwf.nam", "  IC6  gwf.ic\n", ""), "Initial Conditions (IC6) package not specified.", "gwf.nam", 0),
             (edit("gwf.nam", "  DIS6  gwf.dis  dis\n", ""), "Discretization package not specified for model \"GWF\".", "gwf.nam", 0),
@@ -400,7 +402,11 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
                 (edit("gwf.oc", "BUDGET FILEOUT gwf.cbc", "BUDGETCSV FILEOUT gwf.csv"), "unsupported: OC6 option BUDGETCSV", s -> s.models[1].oc.budgetcsv_file == "gwf.csv"),
                 (edit("gwf.wel", "BOUNDNAMES", "BOUNDNAMES\n  AUTO_FLOW_REDUCE 0.1"), "unsupported: WEL6 option AUTO_FLOW_REDUCE (package 'WEL_A'", s -> s.models[1].boundaries[1].auto_flow_reduce == 0.1),
                 (edit("sim.ims", "RELAXATION_FACTOR 0.97", "SCALING_METHOD L2NORM"), "unsupported: IMS6 SCALING_METHOD L2NORM", s -> s.solution_groups[1].solutions[1].scaling_method === :l2norm),
-                (edit("sim.ims", "OUTER_MAXIMUM 20", "BACKTRACKING_NUMBER 5"), "unsupported: IMS6 option BACKTRACKING_NUMBER", s -> s.solution_groups[1].solutions[1].backtracking_number == 5),
+                (edit("sim.ims", "OUTER_MAXIMUM 20", "BACKTRACKING_NUMBER 5"), nothing, s -> s.solution_groups[1].solutions[1].backtracking_number == 5),
+                (
+                    edit("gwf.wel", "2 2 2 -2.5 well1", "2 2 2 PUMPING well1"), "unsupported: time-series values (TS6) in package 'WEL_A'",
+                    s -> s.models[1].boundaries[1].periods.data[1].ts == [TsRef(1, 1, false, :PUMPING)] && isnan(s.models[1].boundaries[1].periods.data[1].bound[1, 1]),
+                ),
                 (edit("sim.tdis", "TIME_UNITS  days", "TIME_UNITS  days\n  START_DATE_TIME 2020-01-01"), nothing, s -> s.tdis.start_date_time == "2020-01-01"),
             )
             if isnothing(msg)
@@ -430,7 +436,7 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
     else
         exdir = joinpath(REFERENCE_DIR, "mf6examples")
         @testset "Tier 0-2 examples load (strict)" begin
-            for name in ("ex-gwf-toth", "ex-gwf-hanic", "ex-gwf-hanir", "ex-gwf-hwell-a", "ex-gwf-fhb")
+            for name in ("ex-gwf-toth", "ex-gwf-hanic", "ex-gwf-hanir", "ex-gwf-hwell-a")
                 @test load_simulation(examples[name]) isa SimulationSpec
             end
             # Spot checks against the input files.
@@ -442,7 +448,10 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
             npf = s.models[1].npf
             @test npf.k22 == fill(0.01, nodes_user(s.models[1].dis)) && npf.angle1 == zeros(nodes_user(s.models[1].dis))
             @test isnothing(npf.k33) && npf.save_specific_discharge
-            s = load_simulation(examples["ex-gwf-fhb"])
+            # fhb uses TS6 values: strict loading waits for T6.3.
+            e = unsupported_error_of(() -> load_simulation(examples["ex-gwf-fhb"]))
+            @test startswith(e.msg, "unsupported: time-series values (TS6) in package 'WEL'")
+            s = load_simulation(examples["ex-gwf-fhb"]; strict = false)
             @test s.tdis.perlen == [400.0, 200.0, 400.0] && s.tdis.nstp == Int32[10, 4, 6] && s.tdis.time_units === :days
             m = s.models[1]
             @test [b.name for b in m.boundaries] == ["WEL", "CHD"]
@@ -483,6 +492,7 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
                 "ex-gwf-maw-p03c" => "convertible cells", "ex-gwf-hanix" => "NPF6 option XT3D",
                 "ex-gwf-whirl" => "NPF6 option XT3D", "ex-gwf-rad-disu" => "DISU6 discretization",
                 "ex-gwf-spbc" => "GWF6-GWF6 exchange", "ex-gwf-lgrv-lgr" => "more than one GWF6 model",
+                "ex-gwf-fhb" => "time-series values (TS6)",
             )
             for name in ("bcf2ss-p02a", "bump-p01a", "bump-p01c", "capture", "nwt-p02a", "nwt-p03a", "nwt-p03b", "zaidel")
                 expected["ex-gwf-$name"] = "NEWTON"
@@ -500,7 +510,7 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
                         @test startswith(e.msg, "unsupported: " * expected[name])
                     else
                         # Tier 0-2 without higher features, and the confined Tier 3 size tests.
-                        @test name in ("ex-gwf-toth", "ex-gwf-hanic", "ex-gwf-hanir", "ex-gwf-hwell-a", "ex-gwf-fhb", "ex-gwf-lgrv-gc", "ex-gwf-lgrv-gr")
+                        @test name in ("ex-gwf-toth", "ex-gwf-hanic", "ex-gwf-hanir", "ex-gwf-hwell-a", "ex-gwf-lgrv-gc", "ex-gwf-lgrv-gr")
                         @test load_simulation(simdir) isa SimulationSpec
                     end
                 end

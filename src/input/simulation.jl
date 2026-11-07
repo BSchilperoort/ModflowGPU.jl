@@ -42,7 +42,11 @@
 # Differences from MF6 (documented):
 # - Grid checks done at setup in MF6 (cell thickness, active nodes, DISU symmetry) are
 #   left to T2.1; missing DELR/DELC/TOP/BOTM (DIS), TOP/BOTM (DISV) or TOP/BOT/AREA
-#   (DISU) arrays are an error here (MF6 would use defaults).
+#   (DISU) arrays are an error here (MF6 does not check that they were given and would
+#   run with unset values). Value checks of NPF arrays (K <= 0, ...) are done by MF6 in
+#   `npf_ar`/`preprocess_input` and are deferred to T2.2.
+# - READARRAYGRID input (CHDG, WELG, ...) is rejected also with `strict = false`: there is
+#   no period-data reader for it yet (an explicit exception to the strict/non-strict rule).
 # - NPF option combinations rejected in `npf_ar` (NEWTON with PERCHED, XT3D with
 #   ALTERNATIVE_CELL_AVERAGING, ...) are not checked here (T2.2/T6.x).
 # - File references (TS6, TAS6, OBS6) must exist; their contents are read by T6.3/T6.7.
@@ -348,7 +352,7 @@ function _load_sto(ld::_Loader, e::PackageEntry, mname, dis::AbstractDisSpec, np
     ss = vec(_required(arrays, "ss", f.path))
     sy = _opt_array(arrays, "sy")
     act = _active(dis)
-    isconv = any(!=(0), iconvert)  # MF6 checks all (reduced) nodes
+    isconv = any(i -> act[i] && iconvert[i] != 0, eachindex(iconvert))  # MF6 checks reduced nodes
     (isconv && isnothing(sy)) && throw(MF6InputError(f.path, 0, "Error in GRIDDATA block: SY not found."))
     _check_nonnegative(f, "SS", ss, dis)
     isnothing(sy) || _check_nonnegative(f, "SY", sy, dis)
@@ -439,6 +443,10 @@ function _load_boundary(ld::_Loader, e::PackageEntry, mname, dis::AbstractDisSpe
     else
         schema, periods = read_list_periods(f, g; simdir = ld.simdir)
         _check_active_list(f, periods, dis)
+    end
+    if ld.strict
+        hasts = readasarrays ? any(p -> !isempty(p.tas), periods.data) : any(p -> !isempty(p.ts), periods.data)
+        hasts && check_feature(f.path, :timeseries, "time-series values ($(readasarrays ? "TAS6" : "TS6")) in package '$(e.name)' ($ctx)")
     end
     return BoundarySpec{kind}(;
         name = e.name, readasarrays, auxnames, auxmultname, auxmultcol,

@@ -50,6 +50,9 @@ the models it solves (`models`, upper case, in `mfsim.nam` order).
   (`:none`, `:diagonal`, `:l2norm`), `reordering_method` (`:none`, `:rcm`, `:md`).
 - `given`: the keywords set in the file (upper case), to tell explicit values from
   COMPLEXITY defaults.
+
+The keyword constructor's defaults are those of COMPLEXITY SIMPLE: `ImsSpec(complexity =
+:complex)` does not apply the COMPLEX presets; start from `ims_defaults(:complex)`.
 """
 Base.@kwdef struct ImsSpec
     models::Vector{String} = String[]

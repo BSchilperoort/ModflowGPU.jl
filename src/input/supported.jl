@@ -17,9 +17,12 @@
 # and the coupling feature set of PLAN.md section 1.1). A few options only change what is
 # printed to the listing file (PRINT_INPUT, PRINT_FLOWS, PRINT_OPTION, HEAD PRINT_FORMAT,
 # MEMORY_PRINT_OPTION, ...): they are accepted and recorded in the spec, and T2.8
-# decides how much of that printing it reproduces. Time-series (TS6) and observation
-# (OBS6) files are accepted as references (fhb, Tier 2); evaluating them is T6.3 and
-# T6.7.
+# decides how much of that printing it reproduces. Output files are accepted and
+# owned by later cards: DIS GRB6 and OC HEAD/BUDGET FILEOUT by T2.8, OBS6 files by T6.7.
+# TS6 files are accepted as references, but values given as time-series names (`TsRef`
+# in list data, TIMEARRAYSERIES in array data) are the `:timeseries` feature: Phase 2
+# cannot evaluate them before T6.3, so strict loading rejects them (fhb loads only with
+# `strict = false`).
 
 """
     MF6UnsupportedError(file, msg)
@@ -88,6 +91,10 @@ const SUPPORTED_OPTIONS = Dict{Tuple{String, String}, Vector{String}}(
     ("sln-ims", "NONLINEAR") => [
         "OUTER_DVCLOSE", "OUTER_MAXIMUM", "UNDER_RELAXATION", "UNDER_RELAXATION_GAMMA",
         "UNDER_RELAXATION_THETA", "UNDER_RELAXATION_KAPPA", "UNDER_RELAXATION_MOMENTUM", "LINEAR_SOLVER",
+        # Backtracking: implemented in T6.2; T2.8 warns. Accepted like the implicit
+        # backtracking of COMPLEXITY COMPLEX (backtracking_number = 20).
+        "BACKTRACKING_NUMBER", "BACKTRACKING_TOLERANCE", "BACKTRACKING_REDUCTION_FACTOR",
+        "BACKTRACKING_RESIDUAL_LIMIT",
     ],
     ("sln-ims", "LINEAR") => [
         "INNER_MAXIMUM", "INNER_DVCLOSE", "INNER_RCLOSE", "LINEAR_ACCELERATION", "RELAXATION_FACTOR",
@@ -122,6 +129,8 @@ field of `validation/examples.toml`). Features not in the set are rejected:
 - `:newton`: NEWTON in the model name file (T6.2);
 - `:multi_model`: more than one GWF model, or more than one solution (T6.6);
 - `:exchange`: GWF6-GWF6 exchanges (T6.6);
+- `:timeseries`: list values given as TS6 time-series names, or TIMEARRAYSERIES arrays
+  (T6.3);
 
 TAS6, ATS6, TVK6, TVS6 and HPC6 files are options (`TAS6 FILEIN ...`) and are rejected
 through `SUPPORTED_OPTIONS`.
