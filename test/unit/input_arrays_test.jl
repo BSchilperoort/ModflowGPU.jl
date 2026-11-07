@@ -403,31 +403,6 @@ end
     end
 end
 
-"""
-    read_grb(path) -> Dict{String, Vector}
-
-The arrays of an MF6 binary grid file (`.grb`): four 50-character header lines (GRID,
-VERSION, NTXT, LENTXT), NTXT definitions of LENTXT characters (`NAME TYPE NDIM n dims`),
-then the data (INTEGER as Int32, DOUBLE as Float64; scalars as one-element vectors).
-"""
-function read_grb(path)
-    return open(path) do io
-        hdr = [String(read(io, 50)) for _ in 1:4]
-        ntxt = parse(Int, split(hdr[3])[2])
-        lentxt = parse(Int, split(hdr[4])[2])
-        defs = [split(String(read(io, lentxt))) for _ in 1:ntxt]
-        d = Dict{String, Vector}()
-        for df in defs
-            ndim = parse(Int, df[4])
-            n = ndim == 0 ? 1 : prod(parse.(Int, df[5:(4 + ndim)]))
-            v = Vector{df[2] == "INTEGER" ? Int32 : Float64}(undef, n)
-            read!(io, v)
-            d[df[1]] = v
-        end
-        return d
-    end
-end
-
 # The discretization arrays (TOP, BOTM/BOT, IDOMAIN, DISU IA/JA) and ICELLTYPE on active
 # cells agree with the binary grid file MF6 wrote in the reference run of every in-scope
 # example (reference/runs/<example>/raw, validation/run_reference.jl).
@@ -450,7 +425,7 @@ end
                 for (mname, files) in model_package_files(simdir)
                     m = models[only(filter(k -> lowercase(k) == lowercase(mname), keys(models)))]
                     haskey(m, "grb_file") || continue  # NOGRB
-                    G = read_grb(joinpath(rdir, m["grb_file"]))
+                    G = ModflowGPU.read_grb(joinpath(rdir, m["grb_file"]))
                     dis = only(filter(f -> f.dfn.subcomponent in ("DIS", "DISV", "DISU"), files))
                     g = grid_dims(dis)
                     A = read_array_block(find_block(dis, "GRIDDATA"), dis.dfn, g; simdir)
