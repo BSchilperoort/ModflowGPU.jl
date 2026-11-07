@@ -411,11 +411,11 @@ marked; their merge commits on `main` hold the card reports.
   - T2.6 Assembly and matrix oracle (done)
   - T2.7 Linear solvers (done)
   - T2.8 Picard loop, time stepping, budgets, output (done)
-- **Phase 3: GPU execution and Milestone A**: [docs/plan/phase3.md](docs/plan/phase3.md)
+- **Phase 3: GPU execution and Milestone A**: [docs/plan/phase3.md](docs/plan/phase3.md) (Milestone A reached 2026-11-07)
   - T3.1 Device execution (done)
   - T3.2 Builder API (done)
   - T3.3 Stepping API (done)
-  - T3.4 Synthetic coupling-model generator
+  - T3.4 Synthetic coupling-model generator (done)
 - **Phase 4: solver performance**: [docs/plan/phase4.md](docs/plan/phase4.md)
   - T4.1 Benchmark harness
   - T4.2 Chebyshev and multicolour smoothers

@@ -112,7 +112,7 @@ function initialize(
         closures = nothing, write_output::Bool = true,
     )
     (length(sim.models) == 1 && isempty(sim.exchanges)) ||
-        throw(MF6UnsupportedError(sim.simdir, "unsupported: $(length(sim.models)) models and $(length(sim.exchanges)) exchanges (multi-model simulations arrive in Phase 3)"))
+        throw(MF6UnsupportedError(sim.simdir, "unsupported: $(length(sim.models)) models and $(length(sim.exchanges)) exchanges (multi-model simulations arrive in T6.6)"))
     spec = only(sim.models)
     ims = only(only(sim.solution_groups).solutions)
     T, Ts, Tp = resolve_precision(backend, precision)
