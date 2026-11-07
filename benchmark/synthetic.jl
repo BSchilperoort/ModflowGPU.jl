@@ -346,15 +346,17 @@ module SyntheticModels
 
     """
         synthetic_simulation(preset = :tiny; seed, name = "syn", ims = synthetic_ims(),
-                             output = true, fields = nothing) -> SimulationSpec
+                             output = true, fields = nothing, ntransient = 12) -> SimulationSpec
 
     The synthetic coupling-like model of `preset` as a `SimulationSpec` (builder API). `output`
     adds OC with SAVE HEAD/BUDGET ALL (`<name>.hds`, `<name>.cbc`). Pass `fields` (from
-    `synthetic_fields`) to reuse them.
+    `synthetic_fields`) to reuse them. `ntransient`: the number of daily transient periods
+    after the steady state (the seasonal RCH and stage factors repeat every 12 periods; the
+    benchmark, benchmark/run.jl, uses 30).
     """
     function synthetic_simulation(
             preset = :tiny; seed::UInt64 = DEFAULT_SEED, name::AbstractString = "syn", ims = synthetic_ims(),
-            output::Bool = true, fields = nothing,
+            output::Bool = true, fields = nothing, ntransient::Integer = NPER_TRANSIENT,
         )
         p = _preset(preset)
         p.buildable || throw(ArgumentError("preset $(preset) is not built in memory (use estimate_device_bytes)"))
@@ -375,7 +377,8 @@ module SyntheticModels
         isriv = [f.acc[c] >= RIVER_ACCUMULATION for c in land]
         riv = land[isriv]
         drn = land[.!isriv]
-        nper = 1 + NPER_TRANSIENT
+        ntransient >= 1 || throw(ArgumentError("ntransient must be at least 1"))
+        nper = 1 + ntransient
         # CHD: sea level in both layers of the rim.
         chd = build_boundary(:CHD, dis; name = "chd", save_flows = true, periods = [1 => (; cells = [rim; rim .+ Int32(ncpl)], values = zeros(2length(rim)))])
         # RIV: width 2√acc m (5–500), conductance width × 1.5 cellsize / 1 d; bed 1 + ln(acc)/2 m

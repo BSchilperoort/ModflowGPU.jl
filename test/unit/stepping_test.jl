@@ -172,3 +172,39 @@ _budget_rates(b) = [(t.name, t.package, t.rate_in, t.rate_out, t.cum_in, t.cum_o
         end
     end
 end
+
+# Section timer (T4.1): `@timed_section` hooks are called in nested pairs when a timer is
+# installed, and change nothing in the results.
+mutable struct _CountingTimer
+    stack::Vector{Symbol}
+    counts::Dict{Symbol, Int}
+end
+ModflowGPU.section_begin(t::_CountingTimer, name::Symbol) = push!(t.stack, name)
+function ModflowGPU.section_end(t::_CountingTimer, name::Symbol)
+    pop!(t.stack) === name || error("unbalanced section $name")
+    t.counts[name] = get(t.counts, name, 0) + 1
+    return nothing
+end
+
+@testset "section timer" begin
+    kw = (; backend = TEST_BACKEND, precision = :double, write_output = false)
+    @test ModflowGPU.section_timer() === nothing
+    ref = ModflowGPU.run(STEPPING_MODEL; kw...)
+    t = _CountingTimer(Symbol[], Dict{Symbol, Int}())
+    prev = ModflowGPU.set_section_timer!(t)
+    r = try
+        ModflowGPU.run(STEPPING_MODEL; kw...)
+    finally
+        ModflowGPU.set_section_timer!(prev)
+    end
+    @test ModflowGPU.section_timer() === nothing
+    @test isempty(t.stack)
+    @test r.heads == ref.heads
+    nouter = sum(s -> s.outer.iterations, r.steps)
+    ninner = sum(s -> s.outer.inner, r.steps)
+    @test t.counts[:assembly] == nouter
+    @test t.counts[:linear_solve] == nouter
+    @test t.counts[:spmv_dot] >= ninner
+    @test t.counts[:budget] == length(r.steps)
+    @test all(k -> haskey(t.counts, k), (:precond_setup, :update_reduce, :vector_update, :outer_reduction, :period_data, :flows))
+end

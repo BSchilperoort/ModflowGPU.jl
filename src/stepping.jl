@@ -146,7 +146,7 @@ function prepare_time_step(s::Simulation, dt::Real = 0.0)
     _push_mirrors!(s)
     s.istep += 1
     step = s.steps[s.istep]
-    step.kstp == 1 && apply_period!(s.model, step.kper)
+    step.kstp == 1 && @timed_section :period_data apply_period!(s.model, step.kper)
     s.stage = :prepared_time_step
     _pull_mirrors!(s)
     return s
@@ -164,7 +164,7 @@ function prepare_solve(s::Simulation, isol::Integer = 1)
     _check_solution(isol)
     _check_stage(s, :prepare_solve, :prepared_time_step)
     _push_mirrors!(s)
-    start_timestep!(s.model, s.steps[s.istep].delt)
+    @timed_section :start_timestep start_timestep!(s.model, s.steps[s.istep].delt)
     s.outer = OuterState(s.solver)
     s.stage = :prepared_solve
     _pull_mirrors!(s)
@@ -196,8 +196,8 @@ function finalize_solve(s::Simulation, isol::Integer = 1)
     _check_stage(s, :finalize_solve, :solving, :prepared_solve)
     m = s.model
     step = s.steps[s.istep]
-    calc_flows!(m)
-    b = model_budget!(s.acc, m, step)
+    @timed_section :flows calc_flows!(m)
+    b = @timed_section :budget model_budget!(s.acc, m, step)
     push!(s.results, StepResult(step, OuterResult(s.outer)))
     push!(s.budgets, b)
     s.stage = :finalized_solve
@@ -216,7 +216,7 @@ CONTINUE option (libmf6 returns a failure status; `ModflowGPU.run` throws a
 function finalize_time_step(s::Simulation)
     _check_stage(s, :finalize_time_step, :finalized_solve)
     r = last(s.results)
-    isnothing(s.output) || _write_step(s.output, s.model, r.step, r.outer, last(s.budgets), s.spec)
+    isnothing(s.output) || @timed_section :output _write_step(s.output, s.model, r.step, r.outer, last(s.budgets), s.spec)
     s.stage = :finalized_time_step
     ok = r.outer.converged || s.spec.continue_on_nonconvergence
     if !r.outer.converged && s.spec.continue_on_nonconvergence
@@ -458,6 +458,12 @@ function set_value(s::Simulation, address::AbstractString, values::AbstractArray
 end
 
 function _push_mirrors!(s::Simulation)
+    isempty(s.mirrors) && return nothing
+    @timed_section :mirrors _push_mirrors_all!(s)
+    return nothing
+end
+
+function _push_mirrors_all!(s::Simulation)
     for mir in values(s.mirrors)
         isnothing(mir.var.set) && continue
         isequal(mir.host, mir.synced) && continue
@@ -470,6 +476,12 @@ end
 # `lost = true` (finalize_solve): warn about writes into a writable mirror since
 # `prepare_solve`, which the refresh discards (they are not sent during the outer iterations).
 function _pull_mirrors!(s::Simulation; lost::Bool = false)
+    isempty(s.mirrors) && return nothing
+    @timed_section :mirrors _pull_mirrors_all!(s, lost)
+    return nothing
+end
+
+function _pull_mirrors_all!(s::Simulation, lost::Bool)
     for (key, mir) in s.mirrors
         lost && !isnothing(mir.var.set) && !isequal(mir.host, mir.synced) &&
             @warn "\"$key\" was written through get_value_ptr after prepare_solve; the write is discarded (write before prepare_solve, or use set_value)"

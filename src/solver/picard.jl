@@ -195,19 +195,19 @@ function outer_iteration!(state::OuterState, ps::PicardSolver, m::GwfModel{T}, k
     n = Int(m.conn.nodes)
     it = state.kiter += 1
     floor_step = it == 1 && st.rclose_floor_factor > 0
-    formulate!(m; symmetric = st.symmetric, scale = floor_step ? ps.scale : nothing)
+    @timed_section :assembly formulate!(m; symmetric = st.symmetric, scale = floor_step ? ps.scale : nothing)
     if floor_step
         # Float32: the attainable residual, eps(T)·max Σ|terms| (rule 2 rounding).
-        smax = _mapreduce!(ps.reducer, backend, _maxscale_term, _MAXSCALE_OPS, n, ps.scale)[1]
+        smax = @timed_section :outer_reduction _mapreduce!(ps.reducer, backend, _maxscale_term, _MAXSCALE_OPS, n, ps.scale)[1]
         floor = st.rclose_floor_factor * eps(T) * abs(smax)
         rc = st.krylov.icnvgopt == 2 || st.krylov.icnvgopt == 4 ? floor * sqrt(n) : floor
         state.rclose = max(st.krylov.rclose, rc)
         k = state.krylov
         state.krylov = state.rclose == k.settings.rclose ? k : _with_settings(k, _with_rclose(st.krylov, state.rclose))
     end
-    res = solve!(m.δ, state.krylov, m.sys.amat, m.res; kstp)
+    res = @timed_section :linear_solve solve!(m.δ, state.krylov, m.sys.amat, m.res; kstp)
     state.inner += res.iterations
-    (hncg, hmax, _, _), lrch = _mapreduce_loc!(ps.reducer, backend, _dxmax_term, _DXMAX_OPS, n, m.δ, m.ibound, m.h)
+    (hncg, hmax, _, _), lrch = @timed_section :outer_reduction _mapreduce_loc!(ps.reducer, backend, _dxmax_term, _DXMAX_OPS, n, m.δ, m.ibound, m.h)
     state.hncg, state.lrch = hncg, lrch
     state.dvclose = max(st.dvclose, st.dvclose_head_factor * eps(T) * abs(hmax))
     if !isfinite(hncg) || !isfinite(hmax)
@@ -218,7 +218,7 @@ function outer_iteration!(state::OuterState, ps::PicardSolver, m::GwfModel{T}, k
         return false
     end
     state.converged = res.converged && abs(hncg) <= state.dvclose
-    underrelax!(ps.ur, m.h, m.δ, m.ibound, it, hncg; converged = state.converged)
+    @timed_section :underrelax underrelax!(ps.ur, m.h, m.δ, m.ibound, it, hncg; converged = state.converged)
     return state.converged
 end
 

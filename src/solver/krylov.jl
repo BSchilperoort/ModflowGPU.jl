@@ -716,11 +716,13 @@ function solve!(δ, solver::KrylovSolver{Ts}, amat, res; kstp::Integer = 1) wher
     n = Int(csr.nodes)
     cg = st.method === :cg
     scaling = Int32(st.scaling === :diagonal ? 1 : st.scaling === :l2norm ? 2 : 0)
-    _map!(backend, _setup_row, n, solver.rowfac, solver.colfac, amat, csr.ia, cg, scaling)
-    scaling == 2 && _map!(backend, _setup_l2col, n, solver.colfac, solver.rowfac, amat, csr.ia, csr.ja, csr.isym)
-    _map!(backend, _setup_jacobi, n, solver.minv, solver.rowfac, solver.colfac, amat, csr.ia)
+    @timed_section :precond_setup begin
+        _map!(backend, _setup_row, n, solver.rowfac, solver.colfac, amat, csr.ia, cg, scaling)
+        scaling == 2 && _map!(backend, _setup_l2col, n, solver.colfac, solver.rowfac, amat, csr.ia, csr.ja, csr.isym)
+        _map!(backend, _setup_jacobi, n, solver.minv, solver.rowfac, solver.colfac, amat, csr.ia)
+    end
     result = cg ? _solve_cg!(solver, amat, kstp, res) : _solve_bcgs!(solver, amat, kstp, res)
-    _map!(backend, _unscale, n, δ, solver.x, solver.colfac)
+    @timed_section :vector_update _map!(backend, _unscale, n, δ, solver.x, solver.colfac)
     return result
 end
 
@@ -737,7 +739,7 @@ function _solve_cg!(s::KrylovSolver{Ts}, amat, kstp, res) where {Ts}
     red = s.reducer
     n = Int(csr.nodes)
     epfact = ims_epfact(st.icnvgopt, kstp)
-    rr, rho, _, _ = _mapreduce!(red, backend, _cg_init, _SUM4, n, s.x, s.r, s.p, s.z, s.b0, res, s.rowfac, s.minv)
+    rr, rho, _, _ = @timed_section :update_reduce _mapreduce!(red, backend, _cg_init, _SUM4, n, s.x, s.r, s.p, s.z, s.b0, res, s.rowfac, s.minv)
     l2norm0 = sqrt(rr)
     icnvg = 0
     itmax = st.maxiter
@@ -752,10 +754,10 @@ function _solve_cg!(s::KrylovSolver{Ts}, amat, kstp, res) where {Ts}
     for iiter in 1:itmax
         innerit += 1
         beta = iiter == 1 ? 0.0 : rho / rho0
-        _map!(backend, _cg_direction, n, s.p, s.z, Ts(beta))
-        pq = _mapreduce!(red, backend, _apply_dot, _SUM4, n, s.q, s.p, s.p, amat, csr.ia, csr.ja, s.rowfac, s.colfac)[1]
+        @timed_section :vector_update _map!(backend, _cg_direction, n, s.p, s.z, Ts(beta))
+        pq = @timed_section :spmv_dot _mapreduce!(red, backend, _apply_dot, _SUM4, n, s.q, s.p, s.p, amat, csr.ia, csr.ja, s.rowfac, s.colfac)[1]
         alpha = _safe_div(rho, pq)
-        deltax, rmax, l2sq, rho_next = _mapreduce!(
+        deltax, rmax, l2sq, rho_next = @timed_section :update_reduce _mapreduce!(
             red, backend, _cg_update, _CG_UPDATE_OPS, n, s.x, s.r, s.z, s.p, s.q, s.minv, Ts(alpha),
         )
         l2norm = sqrt(l2sq)
@@ -765,7 +767,7 @@ function _solve_cg!(s::KrylovSolver{Ts}, amat, kstp, res) where {Ts}
         icnvg != 0 && break
         _is_close(rho, rho0) && break
         if st.north > 0 && mod(iiter + 1, st.north) == 0
-            rho_next = _mapreduce!(
+            rho_next = @timed_section :true_residual _mapreduce!(
                 red, backend, _cg_true_residual, _SUM4, n, s.r, s.z, s.x, s.b0, amat, csr.ia, csr.ja,
                 s.rowfac, s.colfac, s.minv,
             )[1]
@@ -784,7 +786,7 @@ function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res) where {Ts}
     red = s.reducer
     n = Int(csr.nodes)
     epfact = ims_epfact(st.icnvgopt, kstp)
-    rr, rho, _, _ = _mapreduce!(red, backend, _bcgs_init, _SUM4, n, s.x, s.r, s.dhat, s.p, s.v, s.b0, res, s.rowfac)
+    rr, rho, _, _ = @timed_section :update_reduce _mapreduce!(red, backend, _bcgs_init, _SUM4, n, s.x, s.r, s.dhat, s.p, s.v, s.b0, res, s.rowfac)
     l2norm0 = sqrt(rr)
     icnvg = 0
     itmax = st.maxiter
@@ -799,13 +801,13 @@ function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res) where {Ts}
     for iiter in 1:itmax
         innerit += 1
         beta = iiter == 1 ? 0.0 : (rho / rho0) * (alpha0 / omega0)
-        _map!(backend, _bcgs_direction, n, s.p, s.phat, s.r, s.v, s.minv, Ts(beta), Ts(omega0))
-        dv = _mapreduce!(red, backend, _apply_dot, _SUM4, n, s.v, s.phat, s.dhat, amat, csr.ia, csr.ja, s.rowfac, s.colfac)[1]
+        @timed_section :vector_update _map!(backend, _bcgs_direction, n, s.p, s.phat, s.r, s.v, s.minv, Ts(beta), Ts(omega0))
+        dv = @timed_section :spmv_dot _mapreduce!(red, backend, _apply_dot, _SUM4, n, s.v, s.phat, s.dhat, amat, csr.ia, csr.ja, s.rowfac, s.colfac)[1]
         alpha = _safe_div(rho, dv)
-        _map!(backend, _bcgs_half, n, s.q, s.qhat, s.r, s.v, s.minv, Ts(alpha))
-        tq, tt, _, _ = _mapreduce!(red, backend, _bcgs_apply_t, _SUM4, n, s.t, s.qhat, s.q, amat, csr.ia, csr.ja, s.rowfac, s.colfac)
+        @timed_section :vector_update _map!(backend, _bcgs_half, n, s.q, s.qhat, s.r, s.v, s.minv, Ts(alpha))
+        tq, tt, _, _ = @timed_section :spmv_dot _mapreduce!(red, backend, _bcgs_apply_t, _SUM4, n, s.t, s.qhat, s.q, amat, csr.ia, csr.ja, s.rowfac, s.colfac)
         omega = _safe_div(tq, tt)
-        deltax, rmax, l2sq, rho_next = _mapreduce!(
+        deltax, rmax, l2sq, rho_next = @timed_section :update_reduce _mapreduce!(
             red, backend, _bcgs_update, _CG_UPDATE_OPS, n, s.x, s.r, s.dhat, s.phat, s.qhat, s.q, s.t, s.rowfac,
             Ts(alpha), Ts(omega),
         )
@@ -816,7 +818,7 @@ function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res) where {Ts}
         icnvg != 0 && break
         (_is_close(rho, rho0) || _is_close(alpha, alpha0) || _is_close(omega, omega0)) && break
         if st.north > 0 && mod(iiter + 1, st.north) == 0
-            rho_next = _mapreduce!(
+            rho_next = @timed_section :true_residual _mapreduce!(
                 red, backend, _bcgs_true_residual, _SUM4, n, s.r, s.dhat, s.x, s.b0, amat, csr.ia, csr.ja,
                 s.rowfac, s.colfac,
             )[1]
