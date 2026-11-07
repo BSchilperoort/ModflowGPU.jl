@@ -101,8 +101,9 @@ end
 Append the cell-by-cell flows of the time step to the budget file in MF6's order and
 format (`gwf_ot_flow`): STO-SS (and STO-SY) as full arrays over the user nodes when STO
 saves flows, FLOW-JA-FACE (`nja` values) when NPF saves flows, then one IMETH 6 list per
-stress package that saves flows (`q` = `simvals`, the net rate into the model; user
-node numbers; with the package's auxiliary values; records without a cell left out). A package saves flows with its own
+stress package that saves flows (`q` = `simvals`, the net rate into the model; `id1` the
+user node, `id2` the record number; with the package's auxiliary values; records without
+a cell left out). A package saves flows with its own
 SAVE_FLOWS or the model's. DATA-SPDIS is not written (specific discharge arrives later).
 """
 function write_budget(o::ModelOutput, m::GwfModel, step::TimeStep)
@@ -127,7 +128,7 @@ function write_budget(o::ModelOutput, m::GwfModel, step::TimeStep)
         keep = [i for i in 1:pkg.nbound if pkg.nodelist_host[i] > 0]
         sim = Float64.(Array(pkg.simvals))[keep]
         nodeu = Int32[m.conn.nodeuser[pkg.nodelist_host[i]] for i in keep]
-        list = BudgetList(nodeu, copy(nodeu), sim, _record_aux(pkg)[:, keep])
+        list = BudgetList(nodeu, Int32.(keep), sim, _record_aux(pkg)[:, keep])
         write_budget_list(
             io, o.layout, budget_text(pkg), list; kw..., modelnam1 = name, paknam1 = name, modelnam2 = name,
             paknam2 = uppercase(pkg.spec.name), auxtxt = pkg.spec.auxnames,
