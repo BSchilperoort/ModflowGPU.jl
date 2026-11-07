@@ -8,13 +8,13 @@ const MO = ModflowGPU
 
 # A minimal labeled budget table as `budget_ot` (Budget.f90) prints it, with F17.4 and
 # 1PE17.4 values and two terms of the same name.
-function _listing_table(kstp, kper)
+function _listing_table(kstp, kper; zone = "ENTIRE MODEL")
     row(name, cum, rate, pkg) = " " * "   " * lpad(name, 16) * " =" * lpad(cum, 17) * " "^6 * lpad(name, 16) * " =" * lpad(rate, 17) * " "^5 * rpad(pkg, 33)
     return join(
         [
             "",
             "",
-            "  VOLUME BUDGET FOR ENTIRE MODEL AT END OF TIME STEP$(lpad(kstp, 5)), STRESS PERIOD$(lpad(kper, 4))",
+            "  VOLUME BUDGET FOR $zone AT END OF TIME STEP$(lpad(kstp, 5)), STRESS PERIOD$(lpad(kper, 4))",
             "  " * "-"^99,
             "",
             "     CUMULATIVE VOLUME      L**3       RATES FOR THIS TIME STEP      L**3/T          PACKAGE NAME    ",
@@ -122,6 +122,68 @@ end
     @test_throws ArgumentError MO.open_head_file(path; grid = :foo)
 end
 
+@testset "output: explicit layouts and sentinels" begin
+    dir = mktempdir()
+    # Layouts from specs and arrays
+    dis = MO.DisSpec(; nlay = 2, nrow = 3, ncol = 4, delr = ones(4), delc = ones(3), top = zeros(4, 3), botm = fill(-1.0, 4, 3, 2))
+    L = MO.OutputLayout(dis)
+    @test L == MO.OutputLayout(:dis, 4, 3, 2)
+    @test MO.nodesuser(L) == 24 && MO.budget_dims(L) == (4, 3, 2)
+    @test MO.OutputLayout(zeros(5, 3)) == MO.OutputLayout(:disv, 5, 1, 3)
+    @test MO.OutputLayout(zeros(7)) == MO.OutputLayout(:disu, 7, 1, 1)
+    @test_throws ArgumentError MO.OutputLayout(:disv, 5, 2, 3)
+    @test_throws ArgumentError MO.OutputLayout(:disu, 5, 1, 2)
+    @test_throws ArgumentError MO.OutputLayout(:foo, 5, 1, 1)
+    kw = (; kstp = 1, kper = 1, pertim = 1.0, totim = 1.0)
+    for_each_precision() do p
+        h = p.T.(reshape(1:24, 4, 3, 2)) ./ p.T(8)
+        # A flat user-node vector with an explicit layout gives the same bytes as the 3-D array.
+        a, b = joinpath(dir, "a.hds"), joinpath(dir, "b.hds")
+        open(io -> MO.write_head_record(io, L, vec(h); kw...), a, "w")
+        open(io -> MO.write_head_record(io, h; kw...), b, "w")
+        @test read(a) == read(b)
+        @test_throws DimensionMismatch MO.write_head_record(IOBuffer(), L, vec(h)[1:23]; kw...)
+        @test_throws DimensionMismatch MO.write_head_record(IOBuffer(), MO.OutputLayout(:disv, 12, 1, 3), h; kw...)
+        # Sentinels from masks are exact Float64 HNOFLO/HDRY, also for Float32 heads.
+        inactive = falses(24)
+        inactive[[1, 13]] .= true
+        dry = falses(24)
+        dry[5] = true
+        open(io -> MO.write_head_record(io, L, h; kw..., inactive, dry), a, "w")
+        r = vec(MO.read_head(MO.open_head_file(a), 1))
+        @test r[[1, 13]] == [MO.HNOFLO, MO.HNOFLO]
+        @test r[5] == MO.HDRY
+        keep = setdiff(1:24, [1, 5, 13])
+        @test r[keep] == Float64.(vec(h)[keep])
+        # Reduced values with nodeuser: missing user nodes are HNOFLO, dry by reduced index.
+        nodeuser = [2, 3, 7, 24]
+        open(io -> MO.write_head_record(io, L, p.T[1.5, 2.5, 3.5, 4.5]; kw..., nodeuser, dry = [false, true, false, false]), a, "w")
+        r = vec(MO.read_head(MO.open_head_file(a), 1))
+        @test r[nodeuser] == [1.5, MO.HDRY, 3.5, 4.5]
+        @test all(==(MO.HNOFLO), r[setdiff(1:24, nodeuser)])
+        @test_throws ArgumentError MO.head_output_values(L, [1.0]; nodeuser = [25])
+        @test_throws DimensionMismatch MO.head_output_values(L, [1.0, 2.0]; nodeuser = [1])
+    end
+    # Why the masks: a Float32 sentinel is not HNOFLO after conversion to Float64.
+    @test Float64(Float32(MO.HNOFLO)) != MO.HNOFLO
+    # Budget arrays and lists with a layout; names are upper-cased as in MF6.
+    a, b = joinpath(dir, "a.cbc"), joinpath(dir, "b.cbc")
+    bkw = (; kstp = 1, kper = 1, delt = 1.0, pertim = 1.0, totim = 1.0)
+    sto = reshape(collect(1.0:24.0), 4, 3, 2)
+    l = MO.BudgetList(Int32[3], Int32[1], [-2.0])
+    open(a, "w") do io
+        MO.write_budget_array(io, L, "STO-SS", vec(sto); bkw...)
+        MO.write_budget_list(io, L, "WEL", l; bkw..., modelnam1 = "model", paknam1 = "model", modelnam2 = "model", paknam2 = "wel-1")
+    end
+    open(b, "w") do io
+        MO.write_budget_array(io, "STO-SS", sto; bkw...)
+        MO.write_budget_list(io, "WEL", l; bkw..., dims = (4, 3, 2), modelnam1 = "MODEL", paknam1 = "MODEL", modelnam2 = "MODEL", paknam2 = "WEL-1")
+    end
+    @test read(a) == read(b)
+    r = MO.open_budget_file(a).records[2]
+    @test (r.modelnam1, r.paknam2, r.ndim1, r.ndim2, r.ndim3) == ("MODEL           ", "WEL-1           ", 4, 3, -2)
+end
+
 @testset "output: budget file round trip" begin
     dir = mktempdir()
     # (grid, grid dims, a STO array of the grid shape, nja)
@@ -184,7 +246,8 @@ end
     end
     # Argument checks and malformed files
     io = IOBuffer()
-    @test_throws ArgumentError MO.write_budget_array(io, "STO-SS", zeros(4); kstp = 1, kper = 1, delt = 1, pertim = 1, totim = 1, dims = (3, 1, 1))
+    @test_throws DimensionMismatch MO.write_budget_array(io, "STO-SS", zeros(4); kstp = 1, kper = 1, delt = 1, pertim = 1, totim = 1, dims = (3, 1, 1))
+    @test_throws DimensionMismatch MO.write_budget_array(io, MO.OutputLayout(:dis, 2, 2, 2), "STO-SS", zeros(4); kstp = 1, kper = 1, delt = 1, pertim = 1, totim = 1)
     l = MO.BudgetList(Int32[1], Int32[1], [1.0], zeros(2, 1))
     @test_throws ArgumentError MO.write_budget_list(io, "WEL", l; kstp = 1, kper = 1, delt = 1, pertim = 1, totim = 1, dims = (1, 1, 1), modelnam1 = "M", paknam1 = "M", modelnam2 = "M", paknam2 = "W", auxtxt = ["A"])
     path = joinpath(dir, "bad.cbc")
@@ -220,11 +283,12 @@ end
 
 @testset "output: listing budget tables" begin
     path = joinpath(mktempdir(), "model.lst")
-    write(path, "header text\n" * _listing_table(1, 1) * "\n other output\n" * _listing_table(3, 12))
+    write(path, "header text\n" * _listing_table(1, 1) * "\n other output\n" * _listing_table(1, 1; zone = "ZONE 7") * _listing_table(3, 12))
     tables = MO.read_listing_budgets(path)
-    @test length(tables) == 2
-    b = tables[2]
-    @test (b.title, b.kstp, b.kper) == ("VOLUME", 3, 12)
+    @test length(tables) == 3
+    @test tables[2].zone == "ZONE 7"
+    b = tables[3]
+    @test (b.title, b.zone, b.kstp, b.kper) == ("VOLUME", "ENTIRE MODEL", 3, 12)
     @test [t.name for t in b.terms] == ["STO-SS", "RCH", "RCH", "CHD"]
     @test [t.package for t in b.terms] == ["STORAGE", "RCH-1", "RCH-2", "CHD_0"]
     @test b.terms[1].cum_in == 1.25e-2 && b.terms[1].rate_in == 2.5e-3
@@ -235,11 +299,67 @@ end
     @test MO.listing_rates(path, "RCH") == [(15.0, 0.0), (15.0, 0.0)]
     @test MO.listing_rates(path, "rch-2") == [(5.0, 0.0), (5.0, 0.0)]
     @test MO.listing_rates(path, "CHD") == [(0.0, 15.0), (0.0, 15.0)]
+    @test MO.listing_rates(path, "CHD"; zone = "zone 7") == [(0.0, 15.0)]
+    @test isempty(MO.listing_rates(path, "CHD"; title = "MASS"))
     @test_throws ArgumentError MO.listing_rates(path, "WEL")
     @test MO.percent_discrepancy(15.0025, 15.0) ≈ 100 * 0.0025 / 15.00125
     @test MO.percent_discrepancy(0.0, 0.0) == 0.0
     write(path, replace(_listing_table(1, 1), "TOTAL OUT" => "TOTAL XXX"))
     @test_throws MO.MF6InputError MO.read_listing_budgets(path)
+end
+
+# Opt-in (MFGPU_FLOPY=1, needs `uv`; never in CI): flopy reads the files our writers produce.
+@testset "output: files readable by flopy" begin
+    if get(ENV, "MFGPU_FLOPY", "0") != "1"
+        @info "Skipping the flopy check: set MFGPU_FLOPY=1 to run it (needs uv; downloads flopy and numpy)"
+    elseif Sys.which("uv") === nothing
+        @info "Skipping the flopy check: uv not found on PATH"
+    else
+        dir = mktempdir()
+        L = MO.OutputLayout(:dis, 4, 3, 2)
+        heads = [collect(1.0:24.0) .+ k / 4 for k in 1:2]
+        inactive = falses(24)
+        inactive[1] = true
+        open(joinpath(dir, "t.hds"), "w") do io
+            for (k, t) in enumerate((1.0, 2.0))
+                MO.write_head_record(io, L, Float32.(heads[k]); kstp = 1, kper = k, pertim = 1.0, totim = t, inactive)
+            end
+        end
+        flowja = collect(range(-1.5, 2.25; length = 10))
+        sto = collect(range(0.0, 1.0; length = 24))
+        rch = MO.BudgetList(Int32[1, 2], Int32[1, 2], [0.5, 0.25], [1.0 2.0])
+        open(joinpath(dir, "t.cbc"), "w") do io
+            for (k, t) in enumerate((1.0, 2.0))
+                kw = (; kstp = 1, kper = k, delt = 1.0, pertim = 1.0, totim = t)
+                MO.write_budget_array(io, "FLOW-JA-FACE", flowja; kw...)
+                MO.write_budget_array(io, L, "STO-SS", sto; kw...)
+                MO.write_budget_list(io, L, "RCH", rch; kw..., modelnam1 = "M", paknam1 = "M", modelnam2 = "M", paknam2 = "RCH-1", auxtxt = ["MULT"])
+                MO.write_budget_list(io, L, "WEL", MO.BudgetList(Int32[], Int32[], Float64[]); kw..., modelnam1 = "M", paknam1 = "M", modelnam2 = "M", paknam2 = "WEL-1")
+            end
+        end
+        script = joinpath(@__DIR__, "..", "flopy_read.py")
+        out = read(`uv run --quiet --no-project --with flopy --with numpy python -I $script $dir`, String)
+        res = Dict{String, Vector{String}}()
+        for l in split(out, '\n'; keepempty = false)
+            w = split(l)
+            res[w[1]] = w[2:end]
+        end
+        num(k) = parse.(Float64, res[k])
+        @test num("hds_times") == [1.0, 2.0]
+        @test num("hds_kstpkper") == [0.0, 0.0, 0.0, 1.0]  # flopy's (kstp, kper) are 0-based
+        @test num("hds_shape") == [2.0, 3.0, 4.0]
+        expected = Float64.(Float32.(heads[2]))
+        expected[1] = MO.HNOFLO
+        @test num("hds_data") == expected
+        @test res["cbc_names"] == ["FLOW-JA-FACE", "STO-SS", "RCH", "WEL"]
+        @test num("cbc_times") == [1.0, 2.0]
+        @test num("rch_node") == [1.0, 2.0] && num("rch_node2") == [1.0, 2.0]
+        @test num("rch_q") == [0.5, 0.25] && num("rch_mult") == [1.0, 2.0]
+        @test num("wel_n") == [0.0]
+        @test num("fjf") == flowja
+        @test num("sto_shape") == [2.0, 3.0, 4.0]
+        @test num("sto") == sto
+    end
 end
 
 # ---------------------------------------------------------------------------------------
@@ -283,19 +403,17 @@ function _flowja_antisymmetric(flowja, ia, ja)
     return true
 end
 
-# Grid layout of a model from its binary grid file.
-function _grb_layout(g)
-    g.grid == "DIS" && return (:dis, (Int(g["NCOL"]), Int(g["NROW"]), Int(g["NLAY"])))
-    g.grid == "DISV" && return (:disv, (Int(g["NCPL"]), 1, Int(g["NLAY"])))
-    return (:disu, (Int(g["NODES"]), 1, 1))
-end
-
 # Check the head file, budget file and listing of one model of a reference run.
-function _check_reference_model(rdir, mname, m, nam, stats; rewrite)
+function _check_reference_model(rdir, mname, m, nam, stats; rewrite, spec)
     haskey(m, "grb_file") || return @info "No binary grid file for $mname in $rdir: skipped"
     g = MO.read_grb(joinpath(rdir, m["grb_file"]))
-    grid, dims = _grb_layout(g)
-    nodes = prod(dims)
+    layout = MO.OutputLayout(g)
+    grid, dims = layout.kind, MO.budget_dims(layout)
+    nodes = MO.nodesuser(layout)
+    if spec !== nothing
+        @test MO.OutputLayout(MO.model_spec(spec, mname).dis) == layout
+        stats[:spec_layouts] += 1
+    end
     idomain = haskey(g, "IDOMAIN") ? vec(g["IDOMAIN"]) : ones(Int32, nodes)
     @test lowercase(g.grid) == lowercase(m["grid"])
     @test length(idomain) == nodes
@@ -435,7 +553,7 @@ end
             name = run["name"]
             haskey(inventory, name) || continue
             ex = inventory[name]
-            stats = get!(() -> Dict(k => 0 for k in (:runs, :grb, :hds, :head_arrays, :cbc, :cbc_records, :tables, :matched_terms, :rewritten)), per_tier, ex["tier"])
+            stats = get!(() -> Dict(k => 0 for k in (:runs, :grb, :hds, :head_arrays, :cbc, :cbc_records, :tables, :matched_terms, :rewritten, :spec_layouts)), per_tier, ex["tier"])
             # Every mode run by validation/run_reference.jl (raw, tight, tight-relative).
             modes = isdir(joinpath(runs, name)) ? filter(d -> isdir(joinpath(runs, name, d)), readdir(joinpath(runs, name))) : String[]
             isempty(modes) && @info "No reference run of $name: skipped"
@@ -444,12 +562,24 @@ end
                 # Runs that stopped early (no convergence) are read too: MF6 writes whole
                 # records, so their files are complete up to the last saved time step.
                 @testset "$name/$mode" begin
+                    # The layout of the loaded DIS/DISV/DISU spec (from the unpatched
+                    # example input) equals the .grb layout, checked on the reference mode.
+                    spec = nothing
+                    exdir = joinpath(REFERENCE_DIR, "mf6examples", ex["path"])
+                    if mode == run["reference_mode"] && isdir(exdir)
+                        spec = try
+                            MO.load_simulation(exdir; strict = false)
+                        catch err
+                            @info "Simulation loader failed on $exdir: layout check skipped ($(sprint(showerror, err)))"
+                            nothing
+                        end
+                    end
                     sim = MO.read_input_file(joinpath(rdir, "mfsim.nam"); ftype = "SIM", component = "SIM", simdir = rdir)
                     for l in MO.find_block(sim, "MODELS").lines
                         MO.keyword(l, 1) == "GWF6" || continue
                         mname = String(l[3])
                         key = only(filter(k -> lowercase(k) == lowercase(mname), keys(ex["models"])))
-                        _check_reference_model(rdir, mname, ex["models"][key], String(l[2]), stats; rewrite = mode == run["reference_mode"])
+                        _check_reference_model(rdir, mname, ex["models"][key], String(l[2]), stats; rewrite = mode == run["reference_mode"], spec)
                     end
                 end
                 stats[:runs] += 1
@@ -459,7 +589,8 @@ end
             s = per_tier[tier]
             @info "Output files of the reference runs, tier $tier: $(s[:runs]) runs, $(s[:hds]) head files ($(s[:head_arrays]) arrays), " *
                 "$(s[:cbc]) budget files ($(s[:cbc_records]) records), $(s[:grb]) grid files, $(s[:tables]) listing budget tables, " *
-                "$(s[:matched_terms]) listing terms matched to budget records, $(s[:rewritten]) files rewritten byte-identically"
+                "$(s[:matched_terms]) listing terms matched to budget records, $(s[:rewritten]) files rewritten byte-identically, " *
+                "$(s[:spec_layouts]) spec layouts checked"
         end
     end
 end

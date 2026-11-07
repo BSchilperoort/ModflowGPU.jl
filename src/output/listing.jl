@@ -38,7 +38,8 @@ end
 """
     ListingBudget
 
-One budget table of a listing file: `title` (e.g. `"VOLUME"`), `kstp`, `kper` (0 if the
+One budget table of a listing file: `title` (e.g. `"VOLUME"`), `zone` (e.g.
+`"ENTIRE MODEL"`), `kstp`, `kper` (0 if the
 printed number overflowed its field), the `terms` ([`ListingBudgetTerm`](@ref)), the
 totals `total_cum_in`, `total_cum_out`, `total_rate_in`, `total_rate_out`, the
 differences `cum_in_minus_out`, `rate_in_minus_out` and the printed
@@ -46,6 +47,7 @@ differences `cum_in_minus_out`, `rate_in_minus_out` and the printed
 """
 struct ListingBudget
     title::String
+    zone::String
     kstp::Int
     kper::Int
     terms::Vector{ListingBudgetTerm}
@@ -106,6 +108,7 @@ function read_listing_budgets(path::AbstractString)
             continue
         end
         title = String(m[1])
+        zone = String(m[2])
         kstp = something(tryparse(Int, m[3]), 0)
         kper = something(tryparse(Int, m[4]), 0)
         start = i
@@ -148,23 +151,29 @@ function read_listing_budgets(path::AbstractString)
             push!(terms, ListingBudgetTerm(a[1], a[2], a[3], b[3], a[4], b[4]))
         end
         ti, to, d, p = tot["TOTAL IN"], tot["TOTAL OUT"], tot["IN - OUT"], tot["PERCENT DISCREPANCY"]
-        push!(out, ListingBudget(title, kstp, kper, terms, ti[1], to[1], ti[2], to[2], d[1], d[2], p[1], p[2]))
+        push!(out, ListingBudget(title, zone, kstp, kper, terms, ti[1], to[1], ti[2], to[2], d[1], d[2], p[1], p[2]))
         i += 1
     end
     return out
 end
 
 """
-    listing_rates(path, term) -> Vector{Tuple{Float64, Float64}}
+    listing_rates(path, term; title = "VOLUME", zone = "ENTIRE MODEL")
+        -> Vector{Tuple{Float64, Float64}}
 
 `(rate in, rate out)` of the budget term `term` in every budget table of the listing
-file (e.g. one per stress period with PRINT BUDGET LAST), summed over the rows whose name
-or package name equals `term` (case-insensitive). Ported from the `listing_rates` helper
+file with the given `title` and `zone` (by default the model's volume budget; e.g. one
+table per stress period with PRINT BUDGET LAST), summed over the rows whose name or
+package name equals `term` (case-insensitive). Ported from the `listing_rates` helper
 of ModflowCoupling's tests, which took the first matching row; summing gives the same
 for a single package and the model total for several packages of one type.
 """
-function listing_rates(path::AbstractString, term::AbstractString)
-    return map(read_listing_budgets(path)) do b
+function listing_rates(
+        path::AbstractString, term::AbstractString; title::AbstractString = "VOLUME",
+        zone::AbstractString = "ENTIRE MODEL",
+    )
+    tables = filter(b -> _text_eq(b.title, title) && _text_eq(b.zone, zone), read_listing_budgets(path))
+    return map(tables) do b
         rows = filter(t -> _text_eq(t.name, term) || _text_eq(t.package, term), b.terms)
         isempty(rows) && throw(ArgumentError("no budget term $term in the table of KSTP $(b.kstp), KPER $(b.kper) of $path"))
         (sum(t -> t.rate_in, rows), sum(t -> t.rate_out, rows))

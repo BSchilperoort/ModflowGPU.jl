@@ -31,6 +31,7 @@ include("input/simulation.jl")
 # MF6 output files (host only): heads, budgets, binary grid files, listing budgets
 include("output/binary.jl")
 include("output/grb.jl")
+include("output/layout.jl")
 include("output/hds.jl")
 include("output/cbc.jl")
 include("output/listing.jl")

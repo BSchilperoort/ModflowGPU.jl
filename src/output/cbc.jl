@@ -243,43 +243,63 @@ function _write_budget_header(io, text, kstp, kper, dims, imeth, delt, pertim, t
     return nothing
 end
 
-_grid_dims(values::AbstractArray) =
-    ndims(values) == 3 ? size(values) : ndims(values) == 2 ? (size(values, 1), 1, size(values, 2)) : (length(values), 1, 1)
-
 """
+    write_budget_array(io, layout::OutputLayout, text, values; kstp, kper, delt, pertim, totim)
     write_budget_array(io, text, values; kstp, kper, delt, pertim, totim, dims = ...)
 
-Append an IMETH 1 record (`ubdsv1`) to the budget file open as `io`: a full array over
-the user nodes (e.g. `STO-SS`, `STO-SY`) or over the connections (`FLOW-JA-FACE`, length
-NJA). `dims = (ndim1, ndim2, ndim3)` defaults to the shape of `values`: `(ncol, nrow,
-nlay)` for a 3-D (DIS) array, `(ncpl, 1, nlay)` for a 2-D (DISV) array and
-`(length, 1, 1)` for a vector (DISU arrays and FLOW-JA-FACE); NDIM3 is written negative
-(compact header). `text` is right-justified to 16 characters (a 16-character `text` is
-written unchanged).
+Append an IMETH 1 record (`ubdsv1`) to the budget file open as `io`.
+
+The first form writes an array over the user nodes of `layout` (e.g. `STO-SS`,
+`STO-SY`; any array of length [`nodesuser`](@ref)`(layout)` in user-node order) with the
+grid dimensions of the layout as NDIM1-3, as `record_array` does.
+
+The second form takes `dims = (ndim1, ndim2, ndim3)` explicitly. Use it for
+`FLOW-JA-FACE` (`record_connection_array`): a vector over the connections of the
+reduced (active-node) CSR matrix, i.e. the NJA of the binary grid file, with the default
+`dims = (nja, 1, 1)`. Without `dims`, they follow the shape of `values` (3-D: DIS, 2-D:
+`(ncpl, 1, nlay)`, vector: `(length, 1, 1)`), a convenience for arrays in MF6 memory
+shape only.
+
+NDIM3 is written negative (compact header). `text` is right-justified to 16 characters
+(a 16-character `text` is written unchanged). Values are written as Float64.
 """
 function write_budget_array(
-        io::IO, text::AbstractString, values::AbstractArray{<:Real}; kstp::Integer, kper::Integer,
-        delt::Real, pertim::Real, totim::Real, dims = _grid_dims(values),
+        io::IO, layout::OutputLayout, text::AbstractString, values::AbstractArray{<:Real}; kw...,
     )
-    prod(dims) == length(values) || throw(ArgumentError("dims $dims do not match the $(length(values)) values"))
+    _check_length(layout, length(values), "budget array $(strip(text))")
+    return write_budget_array(io, text, values; kw..., dims = budget_dims(layout))
+end
+
+function write_budget_array(
+        io::IO, text::AbstractString, values::AbstractArray{<:Real}; kstp::Integer, kper::Integer,
+        delt::Real, pertim::Real, totim::Real, dims = budget_dims(OutputLayout(values)),
+    )
+    prod(dims) == length(values) || throw(DimensionMismatch("dims $dims do not match the $(length(values)) values"))
     _write_budget_header(io, text, kstp, kper, dims, 1, delt, pertim, totim)
     _write_le(io, values isa Array{Float64} ? values : convert(Array{Float64}, values))
     return nothing
 end
 
 """
-    write_budget_list(io, text, list::BudgetList; kstp, kper, delt, pertim, totim, dims,
-                      modelnam1, paknam1, modelnam2, paknam2, auxtxt = String[])
+    write_budget_list(io, layout::OutputLayout, text, list::BudgetList; kstp, kper, delt,
+                      pertim, totim, modelnam1, paknam1, modelnam2, paknam2, auxtxt = String[])
+    write_budget_list(io, text, list::BudgetList; dims, kw...)
 
 Append an IMETH 6 record (`ubdsv06`, then `ubdsvd` per entry) to the budget file open as
-`io`. `dims = (ndim1, ndim2, ndim3)` are the model grid dimensions (`(ncol, nrow, nlay)`,
-`(ncpl, 1, nlay)` or `(nodes, 1, 1)`; NDIM3 is written negative). For a boundary
+`io`. The header holds the model grid dimensions, [`budget_dims`](@ref)`(layout)` or
+`dims = (ndim1, ndim2, ndim3)` (`(ncol, nrow, nlay)`, `(ncpl, 1, nlay)` or
+`(nodes, 1, 1)`; NDIM3 is written negative). For a boundary
 package MF6 writes `modelnam1 = paknam1 = modelnam2 =` the model name and `paknam2 =` the
 package name; for a GWF-GWF exchange `text = "FLOW-JA-FACE"`, `paknam1 = paknam2 =` the
 exchange name and `modelnam2` the other model. `auxtxt` has one name per row of
-`list.aux`. `text` is right-justified, names left-justified to 16 characters
-(16-character strings are written unchanged).
+`list.aux`. `text` is right-justified, names upper-cased (MF6 stores model and package
+names in upper case) and left-justified to 16 characters, auxiliary names left-justified
+as given (16-character strings are written unchanged).
 """
+function write_budget_list(io::IO, layout::OutputLayout, text::AbstractString, list::BudgetList; kw...)
+    return write_budget_list(io, text, list; kw..., dims = budget_dims(layout))
+end
+
 function write_budget_list(
         io::IO, text::AbstractString, list::BudgetList; kstp::Integer, kper::Integer,
         delt::Real, pertim::Real, totim::Real, dims, modelnam1::AbstractString,
@@ -292,7 +312,7 @@ function write_budget_list(
     size(list.aux) == (naux, n) || throw(ArgumentError("aux must be $naux × $n (one row per auxiliary name), got $(size(list.aux))"))
     _write_budget_header(io, text, kstp, kper, dims, 6, delt, pertim, totim)
     for s in (modelnam1, paknam1, modelnam2, paknam2)
-        write(io, pad_text(s; justify = :left))
+        write(io, pad_text(uppercase(s); justify = :left))
     end
     write(io, htol(Int32(naux + 1)))
     for a in auxtxt

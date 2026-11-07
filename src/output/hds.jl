@@ -177,33 +177,81 @@ end
 read_head(hf::HeadFile; kw...) = read_head(hf, find_head_step(hf; kw...))
 
 """
-    write_head_record(io, values; kstp, kper, pertim, totim, text = "HEAD")
+    head_output_values(layout, values; nodeuser = nothing, inactive = nothing, dry = nothing)
+        -> Vector{Float64}
+
+The Float64 array over the user nodes that MF6 writes for `values` (`record_array`):
+
+- without `nodeuser`, `values` has one value per user node (any array of length
+  [`nodesuser`](@ref)`(layout)`, in user-node order);
+- with `nodeuser`, `values` are the values of the reduced (active) nodes and
+  `nodeuser[i]` is the user node of reduced node `i`; all other user nodes get
+  [`HNOFLO`](@ref), as `dinact` in `record_array`;
+- `inactive` (a `Bool` mask over the user nodes) sets cells to [`HNOFLO`](@ref);
+- `dry` (a `Bool` mask indexed like `values`) sets cells to [`HDRY`](@ref).
+
+The sentinels are set after the conversion to Float64. Pass Float32 heads with masks
+rather than storing `1f30` in them: `Float64(1f30) != 1e30`, so a converted Float32
+sentinel is not recognised as HNOFLO by MF6-compatible readers.
+"""
+function head_output_values(
+        layout::OutputLayout, values::AbstractArray{<:Real}; nodeuser = nothing, inactive = nothing, dry = nothing,
+    )
+    nu = nodesuser(layout)
+    dry === nothing || length(dry) == length(values) ||
+        throw(DimensionMismatch("dry mask has $(length(dry)) values, values has $(length(values))"))
+    if nodeuser === nothing
+        _check_length(layout, length(values), "head array")
+        v = Vector{Float64}(undef, nu)
+        copyto!(v, vec(values))  # converts to Float64
+        dry === nothing || (v[vec(dry)] .= HDRY)
+    else
+        length(nodeuser) == length(values) ||
+            throw(DimensionMismatch("nodeuser has $(length(nodeuser)) entries, values has $(length(values))"))
+        v = fill(HNOFLO, nu)
+        for (i, n) in enumerate(nodeuser)
+            1 <= n <= nu || throw(ArgumentError("nodeuser[$i] = $n is not a user node of the layout (1:$nu)"))
+            v[n] = (dry !== nothing && dry[i]) ? HDRY : Float64(values[i])
+        end
+    end
+    if inactive !== nothing
+        length(inactive) == nu || throw(DimensionMismatch("inactive mask has $(length(inactive)) values, the layout has $nu user nodes"))
+        v[vec(inactive)] .= HNOFLO
+    end
+    return v
+end
+
+"""
+    write_head_record(io, layout::OutputLayout, values; kstp, kper, pertim, totim,
+                      text = "HEAD", nodeuser = nothing, inactive = nothing, dry = nothing)
+    write_head_record(io, values::AbstractArray; kw...)
 
 Append one saved array to the head file open as `io`, as MF6's `record_array` and
-`ulasav` write it. The layout follows the shape of `values`:
+`ulasav` write it, with the records of `layout` ([`OutputLayout`](@ref)):
 
-- `(ncol, nrow, nlay)` (DIS): one record per layer with M1 = ncol, M2 = nrow, M3 = layer;
-- `(ncpl, nlay)` (DISV): one record per layer with M1 = ncpl, M2 = 1, M3 = layer;
-- a vector of `nodes` (DISU): one record with M1 = nodes, M2 = 1, M3 = 1.
+- `:dis`: one record per layer with M1 = ncol, M2 = nrow, M3 = layer;
+- `:disv`: one record per layer with M1 = ncpl, M2 = 1, M3 = layer;
+- `:disu`: one record with M1 = nodes, M2 = 1, M3 = 1.
 
-`values` are written as Float64 in MF6's user-node order, with [`HNOFLO`](@ref) in
-cells outside the model and [`HDRY`](@ref) in dry cells (the caller fills these in).
-`text` is left-justified to 16 characters, as MF6's OC names are; a 16-character `text`
-is written unchanged.
+The values written are [`head_output_values`](@ref)`(layout, values; nodeuser, inactive,
+dry)`: Float64 over the user nodes, with [`HNOFLO`](@ref) and [`HDRY`](@ref) inserted
+from the masks (or already present in Float64 `values`). `text` is left-justified to 16
+characters, as MF6's OC names are; a 16-character `text` is written unchanged.
+
+The second form takes the layout from the shape of `values` (see
+[`OutputLayout`](@ref)`(values)`): a convenience for arrays in MF6 memory shape only,
+since a flat vector is written as DISU.
 """
 function write_head_record(
-        io::IO, values::AbstractArray{<:Real}; kstp::Integer, kper::Integer, pertim::Real, totim::Real,
-        text::AbstractString = "HEAD",
+        io::IO, layout::OutputLayout, values::AbstractArray{<:Real}; kstp::Integer, kper::Integer,
+        pertim::Real, totim::Real, text::AbstractString = "HEAD", nodeuser = nothing, inactive = nothing,
+        dry = nothing,
     )
-    N = ndims(values)
-    N <= 3 || throw(ArgumentError("head arrays have 1 (DISU), 2 (DISV) or 3 (DIS) dimensions, got $N"))
-    m1 = size(values, 1)
-    m2 = N == 3 ? size(values, 2) : 1
-    nlay = N == 1 ? 1 : size(values, N)
     t = pad_text(text; justify = :left)
-    v = values isa Array{Float64} ? vec(values) : convert(Vector{Float64}, vec(values))
+    v = head_output_values(layout, values; nodeuser, inactive, dry)
+    m1, m2 = layout.ncol, layout.nrow
     n = m1 * m2
-    for k in 1:nlay
+    for k in 1:layout.nlay
         write(io, htol(Int32(kstp)), htol(Int32(kper)), htol(Float64(pertim)), htol(Float64(totim)))
         write(io, t)
         write(io, htol(Int32(m1)), htol(Int32(m2)), htol(Int32(k)))
@@ -211,6 +259,8 @@ function write_head_record(
     end
     return nothing
 end
+
+write_head_record(io::IO, values::AbstractArray{<:Real}; kw...) = write_head_record(io, OutputLayout(values), values; kw...)
 
 """
     write_head_file(path, hf::HeadFile) -> path
@@ -222,10 +272,9 @@ function write_head_file(path::AbstractString, hf::HeadFile)
     open(path, "w") do io
         for (i, s) in enumerate(hf.steps)
             h = read_head(hf, i)
-            write_head_record(
-                io, reshape(h, Int(s.m1), Int(s.m2), Int(s.nlay));
-                s.kstp, s.kper, s.pertim, s.totim, s.text,
-            )
+            # The record layout; for a DISU file (one record) this is the same bytes.
+            layout = OutputLayout(:dis, s.m1, s.m2, s.nlay)
+            write_head_record(io, layout, h; s.kstp, s.kper, s.pertim, s.totim, s.text)
         end
     end
     return path
