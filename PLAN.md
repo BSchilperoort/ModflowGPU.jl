@@ -401,7 +401,7 @@ marked; their merge commits on `main` hold the card reports.
   - T2.1 Discretization and connectivity (done)
   - T2.2 NPF, confined (done)
   - T2.3 Boundary framework + CHD, WEL, RCH, GHB (done)
-  - T2.4 RIV, DRN, EVT
+  - T2.4 RIV, DRN, EVT (done)
   - T2.5 STO and IC (done)
   - T2.6 Assembly and matrix oracle
   - T2.7 Linear solvers

@@ -17,6 +17,9 @@ Size: S ≈ < 1 day of agent work, M ≈ 1–3 days, L ≈ > 3 days.
   (`apply_period!`); MF6 redoes it in every `rch_cf` from `nodesontop`, which matters once
   IBOUND changes (dry cells). Also port the GHB input checks (`ghb_ck`: negative cond or
   multiplier, bhead below the bottom of a convertible cell). WEL `AUTO_FLOW_REDUCE` too.
+- From the T2.4 review: RIV/DRN check negative conductance after the multiplier; MF6
+  checks raw cond and the multiplier separately. Port the cell-bottom `*_ck` checks for
+  convertible cells, and move EVT to the highest active cell when IBOUND changes.
 - Done when: Tier 3 examples pass parity.
 
 **T6.2 Newton–Raphson (L) ‖**
