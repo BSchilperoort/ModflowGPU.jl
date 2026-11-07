@@ -45,6 +45,9 @@ include("boundaries/chd.jl")
 include("boundaries/wel.jl")
 include("boundaries/rch.jl")
 include("boundaries/ghb.jl")
+include("boundaries/riv.jl")
+include("boundaries/drn.jl")
+include("boundaries/evt.jl")
 
 # MF6 output files (host only): heads, budgets, binary grid files, listing budgets
 include("output/binary.jl")

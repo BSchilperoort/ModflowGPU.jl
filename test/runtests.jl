@@ -54,6 +54,7 @@ const TEST_GROUPS = [
     "npf" => ["unit/npf_test.jl", "parity/npf_test.jl"],
     "boundaries" => ["unit/boundaries_test.jl", "parity/boundaries_test.jl"],
     "sto" => ["unit/sto_test.jl", "parity/sto_test.jl"],
+    "riv_drn_evt" => ["unit/riv_drn_evt_test.jl", "parity/riv_drn_evt_test.jl"],
 ]
 
 const SELECTED_GROUPS = let
