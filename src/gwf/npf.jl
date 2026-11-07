@@ -415,7 +415,7 @@ end
 
 The per-connection NPF arrays of a confined model in the engine precision `T`: `condsat`
 and `Δr` `(njas)`, converted from the Float64 host values of `setup` (one rounding each).
-Host arrays for now; T3.1 moves them to the device.
+Host arrays here; `NpfModel(backend, T, setup)` or `adapt` puts them on a device.
 """
 struct NpfModel{T <: AbstractFloat, V <: AbstractVector{T}}
     condsat::V

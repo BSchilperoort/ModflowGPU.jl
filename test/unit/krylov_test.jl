@@ -6,7 +6,7 @@
 using LinearAlgebra: LinearAlgebra, Diagonal, norm, dot
 using Random: Random, MersenneTwister
 using ModflowGPU: CsrStructure, KrylovSettings, KrylovSolver, KrylovResult, solve!, spmv!, ims_testcnvg, ims_epfact,
-    ims_preconditioner, ims_defaults, ImsSpec, device_dot, device_maxabs, build_connectivity, accumulation_type
+    ims_preconditioner, ims_defaults, ImsSpec, device_dot, device_maxabs, device_argmaxabs, build_connectivity, accumulation_type
 
 # --- matrices in MF6's CSR layout (diagonal first, then the sorted neighbours)
 
@@ -242,7 +242,25 @@ _tight(T, method; kw...) = KrylovSettings(;
                 tol = accumulation_type(TEST_BACKEND, p.Ts) == Float64 ? 1.0e-13 : 1.0e-5
                 @test abs(device_dot(dx, dy) - ref) <= tol * sum(abs.(Float64.(x) .* y))
                 @test device_maxabs(dx) == Float64(maximum(abs, x))
+                # argmax (sln_get_dxmax): first index of largest magnitude, signed value.
+                v, loc = device_argmaxabs(dx)
+                @test loc == argmax(abs.(x)) && v == Float64(x[loc])
             end
+            # Ties: the first index wins, also across work groups and with opposite signs;
+            # all zero gives index 0 (MF6's nb = 0).
+            n = 70_001
+            for (i1, i2) in ((70_000, 3), (300, 299), (5, 69_000), (513, 257))
+                x = zeros(p.Ts, n)
+                x[i1] = p.Ts(-2)
+                x[i2] = p.Ts(2)
+                x[i2 + 1] = p.Ts(1)
+                v, loc = device_argmaxabs(to_test_device(x))
+                @test loc == min(i1, i2) && v == Float64(x[min(i1, i2)])
+            end
+            @test device_argmaxabs(to_test_device(zeros(p.Ts, n))) == (0.0, 0)
+            x = zeros(p.Ts, n)
+            x[400] = p.Ts(NaN)
+            @test isnan(device_argmaxabs(to_test_device(x))[1])
         end
     end
 

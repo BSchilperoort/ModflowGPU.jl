@@ -155,6 +155,9 @@ end
             start_timestep!(m, st.delt)
             r = solve_timestep!(ps, m, st.kstp)
             @test r.converged
+            # hncg and its node lrch (sln_get_dxmax) from the last correction.
+            δa = Float64.(Array(m.δ)) .* (Array(m.ibound) .> 0)
+            @test r.lrch == argmax(abs.(δa)) && r.hncg == δa[r.lrch]
             calc_flows!(m)
             b = model_budget!(acc, m, st)
             # Host sums (Float64) of the device rates.

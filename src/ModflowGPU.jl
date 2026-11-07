@@ -8,7 +8,7 @@ module ModflowGPU
 
 using KernelAbstractions: KernelAbstractions, Backend, CPU, get_backend, @kernel, @index, @Const, @localmem, @synchronize
 using Printf: @sprintf, @printf
-using Adapt: Adapt
+using Adapt: Adapt, adapt
 
 include("backend_setup.jl")
 include("precision.jl")
