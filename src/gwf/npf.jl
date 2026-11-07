@@ -424,4 +424,17 @@ end
 NpfModel{T}(s::NpfSetup) where {T <: AbstractFloat} = NpfModel{T, Vector{T}}(T.(s.condsat), T.(s.Δr))
 NpfModel(::Type{T}, s::NpfSetup) where {T <: AbstractFloat} = NpfModel{T}(s)
 
+"""
+    NpfModel(backend, T, setup::NpfSetup)
+
+The same on `backend`: `condsat` and `Δr` rounded to `T` on the host, then copied.
+"""
+function NpfModel(backend::Backend, ::Type{T}, s::NpfSetup) where {T <: AbstractFloat}
+    h = NpfModel{T}(s)
+    dev(x) = (d = KernelAbstractions.allocate(backend, T, length(x)); copyto!(d, x); d)
+    return NpfModel(dev(h.condsat), dev(h.Δr))
+end
+
+Adapt.@adapt_structure NpfModel
+
 Base.eltype(::NpfModel{T}) where {T} = T
