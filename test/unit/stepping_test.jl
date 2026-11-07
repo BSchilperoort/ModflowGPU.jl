@@ -113,13 +113,15 @@ _budget_rates(b) = [(t.name, t.package, t.rate_in, t.rate_out, t.cum_in, t.cum_o
             @test ref2.heads != ref.heads
 
             s = initialize(STEPPING_MODEL; kw...)
-            out = _drive_like_coupling(s, function (ptr, step)
-                step.kper == 2 && step.kstp == 1 || return
-                ptr.riv_bound[1, :] .= stages
-                ptr.riv_bound[2, :] .= conds
-                set_value(s, "RDE/RCHA/BOUND", fill(rch, size(ptr.rch_bound)))
-                @test ptr.rch_bound == fill(rch, size(ptr.rch_bound))
-            end)
+            out = _drive_like_coupling(
+                s, function (ptr, step)
+                    step.kper == 2 && step.kstp == 1 || return
+                    ptr.riv_bound[1, :] .= stages
+                    ptr.riv_bound[2, :] .= conds
+                    set_value(s, "RDE/RCHA/BOUND", fill(rch, size(ptr.rch_bound)))
+                    @test ptr.rch_bound == fill(rch, size(ptr.rch_bound))
+                end
+            )
             @test last(out).head == ref2.heads
             @test [_budget_rates(b) for b in s.budgets] == [_budget_rates(b) for b in ref2.budgets]
             # Period 3 data replaces the set values (as in MF6); the multiplier applies to them.
