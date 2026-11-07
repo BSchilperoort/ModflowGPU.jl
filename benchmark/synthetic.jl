@@ -392,9 +392,11 @@ module SyntheticModels
             depth[r] = min(0.5 + 0.1 * sqrt(a), 5.0)
         end
         rivp = [kper => (; cells = riv, values = hcat(rbot .+ depth .* _stage_factor(kper), cond, rbot)) for kper in 1:nper]
-        # Starting heads: 0.5 m above the drain level on land (drains active from the start),
-        # the stage in river cells (a river cell below its bed infiltrates cond · depth, up to
-        # 3e7 m³/d, which sends the first Picard iteration kilometres up), 0 on the rim.
+        # Starting heads: 0.5 m above the drain level on land (drains active from the start:
+        # at the drain level every DRN is off in the first Picard iteration, and recharge on
+        # low-K land (T ~ 1 m²/d) sends it 255 km up on indus, in mf6 identically), the
+        # stage in river cells (a river cell below its bed infiltrates cond · depth, up to
+        # 3e7 m³/d: 290 km with both), 0 on the rim.
         strt = zeros(ncol, nrow, 2)
         for c in land
             strt[c] = strt[c + ncpl] = f.top[c] - f.ddrn[c] + 0.5

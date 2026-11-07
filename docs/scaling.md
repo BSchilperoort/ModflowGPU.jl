@@ -26,6 +26,12 @@ a 50–350 m aquifer, as ModflowCoupling), uniform DELR = DELC (9000 m at 5′, 
 - TDIS: one steady-state day, then 12 daily transient periods; RCH (×(1 + 0.8 sin)) and
   RIV stage (×(1 + 0.5 cos)) change every period.
 - Starting heads: 0.5 m above the drain level, the stage in river cells, 0 on the rim.
+  From the drain level (all DRN off in the first Picard iteration, MF6 drn_cf: no
+  conductance for h <= elevation) the first outer correction on indus is +254906 m
+  (+290441 m with river cells also at the drain level, i.e. below their beds): recharge
+  on low-K coastal land (T ~ 1 m²/d) with no active outlet. mf6 6.8.2 gives the same
+  corrections (to 7 digits) and converges (31 outer iterations in the steady state), so
+  this is the model, not the engine.
 - Deterministic: counter-based SplitMix64 hashes of (seed, field, octave, lattice point);
   no dependence on Random or the Julia version for the random numbers, no per-cell
   allocations.
