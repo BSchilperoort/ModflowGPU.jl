@@ -188,6 +188,62 @@ function _run_models(f)
     return nothing
 end
 
+# IMS variants of coupling_rde for the under-relaxation (sln_underrelax) and COMPLEXITY
+# presets: (name, OPTIONS lines, NONLINEAR lines). COMPLEX enables backtracking, which is
+# not implemented (T6.2): the run warns, and the converged heads must still agree.
+const _UR_VARIANTS = [
+    ("simple", "", "UNDER_RELAXATION SIMPLE\n  UNDER_RELAXATION_GAMMA 0.8"),
+    ("cooley", "", "UNDER_RELAXATION COOLEY\n  UNDER_RELAXATION_GAMMA 0.5"),
+    ("dbd", "", "UNDER_RELAXATION DBD\n  UNDER_RELAXATION_THETA 0.7\n  UNDER_RELAXATION_KAPPA 0.1\n  UNDER_RELAXATION_GAMMA 0.2\n  UNDER_RELAXATION_MOMENTUM 0.001"),
+    ("moderate", "COMPLEXITY MODERATE", ""),
+    ("complex", "COMPLEXITY COMPLEX", ""),
+]
+
+function _ur_ims(opts, nonlin)
+    return """
+    BEGIN options
+      PRINT_OPTION  SUMMARY
+      $opts
+    END options
+    BEGIN nonlinear
+      OUTER_DVCLOSE  1.0e-9
+      OUTER_MAXIMUM  500
+      $nonlin
+    END nonlinear
+    BEGIN linear
+      INNER_MAXIMUM  1000
+      INNER_DVCLOSE  1.0e-11
+      INNER_RCLOSE  1.0e-9
+      LINEAR_ACCELERATION  BICGSTAB
+    END linear
+    """
+end
+
+@testset "Run parity vs MF6: under-relaxation and COMPLEXITY on coupling_rde" begin
+    if !isfile(RUN_MF6)
+        @info "Skipping the under-relaxation run parity test: mf6 not found at $RUN_MF6"
+    else
+        for (name, opts, nonlin) in _UR_VARIANTS
+            mktempdir() do tmp
+                rundir = joinpath(tmp, "rde_$name")
+                cp(joinpath(@__DIR__, "..", "models", "coupling_rde"), rundir)
+                write(joinpath(rundir, "rde.ims"), _ur_ims(opts, nonlin))
+                out = read(Cmd(`$RUN_MF6`; dir = rundir), String)
+                @test occursin("Normal termination", out)
+                lst = read(joinpath(rundir, "mfsim.lst"), String)
+                if name == "complex"
+                    # Outer table rows "Backtracking <kiter> <flag> <count> ...": flag 1 = backtracked.
+                    bt = [parse(Int, x[1]) for x in eachmatch(r"\n\s*Backtracking\s+\d+\s+(\d+)", lst)]
+                    @info "coupling_rde, COMPLEXITY COMPLEX: MF6 backtracking checks $(length(bt)), backtracked in $(count(==(1), bt)) outer iteration(s); ModflowGPU does not backtrack (T6.2)"
+                end
+                @testset "coupling_rde, $name" begin
+                    _run_parity("coupling_rde ($name)", rundir)
+                end
+            end
+        end
+    end
+end
+
 @testset "Run parity vs MF6 (heads, budgets, listing)" begin
     nmodels = Ref(0)
     _run_models() do name, rundir
@@ -197,4 +253,43 @@ end
         end
     end
     @info "Run parity test: $(nmodels[]) model(s)"
+end
+
+# flopy reads our HDS and CBC files (opt-in: MFGPU_FLOPY=1, needs `uv`; like the flopy
+# testset of test/unit/output_test.jl). Every value flopy returns equals our readers'.
+if get(ENV, "MFGPU_FLOPY", "") == "1"
+    @testset "flopy reads ModflowGPU.run output (coupling_rde)" begin
+        mktempdir() do out
+            r = ModflowGPU.run(joinpath(@__DIR__, "..", "models", "coupling_rde"); backend = TEST_BACKEND, precision = :single, outdir = out)
+            script = joinpath(@__DIR__, "..", "flopy_run_read.py")
+            txt = read(`uv run --quiet --no-project --with flopy --with numpy python -I $script $(r.head_file) $(r.budget_file)`, String)
+            res = Dict{String, Vector{String}}()
+            for l in split(txt, '\n'; keepempty = false)
+                w = split(l)
+                res[w[1]] = w[2:end]
+            end
+            num(k) = parse.(Float64, res[k])
+            hf = open_head_file(r.head_file)
+            @test num("hds_times") == [s.totim for s in hf.steps]
+            @test num("hds_kstpkper") == Float64.(vcat([[s.kstp - 1, s.kper - 1] for s in hf.steps]...))
+            # flopy's (nlay, nrow, ncol) C-order array has our (ncol, nrow, nlay) memory order.
+            @test num("hds_last") == vec(read_head(hf, length(hf)))
+            bf = open_budget_file(r.budget_file)
+            last = bf.records[end]
+            names = unique(strip(x.text) for x in bf.records)
+            @test res["cbc_names"] == names
+            @test num("cbc_times") == unique(x.totim for x in bf.records)
+            for n in names
+                i = only(find_budget_records(bf; text = n, kstp = last.kstp, kper = last.kper))
+                v = read_budget(bf, i)
+                if v isa BudgetList
+                    @test num("cbc_$(n)_node") == Float64.(v.id1)
+                    @test num("cbc_$(n)_q") == v.q
+                else
+                    @test num("cbc_$n") == vec(v)
+                end
+            end
+            @info "flopy read ModflowGPU's HDS ($(length(hf)) steps) and CBC ($(length(bf)) records, $(join(names, ", "))) of coupling_rde"
+        end
+    end
 end
