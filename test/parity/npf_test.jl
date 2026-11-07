@@ -7,7 +7,7 @@
 # engine precision (`NpfModel{T}`) for every preset. libmf6 runs in a subprocess
 # (test/libmf6_oracle.jl); skips with a message when reference/ or the libmf6 environment is
 # missing.
-using ModflowGPU: GwfSpec, NpfModel, NpfSetup, npf_setup
+using ModflowGPU: GwfSpec, NpfModel, NpfSetup, npf_setup, load_simulation
 
 _max_rel_err(a, b) = maximum((abs(x - y) / max(abs(x), abs(y), floatmin(Float64)) for (x, y) in zip(a, b)); init = 0.0)
 

@@ -153,6 +153,15 @@ end
     strt = [105.0, 95.0, 85.0, 81.0, 60.0, 72.0]
     r = reference_heads(c, strt)
     @test r == [100.0, 95.0, 85.0, 82.0, 70.0, 72.0]
+    # Confined cells (ICELLTYPE 0) keep STRT (rule 1, revised after T2.6); the clamp only
+    # for convertible cells and for implausible STRT (more than max(zmax − zmin, 1000 m)
+    # outside the model's elevation range [70, 102]).
+    ict = Int32[0, 1, 0, 0, 0, 0]
+    @test reference_heads(c, strt; icelltype = ict) == [105.0, 95.0, 85.0, 81.0, 60.0, 72.0]
+    @test reference_heads(c, [1.0e30, 95.0, 85.0, -1.0e4, NaN, 72.0]; icelltype = ict) == [100.0, 95.0, 85.0, 82.0, 70.0, 72.0]
+    @test reference_heads(c, [1101.0, 95, 85, 81, 60, 72]; icelltype = ict)[1] == 1101.0
+    @test reference_heads(c, [1103.0, 95, 85, 81, 60, 72]; icelltype = ict)[1] == 100.0
+    @test_throws ArgumentError reference_heads(c, strt; icelltype = Int32[0])
     Δr = reference_differences(c, r)
     @test length(Δr) == c.njas
     for n in 1:c.nodes, ii in (c.ia[n] + 1):(c.ia[n + 1] - 1)
@@ -166,8 +175,9 @@ end
     @test reference_heads(c0, [1000.0, 93.5]) == [93.5]
     @test_throws ArgumentError reference_heads(c0, [93.5])
     # The setup carries them, and the precision conversion rounds once.
-    s = npf_setup(_npf(6), IcSpec(; strt), dis, c)
+    s = npf_setup(_npf(6; icelltype = ones(Int32, 6)), IcSpec(; strt), dis, c)
     @test s.r == r && s.Δr == Δr
+    @test npf_setup(_npf(6), IcSpec(; strt), dis, c).r == strt
     for_each_precision() do p
         npf = NpfModel{p.T}(s)
         @test npf isa NpfModel{p.T}

@@ -1,7 +1,8 @@
 # Reference heads and per-connection reference differences (PLAN.md section 3.7, rule 1).
 #
-# The device stores heads as offsets `h'_n = h_n − r_n` from a per-cell reference
-# `r_n = clamp(STRT_n, bot_n, top_n)`, computed here on the host in Float64. Connection
+# The device stores heads as offsets `h'_n = h_n − r_n` from a per-cell reference `r_n`
+# (STRT for confined cells, `clamp(STRT_n, bot_n, top_n)` for convertible cells),
+# computed here on the host in Float64. Connection
 # terms then read `C_nm·(h'_m − h'_n + Δr_nm)` with `Δr_nm = r_m − r_n`.
 #
 # Storage convention (PLAN.md T2.2, like `cl1`/`cl2` in src/discretization/connectivity.jl):
@@ -11,18 +12,56 @@
 # (`reference_difference`).
 
 """
-    reference_heads(conn::Connectivity, strt) -> Vector{Float64}
+    REFERENCE_FALLBACK_MIN_DISTANCE
 
-Per reduced node, the reference head `r_n = clamp(STRT_n, bot_n, top_n)` (PLAN.md section
-3.7, rule 1) in Float64. `strt` is the IC6 starting head by user node (`IcSpec.strt`).
+Smallest distance (m) that STRT of a confined cell may lie outside the model's elevation
+range before `reference_heads` falls back to the clamp (PLAN.md section 3.7, rule 1); see
+`reference_heads`.
 """
-function reference_heads(conn::Connectivity, strt::AbstractVector{<:Real})
+const REFERENCE_FALLBACK_MIN_DISTANCE = 1000.0
+
+"""
+    reference_heads(conn::Connectivity, strt; icelltype = nothing) -> Vector{Float64}
+
+Per reduced node, the reference head `r_n` (PLAN.md section 3.7, rule 1) in Float64.
+`strt` is the IC6 starting head by user node (`IcSpec.strt`), `icelltype` the NPF
+ICELLTYPE by reduced node (`NpfProperties.icelltype`; `nothing` treats every cell as
+convertible).
+
+- Convertible cells (ICELLTYPE ≠ 0): `r_n = clamp(STRT_n, bot_n, top_n)`.
+- Confined cells (ICELLTYPE 0): `r_n = STRT_n`, so the offsets stay as small as the head
+  changes during the run (the clamp gave offsets up to 10600 m on ex-gwf-toth). Fallback
+  to the clamp when STRT is implausible: not finite, or more than
+  `D = max(zmax − zmin, REFERENCE_FALLBACK_MIN_DISTANCE)` above the highest cell top
+  `zmax` or below the lowest cell bottom `zmin` of the model. Such values are sentinels
+  (1e30, −999 in a model at 2000 m), not heads; the clamp keeps their offsets bounded by
+  the distance to the cell and the result does not depend on `r`. The number of cells that
+  fall back is logged.
+"""
+function reference_heads(conn::Connectivity, strt::AbstractVector{<:Real}; icelltype::Union{Nothing, AbstractVector{<:Integer}} = nothing)
     length(strt) == conn.nodesuser ||
         throw(ArgumentError("reference_heads: length(strt) = $(length(strt)), expected $(conn.nodesuser) user nodes"))
+    isnothing(icelltype) || length(icelltype) == conn.nodes ||
+        throw(ArgumentError("reference_heads: length(icelltype) = $(length(icelltype)), expected $(conn.nodes) reduced nodes"))
     r = Vector{Float64}(undef, conn.nodes)
+    conn.nodes == 0 && return r
+    zmax = maximum(conn.top)
+    zmin = minimum(conn.bot)
+    d = max(zmax - zmin, REFERENCE_FALLBACK_MIN_DISTANCE)
+    nfallback = 0
     for n in 1:conn.nodes
-        r[n] = clamp(Float64(strt[conn.nodeuser[n]]), conn.bot[n], conn.top[n])
+        s = Float64(strt[conn.nodeuser[n]])
+        c = clamp(s, conn.bot[n], conn.top[n])
+        if isnothing(icelltype) || icelltype[n] != 0
+            r[n] = c
+        elseif isfinite(s) && zmin - d <= s <= zmax + d
+            r[n] = s
+        else
+            r[n] = isnan(s) ? conn.bot[n] : c
+            nfallback += 1
+        end
     end
+    nfallback > 0 && @info "reference_heads: STRT of $nfallback confined cell(s) is more than $d m outside the model's elevation range [$zmin, $zmax]; using clamp(STRT, bot, top) as their reference head"
     return r
 end
 

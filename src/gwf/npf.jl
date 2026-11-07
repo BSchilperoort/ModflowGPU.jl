@@ -380,7 +380,8 @@ Host-side (Float64) result of the NPF setup of one model (`npf_setup`):
 
 - `properties::NpfProperties` by reduced node;
 - `condsat` `(njas)`: saturated conductance per symmetric connection (`calc_condsat`);
-- `r` `(nodes)`: reference heads `clamp(STRT, bot, top)` (`reference_heads`);
+- `r` `(nodes)`: reference heads (`reference_heads` with the ICELLTYPE of `properties`:
+  STRT for confined cells, `clamp(STRT, bot, top)` for convertible cells);
 - `Δr` `(njas)`: `r[m] − r[n]` per symmetric connection with `n < m`
   (`reference_differences`; read a CSR entry with `reference_difference`).
 """
@@ -404,7 +405,7 @@ npf_setup(model::GwfSpec, conn::Connectivity = build_connectivity(model)) =
 
 function npf_setup(npf::NpfSpec, ic::IcSpec, dis::AbstractDisSpec, conn::Connectivity; newton::Bool = false)
     p = npf_properties(npf, dis, conn; newton)
-    r = reference_heads(conn, ic.strt)
+    r = reference_heads(conn, ic.strt; icelltype = p.icelltype)
     return NpfSetup(p, calc_condsat(p, conn), r, reference_differences(conn, r))
 end
 
@@ -431,8 +432,7 @@ The same on `backend`: `condsat` and `Δr` rounded to `T` on the host, then copi
 """
 function NpfModel(backend::Backend, ::Type{T}, s::NpfSetup) where {T <: AbstractFloat}
     h = NpfModel{T}(s)
-    dev(x) = (d = KernelAbstractions.allocate(backend, T, length(x)); copyto!(d, x); d)
-    return NpfModel(dev(h.condsat), dev(h.Δr))
+    return NpfModel(_device_copy(backend, h.condsat), _device_copy(backend, h.Δr))
 end
 
 Adapt.@adapt_structure NpfModel
