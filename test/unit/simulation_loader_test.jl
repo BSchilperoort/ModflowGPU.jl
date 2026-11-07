@@ -1,5 +1,4 @@
-# Simulation loader → SimulationSpec (T1.4). Uses `input_error_of` from
-# input_blocks_test.jl. The example tests skip when reference/ is missing.
+# Simulation loader → SimulationSpec (T1.4). The example tests skip when reference/ is missing.
 using ModflowGPU: load_simulation, SimulationSpec, GwfSpec, DisSpec, DisvSpec, DisuSpec, NpfSpec, StoSpec,
     IcSpec, OcSpec, BoundarySpec, boundary_kind, ImsSpec, ims_defaults, ExchangeSpec, TdisSpec, nper,
     model_spec, is_transient, MF6UnsupportedError, MF6InputError, read_options, read_input_file, find_block,
