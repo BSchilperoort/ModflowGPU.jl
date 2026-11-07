@@ -7,6 +7,7 @@ so it runs on the CPU and on any GPU backend with a package extension (see `ext/
 module ModflowGPU
 
 using KernelAbstractions: KernelAbstractions, Backend, CPU, get_backend
+using Printf: @sprintf
 
 include("backend_setup.jl")
 include("precision.jl")
@@ -27,6 +28,10 @@ include("spec/simulation.jl")
 
 # MF6 simulation loader (input files → SimulationSpec)
 include("input/simulation.jl")
+
+# Discretization and connectivity (host only)
+include("discretization/connectivity.jl")
+include("discretization/dis.jl")
 
 # MF6 output files (host only): heads, budgets, binary grid files, listing budgets
 include("output/binary.jl")

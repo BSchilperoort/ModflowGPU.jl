@@ -30,6 +30,7 @@ end
 
 include("testutils.jl")
 include("input_files.jl")
+include("libmf6_oracle.jl")
 
 @testset "ModflowGPU" begin
     include("unit/backend_test.jl")
@@ -42,6 +43,8 @@ include("input_files.jl")
     include("unit/input_lists_test.jl")
     include("unit/output_test.jl")
     include("unit/simulation_loader_test.jl")
+    include("unit/connectivity_test.jl")
+    include("parity/connectivity_test.jl")
     if !(TEST_BACKEND isa CPU)
         include("gpu/backend_gpu_test.jl")
     end
