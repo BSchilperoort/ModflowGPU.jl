@@ -1,5 +1,4 @@
-# MF6 list and period input (T1.3). Uses `write_input` from input_tokenizer_test.jl and
-# `input_error_of` from input_blocks_test.jl.
+# MF6 list and period input (T1.3).
 using ModflowGPU: MF6InputError, read_input_file, find_blocks, dis_dims, disv_dims, disu_dims,
     grid_dims, write_binary_array, DNODATA, ncelldim, user_node, cellid, valid_cellid,
     ListSchema, list_schema, list_column, package_options, PackageOptions, PeriodList, TsRef,

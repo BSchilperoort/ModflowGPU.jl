@@ -3,14 +3,6 @@ using ModflowGPU: MF6InputError, InputLine, is_comment_line, tokenize_line, read
     keyword, parse_double, parse_int, get_double, get_int, input_error, eachtoken, tokens, ntokens,
     token, each_double
 
-"Write `text` to `name` in `dir` and return the path."
-function write_input(dir, name, text)
-    path = joinpath(dir, name)
-    mkpath(dirname(path))
-    write(path, text)
-    return path
-end
-
 # Helpers to check that iterating over words and numbers does not allocate.
 function token_bytes(l)
     n = 0

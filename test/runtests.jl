@@ -3,6 +3,9 @@
 # By default everything runs on the CPU backend (this is what `Pkg.test()` and CI do).
 # Set MFGPU_TEST_BACKEND to run on a GPU backend as well; GPU tests run only locally:
 #   MFGPU_TEST_BACKEND=rocm julia --project=test test/runtests.jl
+# Set MFGPU_TEST_GROUPS to a comma-separated list of test groups (see TEST_GROUPS below) to
+# run only those; unset runs everything:
+#   MFGPU_TEST_GROUPS=connectivity,npf julia --project=test test/runtests.jl
 using Test
 using ModflowGPU
 using KernelAbstractions: KernelAbstractions, CPU
@@ -31,23 +34,45 @@ end
 include("testutils.jl")
 include("input_files.jl")
 include("libmf6_oracle.jl")
+include("grids.jl")
+
+# Test groups, in run order: group name => test files. A parity file shares the group
+# name of its unit counterpart. The helpers above are loaded regardless of selection.
+const TEST_GROUPS = [
+    "backend" => ["unit/backend_test.jl"],
+    "precision" => ["unit/precision_test.jl"],
+    "kernel" => ["unit/kernel_test.jl"],
+    "input_tokenizer" => ["unit/input_tokenizer_test.jl"],
+    "input_blocks" => ["unit/input_blocks_test.jl"],
+    "input_examples" => ["unit/input_examples_test.jl"],
+    "input_arrays" => ["unit/input_arrays_test.jl"],
+    "input_lists" => ["unit/input_lists_test.jl"],
+    "output" => ["unit/output_test.jl"],
+    "simulation_loader" => ["unit/simulation_loader_test.jl"],
+    "connectivity" => ["unit/connectivity_test.jl", "parity/connectivity_test.jl"],
+    "npf" => ["unit/npf_test.jl", "parity/npf_test.jl"],
+]
+
+const SELECTED_GROUPS = let
+    valid = first.(TEST_GROUPS)
+    env = strip(get(ENV, "MFGPU_TEST_GROUPS", ""))
+    selected = isempty(env) ? valid : [lowercase(strip(g)) for g in split(env, ',') if !isempty(strip(g))]
+    unknown = setdiff(selected, valid)
+    isempty(unknown) || error(
+        "Unknown MFGPU_TEST_GROUPS name(s): $(join(unknown, ", ")). Valid groups are: $(join(valid, ", "))",
+    )
+    selected
+end
+
+@info "Running test groups: $(join(SELECTED_GROUPS, ", "))"
 
 @testset "ModflowGPU" begin
-    include("unit/backend_test.jl")
-    include("unit/precision_test.jl")
-    include("unit/kernel_test.jl")
-    include("unit/input_tokenizer_test.jl")
-    include("unit/input_blocks_test.jl")
-    include("unit/input_examples_test.jl")
-    include("unit/input_arrays_test.jl")
-    include("unit/input_lists_test.jl")
-    include("unit/output_test.jl")
-    include("unit/simulation_loader_test.jl")
-    include("unit/connectivity_test.jl")
-    include("parity/connectivity_test.jl")
-    include("unit/npf_test.jl")
-    include("parity/npf_test.jl")
-    if !(TEST_BACKEND isa CPU)
+    for (group, files) in TEST_GROUPS
+        group in SELECTED_GROUPS || continue
+        foreach(include, files)
+    end
+    # The GPU backend tests belong to the "backend" group.
+    if !(TEST_BACKEND isa CPU) && "backend" in SELECTED_GROUPS
         include("gpu/backend_gpu_test.jl")
     end
 end

@@ -1,19 +1,7 @@
-# MF6 block parser and DFN schema (T1.1). Uses `write_input` from input_tokenizer_test.jl.
+# MF6 block parser and DFN schema (T1.1).
 using ModflowGPU: MF6InputError, InputFile, InputBlock, parse_blocks, read_input_file,
     find_block, find_blocks, block_number, keyword, DFN_DEFINITIONS, dfn_definition,
-    dfn_block, dfn_variable, dfn_name, dfn_tag
-
-"The `MF6InputError` thrown by `f()` (test fails if there is none)."
-function input_error_of(f)
-    try
-        f()
-    catch e
-        e isa MF6InputError && return e
-        rethrow()
-    end
-    @test false
-    return nothing
-end
+    dfn_block, dfn_variable, dfn_name, dfn_tag, tokens
 
 @testset "Block parser" begin
     @testset "blocks, suffixes, comments" begin
