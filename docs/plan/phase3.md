@@ -17,6 +17,10 @@ Size: S ≈ < 1 day of agent work, M ≈ 1–3 days, L ≈ > 3 days.
 - Add the kernel-hygiene test (section 3.7, rule 5): compile every kernel for
   `:single` on rocm, capture the device LLVM IR (`AMDGPU.@device_code_llvm` or
   GPUCompiler reflection), and fail on any `double`.
+  From the T2.7 review: the Krylov reductions accumulate in `Ta = Float64` by design
+  (rule 4). Exempt only `mapreduce_kernel!` and `finalize_reduction_kernel!` by name, and
+  also compile those two with `Ta = Float32` and require no `double`. T2.7 already has
+  device reductions in `src/solver/krylov.jl`; reuse them.
 - Done when: every Phase 2 parity test passes on rocm in both presets, rocm vs
   CPU agree within the section 4 backend tolerances, and the hygiene test passes.
 

@@ -409,7 +409,7 @@ marked; their merge commits on `main` hold the card reports.
   - T2.4 RIV, DRN, EVT (done)
   - T2.5 STO and IC (done)
   - T2.6 Assembly and matrix oracle (done)
-  - T2.7 Linear solvers
+  - T2.7 Linear solvers (done)
   - T2.8 Picard loop, time stepping, budgets, output
 - **Phase 3: GPU execution and Milestone A**: [docs/plan/phase3.md](docs/plan/phase3.md)
   - T3.1 Device execution
