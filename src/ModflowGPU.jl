@@ -34,6 +34,10 @@ include("input/simulation.jl")
 include("discretization/connectivity.jl")
 include("discretization/dis.jl")
 
+# In-memory model construction and the MF6 input writer (host, T3.2)
+include("builder.jl")
+include("mf6_writer.jl")
+
 # GWF engine setup (host, Float64)
 include("gwf/offsets.jl")
 include("gwf/npf.jl")

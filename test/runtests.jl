@@ -62,6 +62,7 @@ const TEST_GROUPS = [
     "krylov" => ["unit/krylov_test.jl"],
     "picard" => ["unit/picard_test.jl"],
     "run" => ["parity/run_test.jl"],
+    "builder" => ["unit/builder_test.jl"],
     # GPU only (skips with a message on other backends): no `double` in :single kernels.
     "kernel_hygiene" => ["gpu/kernel_hygiene_test.jl"],
 ]
