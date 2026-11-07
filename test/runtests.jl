@@ -39,6 +39,7 @@ include("input_files.jl")
 include("libmf6_oracle.jl")
 include("grids.jl")
 include("residual.jl")
+include("run_parity.jl")
 
 # Test groups, in run order: group name => test files. A parity file shares the group
 # name of its unit counterpart. The helpers above are loaded regardless of selection.
@@ -64,6 +65,7 @@ const TEST_GROUPS = [
     "run" => ["parity/run_test.jl"],
     "stepping" => ["unit/stepping_test.jl"],
     "builder" => ["unit/builder_test.jl"],
+    "synthetic" => ["unit/synthetic_test.jl", "parity/synthetic_test.jl"],
     # GPU only (skips with a message on other backends): no `double` in :single kernels.
     "kernel_hygiene" => ["gpu/kernel_hygiene_test.jl"],
 ]

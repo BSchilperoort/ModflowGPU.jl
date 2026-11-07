@@ -252,6 +252,10 @@ it. Underscore-prefixed helpers are omitted.
 - **libmf6_oracle.jl**: libmf6 subprocess oracle. `LIBMF6_ENV`, `libmf6_available`,
   `run_libmf6_script` (validation/libmf6_connectivity.jl, libmf6_first_solve.jl), `libmf6_connectivity`, `write_dis_simulation` (synthetic DIS sims).
 - **grids.jl**: `_synthetic_coupling_dis`, `_synthetic_passthrough_dis`, `_rel_close`.
+- **run_parity.jl** (T3.4, moved from parity/run_test.jl): `_run_parity(name, rundir)`
+  (ModflowGPU vs MF6 output in `rundir`: heads, CBC, listing tables, both presets, GPU vs
+  CPU; returns the numbers per preset), `_mf6_iterations`, `_head_difference`,
+  `_budget_difference`, `_listing_difference`, `RUN_MF6`. Used by groups run, synthetic.
 - **residual.jl**: `to_test_device`, `flux_residual` (device `flux_residual!` → (rel, rounding
   bound)), `residual_stats`, `host_flux_residual` (the T2.3 host loop, validates the kernel).
 - **models/coupling_rde/**: synthetic coupling-like model (2 × 12 × 15, confined, steady +
@@ -259,6 +263,19 @@ it. Underscore-prefixed helpers are omitted.
   (riv_drn_evt parity test); test/unit/builder_test.jl builds it in memory.
 - **models/fhb_const/**: ex-gwf-fhb with the CHD/WEL time series replaced by constants per
   period (sto parity test).
+
+## Benchmarks (`benchmark/`, workspace project)
+
+- **synthetic.jl** (T3.4): module `SyntheticModels`, the synthetic coupling-model
+  generator (tests `include` it; also a script). `SYNTHETIC_PRESETS` (tiny, indus,
+  continental, global5m, regional30s, global30s), `synthetic_fields` (counter-based noise
+  `value_noise!`, land mask + ocean rim, DEM, log-normal K, priority-flood
+  `flow_accumulation`), `synthetic_simulation` (builder API → `SimulationSpec`: CHD rim,
+  RIV, DRN, EVT, RCH, STO; steady + 12 daily periods), `synthetic_ims` (`:parity`,
+  `:production`), `write_synthetic`, `synthetic_counts` / `scaled_counts`, device memory
+  `device_bytes` / `memory_coefficients` / `estimate_device_bytes`, `synthetic_main`
+  (benchmark driver). Tests: synthetic (unit + parity vs mf6). Results: docs/scaling.md.
+- **hardware.jl** (T0.4): hardware baseline (stream, SpMV, dot, atomics).
 
 ## GPU tests (`test/gpu/`, T3.1)
 
