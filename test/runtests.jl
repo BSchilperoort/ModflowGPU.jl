@@ -35,6 +35,7 @@ include("testutils.jl")
 include("input_files.jl")
 include("libmf6_oracle.jl")
 include("grids.jl")
+include("residual.jl")
 
 # Test groups, in run order: group name => test files. A parity file shares the group
 # name of its unit counterpart. The helpers above are loaded regardless of selection.
@@ -52,6 +53,7 @@ const TEST_GROUPS = [
     "connectivity" => ["unit/connectivity_test.jl", "parity/connectivity_test.jl"],
     "npf" => ["unit/npf_test.jl", "parity/npf_test.jl"],
     "boundaries" => ["unit/boundaries_test.jl", "parity/boundaries_test.jl"],
+    "sto" => ["unit/sto_test.jl", "parity/sto_test.jl"],
 ]
 
 const SELECTED_GROUPS = let

@@ -1,0 +1,15 @@
+# Tight closures for the residual test (PLAN.md section 4).
+BEGIN options
+  PRINT_OPTION  SUMMARY
+END options
+
+BEGIN nonlinear
+  OUTER_DVCLOSE  1.0e-09
+  OUTER_MAXIMUM  50
+END nonlinear
+
+BEGIN linear
+  INNER_MAXIMUM  1000
+  INNER_DVCLOSE  1.0e-12
+  INNER_RCLOSE  1.0e-08
+END linear

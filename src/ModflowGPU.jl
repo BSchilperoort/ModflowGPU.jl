@@ -36,6 +36,8 @@ include("discretization/dis.jl")
 # GWF engine setup (host, Float64)
 include("gwf/offsets.jl")
 include("gwf/npf.jl")
+include("gwf/ic.jl")
+include("gwf/sto.jl")
 
 # Boundary packages: host period data, KA formulate/add kernels
 include("boundaries/framework.jl")

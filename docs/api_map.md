@@ -91,6 +91,15 @@ it. Underscore-prefixed helpers are omitted.
   `NpfProperties` / `npf_properties`, `check_npf_options`, `calc_condsat`, `NpfSetup` /
   `npf_setup(::GwfSpec)`, device struct `NpfModel{T}`, `CCOND_*` averaging codes. Tests:
   npf (parity vs libmf6 CONDSAT).
+- **gwf/ic.jl**: IC (gwf-ic.f90 `ic_ar`). `initial_heads` (starting heads per reduced
+  node as offsets, Float64 host or device copy in `T`). Tests: sto.
+- **gwf/sto.jl**: confined storage (gwf-sto.f90 `sto_rp`/`sto_fc`/`sto_cq`/`sto_bd`,
+  GwfStorageUtils.f90 `SsCapacity`/`SsTerms`). `storage_capacity`, `check_storage_spec`
+  (rejects convertible cells with a transient period, T6.1, and TVS6), `StoragePackage{T}`
+  (device `rho = sc/delt`, `strgss`), `apply_period!` (steady/transient), `set_timestep!`
+  (`rho` from Float64 `delt`), `add_to_system!` (diagonal and `b`), `calc_storage_rates!`
+  (STO-SS), `add_storage_flowja!`, `storage_budget` (rin/rout, host Float64). Tests: sto
+  (parity: residual test on fhb with constant stresses, mf6 run at test time).
 
 ## Boundary packages
 
@@ -133,3 +142,6 @@ it. Underscore-prefixed helpers are omitted.
 - **libmf6_oracle.jl**: libmf6 subprocess oracle. `LIBMF6_ENV`, `libmf6_available`,
   `run_libmf6_script`, `libmf6_connectivity`, `write_dis_simulation` (synthetic DIS sims).
 - **grids.jl**: `_synthetic_coupling_dis`, `_synthetic_passthrough_dis`, `_rel_close`.
+- **residual.jl**: `to_test_device`, `flux_residual` (host flux-form residual until T2.6).
+- **models/fhb_const/**: ex-gwf-fhb with the CHD/WEL time series replaced by constants per
+  period (sto parity test).
