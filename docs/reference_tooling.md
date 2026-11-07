@@ -170,3 +170,30 @@ after the first `solve` (`first_solve_*.bin`, Int32/Float64) and the final heads
 (`final_X.bin`). Its `main` function can be `include`d and reused. For oracle tests,
 load the 6.8.2 environment, run `prepare_time_step`, `prepare_solve`, one `solve`, then
 copy `SLN_1/AMAT` and `SLN_1/RHS` before the next `solve` overwrites them.
+
+## 4. libmf6 as a test oracle (T2.1)
+
+Tests that compare with libmf6 memory run libmf6 in a **subprocess**, in the 6.8.2
+environment of section 2, so ModflowInterface and Modflow6_jll stay out of the test
+dependencies and every simulation gets a fresh libmf6 instance:
+
+- `validation/libmf6_connectivity.jl <simdir> <outdir>` copies the simulation to
+  `<outdir>/model`, initialises it (no time step), and dumps every GWF model's
+  `<MODEL>/CON/{IA,JA,JAS,ISYM,IHC,CL1,CL2,HWVA,ANGLEX,IAUSR,JAUSR}` and
+  `<MODEL>/DIS/{NODEUSER,NODEREDUCED,TOP,BOT,AREA,XC,YC}` as raw Int32/Float64 files
+  `<outdir>/<MODEL>/<COMP>_<NAME>.bin`, with `index.toml` (types, lengths, and the scalars
+  `DIS/{NODES,NODESUSER,NJA,NJAS}`). About 1.5 s per simulation.
+- `test/libmf6_oracle.jl` runs such a script with
+  `julia --startup-file=no --project=$MFGPU_LIBMF6_ENV` (default
+  `$REFERENCE_DIR/julia-env/mf6.8.2`), with `JULIA_LOAD_PATH`/`JULIA_PROJECT` removed
+  from the environment so it also works under `Pkg.test()`, and reads the dumps back
+  (`libmf6_connectivity(simdir)`). Tests skip with a message when the environment's
+  `.setup-complete` marker or `LocalPreferences.toml` is missing.
+- `write_dis_simulation(dir, dis)` (same file) writes a minimal simulation (DIS with
+  INTERNAL arrays written to read back exactly, NPF, IC, IMS, one steady period) for
+  grids made in tests, so synthetic grids (e.g. with IDOMAIN < 0) can be checked against
+  libmf6 too. MF6 reads 2D/3D arrays one row per Fortran READ, so each row starts on a
+  new line.
+
+Run by hand: `julia --project=reference/julia-env/mf6.8.2 validation/libmf6_connectivity.jl
+reference/mf6examples/ex-gwf-toth /tmp/toth-con`.
