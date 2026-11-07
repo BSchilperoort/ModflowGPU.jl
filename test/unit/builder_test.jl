@@ -168,7 +168,7 @@ end
                 for_each_precision() do p
                     r = ModflowGPU.run(spec; backend = TEST_BACKEND, precision = p.preset, write_output = false)
                     dh = maximum(abs.(r.heads .- h6[act]))
-                    @test dh < (p.T === Float64 ? 1.0e-6 : 1.0e-3)
+                    @test dh < (p.T === Float64 ? 1.0e-9 : 1.0e-4)
                     @info "builder: coupling_rde built in memory vs mf6 6.8.2 on the written files, :$(p.preset): max |Δh| = $(round(dh; sigdigits = 3)) m"
                 end
             end

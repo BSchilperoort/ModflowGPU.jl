@@ -329,7 +329,7 @@ function _cell_nodes(cells, layer, g::GridDims, ctx)
 end
 
 function _record_matrix(x, n::Int, ncol::Int, ctx, name)
-    ncol == 0 && (isnothing(x) || isempty(x)) && return zeros(0, n)
+    (ncol == 0 || n == 0) && (isnothing(x) || isempty(x)) && return zeros(ncol, n)
     isnothing(x) && _bad(ctx, "$name not given ($ncol column(s) expected)")
     m = x isa AbstractVector && ncol == 1 ? reshape(x, :, 1) : x
     (m isa AbstractMatrix && size(m) == (n, ncol)) ||
@@ -744,6 +744,14 @@ function _spec_diff(a, b, path, ignore)
         return isequal(a, b) ? nothing : "$path: $(_short(a)) vs $(_short(b))"
     elseif a isa AbstractArray
         size(a) == size(b) || return "$path: size $(size(a)) vs $(size(b))"
+        if isbitstype(eltype(a)) && eltype(a) <: Number  # fast path: no path string per element
+            for i in eachindex(a, b)
+                x, y = a[i], b[i]
+                (x isa AbstractFloat ? reinterpret(Unsigned, x) == reinterpret(Unsigned, y) : isequal(x, y)) ||
+                    return _spec_diff(x, y, "$path[$i]", ignore)
+            end
+            return nothing
+        end
         for i in eachindex(a, b)
             d = _spec_diff(a[i], b[i], "$path[$i]", ignore)
             isnothing(d) || return d
