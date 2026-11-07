@@ -400,7 +400,7 @@ marked; their merge commits on `main` hold the card reports.
 - **Phase 2: CPU engine for confined models (KA kernels on the CPU backend)**: [docs/plan/phase2.md](docs/plan/phase2.md)
   - T2.1 Discretization and connectivity (done)
   - T2.2 NPF, confined (done)
-  - T2.3 Boundary framework + CHD, WEL, RCH, GHB
+  - T2.3 Boundary framework + CHD, WEL, RCH, GHB (done)
   - T2.4 RIV, DRN, EVT
   - T2.5 STO and IC
   - T2.6 Assembly and matrix oracle

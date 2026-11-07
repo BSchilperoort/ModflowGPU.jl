@@ -13,6 +13,10 @@ Size: S ≈ < 1 day of agent work, M ≈ 1–3 days, L ≈ > 3 days.
   kernel (`condsat` stays constant; a per-connection saturation factor is
   applied), convertible storage, and rewetting as a per-cell kernel with a
   neighbour check, run between outer iterations as MF6 does.
+- From the T2.3 review: RCH places records on the highest active cell once per period
+  (`apply_period!`); MF6 redoes it in every `rch_cf` from `nodesontop`, which matters once
+  IBOUND changes (dry cells). Also port the GHB input checks (`ghb_ck`: negative cond or
+  multiplier, bhead below the bottom of a convertible cell). WEL `AUTO_FLOW_REDUCE` too.
 - Done when: Tier 3 examples pass parity.
 
 **T6.2 Newton–Raphson (L) ‖**
