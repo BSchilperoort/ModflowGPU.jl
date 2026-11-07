@@ -278,7 +278,7 @@ it. Underscore-prefixed helpers are omitted.
   continental, global5m, regional30s, global30s), `synthetic_fields` (counter-based noise
   `value_noise!`, land mask + ocean rim, DEM, log-normal K, priority-flood
   `flow_accumulation`), `synthetic_simulation` (builder API → `SimulationSpec`: CHD rim,
-  RIV, DRN, EVT, RCH, STO; steady + 12 daily periods, `ntransient`), `synthetic_ims` (`:parity`,
+  RIV, DRN, EVT, RCH, STO; steady + 12 daily periods, `ntransient`; `output = :none` = OC without records for mf6), `synthetic_ims` (`:parity`,
   `:production`), `write_synthetic`, `synthetic_counts` / `scaled_counts`, device memory
   `device_bytes` / `memory_coefficients` / `estimate_device_bytes`, `synthetic_main`
   (benchmark driver). Tests: synthetic (unit + parity vs mf6). Results: docs/scaling.md.
