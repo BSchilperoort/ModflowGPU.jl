@@ -162,3 +162,21 @@ src/timing.jl, src/budget.jl, src/output/oc.jl, src/run.jl.
 - **Non-convergence.** Without the mfsim.nam CONTINUE option MF6 writes the step's output
   and stops; `ModflowGPU.run` throws a `ConvergenceError` after the step's output, and
   warns and continues with CONTINUE.
+
+## Stepping API and BMI (T3.3)
+
+- **Call semantics** (srcbmi/mf6xmi.F90, mf6core.f90): `prepare_time_step` does
+  `tdis_set_timestep` and `model_rp` (period data; `dt` is ignored by libmf6), `prepare_solve`
+  does `model_ad` (`hold ← x`, CHD heads, storage `rho`), each `solve` is one outer iteration
+  (`has_converged` = `icnvg`), `finalize_solve` does `model_cq`/`model_bd` (SIMVALS, budgets),
+  `finalize_time_step` writes output. Values set between `prepare_time_step` and
+  `prepare_solve` are used for the step and stay until a PERIOD block of that package
+  replaces them.
+- **Port** (src/stepping.jl): the same calls on `Simulation`; `ModflowGPU.run` is built on
+  them. libmf6 hands out pointers into Fortran memory; here `get_value_ptr` is a host Float64
+  mirror (absolute heads, BOUND before the MULTIPLIER aux) synchronised at the call
+  boundaries, and BOUND writes go through the period-data conversion (`set_bound!`). In
+  MF6 6.8 (reference/), RIV keeps STAGE/COND/RBOT as separate arrays with the multiplier applied in
+  `cf`; ModflowCoupling (libmf6 via ModflowInterface) uses `BOUND`, which the port keeps.
+- `get_time_step` returns `delt` (libmf6); ModflowInterface's `BMI.get_time_step` calls
+  `get_end_time` instead (a wrapper bug), see above.

@@ -103,8 +103,9 @@ map (records of node `n` are `noderec[nodeptr[n]:nodeptr[n+1]-1]`, in record ord
 also has `ratein` and `rateout` (`calc_chd_rate`; empty for other kinds).
 
 Host fields: `spec`, `nbound`, `iblock` (index of the PERIOD block in force, 0 before the
-first one), `nodelist_host`, `bound_host` (Float64 values before the cast to `T`),
-`boundname`.
+first one), `nodelist_host`, `bound_host` (Float64 values before the cast to `T`), `bound_user` (the
+values as given: absolute, before the multiplier; what the stepping API reads and writes,
+see `set_bound!`), `boundname`.
 """
 mutable struct BoundaryPackage{K, T <: AbstractFloat, VI <: AbstractVector{Int32}, VT <: AbstractVector{T}, MT <: AbstractMatrix{T}}
     const spec::BoundarySpec{K}
@@ -123,6 +124,7 @@ mutable struct BoundaryPackage{K, T <: AbstractFloat, VI <: AbstractVector{Int32
     iblock::Int
     const nodelist_host::Vector{Int32}
     const bound_host::Matrix{Float64}
+    const bound_user::Matrix{Float64}
     const boundname::Vector{String}
 end
 
@@ -137,7 +139,7 @@ function BoundaryPackage{K, T}(backend::Backend, spec::BoundarySpec{K}, conn::Co
     return BoundaryPackage(
         spec, conn, grid, zi(maxbound), zt(ncol, maxbound), zt(maxbound), zt(maxbound), zt(maxbound),
         zt(nchd), zt(nchd), KernelAbstractions.ones(backend, Int32, conn.nodes + 1), zi(maxbound), 0, 0,
-        zeros(Int32, maxbound), zeros(Float64, ncol, maxbound), String[],
+        zeros(Int32, maxbound), zeros(Float64, ncol, maxbound), zeros(Float64, ncol, maxbound), String[],
     )
 end
 
@@ -149,7 +151,7 @@ BoundaryPackage(backend::Backend, ::Type{T}, spec::BoundarySpec{K}, conn::Connec
 Adapt.adapt_structure(to, p::BoundaryPackage) = BoundaryPackage(
     p.spec, p.conn, p.grid, adapt(to, p.nodelist), adapt(to, p.bound), adapt(to, p.hcof), adapt(to, p.rhs),
     adapt(to, p.simvals), adapt(to, p.ratein), adapt(to, p.rateout), adapt(to, p.nodeptr), adapt(to, p.noderec),
-    p.nbound, p.iblock, copy(p.nodelist_host), copy(p.bound_host), copy(p.boundname),
+    p.nbound, p.iblock, copy(p.nodelist_host), copy(p.bound_host), copy(p.bound_user), copy(p.boundname),
 )
 
 boundary_kind(::BoundaryPackage{K}) where {K} = K
@@ -201,14 +203,12 @@ function _source_values(src::Tuple, a::ArrayPeriod, rows, n)
     return a.values[src[1]]
 end
 
-# Fill `pkg.nodelist_host`, `pkg.bound_host` and `pkg.boundname` from PERIOD block `ib`;
-# returns nbound.
+# Fill `pkg.nodelist_host`, `pkg.bound_user` (values as given) and `pkg.boundname` from
+# PERIOD block `ib`; returns nbound.
 function _period_records!(pkg::BoundaryPackage{K}, ib::Integer) where {K}
     spec = pkg.spec
     kind = BoundaryKind{K}()
     layout = bound_layout(kind, spec)
-    mcol = mult_column(kind)
-    imult = Int(spec.auxmultcol)
     empty!(pkg.boundname)
     data = spec.periods.data[ib]
     rows = Dict{String, Int}()
@@ -244,18 +244,39 @@ function _period_records!(pkg::BoundaryPackage{K}, ib::Integer) where {K}
         append!(pkg.boundname, p.boundname)
     end
     for (c, src) in enumerate(layout)
-        _fill_column!(pkg.bound_host, c, _source_values(src, data, rows, n), data, n, (imult > 0 && c == mcol) ? imult : 0)
+        _fill_column!(pkg.bound_user, c, _source_values(src, data, rows, n), n)
     end
     return n
 end
 
-# Column `c` of `bound` for records 1:n (a function barrier: `vals` and `data` are concrete
-# here, so the record loop does not dispatch per element).
-function _fill_column!(bound, c, vals, data, n, imult)
+# Column `c` of `bound` for records 1:n (a function barrier: `vals` is concrete here, so the
+# record loop does not dispatch per element).
+function _fill_column!(bound, c, vals, n)
     for i in 1:n
-        v = Float64(vals[i])
-        imult > 0 && (v *= data.auxvar[imult, i])
-        bound[c, i] = v
+        bound[c, i] = Float64(vals[i])
+    end
+    return nothing
+end
+
+# `bound_host ← bound_user` for records 1:n, with the MULTIPLIER aux variable of the PERIOD
+# block in force (`pkg.iblock`) applied to the multiplier column (`bnd_rp`, `cond_mult`).
+function _apply_multiplier!(pkg::BoundaryPackage{K}, n) where {K}
+    mcol = mult_column(BoundaryKind{K}())
+    imult = Int(pkg.spec.auxmultcol)
+    aux = (imult > 0 && pkg.iblock > 0) ? pkg.spec.periods.data[pkg.iblock].auxvar : nothing
+    for i in 1:n, c in axes(pkg.bound_user, 1)
+        v = pkg.bound_user[c, i]
+        (c == mcol && !isnothing(aux)) && (v *= aux[imult, i])
+        pkg.bound_host[c, i] = v
+    end
+    return nothing
+end
+
+# The head-like columns of `bound_host` (records 1:n) as offsets from `r` (`to_offsets`).
+function _bound_offsets!(pkg::BoundaryPackage{K}, n, r) where {K}
+    nodes = view(pkg.nodelist_host, 1:n)
+    for c in head_columns(BoundaryKind{K}())
+        pkg.bound_host[c, 1:n] .= to_offsets(r, view(pkg.bound_host, c, 1:n), nodes)
     end
     return nothing
 end
@@ -284,19 +305,35 @@ function apply_period!(pkg::BoundaryPackage{K, T}, kper::Integer, r::AbstractVec
     ib == pkg.iblock && return false
     n = ib == 0 ? 0 : _period_records!(pkg, ib)
     nodes = view(pkg.nodelist_host, 1:n)
+    pkg.iblock = ib
+    _apply_multiplier!(pkg, n)
     check_records(BoundaryKind{K}(), pkg, n)
     if K in (:RCH, :EVT) && !pkg.spec.fixed_cell && !isnothing(ibound)
         for i in 1:n
             nodes[i] > 0 && ibound[nodes[i]] == 0 && (nodes[i] = highest_active(pkg.conn, nodes[i], ibound))
         end
     end
-    for c in head_columns(BoundaryKind{K}())
-        pkg.bound_host[c, 1:n] .= to_offsets(r, view(pkg.bound_host, c, 1:n), nodes)
-    end
+    _bound_offsets!(pkg, n, r)
     pkg.nbound = n
-    pkg.iblock = ib
     _upload_records!(pkg)
     return true
+end
+
+"""
+    set_bound!(pkg::BoundaryPackage, r) -> pkg
+
+After a change of `pkg.bound_user` (the stepping API, `set_value` of `BOUND`): apply the
+MULTIPLIER aux variable of the PERIOD block in force and convert the head-like columns to
+offsets from `r`, exactly as `apply_period!` does for period data (host, Float64), then
+cast to `T` and copy `bound` to the device. Records are not checked (`riv_ck` etc. run in
+`bnd_rp` only, as in MF6) and are not moved (RCH/EVT keep their cells).
+"""
+function set_bound!(pkg::BoundaryPackage{K, T}, r::AbstractVector{Float64}) where {K, T}
+    n = pkg.nbound
+    _apply_multiplier!(pkg, n)
+    _bound_offsets!(pkg, n, r)
+    copyto!(pkg.bound, T.(pkg.bound_host))
+    return pkg
 end
 
 # Copy the host records of `pkg` to the device and rebuild the node→record map.

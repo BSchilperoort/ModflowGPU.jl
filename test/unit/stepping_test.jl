@@ -1,0 +1,174 @@
+# Stepping API and BMI (T3.3): test/models/coupling_rde driven through the call sequence of
+# ModflowCoupling's `advance!` (reference/Modflow-coupling/src/model.jl), against
+# `ModflowGPU.run`, bitwise:
+#
+# - without changes: heads, SIMVALS and budgets equal those of `run` at every step;
+# - with boundary values set between steps (RIV stage and conductance written into the
+#   BOUND host mirror, as ModflowCoupling does; RCHA recharge through `set_value`) at the
+#   start of stress period 2: equal to `run` on a copy of the model whose input has those
+#   values as a PERIOD 2 block (so set values go through the same MULTIPLIER and offset
+#   conversion as period data).
+const BMI = ModflowGPU.BMI  # BasicModelInterface, through the package (not a test dependency)
+using ModflowGPU: Simulation, initialize, prepare_time_step, prepare_solve, solve, finalize_solve,
+    finalize_time_step, get_value_ptr, get_value, set_value, get_var_address, get_current_time, get_end_time,
+    get_time_step
+
+const STEPPING_MODEL = joinpath(@__DIR__, "..", "models", "coupling_rde")
+
+# A copy of coupling_rde with RIV and RCHA PERIOD 2 blocks: the period-3 stages, 1.5 × the
+# conductances (before the cmult multiplier) and recharge `rch`.
+function _stepping_variant(dir, stages, conds, rch)
+    cp(STEPPING_MODEL, dir; force = true)
+    riv = joinpath(dir, "rde.riv")
+    lines = readlines(riv)
+    p1 = findfirst(==("BEGIN period  1"), lines)
+    e1 = findfirst(==("END period  1"), lines)
+    block = ["", "BEGIN period  2"]
+    for (i, l) in enumerate(lines[(p1 + 1):(e1 - 1)])
+        w = split(l)
+        push!(block, "  $(w[1]) $(w[2]) $(w[3])  $(repr(stages[i]))  $(repr(conds[i]))  $(w[6])  $(w[7])  $(w[8])")
+    end
+    push!(block, "END period  2")
+    write(riv, join([lines[1:e1]; block; lines[(e1 + 1):end]], "\n") * "\n")
+    rcha = joinpath(dir, "rde.rcha")
+    txt = read(rcha, String)
+    write(rcha, replace(txt, "BEGIN period  3" => "BEGIN period  2\n  recharge\n    CONSTANT  $(repr(rch))\nEND period  2\n\nBEGIN period  3"))
+    return dir
+end
+
+# ModflowCoupling's `advance!` for every period (one step per call here: the model has
+# several steps per period, each driven the same way). `stress!(ptr, step)` writes the
+# BOUND mirrors after `prepare_time_step`. Returns per step the heads and SIMVALS read
+# through the pointers after `finalize_time_step`.
+function _drive_like_coupling(s::Simulation, stress!)
+    mname = s.model.spec.name
+    addr(var, sub = "") = get_var_address(s, var, mname; subcomponent_name = sub)
+    ptr = (
+        head = get_value_ptr(s, addr("X")),
+        nodeuser = Int.(vec(get_value_ptr(s, addr("NODEUSER", "DIS")))),
+        rch_bound = get_value_ptr(s, addr("BOUND", "RCHA")),
+        riv_bound = get_value_ptr(s, addr("BOUND", "RIV")),
+        riv_simvals = get_value_ptr(s, addr("SIMVALS", "RIV")),
+        drn_simvals = get_value_ptr(s, addr("SIMVALS", "DRN")),
+        evt_simvals = get_value_ptr(s, addr("SIMVALS", "EVT")),
+        mxiter = Int(only(get_value_ptr(s, get_var_address(s, "MXITER", "SLN_1")))),
+    )
+    out = []
+    k = 0
+    while get_current_time(s) < get_end_time(s)
+        prepare_time_step(s, 0.0)
+        k += 1
+        if k == 1  # calibrate_bmi!: record order and the stored placeholder RCH rate
+            for name in ("RIV", "DRN")
+                nodelist = vec(get_value_ptr(s, addr("NODELIST", name)))
+                pkg = s.model.packages[findfirst(p -> p.spec.name == name, s.model.packages)]
+                users = [ptr.nodeuser[n] for n in nodelist[1:pkg.nbound]]
+                @test users == pkg.spec.periods.data[1].nodeu
+            end
+        end
+        stress!(ptr, s.steps[s.istep])
+        prepare_solve(s)
+        converged = false
+        for _ in 1:ptr.mxiter
+            converged = solve(s)
+            converged && break
+        end
+        finalize_solve(s)
+        finalize_time_step(s)
+        @test converged
+        push!(out, (; head = copy(ptr.head), riv = copy(ptr.riv_simvals), drn = copy(ptr.drn_simvals), evt = copy(ptr.evt_simvals)))
+    end
+    return out
+end
+
+_budget_rates(b) = [(t.name, t.package, t.rate_in, t.rate_out, t.cum_in, t.cum_out) for t in b.terms]
+
+@testset "stepping" begin
+    for_each_precision() do p
+        kw = (; backend = TEST_BACKEND, precision = p.preset, write_output = false)
+        ref = ModflowGPU.run(STEPPING_MODEL; kw...)
+
+        @testset "advance! sequence, no changes: bitwise equal to run" begin
+            s = initialize(STEPPING_MODEL; kw...)
+            out = _drive_like_coupling(s, (ptr, step) -> nothing)
+            @test length(out) == length(ref.steps) == 10
+            @test last(out).head == ref.heads
+            @test [_budget_rates(b) for b in s.budgets] == [_budget_rates(b) for b in ref.budgets]
+            @test [r.outer.iterations for r in s.results] == [r.outer.iterations for r in ref.steps]
+            @test get_value(s, "RDE/X") == ref.heads
+            @test vec(get_value(s, "RDE/RIV/SIMVALS")) == last(out).riv
+            ModflowGPU.finalize(s)
+        end
+
+        @testset "boundary values set between steps: bitwise equal to run with PERIOD 2 data" begin
+            spec = ModflowGPU.load_simulation(STEPPING_MODEL)
+            rivspec = only(b for b in only(spec.models).boundaries if b.name == "RIV")
+            per1, per3 = rivspec.periods.data[1], rivspec.periods.data[2]  # PERIOD blocks 1 and 3
+            rows = ModflowGPU.list_column(rivspec.schema, "stage").first, ModflowGPU.list_column(rivspec.schema, "cond").first
+            stages = Vector{Float64}(per3.bound[rows[1], :])
+            conds = 1.5 .* per1.bound[rows[2], :]
+            rch = 0.0007
+            dir = _stepping_variant(mktempdir(), stages, conds, rch)
+            ref2 = ModflowGPU.run(dir; kw...)
+            @test ref2.heads != ref.heads
+
+            s = initialize(STEPPING_MODEL; kw...)
+            out = _drive_like_coupling(
+                s, function (ptr, step)
+                    step.kper == 2 && step.kstp == 1 || return
+                    ptr.riv_bound[1, :] .= stages
+                    ptr.riv_bound[2, :] .= conds
+                    set_value(s, "RDE/RCHA/BOUND", fill(rch, size(ptr.rch_bound)))
+                    @test ptr.rch_bound == fill(rch, size(ptr.rch_bound))
+                end
+            )
+            @test last(out).head == ref2.heads
+            @test [_budget_rates(b) for b in s.budgets] == [_budget_rates(b) for b in ref2.budgets]
+            # Period 3 data replaces the set values (as in MF6); the multiplier applies to them.
+            riv = get_value_ptr(s, "RDE/RIV/BOUND")
+            @test riv[1, :] == stages && riv[2, :] == per3.bound[rows[2], :]
+            ModflowGPU.finalize(s)
+        end
+
+        @testset "API checks" begin
+            s = initialize(STEPPING_MODEL; kw...)
+            @test get_current_time(s) == 0.0 && get_end_time(s) == 51.0
+            @test_throws ArgumentError solve(s)
+            @test_throws ArgumentError set_value(s, "RDE/RIV/SIMVALS", zeros(12))
+            @test_throws ArgumentError get_value(s, "RDE/NOPE")
+            @test get_value(s, "RDE/X") ≈ get_value(s, "RDE/HREF") .+ Float64.(Array(get_value_ptr(s, "RDE/X"; device = true)))
+            @test get_value_ptr(s, "RDE/X"; device = true) === s.model.h
+            prepare_time_step(s)
+            @test get_time_step(s) == 1.0 && only(get_value(s, "TDIS/KPER")) == 1
+            @test_throws ArgumentError prepare_time_step(s)
+            # X written through the mirror before prepare_solve becomes the starting head.
+            x = get_value_ptr(s, "RDE/X")
+            x .+= 0.5
+            prepare_solve(s)
+            @test get_value(s, "RDE/XOLD") ≈ x
+            # A write through the mirror after prepare_solve is discarded, with a warning.
+            x[1] += 1.0
+            @test_logs (:warn, r"discarded") match_mode = :any finalize_solve(s)
+            ModflowGPU.finalize(s)
+
+            # BMI: time, grid, variables, update until the end.
+            b = BMI.initialize(Simulation, joinpath(STEPPING_MODEL, "mfsim.nam"); kw...)
+            @test BMI.get_time_units(b) == "days"
+            @test BMI.get_grid_rank(b, 1) == 3 && BMI.get_grid_shape(b, 1, zeros(Int, 3)) == [2, 12, 15]
+            @test BMI.get_grid_size(b, 1) == 360 && BMI.get_var_grid(b, "RDE/X") == 1
+            @test BMI.get_var_type(b, "RDE/X") == "Float64" && BMI.get_var_type(b, "RDE/RIV/NODELIST") == "Int32"
+            @test BMI.get_var_nbytes(b, "RDE/RIV/BOUND") == 3 * 12 * 8
+            @test "RDE/RIV/BOUND" in BMI.get_input_var_names(b) && !("RDE/RIV/SIMVALS" in BMI.get_input_var_names(b))
+            BMI.update(b)
+            @test BMI.get_current_time(b) == 1.0
+            BMI.update_until(b, BMI.get_end_time(b))
+            h = zeros(length(ref.heads))
+            BMI.get_value(b, "RDE/X", h)
+            @test h == ref.heads
+            v = zeros(2)
+            BMI.get_value_at_indices(b, "RDE/X", v, [1, 5])
+            @test v == ref.heads[[1, 5]]
+            BMI.finalize(b)
+        end
+    end
+end

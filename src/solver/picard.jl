@@ -153,49 +153,87 @@ _with_settings(s::KrylovSolver, st::KrylovSettings) = KrylovSolver(
 )
 
 """
-    solve_timestep!(ps::PicardSolver, m::GwfModel, kstp) -> OuterResult
+    OuterState
 
-Run the outer iterations of the current time step (`sln_ca`; see the header of
-src/solver/picard.jl) on the offset heads `m.h`, after `start_timestep!`. `kstp` is the
-time step number of the period (for `ims_epfact`).
+The state of the outer iterations of the current time step, for one iteration at a time
+(`outer_iteration!`, the stepping API's `solve`): the Krylov solver in use (with the Float32
+rclose floor), the iteration count `kiter`, total inner iterations, the last `hncg`/`lrch`,
+`dvclose`, `rclose`, `converged`, and `diverged` (the correction or the heads were not
+finite; no further iteration is done).
+
+    OuterState(ps::PicardSolver)
 """
-function solve_timestep!(ps::PicardSolver, m::GwfModel{T}, kstp::Integer) where {T}
+mutable struct OuterState{K <: KrylovSolver}
+    krylov::K
+    kiter::Int
+    inner::Int
+    hncg::Float64
+    lrch::Int
+    dvclose::Float64
+    rclose::Float64
+    converged::Bool
+    diverged::Bool
+end
+
+OuterState(ps::PicardSolver) = OuterState(ps.krylov, 0, 0, 0.0, 0, ps.settings.dvclose, ps.settings.krylov.rclose, false, false)
+
+OuterResult(s::OuterState) = OuterResult(s.converged, s.kiter, s.inner, s.hncg, s.lrch, s.dvclose, s.rclose)
+
+"""
+    outer_iteration!(state::OuterState, ps::PicardSolver, m::GwfModel, kstp) -> Bool
+
+One outer iteration of the current time step (one pass of the `sln_ca` loop: formulate and
+assemble, the correction solve, `sln_get_dxmax`, the convergence check and
+`sln_underrelax`), after `start_timestep!` and a fresh `OuterState`. Returns whether the
+step has converged. After a non-finite correction (`state.diverged`) it returns `false`
+without iterating.
+"""
+function outer_iteration!(state::OuterState, ps::PicardSolver, m::GwfModel{T}, kstp::Integer) where {T}
+    state.diverged && return false
     st = ps.settings
     backend = m.backend
     n = Int(m.conn.nodes)
-    krylov = ps.krylov
-    rclose = st.krylov.rclose
-    inner = 0
-    hncg = 0.0
-    lrch = 0
-    dvclose = st.dvclose
-    converged = false
-    kiter = 0
-    for it in 1:st.maxiter
-        kiter = it
-        floor_step = it == 1 && st.rclose_floor_factor > 0
-        formulate!(m; symmetric = st.symmetric, scale = floor_step ? ps.scale : nothing)
-        if floor_step
-            # Float32: the attainable residual, eps(T)·max Σ|terms| (rule 2 rounding).
-            smax = _mapreduce!(ps.reducer, backend, _maxscale_term, _MAXSCALE_OPS, n, ps.scale)[1]
-            floor = st.rclose_floor_factor * eps(T) * abs(smax)
-            rc = st.krylov.icnvgopt == 2 || st.krylov.icnvgopt == 4 ? floor * sqrt(n) : floor
-            rclose = max(st.krylov.rclose, rc)
-            krylov = rclose == krylov.settings.rclose ? krylov : _with_settings(krylov, _with_rclose(st.krylov, rclose))
-        end
-        res = solve!(m.δ, krylov, m.sys.amat, m.res; kstp)
-        inner += res.iterations
-        (hncg, hmax, _, _), lrch = _mapreduce_loc!(ps.reducer, backend, _dxmax_term, _DXMAX_OPS, n, m.δ, m.ibound, m.h)
-        dvclose = max(st.dvclose, st.dvclose_head_factor * eps(T) * abs(hmax))
-        if !isfinite(hncg) || !isfinite(hmax)
-            # The linear solve diverged (NaN or Inf): the step cannot converge.
-            @warn "Outer iteration $it: the correction or the heads are not finite (the linear solver diverged); stopping the outer iterations of this time step"
-            converged = false
-            break
-        end
-        converged = res.converged && abs(hncg) <= dvclose
-        underrelax!(ps.ur, m.h, m.δ, m.ibound, it, hncg; converged)
-        converged && break
+    it = state.kiter += 1
+    floor_step = it == 1 && st.rclose_floor_factor > 0
+    formulate!(m; symmetric = st.symmetric, scale = floor_step ? ps.scale : nothing)
+    if floor_step
+        # Float32: the attainable residual, eps(T)·max Σ|terms| (rule 2 rounding).
+        smax = _mapreduce!(ps.reducer, backend, _maxscale_term, _MAXSCALE_OPS, n, ps.scale)[1]
+        floor = st.rclose_floor_factor * eps(T) * abs(smax)
+        rc = st.krylov.icnvgopt == 2 || st.krylov.icnvgopt == 4 ? floor * sqrt(n) : floor
+        state.rclose = max(st.krylov.rclose, rc)
+        k = state.krylov
+        state.krylov = state.rclose == k.settings.rclose ? k : _with_settings(k, _with_rclose(st.krylov, state.rclose))
     end
-    return OuterResult(converged, kiter, inner, hncg, lrch, dvclose, rclose)
+    res = solve!(m.δ, state.krylov, m.sys.amat, m.res; kstp)
+    state.inner += res.iterations
+    (hncg, hmax, _, _), lrch = _mapreduce_loc!(ps.reducer, backend, _dxmax_term, _DXMAX_OPS, n, m.δ, m.ibound, m.h)
+    state.hncg, state.lrch = hncg, lrch
+    state.dvclose = max(st.dvclose, st.dvclose_head_factor * eps(T) * abs(hmax))
+    if !isfinite(hncg) || !isfinite(hmax)
+        # The linear solve diverged (NaN or Inf): the step cannot converge.
+        @warn "Outer iteration $it: the correction or the heads are not finite (the linear solver diverged); stopping the outer iterations of this time step"
+        state.converged = false
+        state.diverged = true
+        return false
+    end
+    state.converged = res.converged && abs(hncg) <= state.dvclose
+    underrelax!(ps.ur, m.h, m.δ, m.ibound, it, hncg; converged = state.converged)
+    return state.converged
+end
+
+"""
+    solve_timestep!(ps::PicardSolver, m::GwfModel, kstp) -> OuterResult
+
+Run the outer iterations of the current time step (`sln_ca`; see the header of
+src/solver/picard.jl) on the offset heads `m.h`, after `start_timestep!`: up to
+OUTER_MAXIMUM calls of `outer_iteration!`. `kstp` is the time step number of the period
+(for `ims_epfact`).
+"""
+function solve_timestep!(ps::PicardSolver, m::GwfModel, kstp::Integer)
+    state = OuterState(ps)
+    for _ in 1:ps.settings.maxiter
+        (outer_iteration!(state, ps, m, kstp) || state.diverged) && break
+    end
+    return OuterResult(state)
 end

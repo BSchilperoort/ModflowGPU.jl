@@ -116,6 +116,8 @@ it. Underscore-prefixed helpers are omitted.
   columns → offsets), `highest_active`, `boundary_ibound` (CHD → IBOUND
   −1), `formulate!` / `formulate_record`, `add_to_system!`, `calc_simvals!`,
   `boundary_kind`. Tests: boundaries.
+  T3.3: `bound_user` (host values as given, before the multiplier) and `set_bound!` (stepping
+  API writes: multiplier + offsets as period data, then copy to the device); tests: stepping.
 - **boundaries/chd.jl**: CHD (gwf-chd.f90; see `docs/mf6_notes.md`). `apply_chd_heads!`,
   `calc_chd_rate!`. Tests: boundaries (parity vs MF6 CBC).
 - **boundaries/wel.jl**, **rch.jl**, **ghb.jl**: WEL, RCH (list and RCHA arrays, cell
@@ -176,8 +178,9 @@ it. Underscore-prefixed helpers are omitted.
   (from `ImsSpec`, `closures` overrides, Float32 floors `FLOAT32_CLOSURES`, backtracking
   warning), `PicardSolver` (KrylovSolver, UnderRelaxation, Reducer; Adapt), `solve_timestep!` →
   `OuterResult` (converged, outer and inner iterations, hncg and its node `lrch` from one
-  argmax reduction, the dvclose/rclose used).
-  Tests: picard, run.
+  argmax reduction, the dvclose/rclose used); `OuterState` + `outer_iteration!` (one outer
+  iteration, T3.3; `solve_timestep!` loops over it).
+  Tests: picard, run, stepping.
 - **budget.jl**: `gwf_cq`/`gwf_bd`. `npf_flowja!`, `calc_flows!` (NPF, STO, packages with
   `bnd_cf` + `simvals`, CHD `calc_chd_rate!`, `csr_diagsum`), `BudgetTerm`, `ModelBudget`
   (`total_rate_in`/`_out`, `total_cum_in`/`_out`, `percent_discrepancy`,
@@ -210,10 +213,21 @@ it. Underscore-prefixed helpers are omitted.
 ## Running a simulation
 
 - **run.jl** (T2.8): `ModflowGPU.run(simdir or SimulationSpec; backend, precision,
-  outdir, closures, write_output)` → `RunResult` (model, precision types, `StepResult`s,
+  outdir, closures, write_output)` (on the stepping API since T3.3) → `RunResult` (model, precision types, `StepResult`s,
   `ModelBudget`s, final heads, output paths); `ConvergenceError`. One model, one IMS
   solution. Tests: run (parity vs MF6 on Tier 0, fhb_const, coupling_rde and IMS
   variants; flopy read-back with MFGPU_FLOPY=1).
+
+- **stepping.jl** (T3.3): libmf6/XMI-like stepping (PLAN.md 3.6). `Simulation`,
+  `initialize`, `prepare_time_step`, `prepare_solve`, `solve` (one outer iteration),
+  `finalize_solve`, `finalize_time_step`, `do_time_step`, `update`, `finalize`,
+  `get_current_time` / `get_start_time` / `get_end_time` / `get_time_step`, `StepResult`;
+  addresses `get_var_address`, `var_addresses`, `input_addresses`, `get_value_ptr` (host
+  Float64 mirror, absolute; `device = true` for the engine array), `get_value`,
+  `set_value` (X, BOUND). Mirror sync rules in the file header. Tests: stepping.
+- **bmi.jl** (T3.3): BasicModelInterface methods on `Simulation` (`BMI.initialize`,
+  `update`, `update_until`, time, variables, `get_value(_ptr)`, `set_value(_at_indices)`,
+  grid 1 = model grid). Tests: stepping.
 
 ## Test helpers (`test/`, always loaded)
 
