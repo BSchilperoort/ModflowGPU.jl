@@ -557,7 +557,10 @@ the same code on the GPU.
   map, formulate and add kernels, `simvals`, `MULTIPLIER` aux, `AUXMULTNAME`;
   each package declares which `bound` columns are head-like, and the framework
   converts them to offsets on the host when period data is applied),
-  then CHD, WEL (without `AUTO_FLOW_REDUCE` for now: reject it), RCH (list and
+  then CHD, WEL (without `AUTO_FLOW_REDUCE` for now: reject it). First add a
+  shared `to_offsets(r, values)` helper (Float64, cast to `T` after) in
+  `src/gwf/offsets.jl` (from the T2.2 review), used for boundary head columns
+  here and for top/bot (T2.4/T2.5) and the initial head (T2.6). Then RCH (list and
   array input, `FIXED_CELL`/highest-active cell), and GHB.
 - **CHD:** find out exactly how MF6 ≥ 6.4 treats constant-head nodes in the
   system (ibound < 0, row replacement, how their flows are computed in `cq`) and
