@@ -412,7 +412,7 @@ marked; their merge commits on `main` hold the card reports.
   - T2.7 Linear solvers (done)
   - T2.8 Picard loop, time stepping, budgets, output (done)
 - **Phase 3: GPU execution and Milestone A**: [docs/plan/phase3.md](docs/plan/phase3.md)
-  - T3.1 Device execution
+  - T3.1 Device execution (done)
   - T3.2 Builder API
   - T3.3 Stepping API
   - T3.4 Synthetic coupling-model generator
