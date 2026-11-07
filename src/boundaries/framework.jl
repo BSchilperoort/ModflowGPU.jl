@@ -198,7 +198,11 @@ function _period_records!(pkg::BoundaryPackage{K}, ib::Integer) where {K}
             c.first
         end
         for i in 1:n
-            pkg.nodelist_host[i] = _reduced(pkg.conn, p.nodeu[i])
+            nd = _reduced(pkg.conn, p.nodeu[i])
+            # cellid_to_nlist (BoundaryPackageExt.f90): a list record in a cell outside the
+            # reduced grid (IDOMAIN <= 0) is an error.
+            nd > 0 || throw(MF6InputError(spec.file, 0, "$(spec.name): Cell is outside active grid domain (user node $(p.nodeu[i]))."))
+            pkg.nodelist_host[i] = nd
             for c in eachindex(cols)
                 v = p.bound[rows[c], i]
                 imult > 0 && c == mcol && (v *= p.auxvar[imult, i])

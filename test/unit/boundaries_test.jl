@@ -149,6 +149,11 @@ end
             wel = byname["WEL"]
             afr = typeof(wel)(; (f => getfield(wel, f) for f in fieldnames(typeof(wel)))..., auto_flow_reduce = 0.1)
             @test_throws MF6UnsupportedError BoundaryPackage(TEST_BACKEND, Float64, afr, conn, m.dis)
+            # A list record in the IDOMAIN hole (1,3,4) is an error (cellid_to_nlist).
+            p2 = wel.periods.data[1]
+            hole = typeof(p2)(Int32[(1 - 1) * 35 + (3 - 1) * 7 + 4], p2.bound[:, 1:1], p2.auxvar[:, 1:1], String[], p2.ts)
+            wh = typeof(wel)(; (f => getfield(wel, f) for f in fieldnames(typeof(wel)))..., periods = typeof(wel.periods)([2], [hole]))
+            @test_throws MF6InputError apply_period!(BoundaryPackage(TEST_BACKEND, Float64, wh, conn, m.dis), 2, r)
         end
 
         @testset "highest_active" begin
