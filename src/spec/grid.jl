@@ -7,7 +7,8 @@
 # - arrays keep MF6's memory shape and user node numbering: a DIS array `(ncol, nrow,
 #   nlay)` is `A[j, i, k]`, whose linear index is MF6's user node
 #   `(k-1)*nrow*ncol + (i-1)*ncol + j`; `(nodes)` arrays are vectors indexed by user node.
-#   Reduced (active) node numbers depend on IDOMAIN and are made by T2.1;
+#   Reduced (active) node numbers depend on IDOMAIN and are made by `build_connectivity`
+#   (src/discretization);
 # - file references (TS6, OBS6, output files) are kept as written, relative to the
 #   simulation directory (`SimulationSpec.simdir`); names of models and packages are upper
 #   case, as MF6 stores them.

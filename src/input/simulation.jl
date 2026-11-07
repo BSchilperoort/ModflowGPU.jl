@@ -41,10 +41,11 @@
 #
 # Differences from MF6 (documented):
 # - Grid checks done at setup in MF6 (cell thickness, active nodes, DISU symmetry) are
-#   left to T2.1; missing DELR/DELC/TOP/BOTM (DIS), TOP/BOTM (DISV) or TOP/BOT/AREA
-#   (DISU) arrays are an error here (MF6 does not check that they were given and would
-#   run with unset values). Value checks of NPF arrays (K <= 0, ...) are done by MF6 in
-#   `npf_ar`/`preprocess_input` and are deferred to T2.2.
+#   done by `build_connectivity` (`check_dis_grid`; DISV/DISU in T6.4); missing
+#   DELR/DELC/TOP/BOTM (DIS), TOP/BOTM (DISV) or TOP/BOT/AREA (DISU) arrays are an error
+#   here (MF6 does not check that they were given and would run with unset values).
+#   Value checks of NPF arrays (K <= 0, ...) are done by MF6 in `npf_ar`/
+#   `preprocess_input` and are deferred to T2.2.
 # - READARRAYGRID input (CHDG, WELG, ...) is rejected also with `strict = false`: there is
 #   no period-data reader for it yet (an explicit exception to the strict/non-strict rule).
 # - NPF option combinations rejected in `npf_ar` (NEWTON with PERCHED, XT3D with
