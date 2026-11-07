@@ -6,7 +6,7 @@ so it runs on the CPU and on any GPU backend with a package extension (see `ext/
 """
 module ModflowGPU
 
-using KernelAbstractions: KernelAbstractions, Backend, CPU, get_backend
+using KernelAbstractions: KernelAbstractions, Backend, CPU, get_backend, @kernel, @index, @Const
 using Printf: @sprintf
 
 include("backend_setup.jl")
@@ -36,6 +36,13 @@ include("discretization/dis.jl")
 # GWF engine setup (host, Float64)
 include("gwf/offsets.jl")
 include("gwf/npf.jl")
+
+# Boundary packages: host period data, KA formulate/add kernels
+include("boundaries/framework.jl")
+include("boundaries/chd.jl")
+include("boundaries/wel.jl")
+include("boundaries/rch.jl")
+include("boundaries/ghb.jl")
 
 # MF6 output files (host only): heads, budgets, binary grid files, listing budgets
 include("output/binary.jl")

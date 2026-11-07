@@ -53,3 +53,27 @@ otherwise.
     d = Δr[conn.jas[ii]]
     return conn.ja[ii] > n ? d : -d
 end
+
+"""
+    to_offsets(r, values) -> Vector{Float64}
+    to_offsets(r, values, nodes) -> Vector{Float64}
+
+Head-like values as offsets from the cell references (PLAN.md section 3.7, rule 1), in
+Float64; cast to the engine precision `T` only afterwards (`T.(to_offsets(r, v))`), so
+each value is rounded once.
+
+- `to_offsets(r, values)`: one value per reduced node, `values[n] − r[n]` (top, bottom,
+  initial and old heads).
+- `to_offsets(r, values, nodes)`: one value per record with reduced node `nodes[i]`,
+  `values[i] − r[nodes[i]]` (boundary heads, stages, elevations). Records without a node
+  (`nodes[i] <= 0`) keep their value.
+"""
+function to_offsets(r::AbstractVector{Float64}, values::AbstractVector{<:Real})
+    length(values) == length(r) || throw(ArgumentError("to_offsets: length(values) = $(length(values)), expected $(length(r))"))
+    return Float64[Float64(values[n]) - r[n] for n in eachindex(r, values)]
+end
+
+function to_offsets(r::AbstractVector{Float64}, values::AbstractVector{<:Real}, nodes::AbstractVector{<:Integer})
+    length(values) == length(nodes) || throw(ArgumentError("to_offsets: $(length(values)) values for $(length(nodes)) nodes"))
+    return Float64[nodes[i] > 0 ? Float64(values[i]) - r[nodes[i]] : Float64(values[i]) for i in eachindex(values, nodes)]
+end
