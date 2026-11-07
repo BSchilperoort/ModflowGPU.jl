@@ -33,6 +33,10 @@ include("input/simulation.jl")
 include("discretization/connectivity.jl")
 include("discretization/dis.jl")
 
+# GWF engine setup (host, Float64)
+include("gwf/offsets.jl")
+include("gwf/npf.jl")
+
 # MF6 output files (host only): heads, budgets, binary grid files, listing budgets
 include("output/binary.jl")
 include("output/grb.jl")

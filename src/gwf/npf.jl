@@ -1,0 +1,427 @@
+# Node property flow (NPF), confined: saturated conductance per connection (host only).
+#
+# Ports MF6 6.8.2:
+# - gwf-npf.f90 `prepcheck` (K, K33, K22 > 0 with K33OVERK/K22OVERK applied, WETDRY with
+#   REWET, ANGLE1/2/3 consistency and the degree → radian conversion), `check_options`
+#   (option combinations with NEWTON and XT3D, HIGHEST_CELL_SATURATION without NEWTON),
+#   `source_griddata` (K22 = K33 = K when not given), `preprocess_input` (negative
+#   ICELLTYPE → 1 without THICKSTRT), `calc_condsat` (upper triangle, saturation 1),
+#   `hy_eff` (effective K in the connection direction);
+# - GwfConductanceUtils.f90 `hcond`/`convertible_standard`, `vcond`, `condmean`,
+#   `logmean`, `staggered_thkfrac`; HGeoUtil.f90 `hyeff`; Dis.f90 `connection_normal`.
+#
+# `calc_condsat` calls `hcond` and `vcond` with all cells active and convertible, saturation
+# 1 and heads at the cell bottom (vertical) or top (horizontal), so condsat is the
+# full-thickness conductance whatever ICELLTYPE is (THICKSTRT, which changes that, is
+# rejected until T6.1). The branches taken reduce to:
+# - horizontal (ihc ≠ 0): `condmean(K_n, K_m, top_n − bot_n, top_m − bot_m, cl1, cl2, hwva,
+#   icellavg)` (staggered DISU connections use `staggered_thkfrac`);
+# - vertical (ihc = 0): `hwva / ((top_n − bot_n)/2/K33_n + (top_m − bot_m)/2/K33_m)`.
+# The arithmetic below keeps MF6's operation order, so results agree to the last bits up to
+# the libm `sin`/`cos`/`log` of the angle and log-mean cases.
+#
+# Not ported (cannot occur, or handled elsewhere):
+# - `preprocess_input`'s conversion to no-flow of cells with K = 0 (prepcheck already
+#   rejects K <= 0), its negative-thickness check (`check_dis_grid`), wetting and drying
+#   (T6.1), and the Newton bottom-node search (T6.2);
+# - the DISU ANGLDEGX checks of `prepcheck`/`npf_ar` (DISU is T6.4; DIS always has angles);
+# - XT3D (T6.5; MF6 does not compute condsat with XT3D) and THICKSTRT (T6.1) are rejected
+#   with an `MF6UnsupportedError`;
+# - VSC/TVK modifications of K (out of scope / T6.x).
+
+# GwfConductanceUtils.f90 CCOND_* (the ICELLAVG values).
+const CCOND_HMEAN = 0
+const CCOND_LMEAN = 1
+const CCOND_AMTLMK = 2
+const CCOND_AMTHMK = 3
+
+const _ICELLAVG = Dict(:harmonic => CCOND_HMEAN, :logarithmic => CCOND_LMEAN, :amt_lmk => CCOND_AMTLMK, :amt_hmk => CCOND_AMTHMK)
+
+# ConstantsModule DPIO180 = datan(DONE) / 4.5d1.
+const _DPIO180 = atan(1.0) / 45.0
+
+"""
+    logmean(d1, d2)
+
+Logarithmic mean of two positive numbers (GwfConductanceUtils.f90 `logmean`): `(d2 −
+d1) / log(d2/d1)`, or the arithmetic mean when `0.995 < d2/d1 < 1.005`.
+"""
+@inline function logmean(d1::T, d2::T) where {T <: AbstractFloat}
+    drat = d2 / d1
+    if drat <= T(0.995) || drat >= T(1.005)  # DLNLOW, DLNHIGH
+        return (d2 - d1) / log(drat)
+    else
+        return T(0.5) * (d1 + d2)
+    end
+end
+
+"""
+    condmean(k1, k2, thick1, thick2, cl1, cl2, width, iavgmeth)
+
+Conductance between two cells (GwfConductanceUtils.f90 `condmean`) for the averaging
+method `iavgmeth`: `CCOND_HMEAN` (harmonic mean of the transmissivities), `CCOND_LMEAN`
+(logarithmic mean of the transmissivities), `CCOND_AMTLMK` (arithmetic-mean thickness,
+logarithmic-mean K) or `CCOND_AMTHMK` (arithmetic-mean thickness, harmonic-mean K). `k1`,
+`thick1`, `cl1` belong to the first cell and `k2`, `thick2`, `cl2` to the second; `width`
+is the face width.
+"""
+@inline function condmean(k1::T, k2::T, thick1::T, thick2::T, cl1::T, cl2::T, width::T, iavgmeth::Integer) where {T <: AbstractFloat}
+    t1 = k1 * thick1
+    t2 = k2 * thick2
+    if iavgmeth == CCOND_HMEAN
+        return t1 * t2 > zero(T) ? width * t1 * t2 / (t1 * cl2 + t2 * cl1) : zero(T)
+    elseif iavgmeth == CCOND_LMEAN
+        tmean = t1 * t2 > zero(T) ? logmean(t1, t2) : zero(T)
+        return tmean * width / (cl1 + cl2)
+    elseif iavgmeth == CCOND_AMTLMK
+        kmean = k1 * k2 > zero(T) ? logmean(k1, k2) : zero(T)
+        return kmean * T(0.5) * (thick1 + thick2) * width / (cl1 + cl2)
+    else  # CCOND_AMTHMK
+        denom = k1 * cl2 + k2 * cl1
+        kmean = denom > zero(T) ? k1 * k2 / denom : zero(T)
+        return kmean * T(0.5) * (thick1 + thick2) * width
+    end
+end
+
+"""
+    staggered_thkfrac(top, bot, sat, topc, botc)
+
+Saturated thickness of a cell within the overlap with a vertically staggered neighbour
+(`topc`, `botc`) (GwfConductanceUtils.f90 `staggered_thkfrac`; DISU `ihc = 2`).
+"""
+@inline function staggered_thkfrac(top::T, bot::T, sat::T, topc::T, botc::T) where {T <: AbstractFloat}
+    sill_top = min(top, topc)
+    sill_bot = max(bot, botc)
+    tp = bot + sat * (top - bot)
+    return max(min(tp, sill_top) - sill_bot, zero(T))
+end
+
+"""
+    hyeff(k11, k22, k33, ang1, ang2, ang3, vg1, vg2, vg3) -> K
+
+Effective hydraulic conductivity in the direction of the unit vector `(vg1, vg2, vg3)`
+(model coordinates) of the conductivity ellipsoid with principal values `k11`, `k22`,
+`k33`, rotated by `ang1` (in the x-y plane), `ang2` (up/down from it) and `ang3` (about the
+major axis), in radians (HGeoUtil.f90 `hyeff` with `iavgmeth = 0`, the value NPF uses:
+`1/K = Σ ve_i²/k_i`, with a principal direction that matches the vector exactly giving
+that principal value).
+"""
+function hyeff(k11::T, k22::T, k33::T, ang1::T, ang2::T, ang3::T, vg1::T, vg2::T, vg3::T) where {T <: AbstractFloat}
+    s1, c1 = sin(ang1), cos(ang1)
+    s2, c2 = sin(ang2), cos(ang2)
+    s3, c3 = sin(ang3), cos(ang3)
+    # Rotation matrix r (only the products with vg are needed).
+    r11 = c1 * c2
+    r12 = c1 * s2 * s3 - s1 * c3
+    r13 = -c1 * s2 * c3 - s1 * s3
+    r21 = s1 * c2
+    r22 = s1 * s2 * s3 + c1 * c3
+    r23 = -s1 * s2 * c3 + c1 * s3
+    r31 = s2
+    r32 = -c2 * s3
+    r33 = c2 * c3
+    # Unit vector in the ellipse axes.
+    ve1 = r11 * vg1 + r21 * vg2 + r31 * vg3
+    ve2 = r12 * vg1 + r22 * vg2 + r32 * vg3
+    ve3 = r13 * vg1 + r23 * vg2 + r33 * vg3
+    dnum = one(T)
+    d1 = ve1^2
+    d2 = ve2^2
+    d3 = ve3^2
+    if ve1 != zero(T)
+        dnum = dnum * k11
+        d2 = d2 * k11
+        d3 = d3 * k11
+    end
+    if ve2 != zero(T)
+        dnum = dnum * k22
+        d1 = d1 * k22
+        d3 = d3 * k22
+    end
+    if ve3 != zero(T)
+        dnum = dnum * k33
+        d1 = d1 * k33
+        d2 = d2 * k33
+    end
+    denom = d1 + d2 + d3
+    return denom > zero(T) ? dnum / denom : zero(T)
+end
+
+"""
+    NpfProperties
+
+Hydraulic properties of the NPF package by reduced node, in Float64, as MF6 holds them
+after `source_griddata` and `prepcheck`:
+
+- `icelltype` (negative values replaced by 1, `preprocess_input` without THICKSTRT);
+- `k11`, `k22`, `k33`: K22 and K33 are K where not given (`ik22`, `ik33` false), and
+  multiplied by K with K22OVERK/K33OVERK;
+- `angle1`, `angle2`, `angle3`: in radians, `nothing` when not given;
+- `icellavg`: `CCOND_HMEAN`, `CCOND_LMEAN`, `CCOND_AMTLMK` or `CCOND_AMTHMK`.
+"""
+struct NpfProperties
+    icelltype::Vector{Int32}
+    k11::Vector{Float64}
+    k22::Vector{Float64}
+    k33::Vector{Float64}
+    angle1::Union{Nothing, Vector{Float64}}
+    angle2::Union{Nothing, Vector{Float64}}
+    angle3::Union{Nothing, Vector{Float64}}
+    ik22::Bool
+    ik33::Bool
+    icellavg::Int
+end
+
+# gwf-npf.f90 `prepcheck` fmtkerr: "Hydraulic property <name> is <= 0 for cell <cellid> <1PG15.6>".
+function _check_positive!(errors, name, k, nodeuser, g::GridDims)
+    nerr = 0
+    for n in eachindex(k)
+        if k[n] <= 0.0
+            nerr += 1
+            if nerr <= 20
+                cell = _shape_string(cellid(g, nodeuser[n]))
+                push!(errors, rstrip("Hydraulic property $name is <= 0 for cell $cell " * _fortran_1pg(k[n]; w = 15, d = 6)))
+            end
+        end
+    end
+    nerr > 20 && push!(errors, "... $nerr additional errors not shown for $name")
+    return nothing
+end
+
+"""
+    npf_properties(npf::NpfSpec, dis::AbstractDisSpec, conn::Connectivity; newton = false) -> NpfProperties
+
+The NPF properties by reduced node, after MF6's checks of the NPF input
+(gwf-npf.f90 `prepcheck`, then `check_options`; each throws an `MF6InputError` for
+`npf.file` with MF6's messages, all errors of one routine in one message). With
+`newton = true` the NEWTON option combinations are checked (the model's NEWTON option).
+THICKSTRT (T6.1) and XT3D (T6.5) are an `MF6UnsupportedError`.
+"""
+function npf_properties(npf::NpfSpec, dis::AbstractDisSpec, conn::Connectivity; newton::Bool = false)
+    file = isempty(npf.file) ? "NPF" : npf.file
+    g = grid_dims(dis)
+    nu = conn.nodeuser
+    nusr = Int(conn.nodesuser)
+    for (name, a) in (
+            ("ICELLTYPE", npf.icelltype), ("K", npf.k), ("K22", npf.k22), ("K33", npf.k33),
+            ("ANGLE1", npf.angle1), ("ANGLE2", npf.angle2), ("ANGLE3", npf.angle3), ("WETDRY", npf.wetdry),
+        )
+        isnothing(a) || length(a) == nusr ||
+            throw(ArgumentError("NpfSpec: length($name) = $(length(a)), expected $nusr user nodes"))
+    end
+    # gwf-npf.f90 `source_griddata`: by reduced node; K22, K33 = K when not given. The
+    # K33OVERK/K22OVERK "specified but K33/K22 not specified" errors are the loader's.
+    ik22, ik33 = !isnothing(npf.k22), !isnothing(npf.k33)
+    (npf.k22overk && !ik22) && throw(MF6InputError(file, 0, "K22OVERK option specified but K22 not specified."))
+    (npf.k33overk && !ik33) && throw(MF6InputError(file, 0, "K33OVERK option specified but K33 not specified."))
+    k11 = npf.k[nu]
+    k22 = ik22 ? npf.k22[nu] : copy(k11)
+    k33 = ik33 ? npf.k33[nu] : copy(k11)
+    angle1, angle2, angle3 = (isnothing(a) ? nothing : a[nu] for a in (npf.angle1, npf.angle2, npf.angle3))
+
+    # gwf-npf.f90 `prepcheck`.
+    errors = String[]
+    _check_positive!(errors, "K", k11, nu, g)
+    if ik33
+        npf.k33overk && (k33 .*= k11)
+        _check_positive!(errors, "K33", k33, nu, g)
+    end
+    if ik22
+        npf.k22overk && (k22 .*= k11)
+        _check_positive!(errors, "K22", k22, nu, g)
+    end
+    npf.rewet && isnothing(npf.wetdry) && push!(errors, "Error in GRIDDATA block: WETDRY not found.")
+    isnothing(angle1) || (angle1 .*= _DPIO180)
+    if !isnothing(angle2)
+        isnothing(angle1) && push!(errors, "ANGLE2 SPECIFIED BUT NOT ANGLE1. ANGLE2 REQUIRES ANGLE1.")
+        isnothing(angle3) && push!(errors, "ANGLE2 SPECIFIED BUT NOT ANGLE3. SPECIFY BOTH OR NEITHER ONE.")
+        angle2 .*= _DPIO180
+    end
+    if !isnothing(angle3)
+        isnothing(angle1) && push!(errors, "ANGLE3 SPECIFIED BUT NOT ANGLE1. ANGLE3 REQUIRES ANGLE1.")
+        isnothing(angle2) && push!(errors, "ANGLE3 SPECIFIED BUT NOT ANGLE2. SPECIFY BOTH OR NEITHER ONE.")
+        angle3 .*= _DPIO180
+    end
+    isempty(errors) || throw(MF6InputError(file, 0, join(errors, "\n")))
+
+    check_npf_options(npf; newton)
+
+    npf.thickstrt && unsupported(file, "NPF6 option THICKSTRT (T6.1)")
+    npf.xt3d && unsupported(file, "NPF6 option XT3D (T6.5)")
+
+    # gwf-npf.f90 `preprocess_input`: without THICKSTRT, negative ICELLTYPE means 1.
+    icelltype = Int32[npf.icelltype[u] < 0 ? Int32(1) : npf.icelltype[u] for u in nu]
+    return NpfProperties(icelltype, k11, k22, k33, angle1, angle2, angle3, ik22, ik33, _ICELLAVG[npf.cell_averaging])
+end
+
+"""
+    check_npf_options(npf::NpfSpec; newton = false)
+
+NPF option combinations rejected by MF6 (gwf-npf.f90 `check_options`): NEWTON with
+PERCHED, VARIABLECV or REWET, and XT3D with ALTERNATIVE_CELL_AVERAGING, THICKSTRT,
+PERCHED or VARIABLECV, as one `MF6InputError` with MF6's messages. HIGHEST_CELL_SATURATION
+without NEWTON gives MF6's warning (MF6 then turns it off).
+"""
+function check_npf_options(npf::NpfSpec; newton::Bool = false)
+    file = isempty(npf.file) ? "NPF" : npf.file
+    errors = String[]
+    if newton
+        npf.perched && push!(errors, "ERROR IN NPF OPTIONS. NEWTON OPTION CANNOT BE USED WITH PERCHED OPTION.")
+        npf.variablecv && push!(errors, "ERROR IN NPF OPTIONS. NEWTON OPTION CANNOT BE USED WITH VARIABLECV OPTION.")
+        npf.rewet && push!(errors, "ERROR IN NPF OPTIONS. NEWTON OPTION CANNOT BE USED WITH REWET OPTION.")
+    elseif npf.highest_cell_saturation
+        @warn "HIGHEST_CELL_SATURATION option cannot be used when NEWTON option in not specified. Resetting HIGHEST_CELL_SATURATION option to off." file
+    end
+    if npf.xt3d
+        npf.cell_averaging !== :harmonic &&
+            push!(errors, "ERROR IN NPF OPTIONS. ALTERNATIVE_CELL_AVERAGING OPTION CANNOT BE USED WITH XT3D OPTION.")
+        npf.thickstrt && push!(errors, "ERROR IN NPF OPTIONS. THICKSTRT OPTION CANNOT BE USED WITH XT3D OPTION.")
+        npf.perched && push!(errors, "ERROR IN NPF OPTIONS. PERCHED OPTION CANNOT BE USED WITH XT3D OPTION.")
+        npf.variablecv && push!(errors, "ERROR IN NPF OPTIONS. VARIABLECV OPTION CANNOT BE USED WITH XT3D OPTION.")
+    end
+    isempty(errors) || throw(MF6InputError(file, 0, join(errors, "\n")))
+    return nothing
+end
+
+# Unit vector from reduced node `n` towards its neighbour across symmetric connection `jj`
+# (Dis.f90 `connection_normal`): vertical ±z (+1 when the neighbour `m` is above, i.e.
+# `m < n`); horizontal from `anglex`, the angle of the normal pointing from the lower- to
+# the higher-numbered node, negated when `m < n`. The two DIS directions (right: 0,
+# front: 3π/2) are exact (Dis.f90 sets the components to exactly 0 and ±1); other angles
+# (DISV, T6.4) use cos/sin.
+@inline function _connection_normal(conn::Connectivity, n::Integer, m::Integer, ihc::Integer, jj::Integer)
+    if ihc == 0
+        return (0.0, 0.0, m < n ? 1.0 : -1.0)
+    end
+    a = conn.anglex[jj]
+    x, y = if a == 0.0
+        (1.0, 0.0)
+    elseif a == 3.0 / 2.0 * Float64(pi)  # Connections.f90 `disconnections`, front
+        (0.0, -1.0)
+    else
+        (cos(a), sin(a))
+    end
+    return m > n ? (x, y, 0.0) : (-x, -y, 0.0)
+end
+
+"""
+    hy_eff(p::NpfProperties, n, ihc, vg) -> Float64
+
+Effective hydraulic conductivity of reduced node `n` for a connection of type `ihc` in
+the direction `vg = (vg1, vg2, vg3)` (gwf-npf.f90 `hy_eff`): vertical connections use
+K33, rotated with ANGLE1/2/3 when ANGLE2 was given; horizontal connections use K, or
+`hyeff` with K22 and the angles that were given when K22 was given.
+"""
+function hy_eff(p::NpfProperties, n::Integer, ihc::Integer, vg::NTuple{3, Float64})
+    hy11, hy22, hy33 = p.k11[n], p.k22[n], p.k33[n]
+    if ihc == 0
+        isnothing(p.angle2) && return hy33
+        ang3 = isnothing(p.angle3) ? 0.0 : p.angle3[n]
+        return hyeff(hy11, hy22, hy33, p.angle1[n], p.angle2[n], ang3, vg...)
+    else
+        p.ik22 || return hy11
+        ang1 = ang2 = ang3 = 0.0
+        if !isnothing(p.angle1)
+            ang1 = p.angle1[n]
+            if !isnothing(p.angle2)
+                ang2 = p.angle2[n]
+                isnothing(p.angle3) || (ang3 = p.angle3[n])
+            end
+        end
+        return hyeff(hy11, hy22, hy33, ang1, ang2, ang3, vg...)
+    end
+end
+
+"""
+    calc_condsat(p::NpfProperties, conn::Connectivity) -> Vector{Float64}
+
+Saturated conductance per symmetric connection (`njas`, indexed through `jas`) in Float64
+(gwf-npf.f90 `calc_condsat` over all nodes with `upperOnly`, saturation 1): `condmean` of
+the full cell thicknesses for horizontal connections, the series conductance of the two
+half-cell thicknesses for vertical ones, with `hy_eff` in the connection direction.
+"""
+function calc_condsat(p::NpfProperties, conn::Connectivity)
+    condsat = Vector{Float64}(undef, conn.njas)
+    top, bot = conn.top, conn.bot
+    for n in 1:conn.nodes, ii in (conn.ia[n] + 1):(conn.ia[n + 1] - 1)
+        m = conn.ja[ii]
+        m > n || continue
+        jj = conn.jas[ii]
+        ihc = conn.ihc[jj]
+        vg = _connection_normal(conn, n, m, ihc, jj)
+        hyn = hy_eff(p, n, ihc, vg)
+        hym = hy_eff(p, m, ihc, .-vg)
+        topn, botn, topm, botm = top[n], bot[n], top[m], bot[m]
+        if ihc == 0
+            # GwfConductanceUtils.f90 `vcond`, partially saturated branch with sat = 1.
+            bovk1 = 1.0 * (topn - botn) * 0.5 / hyn
+            bovk2 = 1.0 * (topm - botm) * 0.5 / hym
+            denom = bovk1 + bovk2
+            condsat[jj] = denom != 0.0 ? conn.hwva[jj] / denom : 0.0
+        else
+            # GwfConductanceUtils.f90 `hcond` → `convertible_standard`, sat = 1.
+            if ihc == 2
+                thksatn = staggered_thkfrac(topn, botn, 1.0, topm, botm)
+                thksatm = staggered_thkfrac(topm, botm, 1.0, topn, botn)
+            else
+                thksatn = 1.0 * (topn - botn)
+                thksatm = 1.0 * (topm - botm)
+            end
+            condsat[jj] = condmean(hyn, hym, thksatn, thksatm, conn.cl1[jj], conn.cl2[jj], conn.hwva[jj], p.icellavg)
+        end
+    end
+    return condsat
+end
+
+"""
+    NpfSetup
+
+Host-side (Float64) result of the NPF setup of one model (`npf_setup`):
+
+- `properties::NpfProperties` by reduced node;
+- `condsat` `(njas)`: saturated conductance per symmetric connection (`calc_condsat`);
+- `r` `(nodes)`: reference heads `clamp(STRT, bot, top)` (`reference_heads`);
+- `Δr` `(njas)`: `r[m] − r[n]` per symmetric connection with `n < m`
+  (`reference_differences`; read a CSR entry with `reference_difference`).
+"""
+struct NpfSetup
+    properties::NpfProperties
+    condsat::Vector{Float64}
+    r::Vector{Float64}
+    Δr::Vector{Float64}
+end
+
+"""
+    npf_setup(model::GwfSpec, conn::Connectivity = build_connectivity(model)) -> NpfSetup
+    npf_setup(npf::NpfSpec, ic::IcSpec, dis::AbstractDisSpec, conn::Connectivity; newton = false) -> NpfSetup
+
+NPF properties (with MF6's checks, `npf_properties`), saturated conductances
+(`calc_condsat`) and the reference heads and differences (PLAN.md section 3.7, rule 1) of
+a model, all in Float64 on the host.
+"""
+npf_setup(model::GwfSpec, conn::Connectivity = build_connectivity(model)) =
+    npf_setup(model.npf, model.ic, model.dis, conn; newton = model.newton)
+
+function npf_setup(npf::NpfSpec, ic::IcSpec, dis::AbstractDisSpec, conn::Connectivity; newton::Bool = false)
+    p = npf_properties(npf, dis, conn; newton)
+    r = reference_heads(conn, ic.strt)
+    return NpfSetup(p, calc_condsat(p, conn), r, reference_differences(conn, r))
+end
+
+"""
+    NpfModel{T}(setup::NpfSetup)
+    NpfModel(T, setup::NpfSetup)
+
+The per-connection NPF arrays of a confined model in the engine precision `T`: `condsat`
+and `Δr` `(njas)`, converted from the Float64 host values of `setup` (one rounding each).
+Host arrays for now; T3.1 moves them to the device.
+"""
+struct NpfModel{T <: AbstractFloat, V <: AbstractVector{T}}
+    condsat::V
+    Δr::V
+end
+
+NpfModel{T}(s::NpfSetup) where {T <: AbstractFloat} = NpfModel{T, Vector{T}}(T.(s.condsat), T.(s.Δr))
+NpfModel(::Type{T}, s::NpfSetup) where {T <: AbstractFloat} = NpfModel{T}(s)
+
+Base.eltype(::NpfModel{T}) where {T} = T
