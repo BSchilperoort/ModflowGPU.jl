@@ -1,0 +1,13 @@
+BEGIN options
+  READASARRAYS
+END options
+
+BEGIN period  1
+  recharge
+    CONSTANT  0.0012
+END period  1
+
+BEGIN period  3
+  recharge
+    CONSTANT  0.0004
+END period  3

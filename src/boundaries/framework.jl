@@ -12,7 +12,7 @@
 # 3. `calc_simvals!` computes the flow into the model per record (`bnd_cq_simrate`).
 #
 # Heads are offsets from the per-cell references `r` (section 3.7, rule 1). Head-like
-# columns of `bound` (CHD head, GHB bhead) are converted to offsets on the host in Float64
+# columns of `bound` (CHD head, GHB bhead, RIV stage and rbot, DRN elev, EVT surface) are converted to offsets on the host in Float64
 # when period data are applied (`to_offsets`), so `rhs` holds `rhs_mf6 − hcof·r[n]` and
 # `hcof·h' − rhs` equals MF6's `hcof·h − rhs`. The MULTIPLIER auxiliary variable
 # (`AUXMULTNAME`) is applied on the host in Float64 at the same time, before the offset
@@ -37,6 +37,24 @@ The columns of `bound` of a package kind: DFN names of the PERIOD block list col
 function bound_columns end
 
 """
+    bound_layout(kind::BoundaryKind, spec::BoundarySpec) -> Vector
+
+Where each column of `bound` comes from, for the package `spec`: a `(name, j)` tuple for
+element `j` of the PERIOD list column (or READASARRAYS array) `name`, `(:aux, iaux)` for
+auxiliary variable `iaux`, or a `Float64` constant. The default is one `(name, 1)` per
+`bound_columns(kind)`; DRN (AUXDEPTHNAME) and EVT (NSEG, SURF_RATE_SPECIFIED) override it.
+"""
+bound_layout(kind::BoundaryKind, ::BoundarySpec) = Any[(name, 1) for name in bound_columns(kind)]
+
+"""
+    check_records(kind::BoundaryKind, pkg, n)
+
+Check the first `n` host records of `pkg` after period data are read (Float64, before
+offsets; the package `*_ck` routine). Throws `MF6InputError`. The default checks nothing.
+"""
+check_records(::BoundaryKind, pkg, n) = nothing
+
+"""
     head_columns(::BoundaryKind) -> Tuple of Int
 
 The columns of `bound` that hold heads or elevations; they are stored as offsets from the
@@ -56,15 +74,17 @@ mult_column(::BoundaryKind) = 1
     check_boundary_spec(spec::BoundarySpec)
 
 Throw `MF6UnsupportedError` for options of a stress package that the engine does not
-support yet (WEL `AUTO_FLOW_REDUCE`, MVR) and `ArgumentError` for kinds without a
-formulation.
+support yet (WEL `AUTO_FLOW_REDUCE`, MVR), `MF6InputError` for invalid EVT dimensions
+(NSEG < 1, NSEG > 1 or SURF_RATE_SPECIFIED with READASARRAYS) and `ArgumentError` for
+kinds without a formulation.
 """
 function check_boundary_spec(spec::BoundarySpec{K}) where {K}
-    K in (:CHD, :WEL, :RCH, :GHB) ||
+    K in (:CHD, :WEL, :RCH, :GHB, :RIV, :DRN, :EVT) ||
         throw(ArgumentError("$(spec.name): boundary package $K has no engine formulation yet"))
     spec.mover && throw(MF6UnsupportedError(spec.file, "unsupported: MOVER option of $(spec.name)"))
     K === :WEL && spec.auto_flow_reduce != 0 &&
         throw(MF6UnsupportedError(spec.file, "unsupported: AUTO_FLOW_REDUCE of $(spec.name) (needs convertible cells, T6.1)"))
+    K === :EVT && _check_evt_spec(spec)
     return nothing
 end
 
@@ -110,7 +130,7 @@ function BoundaryPackage{K, T}(backend::Backend, spec::BoundarySpec{K}, conn::Co
     check_boundary_spec(spec)
     grid = grid_dims(dis)
     maxbound = spec.readasarrays ? prod(grid.mshape[2:end]) : Int(spec.maxbound)
-    ncol = length(bound_columns(BoundaryKind{K}()))
+    ncol = length(bound_layout(BoundaryKind{K}(), spec))
     zi(n) = KernelAbstractions.zeros(backend, Int32, n)
     zt(dims...) = KernelAbstractions.zeros(backend, T, dims...)
     nchd = K === :CHD ? maxbound : 0
@@ -161,16 +181,29 @@ end
 # The reduced node of user node `nu` (0 when the cell is not in the reduced grid).
 _reduced(conn::Connectivity, nu::Integer) = (nu < 1 || nu > conn.nodesuser) ? Int32(0) : max(conn.nodereduced[nu], Int32(0))
 
+# The values of bound column source `src` (`bound_layout`) for all records, from a list
+# period (`rows`: first row in `p.bound` of each named column) or an array period.
+_source_values(src::Float64, data, rows, n) = fill(src, n)
+function _source_values(src::Tuple, p::PeriodList, rows, n)
+    src[1] === :aux && return view(p.auxvar, src[2], :)
+    return view(p.bound, rows[src[1]] + src[2] - 1, :)
+end
+function _source_values(src::Tuple, a::ArrayPeriod, rows, n)
+    src[1] === :aux && return view(a.auxvar, src[2], :)
+    return a.values[src[1]]
+end
+
 # Fill `pkg.nodelist_host`, `pkg.bound_host` and `pkg.boundname` from PERIOD block `ib`;
 # returns nbound.
 function _period_records!(pkg::BoundaryPackage{K}, ib::Integer) where {K}
     spec = pkg.spec
     kind = BoundaryKind{K}()
-    cols = bound_columns(kind)
+    layout = bound_layout(kind, spec)
     mcol = mult_column(kind)
     imult = Int(spec.auxmultcol)
     empty!(pkg.boundname)
     data = spec.periods.data[ib]
+    rows = Dict{String, Int}()
     if data isa ArrayPeriod
         isempty(data.tas) ||
             throw(MF6UnsupportedError(spec.file, "unsupported: TIMEARRAYSERIES in $(spec.name) (time series arrive with T6.3)"))
@@ -179,11 +212,6 @@ function _period_records!(pkg::BoundaryPackage{K}, ib::Integer) where {K}
         n <= length(pkg.nodelist_host) || throw(ArgumentError("$(spec.name): $n cells for $(length(pkg.nodelist_host)) records"))
         for i in 1:n
             pkg.nodelist_host[i] = _reduced(pkg.conn, nodeu[i])
-            for (c, name) in enumerate(cols)
-                v = data.values[name][i]
-                imult > 0 && c == mcol && (v *= data.auxvar[imult, i])
-                pkg.bound_host[c, i] = v
-            end
         end
     else
         p = data::PeriodList
@@ -192,10 +220,11 @@ function _period_records!(pkg::BoundaryPackage{K}, ib::Integer) where {K}
         n = length(p.nodeu)
         n <= length(pkg.nodelist_host) ||
             throw(MF6InputError(spec.file, 0, "$(spec.name): $n records in a PERIOD block, but MAXBOUND is $(length(pkg.nodelist_host))"))
-        rows = map(cols) do name
-            c = list_column(spec.schema, name)
-            isnothing(c) && throw(ArgumentError("$(spec.name): no column $name in the list schema"))
-            c.first
+        for src in layout
+            (src isa Tuple && src[1] isa String) || continue
+            c = list_column(spec.schema, src[1])
+            isnothing(c) && throw(ArgumentError("$(spec.name): no column $(src[1]) in the list schema"))
+            rows[src[1]] = c.first
         end
         for i in 1:n
             nd = _reduced(pkg.conn, p.nodeu[i])
@@ -203,15 +232,24 @@ function _period_records!(pkg::BoundaryPackage{K}, ib::Integer) where {K}
             # reduced grid (IDOMAIN <= 0) is an error.
             nd > 0 || throw(MF6InputError(spec.file, 0, "$(spec.name): Cell is outside active grid domain (user node $(p.nodeu[i]))."))
             pkg.nodelist_host[i] = nd
-            for c in eachindex(cols)
-                v = p.bound[rows[c], i]
-                imult > 0 && c == mcol && (v *= p.auxvar[imult, i])
-                pkg.bound_host[c, i] = v
-            end
         end
         append!(pkg.boundname, p.boundname)
     end
+    for (c, src) in enumerate(layout)
+        _fill_column!(pkg.bound_host, c, _source_values(src, data, rows, n), data, n, (imult > 0 && c == mcol) ? imult : 0)
+    end
     return n
+end
+
+# Column `c` of `bound` for records 1:n (a function barrier: `vals` and `data` are concrete
+# here, so the record loop does not dispatch per element).
+function _fill_column!(bound, c, vals, data, n, imult)
+    for i in 1:n
+        v = Float64(vals[i])
+        imult > 0 && (v *= data.auxvar[imult, i])
+        bound[c, i] = v
+    end
+    return nothing
 end
 
 """
@@ -220,10 +258,12 @@ end
 Apply the period data of stress period `kper` (`bnd_rp`): the last PERIOD block with
 number `<= kper` (no block yet: no records). When that block is already in force nothing
 changes and `false` is returned. Otherwise, on the host in Float64: convert cellids to
-reduced nodes, apply the MULTIPLIER auxiliary variable, convert the head-like columns to
-offsets from the references `r` (`to_offsets`), and for RCH without FIXED_CELL move each
-record whose cell has `ibound == 0` to the highest active cell below (`rch_cf`,
-`highest_active`; `ibound` is the host IBOUND by reduced node, `nothing` when every cell
+reduced nodes, fill the columns of `bound` (`bound_layout`), apply the MULTIPLIER
+auxiliary variable, check the records (`check_records`: `riv_ck`, `drn_ck`,
+`check_pxdp`), for RCH and EVT without FIXED_CELL move each record whose cell has
+`ibound == 0` to the highest active cell below (`rch_cf`, `evt_cf`, `highest_active`), and
+convert the head-like columns to offsets from the references `r` of the (moved) cell
+(`to_offsets`; `ibound` is the host IBOUND by reduced node, `nothing` when every cell
 is active). Then cast to `T`, copy to the device and rebuild the node→record map.
 Returns `true`.
 
@@ -236,7 +276,8 @@ function apply_period!(pkg::BoundaryPackage{K, T}, kper::Integer, r::AbstractVec
     ib == pkg.iblock && return false
     n = ib == 0 ? 0 : _period_records!(pkg, ib)
     nodes = view(pkg.nodelist_host, 1:n)
-    if K === :RCH && !pkg.spec.fixed_cell && !isnothing(ibound)
+    check_records(BoundaryKind{K}(), pkg, n)
+    if K in (:RCH, :EVT) && !pkg.spec.fixed_cell && !isnothing(ibound)
         for i in 1:n
             nodes[i] > 0 && ibound[nodes[i]] == 0 && (nodes[i] = highest_active(pkg.conn, nodes[i], ibound))
         end

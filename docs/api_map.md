@@ -106,15 +106,23 @@ it. Underscore-prefixed helpers are omitted.
 - **boundaries/framework.jl**: boundary framework (PLAN.md 3.4; BoundaryPackage.f90
   `bnd_rp`/`bnd_fc`/`bnd_cq`). `BoundaryKind{K}`, `BoundaryPackage{K,T}` (device
   `nodelist`, `bound`, `hcof`, `rhs`, `simvals`, node→record map; host copies),
-  `bound_columns` / `head_columns` (per kind), `check_boundary_spec` (rejects WEL
-  AUTO_FLOW_REDUCE), `apply_period!` (period data, MULTIPLIER aux, head columns →
-  offsets, RCH highest active cell), `highest_active`, `boundary_ibound` (CHD → IBOUND
+  `bound_columns` / `head_columns` / `mult_column` (per kind), `bound_layout` (per spec:
+  list columns, aux variables, constants), `check_records` (`*_ck` hook),
+  `check_boundary_spec` (rejects WEL AUTO_FLOW_REDUCE; EVT NSEG / READASARRAYS checks),
+  `apply_period!` (period data, MULTIPLIER aux, checks, RCH/EVT highest active cell, head
+  columns → offsets), `highest_active`, `boundary_ibound` (CHD → IBOUND
   −1), `formulate!` / `formulate_record`, `add_to_system!`, `calc_simvals!`,
   `boundary_kind`. Tests: boundaries.
 - **boundaries/chd.jl**: CHD (gwf-chd.f90; see `docs/mf6_notes.md`). `apply_chd_heads!`,
   `calc_chd_rate!`. Tests: boundaries (parity vs MF6 CBC).
 - **boundaries/wel.jl**, **rch.jl**, **ghb.jl**: WEL, RCH (list and RCHA arrays, cell
   area), GHB formulations (`formulate_record` methods). Tests: boundaries.
+- **boundaries/riv.jl**, **drn.jl**, **evt.jl** (T2.4): RIV (`riv_cf`, stage/rbot as
+  offsets, `riv_ck`), DRN (`drn_cf` with AUXDEPTHNAME drainage depth, device-safe
+  `linear_saturation` = `sQuadraticSaturation` with eps 0), EVT/EVTA (`evt_cf`: NSEG
+  segments, PETM0 / SURF_RATE_SPECIFIED, `check_pxdp`; `bound` = surface, rate, depth,
+  petm0, pxdp…, petm…). Tests: riv_drn_evt (parity: residual and CBC flows on
+  test/models/coupling_rde, mf6 run at test time).
 
 ## MF6 output files (host)
 
@@ -143,5 +151,8 @@ it. Underscore-prefixed helpers are omitted.
   `run_libmf6_script`, `libmf6_connectivity`, `write_dis_simulation` (synthetic DIS sims).
 - **grids.jl**: `_synthetic_coupling_dis`, `_synthetic_passthrough_dis`, `_rel_close`.
 - **residual.jl**: `to_test_device`, `flux_residual` (host flux-form residual until T2.6).
+- **models/coupling_rde/**: synthetic coupling-like model (2 × 12 × 15, confined, steady +
+  transient) with CHD, WEL, RCHA, RIV, DRN, EVT, EVTA; `generate.jl` writes it
+  (riv_drn_evt parity test).
 - **models/fhb_const/**: ex-gwf-fhb with the CHD/WEL time series replaced by constants per
   period (sto parity test).
