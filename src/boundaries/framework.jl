@@ -181,16 +181,16 @@ end
 # The reduced node of user node `nu` (0 when the cell is not in the reduced grid).
 _reduced(conn::Connectivity, nu::Integer) = (nu < 1 || nu > conn.nodesuser) ? Int32(0) : max(conn.nodereduced[nu], Int32(0))
 
-# The value of bound column source `src` (`bound_layout`) for record `i`, from a list
+# The values of bound column source `src` (`bound_layout`) for all records, from a list
 # period (`rows`: first row in `p.bound` of each named column) or an array period.
-@inline _source_value(src::Float64, data, rows, i) = src
-function _source_value(src::Tuple, p::PeriodList, rows, i)
-    src[1] === :aux && return p.auxvar[src[2], i]
-    return p.bound[rows[src[1]] + src[2] - 1, i]
+_source_values(src::Float64, data, rows, n) = fill(src, n)
+function _source_values(src::Tuple, p::PeriodList, rows, n)
+    src[1] === :aux && return view(p.auxvar, src[2], :)
+    return view(p.bound, rows[src[1]] + src[2] - 1, :)
 end
-function _source_value(src::Tuple, a::ArrayPeriod, rows, i)
-    src[1] === :aux && return a.auxvar[src[2], i]
-    return a.values[src[1]][i]
+function _source_values(src::Tuple, a::ArrayPeriod, rows, n)
+    src[1] === :aux && return view(a.auxvar, src[2], :)
+    return a.values[src[1]]
 end
 
 # Fill `pkg.nodelist_host`, `pkg.bound_host` and `pkg.boundname` from PERIOD block `ib`;
@@ -235,12 +235,21 @@ function _period_records!(pkg::BoundaryPackage{K}, ib::Integer) where {K}
         end
         append!(pkg.boundname, p.boundname)
     end
-    for i in 1:n, (c, src) in enumerate(layout)
-        v = _source_value(src, data, rows, i)
-        imult > 0 && c == mcol && (v *= data.auxvar[imult, i])
-        pkg.bound_host[c, i] = v
+    for (c, src) in enumerate(layout)
+        _fill_column!(pkg.bound_host, c, _source_values(src, data, rows, n), data, n, (imult > 0 && c == mcol) ? imult : 0)
     end
     return n
+end
+
+# Column `c` of `bound` for records 1:n (a function barrier: `vals` and `data` are concrete
+# here, so the record loop does not dispatch per element).
+function _fill_column!(bound, c, vals, data, n, imult)
+    for i in 1:n
+        v = Float64(vals[i])
+        imult > 0 && (v *= data.auxvar[imult, i])
+        bound[c, i] = v
+    end
+    return nothing
 end
 
 """
