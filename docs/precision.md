@@ -191,7 +191,8 @@ percent discrepancy < 0.01 % (largest 1.5e-3 %), and `:single` vs `:double` head
 host. Measured on the RX 7800 XT for a 360-row vector: kernels plus synchronisation
 30 µs, the 4-value device-to-host `copyto!` (unpinned, staged) another 32 µs. The
 reduction results now go to host memory registered with HIP (`host_mapped_zeros`, an
-extension hook; the CPU backend aliases the same `Array`), so the copy is gone and a
+extension hook; the CPU backend aliases the same `Array`; AMDGPU 2.8, the version mGV
+allows, keeps the copy because it cannot unregister wrapped memory), so the copy is gone and a
 reduction costs about 30 µs. The algorithms, the number of synchronisations and the
 convergence checks per iteration are unchanged (MF6 semantics), and the results are
 bitwise the same.

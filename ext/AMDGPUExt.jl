@@ -5,14 +5,15 @@ import ModflowGPU
 
 # Host memory registered with HIP and wrapped as a ROCArray: reductions write their
 # results straight into host memory (visible after the stream is synchronised).
+# AMDGPU >= 2.10 wraps an Array: the wrapper keeps it alive and unregisters it once the
+# device is done with it. Older versions (2.8, the version mGV allows) only wrap a pointer
+# and never unregister it, so freed GC memory would stay registered and a later array at
+# the same address (possibly of another size) would reuse the stale registration; there
+# the reductions copy their results instead (`nothing`).
 function ModflowGPU.host_mapped_zeros(::ROCBackend, ::Type{T}, n::Integer) where {T}
     host = zeros(T, n)
-    # AMDGPU >= 2.11 wraps an Array (keeping it alive, unregistering it when freed); older
-    # versions (2.8, the version mGV allows) only wrap a pointer, which registers the
-    # memory for the rest of the session (the caller keeps `host` alive).
-    dev = applicable(unsafe_wrap, AMDGPU.ROCArray, host) ? unsafe_wrap(AMDGPU.ROCArray, host) :
-        unsafe_wrap(AMDGPU.ROCArray, pointer(host), size(host))
-    return (dev, host)
+    applicable(unsafe_wrap, AMDGPU.ROCArray, host) || return nothing
+    return (unsafe_wrap(AMDGPU.ROCArray, host), host)
 end
 
 function __init__()
