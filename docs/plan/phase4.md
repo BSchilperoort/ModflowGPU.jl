@@ -38,6 +38,9 @@ Size: S ≈ < 1 day of agent work, M ≈ 1–3 days, L ≈ > 3 days.
 - Done when: `global5m` steady state converges to tight closure, and the
   iteration count is roughly independent of grid size (compare `indus` vs
   `continental` vs `global5m`).
+- Also (from T2.8): ex-gwf-hwell-a in `:single` fails with Jacobi BiCGSTAB (step 58 of
+  60 does not converge, `MFGPU_TEST_HWELL=1`, group `run`); `:double` passes (7.5e-10 m).
+  It must pass in `:single` with the new preconditioner (T4.2 smoothers or T4.3 AMG).
 
 **T4.4 `:mixed` preset and production default (M)**
 - Depends: T4.3.
