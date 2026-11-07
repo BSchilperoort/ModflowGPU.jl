@@ -64,6 +64,8 @@ function ModelOutput(m::GwfModel, simdir::AbstractString, outdir::AbstractString
     bp = (isnothing(oc) || isempty(oc.budget_file)) ? "" : _output_path(simdir, outdir, oc.budget_file)
     lname = isempty(m.spec.list_file) ? splitext(basename(m.spec.file))[1] * ".lst" : m.spec.list_file
     lp = _output_path(simdir, outdir, lname)
+    m.spec.npf.save_specific_discharge && !isempty(bp) &&
+        @info "NPF SAVE_SPECIFIC_DISCHARGE: DATA-SPDIS is not written to the budget file yet" m.spec.npf.file
     head = isempty(hp) ? nothing : open(hp, "w")
     budget = isempty(bp) ? nothing : open(bp, "w")
     return ModelOutput(head, budget, open(lp, "w"), OutputLayout(m.spec.dis), hp, bp, lp)
