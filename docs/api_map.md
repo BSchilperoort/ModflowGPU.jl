@@ -135,7 +135,22 @@ it. Underscore-prefixed helpers are omitted.
   sums; optional `scale`/`bound` outputs for the universal residual test). Tests:
   assembly (parity: universal residual on Tier 0–2 + synthetic models, libmf6 first-solve
   AMAT/RHS oracle via validation/libmf6_first_solve.jl, cancellation test), also used by
-  boundaries, sto, riv_drn_evt through `flux_residual` in test/residual.jl.
+  boundaries, sto, riv_drn_evt through `flux_residual` in test/residual.jl. Also `spmv!`
+  (`y = A·x`, T2.7; tests: krylov).
+
+## Linear solvers
+
+- **solver/krylov.jl** (T2.7): correction solve `A·δ = res` with zero initial guess
+  (PLAN.md 3.7 rules 3–4; ImsLinearBase.f90 `ims_base_cg`, `ims_base_bcgs`,
+  `ims_base_scale`, `ims_base_testcnvg`, `ims_base_epfact`). `KrylovSettings` (host; from
+  an `ImsSpec`: LINEAR_ACCELERATION, INNER_*, rclose options, NUMBER_ORTHOGONALIZATIONS,
+  SCALING_METHOD; ILU0/MILU0/ILUT → Jacobi with a warning), `ims_preconditioner`
+  (`resolve_ipc`), `ims_testcnvg`, `ims_epfact`, `KrylovSolver{Ts,Tp,Ta}` (device
+  workspace), `solve!(δ, solver, amat, res; kstp)` → `KrylovResult` (converged,
+  iterations, status, dvmax, rmax, l2norm0, l2norm). Device reductions: `Reducer`,
+  `accumulation_type`, `device_dot`, `device_maxabs` (fused map-reduce kernels
+  `mapreduce_kernel!` / `finalize_reduction_kernel!`, `map_kernel!`). IMS mapping in
+  docs/mf6_notes.md, accuracy and timing in docs/precision.md. Tests: krylov.
 
 ## MF6 output files (host)
 

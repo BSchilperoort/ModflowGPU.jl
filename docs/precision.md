@@ -62,3 +62,42 @@ GHB-like term on one cell): max |res_single − res_double| / max |res_double|:
 amat is bitwise equal on all six models and `b'` within 3.6e-16 of
 max(|RHS| + Σ|a·r|); `:single` within 7.1e-8 (amat, relative to max |a|) and 5.3e-8
 (`b'`), i.e. one Float32 rounding.
+
+## Linear solvers (T2.7)
+
+Kernels: `src/solver/krylov.jl`. Vectors are in `Ts`, the Jacobi inverse diagonal in
+`Tp`; every dot product and norm (`L2NORM0`, rho, the denominators, the max-abs `δ` and
+residual) is a device reduction accumulated in `Ta = accumulation_type(backend, Ts)`:
+Float64 when the backend has it (so also in `:single` on CPU and ROCm), else `Ts`. The
+reduction is a pairwise tree in each 256-item work group, then one work group over the
+group results; the scalars and the convergence test are Float64 on the host. Note for
+T3.1 (no `double` in `:single` device IR): the reduction kernels of `:single` contain
+Float64 by design (rule 4) on backends with Float64; the IR check must exempt them or
+run with `Ta = Float32`.
+
+Test: test/unit/krylov_test.jl (group `krylov`), random M-matrices (n = 500, about 6
+neighbours per row), RELATIVE_RCLOSE 1e-11 (`:double`) or 1e-6 (`:single`); error
+`max |x − x\| / max |x\|` (badly scaled: in the scaled variables `√|a_nn|·x`), CPU backend,
+iterations in brackets:
+
+| Case | `:double` | `:single` |
+| --- | --- | --- |
+| SPD, CG | 3.5e-11 (122) | 8.8e-7 (20) |
+| SPD, MF6 sign (CG on −A) | 2.6e-11 (108) | 6.6e-7 (20) |
+| SPD, rows scaled by e^N(0,1), CG + DIAGONAL | 8.3e-12 (63) | 2.8e-7 (20) |
+| SPD, MF6 sign, BiCGSTAB | 4.4e-11 (29) | 7.8e-6 (13) |
+| nonsymmetric, BiCGSTAB | 2.5e-11 (16) | 1.5e-6 (10) |
+| nonsymmetric, MF6 sign, BiCGSTAB | 2.0e-11 (18) | 1.7e-6 (10) |
+| nonsymmetric scaled, BiCGSTAB + DIAGONAL | 2.2e-12 (27) | 2.1e-7 (11) |
+| nonsymmetric scaled, BiCGSTAB + L2NORM | 3.2e-12 (2000, see mf6_notes) | 1.2e-7 (11) |
+
+The attainable relative residual of the recursively updated residual is about 1e-12 in
+Float64 on these matrices (on one of them CG reaches 1e-9 in 27 iterations and needs
+about 1000 for 1e-12, also in a host Float64 port), and about 1e-7 in Float32. In Float32 an absolute
+INNER_RCLOSE below `eps(Float32)·‖A‖·‖δ‖` cannot be reached and the solve runs to
+INNER_MAXIMUM; T2.8 sets the `:single` closures. ROCm (RX 7800 XT) and the CPU backend give
+the same iteration counts in `:double` and `δ` within 1e-10.
+
+Timing on the RX 7800 XT, 1e6 rows (2 × 500 × 1000 DIS grid, 7-point stencil), Jacobi:
+CG 0.53 ms per iteration (`:double`) and 0.38 ms (`:single`); BiCGSTAB 1.05 ms and
+0.69 ms. Each CG iteration has 2 host synchronisations (one 4-value copy each), BiCGSTAB 3.

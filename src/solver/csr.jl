@@ -263,3 +263,26 @@ function flux_residual!(res, sys::LinearSystem, csr::CsrStructure, npf::NpfModel
     )
     return res
 end
+
+@kernel function spmv_kernel!(y, @Const(amat), @Const(ia), @Const(ja), @Const(x))
+    n = @index(Global)
+    T = eltype(y)
+    @inbounds begin
+        s = zero(T)
+        for ii in ia[n]:(ia[n + 1] - Int32(1))
+            s += T(amat[ii]) * T(x[ja[ii]])
+        end
+        y[n] = s
+    end
+end
+
+"""
+    spmv!(y, amat, csr::CsrStructure, x) -> y
+
+`y = A·x` for the matrix `amat` in the CSR layout of `csr` (SPARSKIT `amux`, used by
+ImsLinearBase.f90), one work item per row, accumulated in `eltype(y)`.
+"""
+function spmv!(y, amat, csr::CsrStructure, x)
+    spmv_kernel!(get_backend(y))(y, amat, csr.ia, csr.ja, x; ndrange = csr.nodes)
+    return y
+end
