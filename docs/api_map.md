@@ -10,7 +10,7 @@ it. Underscore-prefixed helpers are omitted.
 
 - **backend_setup.jl**: backend registry, adapted from mGV. `select_backend` (name → KA
   backend), `register_backend!` (called by `ext/*Ext.jl`), `backend_options`,
-  `backend_name`, `known_backend_package`, `pin_memory!` (extension hook), `BackendEntry`, `BACKEND_REGISTRY`, `KNOWN_BACKENDS`. Tests: backend.
+  `backend_name`, `known_backend_package`, `pin_memory!` (extension hook), `BackendEntry`, `BACKEND_REGISTRY`, `KNOWN_BACKENDS`; `_device_copy` (host array → new device array). Tests: backend.
 - **ext/*Ext.jl** (AMDGPU, CUDA, Metal, oneAPI, OpenCL): `__init__` registers the backend;
   overrides `supports_float64` where needed. Tests: backend (GPU file with
   `MFGPU_TEST_BACKEND`).
@@ -83,7 +83,8 @@ it. Underscore-prefixed helpers are omitted.
 ## GWF engine
 
 - **gwf/offsets.jl**: heads as offsets from per-cell references (PLAN.md 3.7 rule 1).
-  `reference_heads`, `reference_differences`, `reference_difference` (device-safe),
+  `reference_heads` (STRT for ICELLTYPE 0 with a clamp fallback for implausible STRT,
+  `REFERENCE_FALLBACK_MIN_DISTANCE`; clamp for convertible cells), `reference_differences`, `reference_difference` (device-safe),
   `to_offsets` (Float64 head-like values → offsets, per node or per record). Tests: npf,
   boundaries.
 - **gwf/npf.jl**: NPF, confined: saturated conductance per connection (NPF.f90). Device-safe
@@ -152,6 +153,31 @@ it. Underscore-prefixed helpers are omitted.
   `mapreduce_kernel!` / `finalize_reduction_kernel!`, `map_kernel!`). IMS mapping in
   docs/mf6_notes.md, accuracy and timing in docs/precision.md. Tests: krylov.
 
+## Time stepping, outer iterations, flows and budgets (T2.8)
+
+- **timing.jl**: TDIS on the host (tdis.f90 `tdis_set_timestep`/`tdis_set_delt`).
+  `TimeStep` (kper, kstp, delt, pertim, totim, endofperiod), `time_steps(tdis)`. Tests:
+  picard.
+- **gwf/model.jl**: one model on a device. `GwfModel{T}` (spec, conn, NpfSetup, CSR,
+  NpfModel, LinearSystem, boundary packages, STO, ibound, offset heads `h`/`hold`, `res`,
+  `δ`, `flowja`), `apply_period!(::GwfModel, kper)` (once per period: package period
+  data, STO, CHD ibound), `start_timestep!` (`rho`, `hold ← h`, CHD heads), `formulate!`
+  (formulate, assemble, flux residual), `absolute_heads` (host Float64 `r + h'`). Tests:
+  picard, run.
+- **solver/underrelax.jl**: `sln_underrelax`. `UnderRelaxation` (SIMPLE, COOLEY host
+  scalars, DBD device state), `underrelax!` (`relax_update_kernel!`,
+  `dbd_update_kernel!`). Tests: picard (vs a host port), run (variants vs MF6).
+- **solver/picard.jl**: outer loop (`sln_ca`/`solve`; PLAN.md 3.7 rule 3). `PicardSettings`
+  (from `ImsSpec`, `closures` overrides, Float32 floors `FLOAT32_CLOSURES`, backtracking
+  warning), `PicardSolver` (KrylovSolver, UnderRelaxation, Reducer), `solve_timestep!` →
+  `OuterResult` (converged, outer and inner iterations, hncg, the dvclose/rclose used).
+  Tests: picard, run.
+- **budget.jl**: `gwf_cq`/`gwf_bd`. `npf_flowja!`, `calc_flows!` (NPF, STO, packages with
+  `bnd_cf` + `simvals`, CHD `calc_chd_rate!`, `csr_diagsum`), `BudgetTerm`, `ModelBudget`
+  (`total_rate_in`/`_out`, `total_cum_in`/`_out`, `percent_discrepancy`,
+  `cum_percent_discrepancy`), `BudgetAccumulator`, `model_budget!` (device reductions,
+  host cumulative volumes), `budget_text` (CBC text per package). Tests: picard, run.
+
 ## MF6 output files (host)
 
 - **output/binary.jl**: shared binary I/O helpers (little-endian stream files).
@@ -168,7 +194,20 @@ it. Underscore-prefixed helpers are omitted.
   `find_budget_records`, `read_budget`, `write_budget_array`, `write_budget_list`,
   `write_budget_file`. Tests: output.
 - **output/listing.jl**: listing-file budget tables. `ListingBudget`, `ListingBudgetTerm`,
-  `read_listing_budgets`, `listing_rates`, `percent_discrepancy`. Tests: output.
+  `read_listing_budgets`, `listing_rates`, `percent_discrepancy`, `write_listing_budget`
+  (`budget_ot` layout, T2.8). Tests: output, picard.
+- **output/oc.jl** (T2.8): output control and run output. `oc_selected` (OC PERIOD
+  blocks, ALL/FIRST/LAST/FREQUENCY/STEPS), `ModelOutput` (open HDS/CBC/listing files),
+  `write_heads`, `write_budget` (STO-SS, FLOW-JA-FACE, package lists as MF6),
+  `write_head_listing` (PRINT HEAD). Tests: picard, run.
+
+## Running a simulation
+
+- **run.jl** (T2.8): `ModflowGPU.run(simdir or SimulationSpec; backend, precision,
+  outdir, closures, write_output)` → `RunResult` (model, precision types, `StepResult`s,
+  `ModelBudget`s, final heads, output paths); `ConvergenceError`. One model, one IMS
+  solution. Tests: run (parity vs MF6 on Tier 0, fhb_const, coupling_rde and IMS
+  variants; flopy read-back with MFGPU_FLOPY=1).
 
 ## Test helpers (`test/`, always loaded)
 
