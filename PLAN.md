@@ -629,7 +629,9 @@ the same code on the GPU.
   `docs/precision.md` rather than failing on it. Also conversion of offsets to
   absolute Float64 heads on the host for all output,
   `src/budget.jl` (FLOW-JA-FACE, per-package in/out, storage, percent
-  discrepancy), OC (SAVE/PRINT HEAD/BUDGET ALL/LAST/FREQUENCY/STEPS), HDS/CBC
+  discrepancy; CHD as in `calc_chd_rate`: the listing's CHD in/out is the
+  per-connection split over connections to active cells, the CBC CHD `q` is the
+  per-cell net, and the rate is added to `flowja(idiag)`), OC (SAVE/PRINT HEAD/BUDGET ALL/LAST/FREQUENCY/STEPS), HDS/CBC
   writers, a short listing file with budget tables, and `ModflowGPU.run(simdir)`.
 - Also deliver `docs/precision.md`: the Float32 closures (section 3.7), and the
   measured `:single` vs `:double` and `:single` vs MF6 differences on every
