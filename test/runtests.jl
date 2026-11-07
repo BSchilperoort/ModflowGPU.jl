@@ -45,6 +45,8 @@ include("libmf6_oracle.jl")
     include("unit/simulation_loader_test.jl")
     include("unit/connectivity_test.jl")
     include("parity/connectivity_test.jl")
+    include("unit/npf_test.jl")
+    include("parity/npf_test.jl")
     if !(TEST_BACKEND isa CPU)
         include("gpu/backend_gpu_test.jl")
     end

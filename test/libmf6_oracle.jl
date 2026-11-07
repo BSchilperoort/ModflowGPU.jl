@@ -88,14 +88,23 @@ function _write_internal(io, name, a)
 end
 
 """
-    write_dis_simulation(dir, dis::ModflowGPU.DisSpec; name = "synth")
+    write_dis_simulation(dir, dis::ModflowGPU.DisSpec; name = "synth", npf_options = String[],
+                         npf_arrays = Dict("icelltype" => 0, "k" => 1.0), strt = 0.0)
 
 Write a one-model MF6 simulation on the grid `dis` to `dir`: mfsim.nam, TDIS (one
 steady period), IMS, and a GWF model with DIS (INTERNAL arrays, reals written so that
-they read back exactly), a confined NPF with K = 1 and IC. No boundary packages: enough
-for libmf6 to initialise, not to solve.
+they read back exactly), NPF and IC. No boundary packages: enough for libmf6 to
+initialise, not to solve.
+
+NPF: `npf_options` are lines of the OPTIONS block (`"ALTERNATIVE_CELL_AVERAGING
+LOGARITHMIC"`, ...), `npf_arrays` maps GRIDDATA names to a constant or an array of the
+grid shape (written INTERNAL, in the order `icelltype`, `k`, `k22`, `k33`, `angle1`,
+`angle2`, `angle3`, `wetdry`). IC STRT is a constant or an array.
 """
-function write_dis_simulation(dir::AbstractString, dis; name::AbstractString = "synth")
+function write_dis_simulation(
+        dir::AbstractString, dis; name::AbstractString = "synth", npf_options = String[],
+        npf_arrays = Dict{String, Any}("icelltype" => 0, "k" => 1.0), strt = 0.0,
+    )
     mkpath(dir)
     write(
         joinpath(dir, "mfsim.nam"), """
@@ -164,27 +173,21 @@ function write_dis_simulation(dir::AbstractString, dis; name::AbstractString = "
         _write_internal(io, "idomain", dis.idomain)
         println(io, "END griddata")
     end
-    write(
-        joinpath(dir, "$name.npf"), """
-        BEGIN options
-        END options
-        BEGIN griddata
-          icelltype
-            CONSTANT  0
-          k
-            CONSTANT  1.0
-        END griddata
-        """,
-    )
-    write(
-        joinpath(dir, "$name.ic"), """
-        BEGIN options
-        END options
-        BEGIN griddata
-          strt
-            CONSTANT  0.0
-        END griddata
-        """,
-    )
+    _write_value(io, key, v) = v isa AbstractArray ? _write_internal(io, key, v) :
+        println(io, "  ", key, "\n    CONSTANT  ", v isa Integer ? string(v) : _mf6_real(v))
+    open(joinpath(dir, "$name.npf"), "w") do io
+        println(io, "BEGIN options")
+        foreach(o -> println(io, "  ", o), npf_options)
+        println(io, "END options\nBEGIN griddata")
+        for key in ("icelltype", "k", "k22", "k33", "angle1", "angle2", "angle3", "wetdry")
+            haskey(npf_arrays, key) && _write_value(io, key, npf_arrays[key])
+        end
+        println(io, "END griddata")
+    end
+    open(joinpath(dir, "$name.ic"), "w") do io
+        println(io, "BEGIN options\nEND options\nBEGIN griddata")
+        _write_value(io, "strt", strt)
+        println(io, "END griddata")
+    end
     return dir
 end

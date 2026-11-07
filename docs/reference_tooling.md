@@ -182,7 +182,12 @@ dependencies and every simulation gets a fresh libmf6 instance:
   `<MODEL>/CON/{IA,JA,JAS,ISYM,IHC,CL1,CL2,HWVA,ANGLEX,IAUSR,JAUSR}` and
   `<MODEL>/DIS/{NODEUSER,NODEREDUCED,TOP,BOT,AREA,XC,YC}` as raw Int32/Float64 files
   `<outdir>/<MODEL>/<COMP>_<NAME>.bin`, with `index.toml` (types, lengths, and the scalars
-  `DIS/{NODES,NODESUSER,NJA,NJAS}`). About 1.5 s per simulation.
+  `DIS/{NODES,NODESUSER,NJA,NJAS}`). Since T2.2 it also dumps
+  `<MODEL>/NPF/{CONDSAT,K11,K22,K33,ANGLE1,ANGLE2,ANGLE3,ICELLTYPE}` and `<MODEL>/IC/STRT`
+  where libmf6 has them with a non-zero length (CONDSAT has length 0 under XT3D, the
+  angles when not given). These are the values after `npf_ar`: by reduced node, K22/K33
+  filled in and scaled by K22OVERK/K33OVERK, angles in radians, CONDSAT per symmetric
+  connection. About 1.5 s per simulation.
 - `test/libmf6_oracle.jl` runs such a script with
   `julia --startup-file=no --project=$MFGPU_LIBMF6_ENV` (default
   `$REFERENCE_DIR/julia-env/mf6.8.2`), with `JULIA_LOAD_PATH`/`JULIA_PROJECT` removed
@@ -192,7 +197,8 @@ dependencies and every simulation gets a fresh libmf6 instance:
 - `write_dis_simulation(dir, dis)` (same file) writes a minimal simulation (DIS with
   INTERNAL arrays written to read back exactly, NPF, IC, IMS, one steady period) for
   grids made in tests, so synthetic grids (e.g. with IDOMAIN < 0) can be checked against
-  libmf6 too. MF6 reads 2D/3D arrays one row per Fortran READ, so each row starts on a
+  libmf6 too. Keywords `npf_options` (OPTIONS lines), `npf_arrays` (GRIDDATA name =>
+  constant or array) and `strt` set the NPF and IC input (T2.2). MF6 reads 2D/3D arrays one row per Fortran READ, so each row starts on a
   new line.
 
 Run by hand: `julia --project=reference/julia-env/mf6.8.2 validation/libmf6_connectivity.jl
