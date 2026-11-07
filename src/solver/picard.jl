@@ -31,7 +31,7 @@ Float32 by `PicardSettings`:
   `eps(Float32)·max_n Σ_m |terms|` of the first outer iteration of a step, the rounding
   level of the flux-form residual (rule 2).
 """
-const FLOAT32_CLOSURES = (; outer_dvclose = 1.0e-5, inner_dvclose = 1.0e-6, dvclose_head_factor = 1.0, inner_rclose_factor = 10.0)
+const FLOAT32_CLOSURES = (; outer_dvclose = 1.0e-6, inner_dvclose = 1.0e-6, dvclose_head_factor = 1.0, inner_rclose_factor = 1.0)
 
 """
     PicardSettings
