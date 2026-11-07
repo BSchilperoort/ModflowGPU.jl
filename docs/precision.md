@@ -169,7 +169,7 @@ BiCGSTAB solve does not converge in 1000 iterations and returns a correction of 
 for a residual of 0.93, after which the outer iterations diverge (NaN by iteration 8).
 Until T2.8's last fix the max-abs reduction skipped NaN and the step was reported as
 converged; it now propagates NaN and the outer loop stops with a warning (and
-`ConvergenceError`). HWELL_DOUBLE The cure is the Phase 4 preconditioner (MF6 needs 2 outer
+`ConvergenceError`). `:double` on ROCm converges in all 60 steps (231 s; 2 outer and 12–30 inner iterations per step in the first steps), within 2.0e-10 m of MF6 in the last step, percent discrepancy 2.8e-8 %. The cure is the Phase 4 preconditioner (MF6 needs 2 outer
 and 7–10 inner iterations per step with ILU0).
 
 **Section 4 thresholds.** Confirmed for `:single` on Tier 0 and the synthetic models:
