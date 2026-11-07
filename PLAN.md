@@ -541,6 +541,11 @@ the same code on the GPU.
   harmonic default, `LOGARITHMIC`, `AMT-LMK`, `AMT-HMK`; `K22`/`K33` and
   `ANGLE1/2/3` effective K in the connection direction; `THICKSTRT` is parsed
   but rejected until T6.1; `K22OVERK`/`K33OVERK`.
+- Convention (from the T2.1 review): per-connection arrays (`condsat`, `Δr`)
+  are stored per symmetric pair (`njas`) and indexed through `jas`, like
+  `cl1/cl2`. `Δr[jas]` is `r[m] − r[n]` with `n < m`; a row-wise gather for
+  row `n` uses `+Δr[jas[ii]]` when `ja[ii] > n` and `−Δr[jas[ii]]` otherwise
+  (as `connection_lengths` does).
 - Done when: `condsat` equals libmf6 `NPF/CONDSAT` (if exposed) or passes the
   universal residual test on toth, hanic and hanir.
 
@@ -586,7 +591,9 @@ the same code on the GPU.
 
 **T2.6 Assembly and matrix oracle (M)**
 - Depends: T2.2–T2.5.
-- Deliver: `src/solver/csr.jl` assembly kernel (off-diagonals from `condsat`,
+- Deliver: a small parametric device view of the CSR structure (`ia`, `ja`,
+  `jas`, `isym` as needed; `Adapt.@adapt_structure`) next to the host
+  `Connectivity`, then `src/solver/csr.jl` assembly kernel (off-diagonals from `condsat`,
   diagonal = −Σ, plus boundary and storage terms), the flux-form residual
   kernel (section 3.7, rule 2), and `test/parity/assembly_test.jl` with:
   1. the universal residual test (section 4) on every Tier 0–2 example, with
