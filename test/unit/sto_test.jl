@@ -6,12 +6,6 @@ using ModflowGPU: load_simulation, build_connectivity, reference_heads, StoSpec,
     storage_capacity, check_storage_spec, apply_period!, set_timestep!, add_to_system!, calc_storage_rates!,
     add_storage_flowja!, storage_budget, initial_heads, MF6UnsupportedError
 
-function _sto_dev(x::AbstractArray)
-    d = KernelAbstractions.allocate(TEST_BACKEND, eltype(x), size(x))
-    copyto!(d, x)
-    return d
-end
-
 # A 4-period simulation on the coupling-like grid (IDOMAIN 0 cells) with STO: period 1 is
 # transient (no PERIOD block yet), 2 and 4 are steady state, 3 is transient.
 function _write_sto_simulation(dir; storagecoefficient = false)
@@ -111,14 +105,14 @@ end
                     rho64 = sc .* (1.0 / delt)
                     @test Array(s.rho) == T.(rho64)
                     rho = Float64.(T.(rho64))
-                    ib = _sto_dev(ibh)
-                    hold = _sto_dev(T.(hold64))
-                    hnew = _sto_dev(T.(hnew64))
-                    idiag = _sto_dev(Int32.(1:nodes))
+                    ib = to_test_device(ibh)
+                    hold = to_test_device(T.(hold64))
+                    hnew = to_test_device(T.(hnew64))
+                    idiag = to_test_device(Int32.(1:nodes))
                     d0 = [-1.0 - n for n in 1:nodes]
                     b0 = [0.5 * n for n in 1:nodes]
-                    diag = _sto_dev(T.(d0))
-                    b = _sto_dev(T.(b0))
+                    diag = to_test_device(T.(d0))
+                    b = to_test_device(T.(b0))
                     add_to_system!(diag, b, idiag, s, hold, ib)
                     KernelAbstractions.synchronize(TEST_BACKEND)
                     act = ibh .> 0
@@ -137,7 +131,7 @@ end
                     @test maximum(abs.(q .- qref)) <= tol * maximum(abs, qref)
                     @test all(iszero, q[.!act])
                     flowja = KernelAbstractions.zeros(TEST_BACKEND, T, conn.nja)
-                    iad = _sto_dev(Int32.(conn.ia[1:nodes]))
+                    iad = to_test_device(Int32.(conn.ia[1:nodes]))
                     add_storage_flowja!(flowja, iad, s)
                     fj = Array(flowja)
                     @test fj[conn.ia[1:nodes]] == Array(s.strgss)

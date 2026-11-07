@@ -35,6 +35,7 @@ include("testutils.jl")
 include("input_files.jl")
 include("libmf6_oracle.jl")
 include("grids.jl")
+include("residual.jl")
 
 # Test groups, in run order: group name => test files. A parity file shares the group
 # name of its unit counterpart. The helpers above are loaded regardless of selection.

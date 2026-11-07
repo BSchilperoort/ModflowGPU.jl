@@ -9,46 +9,11 @@
 # MF6's heads converted to offsets in Float64 before the cast to `T`. Constant-head cells
 # get their heads from `apply_chd_heads!`. Criterion (PLAN.md section 4): max |res_n| /
 # max_n Σ|terms_n| < 1e-8; in `:single` it may instead stay below the bound set by rounding
-# the offset heads to Float32 (`_bnd_residual`; both are reported). Then the CHD rates (`calc_chd_rate!`, from flowja computed
+# the offset heads to Float32 (`flux_residual` in test/residual.jl; both are reported). Then the CHD rates (`calc_chd_rate!`, from flowja computed
 # with MF6's heads) against MF6's CBC CHD records. Skips without reference/.
 using ModflowGPU: load_simulation, build_connectivity, BoundaryPackage, apply_period!, formulate!, add_to_system!, apply_chd_heads!,
     calc_chd_rate!, boundary_ibound, npf_setup, to_offsets, open_head_file, read_head,
     open_budget_file, read_budget
-
-function _bnd_dev(x::AbstractArray)
-    d = KernelAbstractions.allocate(TEST_BACKEND, eltype(x), size(x))
-    copyto!(d, x)
-    return d
-end
-
-# Flux-form residual on the host in `T`; returns max |res| / max Σ|terms| and the bound
-# from rounding the offset heads to `T`, eps(T)·max_n Σ C·(|h'_m| + |h'_n| + |Δr|) / max Σ|terms|.
-function _bnd_residual(::Type{T}, conn, condsat, Δr, h, diag, b, ib) where {T}
-    maxres = zero(T)
-    maxscale = zero(T)
-    maxround = zero(T)
-    for n in 1:conn.nodes
-        ib[n] > 0 || continue
-        res = zero(T)
-        scale = zero(T)
-        round = zero(T)
-        for ii in (conn.ia[n] + 1):(conn.ia[n + 1] - 1)
-            m = conn.ja[ii]
-            d = conn.ja[ii] > n ? Δr[conn.jas[ii]] : -Δr[conn.jas[ii]]
-            t = condsat[conn.jas[ii]] * (h[m] - h[n] + d)
-            res += t
-            scale += abs(t)
-            round += condsat[conn.jas[ii]] * (abs(h[m]) + abs(h[n]) + abs(d))
-        end
-        t = diag[n] * h[n] - b[n]
-        res += t
-        scale += abs(diag[n] * h[n]) + abs(b[n])
-        maxres = max(maxres, abs(res))
-        maxscale = max(maxscale, scale)
-        maxround = max(maxround, round)
-    end
-    return maxres / maxscale, eps(T) * maxround / maxscale
-end
 
 @testset "Boundary residual test (CHD, WEL) vs MF6 tight heads" begin
     for name in ("ex-gwf-toth", "ex-gwf-hanic")
@@ -80,12 +45,12 @@ end
                 pk = [BoundaryPackage(TEST_BACKEND, T, b, conn, m.dis) for b in m.boundaries]
                 foreach(x -> apply_period!(x, 1, s.r), pk)
                 ibh = boundary_ibound(conn, pk)
-                ib = _bnd_dev(ibh)
-                h = _bnd_dev(T.(hoff))
-                area = _bnd_dev(T.(conn.area))
+                ib = to_test_device(ibh)
+                h = to_test_device(T.(hoff))
+                area = to_test_device(T.(conn.area))
                 diag = KernelAbstractions.zeros(TEST_BACKEND, T, conn.nodes)
                 b = KernelAbstractions.zeros(TEST_BACKEND, T, conn.nodes)
-                idiag = _bnd_dev(Int32.(1:conn.nodes))
+                idiag = to_test_device(Int32.(1:conn.nodes))
                 for x in pk
                     if ModflowGPU.boundary_kind(x) === :CHD
                         apply_chd_heads!(h, x)
@@ -99,12 +64,12 @@ end
                 # MF6's constant heads are the CHD heads.
                 chdnodes = findall(<(0), ibh)
                 @test maximum(abs.(Float64.(hh[chdnodes]) .- hoff[chdnodes])) <= 2 * eps(T) * maximum(abs.(hoff[chdnodes]); init = 1.0)
-                rel, roundoff = _bnd_residual(T, conn, T.(s.condsat), T.(s.Δr), hh, Array(diag), Array(b), ibh)
+                rel, roundoff = flux_residual(T, conn, T.(s.condsat), T.(s.Δr), hh, Array(diag), Array(b), ibh)
                 @info "Boundary residual test: $name, :$(p.preset), $(count(>(0), ibh)) active rows, $(length(chdnodes)) CHD cells: max |res| / max Σ|terms| = $rel (rounding bound $roundoff)"
                 @test rel < 1.0e-8 || (T === Float32 && rel <= roundoff)
                 # CHD rates vs the CBC CHD records (q per cell).
-                ia, ja = _bnd_dev(conn.ia), _bnd_dev(conn.ja)
-                fj = _bnd_dev(T.(flowja))
+                ia, ja = to_test_device(conn.ia), to_test_device(conn.ja)
+                fj = to_test_device(T.(flowja))
                 q = Float64[]
                 nodes = Int32[]
                 for x in pk
