@@ -24,7 +24,7 @@
 using ModflowGPU: load_simulation, build_connectivity, npf_setup, BoundaryPackage, apply_period!, formulate!,
     apply_chd_heads!, boundary_ibound, StoragePackage, set_timestep!, initial_heads, to_offsets, open_head_file,
     read_head, CsrStructure, LinearSystem, NpfModel, assemble!, flux_residual!, reset_terms!, add_terms!,
-    MF6UnsupportedError
+    MF6UnsupportedError, backend_name
 
 const ASM_MF6 = get(ENV, "MF6", joinpath(REFERENCE_DIR, "mf6.8.2_linux", "bin", "mf6"))
 
@@ -40,7 +40,8 @@ _symmetric(sim) = only(only(sim.solution_groups).solutions).linear_acceleration 
 # The device formulation of one model in precision `T`, set up for period `kper` and
 # step length `delt`, with offset heads `h` (host, Float64 offsets) and old heads `hold`.
 # Returns the device objects; the constant heads are applied to `h`.
-struct _AsmCase{T, C, S, N, P, ST, V, VI}
+struct _AsmCase{T, B, C, S, N, P, ST, V, VI}
+    backend::B
     csr::C
     sys::S
     npf::N
@@ -51,16 +52,18 @@ struct _AsmCase{T, C, S, N, P, ST, V, VI}
     ib::VI
 end
 
-function _asm_case(T, m, conn, s, nper)
-    csr = CsrStructure(TEST_BACKEND, conn)
-    sys = LinearSystem(TEST_BACKEND, T, csr)
-    npf = NpfModel(TEST_BACKEND, T, s)
-    pk = [BoundaryPackage(TEST_BACKEND, T, b, conn, m.dis) for b in m.boundaries]
-    sto = isnothing(m.sto) ? nothing : StoragePackage(TEST_BACKEND, T, m.sto, conn, nper)
-    area = to_test_device(T.(conn.area))
-    ib = to_test_device(ones(Int32, conn.nodes))
-    return _AsmCase{T, typeof(csr), typeof(sys), typeof(npf), typeof(pk), typeof(sto), typeof(area), typeof(ib)}(
-        csr, sys, npf, pk, sto, area, Int(conn.nodes), ib,
+_todev(backend, x) = (d = KernelAbstractions.allocate(backend, eltype(x), size(x)); copyto!(d, x); d)
+
+function _asm_case(T, m, conn, s, nper; backend = TEST_BACKEND)
+    csr = CsrStructure(backend, conn)
+    sys = LinearSystem(backend, T, csr)
+    npf = NpfModel(backend, T, s)
+    pk = [BoundaryPackage(backend, T, b, conn, m.dis) for b in m.boundaries]
+    sto = isnothing(m.sto) ? nothing : StoragePackage(backend, T, m.sto, conn, nper)
+    area = _todev(backend, T.(conn.area))
+    ib = _todev(backend, ones(Int32, conn.nodes))
+    return _AsmCase{T, typeof(backend), typeof(csr), typeof(sys), typeof(npf), typeof(pk), typeof(sto), typeof(area), typeof(ib)}(
+        backend, csr, sys, npf, pk, sto, area, Int(conn.nodes), ib,
     )
 end
 
@@ -73,8 +76,8 @@ function _formulate!(c::_AsmCase{T}, conn, s, kper, delt, hoff, holdoff) where {
     end
     ibh = boundary_ibound(conn, c.pk)
     copyto!(c.ib, ibh)
-    h = to_test_device(T.(hoff))
-    hold = to_test_device(T.(holdoff))
+    h = _todev(c.backend, T.(hoff))
+    hold = _todev(c.backend, T.(holdoff))
     reset_terms!(c.sys)
     for x in c.pk
         if ModflowGPU.boundary_kind(x) === :CHD
@@ -194,6 +197,22 @@ function _oracle(name, simdir, m, sim)
         tol = T === Float64 ? 1.0e-12 : 1.0e-6
         @test ea < tol
         @test eb < tol
+        if !(TEST_BACKEND isa CPU)
+            # The same formulation on the CPU backend (PLAN.md section 4, backends).
+            cc = _asm_case(T, m, conn, s, length(sim.tdis.perlen); backend = CPU())
+            hc, _ = _formulate!(cc, conn, s, 1, o.delt, h0, h0)
+            assemble!(cc.sys, cc.csr, cc.npf, hc, cc.ib; symmetric)
+            rg, rc, sg = (zeros(T, conn.nodes) for _ in 1:3)
+            resg = KernelAbstractions.zeros(TEST_BACKEND, T, conn.nodes)
+            scg = KernelAbstractions.zeros(TEST_BACKEND, T, conn.nodes)
+            flux_residual!(resg, c.sys, c.csr, c.npf, h, c.ib; scale = scg)
+            flux_residual!(rc, cc.sys, cc.csr, cc.npf, hc, cc.ib)
+            KernelAbstractions.synchronize(TEST_BACKEND)
+            rel(a, b) = maximum(abs.(Float64.(a) .- Float64.(b))) / max(maximum(abs, Float64.(b)), floatmin())
+            dg = (rel(Array(c.sys.amat), cc.sys.amat), rel(Array(c.sys.rhs), cc.sys.rhs), maximum(abs.(Float64.(Array(resg)) .- rc)) / maximum(Array(scg)))
+            @test all(<(T === Float64 ? 1.0e-10 : 1.0e-5), dg)
+            @info "Assembly $(backend_name(TEST_BACKEND)) vs CPU: $name, :$(p.preset): amat $(dg[1]), rhs $(dg[2]), residual / max Σ|terms| $(dg[3])"
+        end
         @info "Assembly oracle vs libmf6 (first solve): $name, :$(p.preset), symmetric = $symmetric, $(count(<(0), ibh)) CHD rows: amat max |Δ| / max |a| = $(round(ea; sigdigits = 3)), b' max |Δ| / max(|RHS| + Σ|a·r|) = $(round(eb; sigdigits = 3))"
     end
     return nothing

@@ -1,7 +1,8 @@
 # Residual test with CHD and WEL (T2.3) on ex-gwf-toth (CHD) and ex-gwf-hanic (CHD, WEL),
-# using MF6 6.8.2 tight-closure heads (reference/runs/<example>/tight). The assembly of
-# T2.6 does not exist yet, so the connection terms are computed here on the host, in flux
-# form (PLAN.md section 3.7, rule 2) in the engine precision `T`: per active row `n`,
+# using MF6 6.8.2 tight-closure heads (reference/runs/<example>/tight). The residual is
+# computed in flux form (PLAN.md section 3.7, rule 2) in the engine precision `T` by the
+# device kernel `flux_residual!` of T2.6 (through `flux_residual`, test/residual.jl; it
+# was a host loop in T2.3): per active row `n`,
 #
 #     res_n = Σ_m condsat_nm·(h'_m − h'_n + Δr_nm) + hcof_n·h'_n − rhs_n
 #
