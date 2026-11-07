@@ -112,6 +112,20 @@ extension adds a method for its backend.
 """
 pin_memory!(::Backend, arr) = nothing
 
+"""
+    host_mapped_zeros(backend, T, n) -> (device, host) or nothing
+
+A zeroed host vector `host` of `n` values of type `T` and a device array `device` that
+aliases its memory (kernels write the host memory directly), or `nothing` when the
+backend cannot map host memory (callers then copy with `copyto!`). Used for the small
+results of device reductions, which the host reads after every reduction: on ROCm this
+saves the device-to-host copy (~30 µs on the RX 7800 XT, docs/precision.md). Extension
+hook: the CPU backend returns the same `Array` twice, ROCm a registered host array;
+other backends return `nothing` unless their extension adds a method.
+"""
+host_mapped_zeros(::Backend, ::Type, ::Integer) = nothing
+host_mapped_zeros(::CPU, ::Type{T}, n::Integer) where {T} = (a = zeros(T, n); (a, a))
+
 # A new array on `backend` with the contents of the host array `x` (`copyto!`, no slicing).
 function _device_copy(backend::Backend, x::AbstractArray{T}) where {T}
     d = KernelAbstractions.allocate(backend, T, size(x))

@@ -144,6 +144,14 @@ end
 BoundaryPackage(backend::Backend, ::Type{T}, spec::BoundarySpec{K}, conn::Connectivity, dis::AbstractDisSpec) where {K, T} =
     BoundaryPackage{K, T}(backend, spec, conn, dis)
 
+# Adapt (e.g. `adapt(backend, pkg)`): the device arrays move; the host period state is
+# copied, so the two packages can take different periods.
+Adapt.adapt_structure(to, p::BoundaryPackage) = BoundaryPackage(
+    p.spec, p.conn, p.grid, adapt(to, p.nodelist), adapt(to, p.bound), adapt(to, p.hcof), adapt(to, p.rhs),
+    adapt(to, p.simvals), adapt(to, p.ratein), adapt(to, p.rateout), adapt(to, p.nodeptr), adapt(to, p.noderec),
+    p.nbound, p.iblock, copy(p.nodelist_host), copy(p.bound_host), copy(p.boundname),
+)
+
 boundary_kind(::BoundaryPackage{K}) where {K} = K
 Base.eltype(::BoundaryPackage{K, T}) where {K, T} = T
 Base.show(io::IO, p::BoundaryPackage{K, T}) where {K, T} =

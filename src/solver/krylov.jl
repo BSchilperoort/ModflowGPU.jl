@@ -43,18 +43,34 @@ const _RED_K = 4
 
 struct _SumOp end
 struct _MaxAbsOp end
+# Like _MaxAbsOp, and the reduction also returns the index of the value (only as the first
+# of the 4 ops): the first index of largest magnitude, 0 when every value is zero
+# (sln_get_dxmax `lrch`, ims_base_testcnvg `locdv`; for the IMS convergence tables).
+struct _ArgMaxAbsOp end
 
 @inline _combine(::_SumOp, a, b) = a + b
 # Signed value of largest magnitude (the first one on ties); NaN propagates, so a
 # diverged vector is never reported as converged.
-@inline _combine(::_MaxAbsOp, a, b) = (abs(b) > abs(a) || isnan(b)) ? b : a
+@inline _combine(::Union{_MaxAbsOp, _ArgMaxAbsOp}, a, b) = (abs(b) > abs(a) || isnan(b)) ? b : a
+
+# Whether (b, ib) replaces (a, ia) in an argmax: larger magnitude, or equal magnitude at a
+# lower index (the tree does not visit the indices in order), or the first NaN. Nonzero
+# values always carry their index, zeros carry 0.
+@inline _argmax_takes(a, ia, b, ib) = (isnan(b) && !isnan(a)) || abs(b) > abs(a) || (abs(b) == abs(a) && 0 < ib < ia)
 
 const _SUM4 = (_SumOp(), _SumOp(), _SumOp(), _SumOp())
 
-@inline function _tree_step!(shared, ops, li, s)
+@inline function _tree_step!(shared, sloc, ops, li, s)
     if li <= s
         @inbounds begin
-            shared[li, 1] = _combine(ops[1], shared[li, 1], shared[li + s, 1])
+            if ops[1] isa _ArgMaxAbsOp
+                if _argmax_takes(shared[li, 1], sloc[li], shared[li + s, 1], sloc[li + s])
+                    shared[li, 1] = shared[li + s, 1]
+                    sloc[li] = sloc[li + s]
+                end
+            else
+                shared[li, 1] = _combine(ops[1], shared[li, 1], shared[li + s, 1])
+            end
             shared[li, 2] = _combine(ops[2], shared[li, 2], shared[li + s, 2])
             shared[li, 3] = _combine(ops[3], shared[li, 3], shared[li + s, 3])
             shared[li, 4] = _combine(ops[4], shared[li, 4], shared[li + s, 4])
@@ -75,78 +91,108 @@ end
 
 @inline _zeros4(::Type{Ta}) where {Ta} = (zero(Ta), zero(Ta), zero(Ta), zero(Ta))
 
+# The tree is written out in each kernel: KA 0.9's CPU backend only accepts `@synchronize`
+# in the kernel body itself.
+
 # Stage 1: work item `i` evaluates `f(Ta, i, args...)` (which may also write vectors) and
 # returns 4 values in `Ta`; each work group reduces them in local memory (a pairwise tree)
-# into one column of `partials` (4 × groups).
-@kernel function mapreduce_kernel!(partials, f, ops, len, args)
+# into one column of `partials` (4 × groups), and for an `_ArgMaxAbsOp` the index of the
+# first value into `ploc`.
+@kernel function mapreduce_kernel!(partials, ploc, f, ops, len, args)
     Ta = eltype(partials)
     shared = @localmem eltype(partials) (256, 4)
+    sloc = @localmem Int32 (256,)
     i = @index(Global, Linear)
+    li = @index(Local, Linear)
     vals = i <= len ? f(Ta, i, args...) : _zeros4(Ta)
-    _store4!(shared, @index(Local, Linear), vals)
+    _store4!(shared, li, vals)
+    if ops[1] isa _ArgMaxAbsOp
+        @inbounds sloc[li] = vals[1] != zero(Ta) ? i % Int32 : Int32(0)
+    end
     @synchronize
-    _tree_step!(shared, ops, @index(Local, Linear), 128)
+    _tree_step!(shared, sloc, ops, li, 128)
     @synchronize
-    _tree_step!(shared, ops, @index(Local, Linear), 64)
+    _tree_step!(shared, sloc, ops, li, 64)
     @synchronize
-    _tree_step!(shared, ops, @index(Local, Linear), 32)
+    _tree_step!(shared, sloc, ops, li, 32)
     @synchronize
-    _tree_step!(shared, ops, @index(Local, Linear), 16)
+    _tree_step!(shared, sloc, ops, li, 16)
     @synchronize
-    _tree_step!(shared, ops, @index(Local, Linear), 8)
+    _tree_step!(shared, sloc, ops, li, 8)
     @synchronize
-    _tree_step!(shared, ops, @index(Local, Linear), 4)
+    _tree_step!(shared, sloc, ops, li, 4)
     @synchronize
-    _tree_step!(shared, ops, @index(Local, Linear), 2)
+    _tree_step!(shared, sloc, ops, li, 2)
     @synchronize
-    _tree_step!(shared, ops, @index(Local, Linear), 1)
+    _tree_step!(shared, sloc, ops, li, 1)
     @synchronize
-    if @index(Local, Linear) == 1
+    if li == 1
         g = @index(Group, Linear)
         @inbounds for k in 1:_RED_K
             partials[k, g] = shared[1, k]
         end
+        if ops[1] isa _ArgMaxAbsOp
+            @inbounds ploc[g] = sloc[1]
+        end
     end
 end
 
-@inline function _fold_partials(partials, ops, li, ngroups)
+@inline function _fold_partials(partials, ploc, ops, li, ngroups)
     Ta = eltype(partials)
     a1, a2, a3, a4 = _zeros4(Ta)
+    l1 = Int32(0)
     g = li
     @inbounds while g <= ngroups
-        a1 = _combine(ops[1], a1, partials[1, g])
+        if ops[1] isa _ArgMaxAbsOp
+            if _argmax_takes(a1, l1, partials[1, g], ploc[g])
+                a1 = partials[1, g]
+                l1 = ploc[g]
+            end
+        else
+            a1 = _combine(ops[1], a1, partials[1, g])
+        end
         a2 = _combine(ops[2], a2, partials[2, g])
         a3 = _combine(ops[3], a3, partials[3, g])
         a4 = _combine(ops[4], a4, partials[4, g])
         g += _RED_WG
     end
-    return (a1, a2, a3, a4)
+    return (a1, a2, a3, a4), l1
 end
 
-# Stage 2: one work group reduces the columns of `partials` into `out` (4 values).
-@kernel function finalize_reduction_kernel!(out, @Const(partials), ops, ngroups)
+# Stage 2: one work group reduces the columns of `partials` into `out` (4 values), and
+# `ploc` into `outloc[1]` for an `_ArgMaxAbsOp`.
+@kernel function finalize_reduction_kernel!(out, outloc, @Const(partials), @Const(ploc), ops, ngroups)
     shared = @localmem eltype(partials) (256, 4)
-    _store4!(shared, @index(Local, Linear), _fold_partials(partials, ops, @index(Local, Linear), ngroups))
+    sloc = @localmem Int32 (256,)
+    li = @index(Local, Linear)
+    vals, loc = _fold_partials(partials, ploc, ops, li, ngroups)
+    _store4!(shared, li, vals)
+    if ops[1] isa _ArgMaxAbsOp
+        @inbounds sloc[li] = loc
+    end
     @synchronize
-    _tree_step!(shared, ops, @index(Local, Linear), 128)
+    _tree_step!(shared, sloc, ops, li, 128)
     @synchronize
-    _tree_step!(shared, ops, @index(Local, Linear), 64)
+    _tree_step!(shared, sloc, ops, li, 64)
     @synchronize
-    _tree_step!(shared, ops, @index(Local, Linear), 32)
+    _tree_step!(shared, sloc, ops, li, 32)
     @synchronize
-    _tree_step!(shared, ops, @index(Local, Linear), 16)
+    _tree_step!(shared, sloc, ops, li, 16)
     @synchronize
-    _tree_step!(shared, ops, @index(Local, Linear), 8)
+    _tree_step!(shared, sloc, ops, li, 8)
     @synchronize
-    _tree_step!(shared, ops, @index(Local, Linear), 4)
+    _tree_step!(shared, sloc, ops, li, 4)
     @synchronize
-    _tree_step!(shared, ops, @index(Local, Linear), 2)
+    _tree_step!(shared, sloc, ops, li, 2)
     @synchronize
-    _tree_step!(shared, ops, @index(Local, Linear), 1)
+    _tree_step!(shared, sloc, ops, li, 1)
     @synchronize
-    if @index(Local, Linear) == 1
+    if li == 1
         @inbounds for k in 1:_RED_K
             out[k] = shared[1, k]
+        end
+        if ops[1] isa _ArgMaxAbsOp
+            @inbounds outloc[1] = sloc[1]
         end
     end
 end
@@ -156,20 +202,38 @@ end
 
 Device buffers for fused map-reductions of up to 4 values over vectors of up to `len`
 entries, accumulated in `Ta` (PLAN.md section 3.7, rule 4): a pairwise tree in each work
-group, then one work group over the group results. `Reducer(backend, len, Ta)`.
+group, then one work group over the group results. With an argmax as the first operation
+it also returns the index of the first value. `Reducer(backend, len, Ta)`.
 """
-struct Reducer{Ta, MA <: AbstractMatrix{Ta}, VA <: AbstractVector{Ta}}
+struct Reducer{Ta, MA <: AbstractMatrix{Ta}, VA <: AbstractVector{Ta}, VI <: AbstractVector{Int32}, VJ <: AbstractVector{Int32}}
     partials::MA
     out::VA
+    ploc::VI
+    outloc::VJ
     host::Vector{Ta}
+    hostloc::Vector{Int32}
+    mapped::Bool
 end
 
+# `out` and `outloc` alias `host` and `hostloc` where the backend maps host memory
+# (`host_mapped_zeros`), so reading a result needs no device-to-host copy.
 function Reducer(backend::Backend, len::Integer, ::Type{Ta}) where {Ta}
     ng = max(cld(len, _RED_WG), 1)
     partials = KernelAbstractions.zeros(backend, Ta, _RED_K, ng)
-    out = KernelAbstractions.zeros(backend, Ta, _RED_K)
-    return Reducer{Ta, typeof(partials), typeof(out)}(partials, out, zeros(Ta, _RED_K))
+    ploc = KernelAbstractions.zeros(backend, Int32, ng)
+    mo = host_mapped_zeros(backend, Ta, _RED_K)
+    ml = host_mapped_zeros(backend, Int32, 1)
+    if isnothing(mo) || isnothing(ml)
+        out = KernelAbstractions.zeros(backend, Ta, _RED_K)
+        outloc = KernelAbstractions.zeros(backend, Int32, 1)
+        return Reducer(partials, out, ploc, outloc, zeros(Ta, _RED_K), zeros(Int32, 1), false)
+    end
+    return Reducer(partials, mo[1], ploc, ml[1], mo[2], ml[2], true)
 end
+
+# Adapt: a Reducer is scratch space, so a new one is made on the target backend.
+Adapt.adapt_structure(to, r::Reducer{Ta}) where {Ta} =
+    Reducer(get_backend(adapt(to, r.partials)), size(r.partials, 2) * _RED_WG, Ta)
 
 """
     accumulation_type(backend, Ts) -> Type
@@ -180,19 +244,31 @@ backend supports it, otherwise `Ts` (with pairwise summation).
 accumulation_type(backend::Backend, ::Type{Ts}) where {Ts} = supports_float64(backend) ? Float64 : Ts
 
 # Launch `f(Ta, i, args...)` for i in 1:len and reduce its 4 results with `ops`; return
-# them on the host as a 4-tuple of Float64.
+# them on the host as a 4-tuple of Float64 (one synchronisation and one 4-value copy).
 function _mapreduce!(red::Reducer{Ta}, backend, f, ops, len, args...) where {Ta}
-    ng = cld(len, _RED_WG)
-    ng <= size(red.partials, 2) || throw(ArgumentError("reduction over $len entries exceeds the Reducer"))
-    if ng == 0
-        return (0.0, 0.0, 0.0, 0.0)
-    end
-    mapreduce_kernel!(backend, _RED_WG)(red.partials, f, ops, len, args; ndrange = ng * _RED_WG)
-    finalize_reduction_kernel!(backend, _RED_WG)(red.out, red.partials, ops, ng; ndrange = _RED_WG)
-    KernelAbstractions.synchronize(backend)
-    copyto!(red.host, red.out)
+    _launch_reduction!(red, backend, f, ops, len, args...) || return (0.0, 0.0, 0.0, 0.0)
+    red.mapped || copyto!(red.host, red.out)
     h = red.host
     return (Float64(h[1]), Float64(h[2]), Float64(h[3]), Float64(h[4]))
+end
+
+# The same with `ops[1] isa _ArgMaxAbsOp`: returns `(values, index)`, the index of the
+# first value (0 when it is zero).
+function _mapreduce_loc!(red::Reducer, backend, f, ops::Tuple{_ArgMaxAbsOp, Vararg}, len, args...)
+    vals = _mapreduce!(red, backend, f, ops, len, args...)
+    len > 0 || return vals, 0
+    red.mapped || copyto!(red.hostloc, red.outloc)
+    return vals, Int(red.hostloc[1])
+end
+
+function _launch_reduction!(red::Reducer, backend, f, ops, len, args...)
+    ng = cld(len, _RED_WG)
+    ng <= size(red.partials, 2) || throw(ArgumentError("reduction over $len entries exceeds the Reducer"))
+    ng == 0 && return false
+    mapreduce_kernel!(backend, _RED_WG)(red.partials, red.ploc, f, ops, len, args; ndrange = ng * _RED_WG)
+    finalize_reduction_kernel!(backend, _RED_WG)(red.out, red.outloc, red.partials, red.ploc, ops, ng; ndrange = _RED_WG)
+    KernelAbstractions.synchronize(backend)
+    return true
 end
 
 @kernel function map_kernel!(f, len, args)
@@ -225,6 +301,20 @@ function device_maxabs(x; Ta = accumulation_type(get_backend(x), eltype(x)))
     red = Reducer(backend, length(x), Ta)
     ops = (_MaxAbsOp(), _SumOp(), _SumOp(), _SumOp())
     return abs(_mapreduce!(red, backend, _maxabs_term, ops, length(x), x)[1])
+end
+
+"""
+    device_argmaxabs(x; Ta) -> (value, index)
+
+The signed value of largest magnitude of a device vector and its first index (0 when `x`
+is all zero), as `sln_get_dxmax` finds `hncg` and `lrch`; a device reduction.
+"""
+function device_argmaxabs(x; Ta = accumulation_type(get_backend(x), eltype(x)))
+    backend = get_backend(x)
+    red = Reducer(backend, length(x), Ta)
+    ops = (_ArgMaxAbsOp(), _SumOp(), _SumOp(), _SumOp())
+    vals, loc = _mapreduce_loc!(red, backend, _maxabs_term, ops, length(x), x)
+    return vals[1], loc
 end
 
 # ---------------------------------------------------------------------------------------
@@ -410,6 +500,8 @@ function KrylovSolver(
         Reducer(backend, n, Ta),
     )
 end
+
+Adapt.@adapt_structure KrylovSolver
 
 KernelAbstractions.get_backend(s::KrylovSolver) = get_backend(s.x)
 

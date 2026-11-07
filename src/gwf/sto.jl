@@ -92,6 +92,10 @@ end
 StoragePackage(backend::Backend, ::Type{T}, sto::StoSpec, conn::Connectivity, nper::Integer) where {T} =
     StoragePackage{T}(backend, sto, conn, nper)
 
+# Adapt: `rho` and `strgss` move, the host fields are kept.
+Adapt.adapt_structure(to, s::StoragePackage) =
+    StoragePackage(s.spec, s.conn, s.sc, adapt(to, s.rho), adapt(to, s.strgss), s.delt, s.kper, s.transient)
+
 Base.eltype(::StoragePackage{T}) where {T} = T
 Base.show(io::IO, s::StoragePackage{T}) where {T} =
     print(io, "StoragePackage{", T, "}(", s.conn.nodes, " cells, period ", s.kper, s.transient ? " transient" : " steady state", ")")

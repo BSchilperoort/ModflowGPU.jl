@@ -155,6 +155,9 @@ end
             start_timestep!(m, st.delt)
             r = solve_timestep!(ps, m, st.kstp)
             @test r.converged
+            # hncg and its node lrch (sln_get_dxmax) from the last correction.
+            δa = Float64.(Array(m.δ)) .* (Array(m.ibound) .> 0)
+            @test r.lrch == argmax(abs.(δa)) && r.hncg == δa[r.lrch]
             calc_flows!(m)
             b = model_budget!(acc, m, st)
             # Host sums (Float64) of the device rates.
@@ -224,5 +227,44 @@ end
         fill!(m.h, p.T(NaN))
         r = @test_logs (:warn, r"not finite") match_mode = :any solve_timestep!(ps, m, 1)
         @test !r.converged && r.iterations == 1 && isnan(r.hncg)
+    end
+end
+
+# T3.1: Adapt rules on the engine structs. A model, its outer-loop solver and budget
+# accumulator built on the CPU and moved with `adapt` to the test backend (and back) give
+# the same heads and budgets as ones built there.
+@testset "Adapt: moving a model and its solvers between backends" begin
+    adapt = ModflowGPU.adapt
+    sim = load_simulation(joinpath(@__DIR__, "..", "models", "coupling_rde"))
+    spec = only(sim.models)
+    steps = time_steps(sim.tdis)[1:3]
+    run_steps!(m, ps, acc) = map(steps) do st
+        st.kstp == 1 && ModflowGPU.apply_period!(m, st.kper)
+        start_timestep!(m, st.delt)
+        r = solve_timestep!(ps, m, st.kstp)
+        calc_flows!(m)
+        b = model_budget!(acc, m, st)
+        (r.iterations, r.inner, ModflowGPU.absolute_heads(m), ModflowGPU.total_rate_in(b))
+    end
+    for_each_precision() do p
+        T = p.T
+        ims = ImsSpec(; linear_acceleration = :bicgstab, under_relaxation = :dbd, outer_dvclose = 1.0e-6, outer_maximum = 100, inner_maximum = 300, inner_dvclose = 1.0e-7, inner_rclose = 1.0e-6, under_relaxation_theta = 0.7, under_relaxation_kappa = 0.1, under_relaxation_gamma = 0.2)
+        m = GwfModel(TEST_BACKEND, T, spec, length(sim.tdis.perlen))
+        ps = PicardSolver(m, PicardSettings(ims, T))
+        native = run_steps!(m, ps, BudgetAccumulator(m))
+        # Built on the CPU (where the reductions accumulate in Float64), then moved.
+        mc = GwfModel(CPU(), T, spec, length(sim.tdis.perlen))
+        psc = PicardSolver(mc, PicardSettings(ims, T); Ts = T)
+        md = adapt(TEST_BACKEND, mc)
+        @test md.backend isa typeof(TEST_BACKEND)
+        @test typeof(md.h) == typeof(m.h) && typeof(md.packages[1].bound) == typeof(m.packages[1].bound)
+        @test typeof(adapt(TEST_BACKEND, psc)) == typeof(ps)
+        moved = run_steps!(md, adapt(TEST_BACKEND, psc), adapt(TEST_BACKEND, BudgetAccumulator(mc)))
+        @test moved == native
+        # The CPU original is untouched (its host period state was copied).
+        @test mc.kper == 0 && all(pkg -> pkg.iblock == 0, mc.packages)
+        # And back to the CPU: same state.
+        mb = adapt(CPU(), md)
+        @test mb.h isa Array && Array(md.h) == mb.h && Array(md.sys.amat) == mb.sys.amat
     end
 end

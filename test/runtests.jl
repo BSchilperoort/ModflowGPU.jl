@@ -6,6 +6,9 @@
 # Set MFGPU_TEST_GROUPS to a comma-separated list of test groups (see TEST_GROUPS below) to
 # run only those; unset runs everything:
 #   MFGPU_TEST_GROUPS=connectivity,npf julia --project=test test/runtests.jl
+# test/gpu/runtests.jl is the GPU entry: the same suite with MFGPU_TEST_BACKEND (default
+# rocm); every parity test then runs on the GPU, and the run and assembly parity tests also
+# compare it with the CPU backend (PLAN.md section 4).
 using Test
 using ModflowGPU
 using KernelAbstractions: KernelAbstractions, CPU
@@ -59,6 +62,8 @@ const TEST_GROUPS = [
     "krylov" => ["unit/krylov_test.jl"],
     "picard" => ["unit/picard_test.jl"],
     "run" => ["parity/run_test.jl"],
+    # GPU only (skips with a message on other backends): no `double` in :single kernels.
+    "kernel_hygiene" => ["gpu/kernel_hygiene_test.jl"],
 ]
 
 const SELECTED_GROUPS = let

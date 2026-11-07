@@ -58,6 +58,17 @@ function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) whe
     )
 end
 
+# Adapt, e.g. `adapt(backend, m)`: every device array moves (and `backend` becomes the
+# backend of the adapted heads); the host setup is shared with `m`.
+function Adapt.adapt_structure(to, m::GwfModel)
+    h = adapt(to, m.h)
+    return GwfModel(
+        m.spec, get_backend(h), m.conn, m.setup, adapt(to, m.csr), adapt(to, m.npf), adapt(to, m.sys),
+        BoundaryPackage[adapt(to, p) for p in m.packages], adapt(to, m.sto), adapt(to, m.area), adapt(to, m.ibound),
+        copy(m.ibound_host), h, adapt(to, m.hold), adapt(to, m.res), adapt(to, m.δ), adapt(to, m.flowja), m.kper,
+    )
+end
+
 Base.eltype(::GwfModel{T}) where {T} = T
 KernelAbstractions.get_backend(m::GwfModel) = m.backend
 Base.show(io::IO, m::GwfModel{T}) where {T} =

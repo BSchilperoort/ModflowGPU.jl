@@ -6,8 +6,8 @@
 #    residual (`formulate!`);
 # 2. solve the correction system `A·δ = res` with a zero initial guess (`solve!`; MF6
 #    solves `A·x = b` from `x`, and `δ` is its `x − xtemp`);
-# 3. `hncg`, the signed largest `δ` over the active cells (`sln_get_dxmax`), one device
-#    reduction;
+# 3. `hncg`, the signed largest `δ` over the active cells, and its node `lrch`
+#    (`sln_get_dxmax`), one device reduction;
 # 4. converged when the inner solve converged and `|hncg| <= OUTER_DVCLOSE`
 #    (`sln_has_converged`); then `h' += δ`, otherwise the under-relaxed update
 #    (`sln_underrelax`, src/solver/underrelax.jl).
@@ -94,7 +94,7 @@ end
 
 Outcome of the outer iterations of one time step: `converged`, `iterations` (outer),
 `inner` (total inner iterations), `hncg` (signed maximum head change of the last outer
-iteration), `dvclose` and `inner_rclose` (the OUTER_DVCLOSE and INNER_RCLOSE used, after
+iteration) and `lrch` (its reduced node, 0 when no head changed; `sln_get_dxmax`), `dvclose` and `inner_rclose` (the OUTER_DVCLOSE and INNER_RCLOSE used, after
 the Float32 floors).
 """
 struct OuterResult
@@ -102,6 +102,7 @@ struct OuterResult
     iterations::Int
     inner::Int
     hncg::Float64
+    lrch::Int
     dvclose::Float64
     inner_rclose::Float64
 end
@@ -112,7 +113,8 @@ end
 
 @inline _maxscale_term(::Type{Ta}, i, s) where {Ta} = @inbounds (Ta(s[i]), zero(Ta), zero(Ta), zero(Ta))
 
-const _DXMAX_OPS = (_MaxAbsOp(), _MaxAbsOp(), _SumOp(), _SumOp())
+const _DXMAX_OPS = (_ArgMaxAbsOp(), _MaxAbsOp(), _SumOp(), _SumOp())
+const _MAXSCALE_OPS = (_MaxAbsOp(), _SumOp(), _SumOp(), _SumOp())
 
 """
     PicardSolver
@@ -141,6 +143,8 @@ function PicardSolver(m::GwfModel{T}, settings::PicardSettings; Ts::Type = T, Tp
     return PicardSolver(settings, krylov, ur, red, scale)
 end
 
+Adapt.@adapt_structure PicardSolver
+
 # KrylovSettings with a different INNER_RCLOSE (the Float32 floor).
 _with_rclose(k::KrylovSettings, rclose) = KrylovSettings(k.method, k.maxiter, k.dvclose, Float64(rclose), k.icnvgopt, k.north, k.scaling)
 
@@ -163,6 +167,7 @@ function solve_timestep!(ps::PicardSolver, m::GwfModel{T}, kstp::Integer) where 
     rclose = st.krylov.rclose
     inner = 0
     hncg = 0.0
+    lrch = 0
     dvclose = st.dvclose
     converged = false
     kiter = 0
@@ -172,7 +177,7 @@ function solve_timestep!(ps::PicardSolver, m::GwfModel{T}, kstp::Integer) where 
         formulate!(m; symmetric = st.symmetric, scale = floor_step ? ps.scale : nothing)
         if floor_step
             # Float32: the attainable residual, eps(T)·max Σ|terms| (rule 2 rounding).
-            smax = _mapreduce!(ps.reducer, backend, _maxscale_term, _DXMAX_OPS, n, ps.scale)[1]
+            smax = _mapreduce!(ps.reducer, backend, _maxscale_term, _MAXSCALE_OPS, n, ps.scale)[1]
             floor = st.rclose_floor_factor * eps(T) * abs(smax)
             rc = st.krylov.icnvgopt == 2 || st.krylov.icnvgopt == 4 ? floor * sqrt(n) : floor
             rclose = max(st.krylov.rclose, rc)
@@ -180,7 +185,7 @@ function solve_timestep!(ps::PicardSolver, m::GwfModel{T}, kstp::Integer) where 
         end
         res = solve!(m.δ, krylov, m.sys.amat, m.res; kstp)
         inner += res.iterations
-        hncg, hmax, _, _ = _mapreduce!(ps.reducer, backend, _dxmax_term, _DXMAX_OPS, n, m.δ, m.ibound, m.h)
+        (hncg, hmax, _, _), lrch = _mapreduce_loc!(ps.reducer, backend, _dxmax_term, _DXMAX_OPS, n, m.δ, m.ibound, m.h)
         dvclose = max(st.dvclose, st.dvclose_head_factor * eps(T) * abs(hmax))
         if !isfinite(hncg) || !isfinite(hmax)
             # The linear solve diverged (NaN or Inf): the step cannot converge.
@@ -192,5 +197,5 @@ function solve_timestep!(ps::PicardSolver, m::GwfModel{T}, kstp::Integer) where 
         underrelax!(ps.ur, m.h, m.δ, m.ibound, it, hncg; converged)
         converged && break
     end
-    return OuterResult(converged, kiter, inner, hncg, dvclose, rclose)
+    return OuterResult(converged, kiter, inner, hncg, lrch, dvclose, rclose)
 end

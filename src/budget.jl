@@ -160,6 +160,10 @@ struct BudgetAccumulator{R <: Reducer}
     reducer::R
 end
 
+# Adapt: the reducer moves; the cumulative volumes are copied (they change during a run).
+Adapt.adapt_structure(to, a::BudgetAccumulator) =
+    BudgetAccumulator(a.names, a.packages, copy(a.cum_in), copy(a.cum_out), adapt(to, a.reducer))
+
 """
     budget_text(pkg::BoundaryPackage) -> String
 

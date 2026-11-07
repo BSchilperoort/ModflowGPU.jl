@@ -47,6 +47,12 @@ function UnderRelaxation(backend::Backend, ::Type{T}, ims::ImsSpec, nodes::Integ
     )
 end
 
+# Adapt: the DBD vectors move, the settings and COOLEY history are kept.
+Adapt.adapt_structure(to, u::UnderRelaxation) = UnderRelaxation(
+    u.method, u.gamma, u.theta, u.kappa, u.momentum, u.relaxold, u.bigchold,
+    adapt(to, u.wsave), adapt(to, u.hchold), adapt(to, u.deold),
+)
+
 @kernel function relax_update_kernel!(h, @Const(δ), @Const(ibound), w)
     n = @index(Global)
     @inbounds if ibound[n] > 0
