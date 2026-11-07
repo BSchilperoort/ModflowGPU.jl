@@ -17,6 +17,13 @@ it. Underscore-prefixed helpers are omitted.
   host memory; AMDGPU >= 2.10 only, older versions copy). Tests: backend (GPU file with `MFGPU_TEST_BACKEND`).
 - **precision.jl**: precision presets (PLAN.md 3.7). `resolve_precision(backend, preset)`
   → `(; T, Ts, Tp)`, `PRECISION_PRESETS`, `supports_float64` (extension hook). Tests: precision, kernel.
+- **instrument.jl** (T4.1): optional timing of the hot loop. `@timed_section name expr`
+  (one `Ref` load and a branch when off; no closure), `set_section_timer!` /
+  `section_timer`, hooks `section_begin` / `section_end` (methods come from the timer type,
+  e.g. benchmark/run.jl's `SyncTimer`). Sections: `assembly`, `linear_solve`
+  (`precond_setup`, `spmv_dot`, `update_reduce`, `vector_update`, `true_residual`),
+  `outer_reduction`, `underrelax` (picard.jl, krylov.jl); `period_data`,
+  `start_timestep`, `flows`, `budget`, `output`, `mirrors` (stepping.jl). Tests: stepping.
 
 ## MF6 input (host)
 
@@ -271,11 +278,16 @@ it. Underscore-prefixed helpers are omitted.
   continental, global5m, regional30s, global30s), `synthetic_fields` (counter-based noise
   `value_noise!`, land mask + ocean rim, DEM, log-normal K, priority-flood
   `flow_accumulation`), `synthetic_simulation` (builder API → `SimulationSpec`: CHD rim,
-  RIV, DRN, EVT, RCH, STO; steady + 12 daily periods), `synthetic_ims` (`:parity`,
+  RIV, DRN, EVT, RCH, STO; steady + 12 daily periods, `ntransient`), `synthetic_ims` (`:parity`,
   `:production`), `write_synthetic`, `synthetic_counts` / `scaled_counts`, device memory
   `device_bytes` / `memory_coefficients` / `estimate_device_bytes`, `synthetic_main`
   (benchmark driver). Tests: synthetic (unit + parity vs mf6). Results: docs/scaling.md.
 - **hardware.jl** (T0.4): hardware baseline (stream, SpMV, dot, atomics).
+- **run.jl** (T4.1): benchmark harness: indus / continental / global5m, steady state + 30
+  daily steps (`synthetic_simulation(...; ntransient)`), on a backend in `:double` and
+  `:single` (wall time per step, iterations, pool peak memory, SpMV GB/s, TimerOutputs
+  time split through `SyncTimer`) or with mf6 (serial, per-step times from stdout).
+  Results: benchmark/results/<date>.md.
 
 ## GPU tests (`test/gpu/`, T3.1)
 

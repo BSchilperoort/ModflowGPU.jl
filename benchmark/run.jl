@@ -242,14 +242,17 @@ end
 # ---------------------------------------------------------------------------------------
 
 function mf6_case(preset, mf6exe, workdir; nsteps, ims)
-    dir = mktempdir(workdir; prefix = "mf6_$(preset)_")
+    dir = mktempdir(workdir; prefix = "mf6_$(preset)_", cleanup = false)
     tw = @elapsed spec = write_synthetic(dir, preset; maxcells = 10^8, output = false, ntransient = nsteps, ims = synthetic_ims(ims))
     c = synthetic_counts(spec)
     stamps = Float64[]
+    last_lines = String[]
     t0 = time_ns()
-    open(Cmd(`$mf6exe`; dir)) do io
+    open(ignorestatus(Cmd(`$mf6exe`; dir))) do io
         for line in eachline(io)
             occursin(r"Solving:\s+Stress period:", line) && push!(stamps, (time_ns() - t0) / 1.0e9)
+            push!(last_lines, line)
+            length(last_lines) > 20 && popfirst!(last_lines)
         end
     end
     tend = (time_ns() - t0) / 1.0e9
@@ -258,7 +261,12 @@ function mf6_case(preset, mf6exe, workdir; nsteps, ims)
     txt = read(joinpath(dir, "mfsim.lst"), String)
     its = [(parse(Int, m[1]), parse(Int, m[2])) for m in eachmatch(r"(\d+) CALLS TO NUMERICAL SOLUTION IN TIME STEP \d+ STRESS PERIOD \d+\s*\n\s*(\d+) TOTAL ITERATIONS", txt)]
     ok = occursin("Normal termination", txt)
-    rm(dir; recursive = true)
+    isempty(its) && push!(its, (0, 0))
+    if ok
+        rm(dir; recursive = true)
+    else
+        println("mf6 $preset failed; input and listing kept in $dir; last output:\n", join(last_lines, "\n"))
+    end
     return (; preset, nodes = c.nodes, twrite = tw, tread = stamps[1], steps, its, tend, ok)
 end
 
