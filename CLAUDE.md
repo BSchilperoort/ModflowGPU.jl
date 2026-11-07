@@ -6,12 +6,13 @@ Read the card you are working on and the sections it references before starting.
 
 ## Git workflow (local, agreed with the owner)
 
-- There is **no remote**. Do not push, and do not open GitHub PRs.
+- The remote is `origin` (`git@github.com:BSchilperoort/ModflowGPU.jl.git`). Do not open
+  GitHub PRs; cards are merged locally.
 - Each task card is done on a local branch `T<id>-<short-name>` (e.g. `T0.1-package-scaffold`),
-  branched from `main`.
+  branched from `main`. Card branches are not pushed.
 - After an independent review, the branch is merged into `main` with `git merge --no-ff`, with
-  the card report as the merge commit message. Agents implementing a card do not merge
-  their own branch.
+  the card report as the merge commit message, and `main` is pushed to `origin`. Agents
+  implementing a card do not merge their own branch or push.
 - The card report covers: what was ported (Fortran routines), test results with numbers
   (including the local GPU test summary for anything touching kernels, solver or assembly),
   deviations from MF6, and open issues.
