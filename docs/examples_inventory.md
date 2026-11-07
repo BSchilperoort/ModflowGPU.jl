@@ -95,7 +95,9 @@ For every example in `examples.toml` the simulation directory is copied to
   `RELATIVE_RCLOSE`) is kept, so the criterion keeps its meaning; most examples
   use `STRICT` (absolute infinity norm, and the outer iteration only converges when
   the inner solve converged in its first iteration). Patched lines carry a
-  `# patched by run_reference.jl` comment; missing keys and blocks are added. The
+  `# patched by run_reference.jl` comment; missing keys and blocks are added, blocks
+  in the order MF6 reads them (OPTIONS, NONLINEAR, LINEAR: a NONLINEAR block after
+  LINEAR is silently ignored). The
   deprecated `OUTER_HCLOSE` / `INNER_HCLOSE` are replaced by the DVCLOSE keys.
 - `tight-relative` (only when `tight` fails): as `tight` but
   `INNER_RCLOSE 1e-10 RELATIVE_RCLOSE`. MF6 then ends the inner solve on
@@ -108,8 +110,12 @@ Patched modes also get `PRINT_OPTION SUMMARY` when the file has no PRINT_OPTION,
 example sets a print option). Nothing else changes.
 
 Each run directory has `run.toml`: `status` (`ok` = exit code 0, "Normal termination
-of simulation." in `mfsim.lst` and no "Solution Group ... did not converge" message;
-else `nonconverged`, `error` or `timeout`), `exit_code`, `wall_s`,
+of simulation." in `mfsim.lst`, no "Solution Group ... did not converge" message and,
+in patched modes, `closures_ok`; else `wrong_closures`, `nonconverged`, `error` or
+`timeout`), `closures_applied` (per solution, the outer/inner DVCLOSE, INNER_RCLOSE
+and iteration limits that mf6 echoes in `mfsim.lst`), `closures_ok` (patched modes:
+every applied value equals the requested one, iteration limits at least 500 / 1000;
+`closure_errors` lists the mismatches), `exit_code`, `wall_s`,
 `normal_termination`, `converged`, `nonconverged_steps`, `outer_iterations` and
 `inner_iterations` (summed over time steps; only present when the listing prints
 them), `max_abs_percent_discrepancy` (all budgets in all listing files, cumulative and
@@ -156,3 +162,9 @@ table with wall times and iteration counts is in `reference/runs/summary.md`.
 
 The default closures of the examples are not tight enough for parity: `ex-gwf-toth`
 (IMS defaults, `OUTER_DVCLOSE 1e-3`) differs from its tight run by 1.5 cm.
+
+Fix (2026-11-07): `patch_ims` used to append a missing NONLINEAR block after LINEAR,
+where MF6 ignores it; the `ex-gwf-toth` tight run (the only affected example) ran with
+`OUTER_DVCLOSE 1e-3` and `OUTER_MAXIMUM 25`. Rerun with the block in front of LINEAR:
+1e-9 applied, converged in 2 outer / 254 inner iterations as before (the second outer
+change is 1.3e-10), heads bit-identical to the old run and 1.55 cm from `raw`.

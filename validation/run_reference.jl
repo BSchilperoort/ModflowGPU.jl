@@ -77,7 +77,10 @@ line. OUTER_DVCLOSE (NONLINEAR block) and INNER_DVCLOSE / INNER_RCLOSE (LINEAR
 block) are replaced or added; an INNER_RCLOSE keyword (STRICT, L2NORM_RCLOSE,
 RELATIVE_RCLOSE) is kept, so the new value has the same meaning as the old one.
 OUTER_MAXIMUM / INNER_MAXIMUM become max(existing or complexity default, 500 / 1000).
-Missing NONLINEAR / LINEAR blocks are appended. Returns what was set.
+A missing OPTIONS, NONLINEAR or LINEAR block is inserted in MF6's reading
+order OPTIONS, NONLINEAR, LINEAR (NumericalSolution.f90 `sln_ar` reads OPTIONS
+and NONLINEAR, then ImsLinearSettings reads LINEAR; a NONLINEAR block after
+LINEAR is silently ignored). Returns what was set.
 """
 function patch_ims(path, c)
     lines = readlines(path)
@@ -111,17 +114,36 @@ function patch_ims(path, c)
             "INNER_RCLOSE" => strip(fmt(c.inner_rclose) * " " * rclose_kw),
         ],
     )
+    order = ("OPTIONS", "NONLINEAR", "LINEAR")
+    seen_blocks = Set{String}()
+    for l in lines
+        t = tok(l)
+        length(t) >= 2 && uppercase(t[1]) == "BEGIN" && push!(seen_blocks, uppercase(t[2]))
+    end
+    # blocks to add, emitted just before the first existing block that MF6 reads after them
+    missing_blocks = [b for b in order if !(b in seen_blocks) && !isempty(set[b])]
+    function emit_missing!(out, upto)
+        while !isempty(missing_blocks) && findfirst(==(missing_blocks[1]), order) < upto
+            b = popfirst!(missing_blocks)
+            push!(out, "BEGIN $b")
+            for (key, val) in set[b]
+                push!(out, "  $key  $val")
+            end
+            push!(out, "END $b", "")
+        end
+        return out
+    end
     out = String[]
     block = ""
     done = Set{String}()
-    seen_blocks = Set{String}()
     for l in lines
         t = tok(l)
         k = isempty(t) ? "" : uppercase(t[1])
         k = get(DEPRECATED, k, k)
         if k == "BEGIN"
             block = uppercase(t[2])
-            push!(seen_blocks, block)
+            i = findfirst(==(block), order)
+            i === nothing || emit_missing!(out, i)
         elseif k == "END" && haskey(set, block)
             for (key, val) in set[block]
                 key in done || push!(out, "  $key  $val")
@@ -138,14 +160,8 @@ function patch_ims(path, c)
         end
         push!(out, l)
     end
-    for b in ("OPTIONS", "NONLINEAR", "LINEAR")
-        (b in seen_blocks || isempty(set[b])) && continue
-        push!(out, "", "BEGIN $b")
-        for (key, val) in set[b]
-            push!(out, "  $key  $val")
-        end
-        push!(out, "END $b")
-    end
+    isempty(missing_blocks) || push!(out, "")
+    emit_missing!(out, length(order) + 1)
     write(path, join(out, "\n") * "\n")
     return Dict(k => v for b in values(set) for (k, v) in b)
 end
@@ -223,6 +239,53 @@ function check_listings(dir)
     return r
 end
 
+"""
+    check_closures(dir, mode) -> Dict
+
+Closures that mf6 actually applied, parsed from the solver echo in mfsim.lst
+(one entry per solution: NumericalSolution.f90 `sln_ar` format 9002 and
+ImsLinear.f90 `imslinear_ar` format 02010), compared with the closures requested
+for `mode`. A patch that mf6 ignores (e.g. a block in the wrong order) shows up
+here. `closures_ok` is false if any applied value differs from the request or
+if the echo is missing.
+"""
+function check_closures(dir, mode)
+    sim = joinpath(dir, "mfsim.lst")
+    r = Dict{String, Any}()
+    isfile(sim) || return r
+    txt = read(sim, String)
+    num = "([-+0-9.Ee]+)"
+    grab(re) = [parse(Float64, m[1]) for m in eachmatch(Regex(re), txt)]
+    applied = Dict{String, Any}(
+        "outer_dvclose" => grab("OUTER ITERATION CONVERGENCE CRITERION\\s+\\(DVCLOSE\\) =\\s*$num"),
+        "outer_maximum" => Int.(grab("MAXIMUM NUMBER OF OUTER ITERATIONS\\s+\\(MXITER\\) =\\s*$num")),
+        "inner_maximum" => Int.(grab("MAXIMUM OF (\\d+) INTERNAL ITERATIONS PER CALL")),
+        "inner_dvclose" => grab("HEAD CHANGE CRITERION FOR CLOSURE\\s+=\\s*$num"),
+        "inner_rclose" => grab("RESIDUAL CHANGE CRITERION FOR CLOSURE\\s+=\\s*$num"),
+    )
+    r["closures_applied"] = applied
+    haskey(CLOSURES, mode) || return r
+    c = CLOSURES[mode]
+    # the echo has 6 (outer) and 5 (inner) significant digits
+    close_to(a, b) = abs(a - b) <= 1.0e-4 * abs(b)
+    bad = String[]
+    for (key, want) in ("outer_dvclose" => c.outer_dvclose, "inner_dvclose" => c.inner_dvclose, "inner_rclose" => c.inner_rclose)
+        isempty(applied[key]) && push!(bad, "$key not echoed in mfsim.lst")
+        for v in applied[key]
+            close_to(v, want) || push!(bad, @sprintf("%s applied %.6e, requested %.6e", key, v, want))
+        end
+    end
+    for (key, want) in ("outer_maximum" => MIN_OUTER, "inner_maximum" => MIN_INNER)
+        isempty(applied[key]) && push!(bad, "$key not echoed in mfsim.lst")
+        for v in applied[key]
+            v >= want || push!(bad, "$key applied $v, requested >= $want")
+        end
+    end
+    r["closures_ok"] = isempty(bad)
+    isempty(bad) || (r["closure_errors"] = bad)
+    return r
+end
+
 # ---------------------------------------------------------------------------
 # Running
 
@@ -270,13 +333,16 @@ end
 const LISTING_KEYS = (
     "normal_termination", "converged", "nonconverged_steps", "outer_iterations",
     "inner_iterations", "max_abs_percent_discrepancy", "errors", "status",
+    "closures_applied", "closures_ok", "closure_errors",
 )
 
 "(Re)derive the listing checks and the status of a finished run; rewrite run.toml."
 function update_listing_fields!(info, dest)
     foreach(k -> delete!(info, k), LISTING_KEYS)
     merge!(info, check_listings(dest))
+    merge!(info, check_closures(dest, info["mode"]))
     info["status"] = info["timed_out"] ? "timeout" :
+        !get(info, "closures_ok", true) ? "wrong_closures" :
         (info["exit_code"] == 0 && info["converged"]) ? "ok" :
         info["normal_termination"] ? "nonconverged" :
         info["nonconverged_steps"] > 0 ? "nonconverged" : "error"
@@ -333,6 +399,7 @@ function write_summary(examples)
                 k => info[k] for k in (
                         "status", "exit_code", "wall_s", "normal_termination", "converged",
                         "nonconverged_steps", "outer_iterations", "inner_iterations", "max_abs_percent_discrepancy",
+                        "closures_ok",
                     )
                     if haskey(info, k)
             )
