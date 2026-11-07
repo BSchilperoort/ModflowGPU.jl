@@ -175,8 +175,8 @@ src/timing.jl, src/budget.jl, src/output/oc.jl, src/run.jl.
 - **Port** (src/stepping.jl): the same calls on `Simulation`; `ModflowGPU.run` is built on
   them. libmf6 hands out pointers into Fortran memory; here `get_value_ptr` is a host Float64
   mirror (absolute heads, BOUND before the MULTIPLIER aux) synchronised at the call
-  boundaries, and BOUND writes go through the period-data conversion (`set_bound!`). Since
-  MF6 6.5, RIV/DRN/GHB keep STAGE/COND etc. as separate arrays with the multiplier applied in
+  boundaries, and BOUND writes go through the period-data conversion (`set_bound!`). In
+  MF6 6.8 (reference/), RIV keeps STAGE/COND/RBOT as separate arrays with the multiplier applied in
   `cf`; ModflowCoupling (libmf6 via ModflowInterface) uses `BOUND`, which the port keeps.
 - `get_time_step` returns `delt` (libmf6); ModflowInterface's `BMI.get_time_step` calls
   `get_end_time` instead (a wrapper bug), see above.
