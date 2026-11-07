@@ -302,10 +302,11 @@ end
 
 Factor applied to the initial L2 norm in the inner convergence test
 (ImsLinearBase.f90 `ims_base_epfact`): 0.01 (first time step) or 0.1 for L2NORM_RCLOSE,
-1e-4 for L2NORM_RELATIVE_RCLOSE, 1 otherwise.
+1e-4 for L2NORM_RELATIVE_RCLOSE, 1 otherwise. MF6 writes 0.01 and 0.10 as default-real
+(single-precision) literals, so the values are `Float64(0.01f0)` and `Float64(0.10f0)`.
 """
 function ims_epfact(icnvgopt::Integer, kstp::Integer)
-    icnvgopt == 2 && return kstp == 1 ? 0.01 : 0.1
+    icnvgopt == 2 && return kstp == 1 ? Float64(0.01f0) : Float64(0.1f0)
     icnvgopt == 4 && return 1.0e-4
     return 1.0
 end

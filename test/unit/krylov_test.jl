@@ -208,7 +208,7 @@ _tight(T, method; kw...) = KrylovSettings(;
         @test ims_testcnvg(4, 5, 1.0e-4, 0.05, 1000.0, 1.0e-4, 1.0e-3, 0.1) == 1
         @test ims_testcnvg(4, 5, 1.0e-2, 0.05, 1000.0, 1.0e-4, 1.0e-3, 0.1) == -1
         @test ims_testcnvg(4, 5, 1.0e-2, 0.5, 1000.0, 1.0e-4, 1.0e-3, 0.1) == 0
-        @test ims_epfact(2, 1) == 0.01 && ims_epfact(2, 3) == 0.1 && ims_epfact(4, 1) == 1.0e-4 && ims_epfact(0, 1) == 1.0
+        @test ims_epfact(2, 1) == Float64(0.01f0) && ims_epfact(2, 3) == Float64(0.1f0) && ims_epfact(4, 1) == 1.0e-4 && ims_epfact(0, 1) == 1.0
     end
 
     @testset "IMS option mapping" begin
