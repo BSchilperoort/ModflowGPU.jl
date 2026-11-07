@@ -1,8 +1,10 @@
 # ModflowGPU.jl: notes for agents
 
-A GPU port of MODFLOW 6 groundwater flow (GWF) in Julia with KernelAbstractions. The plan,
-architecture and task cards are in `PLAN.md`; the conventions below summarise its section 2.
-Read the card you are working on and the sections it references before starting.
+A GPU port of MODFLOW 6 groundwater flow (GWF) in Julia with KernelAbstractions. The plan and
+architecture are in `PLAN.md`; the task cards are in one file per phase,
+`docs/plan/phase<N>.md` (index in PLAN.md section 5). The conventions below summarise
+PLAN.md section 2. Read your card's phase file and the PLAN.md sections it references
+before starting.
 
 ## Git workflow (local, agreed with the owner)
 
