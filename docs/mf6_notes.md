@@ -44,6 +44,17 @@ row replacement belongs to the assembly (T2.6); `calc_chd_rate!` ports `calc_chd
 which in MF6 only feeds observations and the MVR. Verified against MF6's CBC CHD records on
 ex-gwf-toth and ex-gwf-hanic (`test/parity/boundaries_test.jl`).
 
+**Port (T2.6).** `assemble!` (src/solver/csr.jl) applies `sln_ls`: rows with
+`ibound <= 0` become identity rows with `rhs = h'` (the offset CHD head), active rows
+with a diagonal below 1e-15 in magnitude get diagonal −1 and `rhs −= h'`, and with
+`symmetric = true` (IMS `LINEAR_ACCELERATION CG`, sequential mode) the CHD columns of
+active rows are moved to the right-hand side. The off-diagonals of all other rows keep
+the coupling to CHD cells (`hcond`/`vcond` are zero only for `ibound == 0`). The
+flux-form residual is zero on CHD rows. Verified bitwise (`:double`) against libmf6's
+`SLN_1/AMAT` after the first solve on toth (CG), hanic/hanir (BiCGSTAB), fhb_const (CG)
+and coupling_rde (`test/parity/assembly_test.jl`). Note: BMI `get_time_step` does not
+return the step length; read `TDIS/DELT`.
+
 ## Other boundary details used in T2.3
 
 - **MULTIPLIER aux / AUXMULTNAME** (`bnd_rp`, `BndExt`): the aux column named by

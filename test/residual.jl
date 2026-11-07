@@ -1,4 +1,6 @@
-# Helpers for the residual tests (PLAN.md section 4) until the assembly of T2.6 exists.
+# Helpers for the residual tests (PLAN.md section 4). `flux_residual` runs the device
+# residual kernel of src/solver/csr.jl (T2.6); `host_flux_residual` is the host loop it
+# replaced (T2.3), kept to validate the kernel (test/parity/assembly_test.jl).
 
 "Copy of `x` on TEST_BACKEND."
 function to_test_device(x::AbstractArray)
@@ -8,7 +10,7 @@ function to_test_device(x::AbstractArray)
 end
 
 """
-    flux_residual(T, conn, condsat, Δr, h, diag, b, ib) -> (rel, roundoff)
+    host_flux_residual(T, conn, condsat, Δr, h, diag, b, ib) -> (rel, roundoff)
 
 Flux-form residual (PLAN.md section 3.7, rule 2) on the host in `T`: per row `n` with
 `ib[n] > 0`,
@@ -19,7 +21,7 @@ with the boundary and storage terms in `diag` and `b` (host arrays). Returns
 `max |res| / max Σ|terms|` and the bound from rounding the offset heads to `T`,
 `eps(T)·max_n (Σ C·(|h'_m| + |h'_n| + |Δr|) + |diag_n·h'_n| + |b_n|) / max Σ|terms|`.
 """
-function flux_residual(::Type{T}, conn, condsat, Δr, h, diag, b, ib) where {T}
+function host_flux_residual(::Type{T}, conn, condsat, Δr, h, diag, b, ib) where {T}
     maxres = zero(T)
     maxscale = zero(T)
     maxround = zero(T)
@@ -45,4 +47,34 @@ function flux_residual(::Type{T}, conn, condsat, Δr, h, diag, b, ib) where {T}
         maxround = max(maxround, round)
     end
     return maxres / maxscale, eps(T) * maxround / maxscale
+end
+
+"""
+    residual_stats(T, res, scale, bound) -> (rel, roundoff)
+
+`max |res| / max scale` and `eps(T)·max bound / max scale` from the per-row outputs of
+`ModflowGPU.flux_residual!` (copied to the host; max norms need no accumulation).
+"""
+function residual_stats(::Type{T}, res, scale, bound) where {T}
+    maxscale = Float64(maximum(Array(scale)))
+    return Float64(maximum(abs, Array(res))) / maxscale, eps(T) * Float64(maximum(Array(bound))) / maxscale
+end
+
+"""
+    flux_residual(T, conn, condsat, Δr, h, diag, b, ib) -> (rel, roundoff)
+
+As `host_flux_residual`, with the device kernel `ModflowGPU.flux_residual!` on
+TEST_BACKEND: `condsat`, `Δr` (`T`, per symmetric connection), `h`, `diag`, `b` (`T`) and
+`ib` are host or device arrays.
+"""
+function flux_residual(::Type{T}, conn, condsat, Δr, h, diag, b, ib) where {T}
+    csr = ModflowGPU.CsrStructure(TEST_BACKEND, conn)
+    npf = ModflowGPU.NpfModel(to_test_device(T.(Array(condsat))), to_test_device(T.(Array(Δr))))
+    sys = ModflowGPU.LinearSystem(TEST_BACKEND, T, csr)
+    copyto!(sys.bdiag, T.(Array(diag)))
+    copyto!(sys.brhs, T.(Array(b)))
+    res, scale, bound = (KernelAbstractions.zeros(TEST_BACKEND, T, conn.nodes) for _ in 1:3)
+    ModflowGPU.flux_residual!(res, sys, csr, npf, to_test_device(T.(Array(h))), to_test_device(Int32.(Array(ib))); scale, bound)
+    KernelAbstractions.synchronize(TEST_BACKEND)
+    return residual_stats(T, res, scale, bound)
 end

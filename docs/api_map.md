@@ -89,7 +89,7 @@ it. Underscore-prefixed helpers are omitted.
 - **gwf/npf.jl**: NPF, confined: saturated conductance per connection (NPF.f90). Device-safe
   `logmean`, `condmean`, `staggered_thkfrac`; host `hyeff` / `hy_eff` (anisotropic K),
   `NpfProperties` / `npf_properties`, `check_npf_options`, `calc_condsat`, `NpfSetup` /
-  `npf_setup(::GwfSpec)`, device struct `NpfModel{T}`, `CCOND_*` averaging codes. Tests:
+  `npf_setup(::GwfSpec)`, device struct `NpfModel{T}` (`NpfModel(backend, T, setup)`, Adapt), `CCOND_*` averaging codes. Tests:
   npf (parity vs libmf6 CONDSAT).
 - **gwf/ic.jl**: IC (gwf-ic.f90 `ic_ar`). `initial_heads` (starting heads per reduced
   node as offsets, Float64 host or device copy in `T`). Tests: sto.
@@ -124,6 +124,19 @@ it. Underscore-prefixed helpers are omitted.
   petm0, pxdp…, petm…). Tests: riv_drn_evt (parity: residual and CBC flows on
   test/models/coupling_rde, mf6 run at test time).
 
+## Assembly and residual
+
+- **solver/csr.jl** (T2.6): MF6-layout assembly and the flux-form residual (PLAN.md 3.3,
+  3.7 rule 2; `npf_fc`, `bnd_fc`, `sto_fc`, `sln_ls`). Device structs `CsrStructure`
+  (ia/ja/jas/isym, `idiag`, `inode`; Adapt) and `LinearSystem{T}` (`amat`, offset rhs
+  `b' = b − A·r`, per-node boundary + storage terms `bdiag`/`brhs`); `reset_terms!`,
+  `add_terms!` (boundary or storage package → `bdiag`/`brhs`), `assemble!` (CHD identity
+  rows, small-diagonal fix, `symmetric` CG column move), `flux_residual!` (compensated row
+  sums; optional `scale`/`bound` outputs for the universal residual test). Tests:
+  assembly (parity: universal residual on Tier 0–2 + synthetic models, libmf6 first-solve
+  AMAT/RHS oracle via validation/libmf6_first_solve.jl, cancellation test), also used by
+  boundaries, sto, riv_drn_evt through `flux_residual` in test/residual.jl.
+
 ## MF6 output files (host)
 
 - **output/binary.jl**: shared binary I/O helpers (little-endian stream files).
@@ -148,9 +161,10 @@ it. Underscore-prefixed helpers are omitted.
 - **input_files.jl**: `REFERENCE_DIR`, `in_scope_examples`, `simulation_input_files`,
   `model_package_files`.
 - **libmf6_oracle.jl**: libmf6 subprocess oracle. `LIBMF6_ENV`, `libmf6_available`,
-  `run_libmf6_script`, `libmf6_connectivity`, `write_dis_simulation` (synthetic DIS sims).
+  `run_libmf6_script` (validation/libmf6_connectivity.jl, libmf6_first_solve.jl), `libmf6_connectivity`, `write_dis_simulation` (synthetic DIS sims).
 - **grids.jl**: `_synthetic_coupling_dis`, `_synthetic_passthrough_dis`, `_rel_close`.
-- **residual.jl**: `to_test_device`, `flux_residual` (host flux-form residual until T2.6).
+- **residual.jl**: `to_test_device`, `flux_residual` (device `flux_residual!` → (rel, rounding
+  bound)), `residual_stats`, `host_flux_residual` (the T2.3 host loop, validates the kernel).
 - **models/coupling_rde/**: synthetic coupling-like model (2 × 12 × 15, confined, steady +
   transient) with CHD, WEL, RCHA, RIV, DRN, EVT, EVTA; `generate.jl` writes it
   (riv_drn_evt parity test).

@@ -8,6 +8,7 @@ module ModflowGPU
 
 using KernelAbstractions: KernelAbstractions, Backend, CPU, get_backend, @kernel, @index, @Const
 using Printf: @sprintf
+using Adapt: Adapt
 
 include("backend_setup.jl")
 include("precision.jl")
@@ -48,6 +49,9 @@ include("boundaries/ghb.jl")
 include("boundaries/riv.jl")
 include("boundaries/drn.jl")
 include("boundaries/evt.jl")
+
+# Assembly and residual (KA kernels)
+include("solver/csr.jl")
 
 # MF6 output files (host only): heads, budgets, binary grid files, listing budgets
 include("output/binary.jl")
