@@ -24,6 +24,8 @@
 #   - every mirror is refreshed from the engine at the end of `initialize`,
 #     `prepare_time_step`, `prepare_solve` and `finalize_solve` (so X during the outer
 #     iterations is the X at the start of the step; read it with `get_value`).
+#   - writes into a mirror between `prepare_solve` and `finalize_solve` are discarded by
+#     the refresh in `finalize_solve`, with a warning (use `set_value` there).
 #
 # `get_value_ptr(sim, address; device = true)` returns the engine arrays themselves
 # (device, precision T, head-like values as offsets from "<model>/HREF", BOUND with the
@@ -199,7 +201,7 @@ function finalize_solve(s::Simulation, isol::Integer = 1)
     push!(s.results, StepResult(step, OuterResult(s.outer)))
     push!(s.budgets, b)
     s.stage = :finalized_solve
-    _pull_mirrors!(s)
+    _pull_mirrors!(s; lost = true)
     return s.outer.converged
 end
 
@@ -465,8 +467,12 @@ function _push_mirrors!(s::Simulation)
     return nothing
 end
 
-function _pull_mirrors!(s::Simulation)
-    for mir in values(s.mirrors)
+# `lost = true` (finalize_solve): warn about writes into a writable mirror since
+# `prepare_solve`, which the refresh discards (they are not sent during the outer iterations).
+function _pull_mirrors!(s::Simulation; lost::Bool = false)
+    for (key, mir) in s.mirrors
+        lost && !isnothing(mir.var.set) && !isequal(mir.host, mir.synced) &&
+            @warn "\"$key\" was written through get_value_ptr after prepare_solve; the write is discarded (write before prepare_solve, or use set_value)"
         v = mir.var.get(s)
         copyto!(mir.host, v)
         copyto!(mir.synced, v)

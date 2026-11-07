@@ -146,6 +146,9 @@ _budget_rates(b) = [(t.name, t.package, t.rate_in, t.rate_out, t.cum_in, t.cum_o
             x .+= 0.5
             prepare_solve(s)
             @test get_value(s, "RDE/XOLD") ≈ x
+            # A write through the mirror after prepare_solve is discarded, with a warning.
+            x[1] += 1.0
+            @test_logs (:warn, r"discarded") match_mode = :any finalize_solve(s)
             ModflowGPU.finalize(s)
 
             # BMI: time, grid, variables, update until the end.
