@@ -111,3 +111,10 @@ Page-lock host memory to speed up device transfers. Does nothing unless a backen
 extension adds a method for its backend.
 """
 pin_memory!(::Backend, arr) = nothing
+
+# A new array on `backend` with the contents of the host array `x` (`copyto!`, no slicing).
+function _device_copy(backend::Backend, x::AbstractArray{T}) where {T}
+    d = KernelAbstractions.allocate(backend, T, size(x))
+    copyto!(d, x)
+    return d
+end

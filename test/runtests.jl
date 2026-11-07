@@ -57,6 +57,8 @@ const TEST_GROUPS = [
     "riv_drn_evt" => ["unit/riv_drn_evt_test.jl", "parity/riv_drn_evt_test.jl"],
     "assembly" => ["parity/assembly_test.jl"],
     "krylov" => ["unit/krylov_test.jl"],
+    "picard" => ["unit/picard_test.jl"],
+    "run" => ["parity/run_test.jl"],
 ]
 
 const SELECTED_GROUPS = let

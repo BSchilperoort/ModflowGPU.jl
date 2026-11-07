@@ -49,12 +49,6 @@ end
 
 Adapt.@adapt_structure CsrStructure
 
-function _device_copy(backend::Backend, x::AbstractVector{T}) where {T}
-    d = KernelAbstractions.allocate(backend, T, length(x))
-    copyto!(d, x)
-    return d
-end
-
 """
     CsrStructure(backend, conn::Connectivity) -> CsrStructure
 

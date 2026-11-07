@@ -190,3 +190,47 @@ function percent_discrepancy(total_in::Real, total_out::Real)
     avg = (total_in + total_out) / 2
     return avg == 0 ? 0.0 : 100 * (total_in - total_out) / avg
 end
+
+# Budget.f90 `value_to_string`: F17.4, or 1PE17.4 (ES17.4E3 beyond 2-digit exponents) for
+# non-zero values from `big` on or below `small`.
+function _budget_value(v::Float64, big::Float64)
+    a = abs(v)
+    if v != 0 && (a >= big || a < 0.1)
+        s = @sprintf("%.4E", v)
+        m = match(r"^(.*)E([+-])(\d+)$", s)
+        e = parse(Int, m[3])
+        s = (a >= 9.99995e99 || a < 1.0e-99) ? string(m[1], "E", m[2], lpad(e, 3, '0')) : string(m[1], "E", m[2], lpad(e, 2, '0'))
+        return lpad(s, 17)
+    end
+    return lpad(@sprintf("%.4f", v), 17)
+end
+
+"""
+    write_listing_budget(io, kstp, kper, terms; title = "VOLUME", zone = "ENTIRE MODEL")
+
+Write one budget table in the layout of MF6's `budget_ot` (Budget.f90, labeled form, as
+GWF prints it; read back by [`read_listing_budgets`](@ref)). `terms` is a collection of
+`(name, package, cum_in, cum_out, rate_in, rate_out)` tuples (Float64 values).
+"""
+function write_listing_budget(io::IO, kstp::Integer, kper::Integer, terms; title::AbstractString = "VOLUME", zone::AbstractString = "ENTIRE MODEL")
+    big1, big2 = 9.99999e11, 9.99999e10
+    @printf(io, "\n\n  %s BUDGET FOR %s AT END OF TIME STEP%5d, STRESS PERIOD%4d\n  %s\n", title, zone, kstp, kper, "-"^99)
+    print(io, "\n     CUMULATIVE VOLUME      L**3       RATES FOR THIS TIME STEP      L**3/T          PACKAGE NAME    \n")
+    print(io, "     ------------------                 ------------------------                     ----------------\n\n")
+    print(io, " "^11, "IN:", " "^38, "IN:\n", " "^11, "---", " "^38, "---\n")
+    line(name, a, b, pkg) = print(io, "    ", lpad(name, 16), " =", _budget_value(a, big1), " "^6, lpad(name, 16), " =", _budget_value(b, big1), " "^5, rpad(pkg, 16), "\n")
+    for t in terms
+        line(t[1], t[3], t[5], t[2])
+    end
+    tin = (sum(t -> t[3], terms; init = 0.0), sum(t -> t[5], terms; init = 0.0))
+    tout = (sum(t -> t[4], terms; init = 0.0), sum(t -> t[6], terms; init = 0.0))
+    print(io, "\n", " "^12, "TOTAL IN =", _budget_value(tin[1], big1), " "^14, "TOTAL IN =", _budget_value(tin[2], big1), "\n")
+    print(io, "\n", " "^10, "OUT:", " "^37, "OUT:\n", " "^10, "----", " "^37, "----\n")
+    for t in terms
+        line(t[1], t[4], t[6], t[2])
+    end
+    print(io, "\n", " "^11, "TOTAL OUT =", _budget_value(tout[1], big1), " "^13, "TOTAL OUT =", _budget_value(tout[2], big1), "\n")
+    print(io, "\n", " "^12, "IN - OUT =", _budget_value(tin[1] - tout[1], big2), " "^14, "IN - OUT =", _budget_value(tin[2] - tout[2], big2), "\n")
+    @printf(io, "\n PERCENT DISCREPANCY = %14.2f     PERCENT DISCREPANCY = %14.2f\n\n", percent_discrepancy(tin[1], tout[1]), percent_discrepancy(tin[2], tout[2]))
+    return nothing
+end

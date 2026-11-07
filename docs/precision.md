@@ -17,9 +17,9 @@ rounding the offset heads to `T`. CPU and ROCm (RX 7800 XT) give bitwise identic
 
 | Model | nodes, steps | `:double` | `:single` | `:single` rounding bound |
 | --- | --- | --- | --- | --- |
-| ex-gwf-toth | 20000, 1 | 5.7e-13 | 4.6e-5 | 1.3e-4 |
-| ex-gwf-hanic | 2601, 1 | 3.4e-11 | 2.1e-7 | 1.2e-6 |
-| ex-gwf-hanir | 2601, 1 | 3.4e-11 | 2.1e-7 | 1.2e-6 |
+| ex-gwf-toth | 1 | 5.6e-9 | 4.9e-5 | 4.9e-5 | 3.4e-13 / 3.2e-7 | 1.3e-7 | 2.5e-5 % | 3/1247, 3/1435, 2/254 |
+| ex-gwf-hanic | 1 | 1.5e-9 | 5.1e-7 | 4.6e-7 | 9.4e-10 / 4.0e-7 | 0 | 1.0e-3 % | 3/199, 3/146, 2/39 |
+| ex-gwf-hanir | 1 | 1.4e-9 | 5.0e-7 | 5.3e-7 | 9.0e-10 / 4.9e-7 | 0 | 1.2e-3 % | 4/222, 3/151, 2/39 |
 | ex-gwf-hwell-a | 153164, 60 | 1.6e-12 | 8.0e-5 | 4.8e-4 |
 | fhb_const (synthetic) | 30, 20 | 2.5e-12 | 7.2e-7 | 3.7e-6 |
 | coupling_rde (synthetic) | 337, 10 | 8.0e-13 | 2.7e-7 | 8.1e-7 |
@@ -44,10 +44,19 @@ experiment, not a test):
 | `STRT` (no clamp) | 1010 | 2.9e-6 (1.2e-5) | 0.21 | 3.2e-8 (1.6e-7) |
 | MF6's converged heads | 0 | 4.1e-8 (1.2e-7) | 0 | 7.8e-8 (1.2e-7) |
 
-Proposal for the owner (not implemented; it changes rule 1): use `r = STRT` without
-the clamp in ICELLTYPE 0 cells (the clamp only matters for convertible cells, T6.1),
-and consider re-referencing `r` to the current heads between stress periods (host
-Float64 work: `r`, `Δr` and the head-like boundary columns).
+Proposal for the owner (adopted after T2.6 and implemented in T2.8, see below): use
+`r = STRT` without the clamp in ICELLTYPE 0 cells (the clamp only matters for
+convertible cells, T6.1). Re-referencing `r` between stress periods was not adopted.
+
+**Rule 1 as implemented (T2.8).** `reference_heads` (src/gwf/offsets.jl): `r = STRT` for
+ICELLTYPE 0, `clamp(STRT, bot, top)` for convertible cells, and the clamp also for a
+confined cell whose STRT is not finite or lies more than
+`D = max(zmax − zmin, 1000 m)` outside the model's elevation range `[zmin, zmax]`
+(`REFERENCE_FALLBACK_MIN_DISTANCE`; such values are sentinels, and the number of cells
+is logged). None of the parity models triggers the fallback. Universal residual test,
+re-measured (all saved steps, `:single`, rounding bound in brackets): toth 2.9e-6
+(1.2e-5; was 4.6e-5), hwell-a 4.8e-6 (1.5e-4, 60 steps; was 8.0e-5), hanic/hanir 2.1e-7,
+fhb_const 7.3e-7, coupling_rde 1.3e-7; `:double` unchanged.
 
 **Cancellation test** (a column of 100 cells at 5000 m, 1 cm head differences, K = 3, a
 GHB-like term on one cell): max |res_single − res_double| / max |res_double|:
@@ -101,3 +110,76 @@ the same iteration counts in `:double` and `δ` within 1e-10.
 Timing on the RX 7800 XT, 1e6 rows (2 × 500 × 1000 DIS grid, 7-point stencil), Jacobi:
 CG 0.53 ms per iteration (`:double`) and 0.38 ms (`:single`); BiCGSTAB 1.05 ms and
 0.69 ms. Each CG iteration has 2 host synchronisations (one 4-value copy each), BiCGSTAB 3.
+
+## Outer iterations, closures and end-to-end parity (T2.8)
+
+Kernels and host logic: src/solver/picard.jl (outer loop, correction solve with zero
+initial guess, rule 3), src/budget.jl (flows in `T`, budget sums as device reductions in
+Float64 where available, rule 4). Test: test/parity/run_test.jl (group `run`): every
+saved step of our HDS and CBC files and every listing budget table against MF6 6.8.2
+tight-closure runs (OUTER_DVCLOSE 1e-9, INNER_DVCLOSE 1e-10, INNER_RCLOSE 1e-10 or the
+synthetic models' own tight IMS).
+
+**Float32 closures** (`FLOAT32_CLOSURES`, applied by `PicardSettings` when `T = Float32`;
+closures already looser are kept):
+
+| Closure | Float32 floor | Why |
+| --- | --- | --- |
+| OUTER_DVCLOSE | `max(1e-6 m, eps32 · max_n \|h'_n\|)` (checked every outer iteration) | A Float32 offset head resolves `eps32·\|h'\|`; the correction of a converged state is noise of ~0.25 `eps32·max\|h'\|` (toth: `\|δ\|` stalls at 3.05e-5 m with offsets up to 1010 m, so a fixed 1e-5 never converges) |
+| INNER_DVCLOSE | 1e-6 m | below the outer floor is wasted work |
+| INNER_RCLOSE (absolute options) | `≥ eps32 · max_n Σ_m \|terms\|` of the first outer iteration of the step (×√n for the L2 options) | the rounding level of the flux-form residual (rule 2); T2.7: an absolute rclose below ~`eps32·‖A‖·‖δ‖` is unreachable |
+
+Measured: the factor on the rclose floor sets the `:single` budget discrepancy (hanic: 10
+→ 0.0055 %, 2 → 0.0016 %, 1 → 0.0008 %, 0.5 → same heads); 1 is used. OUTER_DVCLOSE
+floors 1e-5 and 1e-6 both converge on every model; 1e-6 halves the `:single` head error
+on coupling_rde (1.1e-5 → 1.5e-6 m vs `:double`) for 15 % more outer iterations.
+
+**End-to-end parity** (CPU backend; ROCm on the RX 7800 XT gives bitwise identical heads
+in both presets). Heads: max |Δh| over all saved steps vs MF6; CBC: max |Δq| over all
+records (FLOW-JA-FACE, STO-SS, package lists) / total inflow of the step; listing: every
+term's rate in and out (incl. the CHD split) beyond the printed rounding / total
+inflow; pd: max |percent discrepancy| over the steps; iterations: outer/inner summed over
+the steps (MF6 with ILU0, ours with Jacobi until Phase 4).
+
+| Model | steps | `:double` max \|Δh\| | `:single` max \|Δh\| | `:single` vs `:double` (final) | CBC `:double` / `:single` | listing `:single` | pd `:single` | outer/inner `:double`, `:single`, MF6 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ex-gwf-toth | 1 | 5.6e-9 | 4.9e-5 | 4.9e-5 | 3.4e-13 / 3.2e-7 | 1.3e-7 | 2.5e-5 % | 3/1247, 3/1435, 2/254 |
+| ex-gwf-hanic | 1 | 1.5e-9 | 5.1e-7 | 4.6e-7 | 9.4e-10 / 4.0e-7 | 0 | 1.0e-3 % | 3/199, 3/146, 2/39 |
+| ex-gwf-hanir | 1 | 1.4e-9 | 5.0e-7 | 5.3e-7 | 9.0e-10 / 4.9e-7 | 0 | 1.2e-3 % | 4/222, 3/151, 2/39 |
+| fhb_const | 20 | 5.0e-11 | 5.9e-6 | 4.1e-7 | 1.6e-11 / 1.4e-6 | 6.7e-8 | 2.3e-4 % | 29/190, 28/149, 29/2251 |
+| coupling_rde | 10 | 1.2e-11 | 1.2e-5 | 1.5e-6 | 9.2e-13 / 1.5e-7 | 7.7e-7 | 1.9e-4 % | 103/5722, 55/1101, 142/107439 |
+| coupling_rde, SIMPLE 0.8 | 10 | 8.4e-11 | 3.8e-5 | 1.7e-5 | 1.4e-12 / 5.8e-7 | 3.4e-6 | 4.9e-4 % | 137/6402, 75/1825, 137/3807 |
+| coupling_rde, COOLEY 0.5 | 10 | 1.3e-10 | 1.3e-5 | 1.7e-5 | 2.4e-12 / 1.7e-7 | 9.6e-7 | 2.2e-4 % | 94/4460, 58/1202, 94/5483 |
+| coupling_rde, DBD | 10 | 1.5e-10 | 1.7e-5 | 8.5e-6 | 3.0e-12 / 3.4e-7 | 1.3e-6 | 3.4e-4 % | 112/5363, 66/1295, 113/5346 |
+| coupling_rde, MODERATE | 10 | 1.1e-10 | 3.1e-5 | 6.3e-6 | 2.1e-12 / 4.5e-7 | 2.6e-6 | 5.1e-4 % | 94/4351, 55/1086, 94/1028 |
+| coupling_rde, COMPLEX | 10 | 1.5e-10 | 2.2e-5 | 1.5e-5 | 3.0e-12 / 3.1e-7 | 1.5e-6 | 3.7e-4 % | 125/5750, 70/3548, 125/4019 |
+
+The under-relaxation variants run with OUTER_DVCLOSE 1e-9, INNER_DVCLOSE 1e-11 and
+INNER_RCLOSE 1e-9; their `:double` outer counts equal MF6's within one iteration.
+The inner counts reflect Jacobi vs ILU0 and the relative denominator guard of the Krylov
+solvers (`_safe_div`, docs/mf6_notes.md): with MF6's absolute `DPREC` guard the
+correction solves stalled at |r| ~ 1e-8 and hit INNER_MAXIMUM every outer iteration
+(hanir `:double` 16/14402, coupling_rde 226/215792; MF6's own 107439 inner iterations on
+coupling_rde show the same stall). Columns other than `:single` vs `:double` were
+re-measured after that change. COMPLEXITY COMPLEX enables backtracking, which MF6
+used in 3 of 125 outer iterations; ModflowGPU warns and does not backtrack (T6.2), and the
+converged heads agree as above. In `:single` the outer loop stops at the Float32 floors,
+hence fewer outer iterations than MF6.
+
+**ex-gwf-hwell-a** (153164 cells, 60 steps, BiCGSTAB; opt-in `MFGPU_TEST_HWELL=1`, not
+part of the suite). `:single` on ROCm: steps 1–56 converge in 2–15 outer iterations and
+stay within 2e-5 m of MF6 (max |h'| 5.8 m); in step 57 (`delt` = 0.096 d) the Jacobi
+BiCGSTAB solve does not converge in 1000 iterations and returns a correction of 3656 m
+for a residual of 0.93, after which the outer iterations diverge (NaN by iteration 8).
+Until T2.8's last fix the max-abs reduction skipped NaN and the step was reported as
+converged; it now propagates NaN and the outer loop stops with a warning (and
+`ConvergenceError`). `:double` on ROCm converges in all 60 steps (231 s; 2 outer and 12–30 inner iterations per step in the first steps), within 2.0e-10 m of MF6 in the last step, percent discrepancy 2.8e-8 %. The cure is the Phase 4 preconditioner (MF6 needs 2 outer
+and 7–10 inner iterations per step with ILU0).
+
+**Section 4 thresholds.** Confirmed for `:single` on Tier 0 and the synthetic models:
+heads < 1e-3 m (largest measured 4.9e-5 m, toth, whose offsets reach 1010 m: the head
+error scales with `eps32·max|h'|`), package flows < 1e-4 × total in (largest 3.4e-6),
+percent discrepancy < 0.01 % (largest 1.5e-3 %), and `:single` vs `:double` heads
+< 1e-3 m. The `:double` criteria hold with large margins (heads ≤ 4.0e-8 m, flows
+≤ 1.0e-9 × total in). No threshold is changed; the measured values leave about a factor
+20 on heads and 7 on percent discrepancy for the larger models of T3.4 and T5.3.

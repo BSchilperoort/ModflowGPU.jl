@@ -99,6 +99,66 @@ Semantics kept from MF6:
   column factor DSCALE2). `L2NORM0` is the scaled initial norm in both, so with L2NORM
   scaling BiCGSTAB compares an unscaled norm with a scaled `L2NORM0`.
 - Stagnation exits: CG stops when `is_close(rho, rho0)` or `rho == 0`; BiCGSTAB when rho,
-  alpha or omega repeat (`is_close`, rtol 100·eps) or `rho·omega == 0`. Denominators get
-  `+ SIGN(DPREC, d)`.
+  alpha or omega repeat (`is_close`, rtol 100·eps) or `rho·omega == 0`. Deviation: MF6
+  adds the absolute `SIGN(DPREC, d)` to denominators; we add `SIGN(eps·|numerator|, d)`
+  (`_safe_div`). The absolute guard stalls the correction solves once the dot products
+  reach ~1e-16 (|r| ~ 1e-8), so the inner solve hit INNER_MAXIMUM every outer iteration
+  (ex-gwf-hanir `:double`: 16 outer / 14402 inner with it, 4 / 222 without; coupling_rde 226 / 215792
+  → 103 / 5722).
 - `L2NORM0 == 0` gives zero iterations and convergence.
+
+## Outer iterations, time steps, budgets and output (T2.8)
+
+Routines: `sln_ca`, `solve`, `sln_get_dxmax`, `sln_has_converged`, `sln_underrelax`,
+`finalizeSolve` (`NumericalSolution.f90`); `imslinear_ap` (`ImsLinear.f90`);
+`tdis_set_timestep`, `tdis_set_delt` (`tdis.f90`); `gwf_cq`, `gwf_bd`, `gwf_ot`,
+`gwf_ot_flow` (`gwf.f90`); `bnd_cq_simrate`, `save_print_model_flows`
+(`BoundaryPackage.f90`); `csr_diagsum` (`Sparse.f90`); `budget_ot`, `value_to_string`
+(`Budget.f90`); `set_print_flag` (`OutputControl.f90`), `is_selected`
+(`TimeStepSelect.f90`). Implementation: src/solver/picard.jl, src/solver/underrelax.jl,
+src/timing.jl, src/budget.jl, src/output/oc.jl, src/run.jl.
+
+- **Outer convergence.** An outer iteration converges only when the inner solve
+  converged (`imslinear_ap` returns ICNVG 1; STRICT and the relative criteria return −1,
+  reset to 0) **and** `|hncg| <= OUTER_DVCLOSE`, where `hncg` is the signed largest
+  `x − xtemp` over active cells. With INNER_RCLOSE STRICT (hanic, hanir) an inner solve
+  converges only when its first inner iteration does, so the outer loop runs until the
+  residual is tiny. The port: `converged = result.converged && |max δ| <= dvclose`.
+- **Under-relaxation** is applied only to a non-converged outer iteration: SIMPLE
+  `x = xtemp + gamma·δ`; COOLEY one factor from `bigch = hncg` and its weighted history
+  (`relax < 1` only changes `x`); DBD a factor per cell (`wsave`, `hchold`, `deold`
+  initialised at `kiter == 1`, momentum from `kiter > 4`). A converged iteration keeps the
+  full solution. COMPLEXITY MODERATE/COMPLEX select DBD; COMPLEX also backtracking
+  (BACKTRACKING_NUMBER 20; not ported until T6.2: `PicardSettings` warns). On coupling_rde
+  with COMPLEXITY COMPLEX, MF6 backtracked in 3 of 125 outer iterations; the converged
+  heads agree regardless (test/parity/run_test.jl).
+- **Time steps.** The first step of a period is `perlen/float(nstp)` or
+  `perlen·(1 − tsmult)/(1 − tsmult^nstp)`, later ones `tsmult·delt`, but the **last** step
+  of a period is `topertim + perlen − totim`, and `pertim = perlen` at the end of the
+  period.
+- **Flows** (`gwf_cq`): `flowja` zeroed; NPF off-diagonals (flow into `n`); STO-SS rates on
+  the diagonal; each package re-formulated with the final heads (`bnd_cf`) and its
+  `simvals` (`hcof·x − rhs`, 0 for `ibound <= 0`) added to the diagonal; CHD
+  `calc_chd_rate`; then `csr_diagsum` adds the off-diagonals to the diagonal (`gwf_bd`),
+  so the CBC FLOW-JA-FACE diagonal is each cell's imbalance.
+- **Budget** (`rate_accumulator`): positive rates are IN, negated negative rates OUT;
+  CHD uses `ratechdin`/`ratechdout` (the split over connections to active cells, see
+  the CHD section); cumulative volumes `+= rate·delt`. Order: STO-SS (STO-SY if any
+  ICONVERT ≠ 0), then the packages. The listing's package column says `STORAGE` for STO.
+  The budget table is printed with PRINT BUDGET, at the end of every period, and after a
+  failed step (`set_print_flag`).
+- **CBC records** (`gwf_ot_flow`, written when OC saves BUDGET): STO-SS (and STO-SY) as
+  IMETH 1 arrays over the user nodes (dims `(ncol, nrow, −nlay)`, 0 outside the reduced
+  grid) when STO or the model saves flows, also in steady periods; FLOW-JA-FACE as IMETH 1
+  with dims `(nja, 1, −1)`; DATA-SPDIS with SAVE_SPECIFIC_DISCHARGE (not written yet);
+  then per package an IMETH 6 list with `id1` = user node, `id2` = **record number**,
+  `q` = `simvals` (CHD: the net cell rate), the package's aux values, and only records
+  with a cell (`node > 0`). Texts: `RCHA` (`"            RCHA"`) and `EVTA` for
+  READASARRAYS; MF6 6.8 writes EVTA's text as `"           EVTA "` (left in 16 characters).
+  `paknam2` is the package name.
+- **Output control.** A PERIOD block stays in force until the next one; an empty block
+  turns output off. ALL, FIRST (`kstp == 1`), LAST (end of period), FREQUENCY n
+  (`mod(kstp, n) == 0`), STEPS list; several records of one block combine.
+- **Non-convergence.** Without the mfsim.nam CONTINUE option MF6 writes the step's output
+  and stops; `ModflowGPU.run` throws a `ConvergenceError` after the step's output, and
+  warns and continues with CONTINUE.

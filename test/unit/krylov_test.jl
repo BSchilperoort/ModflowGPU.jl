@@ -101,7 +101,8 @@ function _mf6_reference(A, b, st::KrylovSettings; kstp = 1)
     itmax = l2norm0 == 0 ? 0 : st.maxiter
     icnvg = l2norm0 == 0 ? 1 : 0
     epfact = ims_epfact(st.icnvgopt, kstp)
-    sgn(x) = x + copysign(eps(Float64), x)
+    # MF6 adds SIGN(DPREC, d); ours is relative to the numerator (`_safe_div`, mf6_notes.md).
+    sdiv(num, d) = num / (d + copysign(max(eps(Float64) * abs(num), floatmin(Float64)), d))
     close(a, b) = a == b || abs(a - b) <= 100 * eps() * max(abs(a), abs(b))
     iters = 0
     if st.method === :cg
@@ -113,7 +114,7 @@ function _mf6_reference(A, b, st::KrylovSettings; kstp = 1)
             rho = dot(d, z)
             p = it == 1 ? z : z .+ (rho / rho0) .* p
             q = A * p
-            alpha = rho / sgn(dot(p, q))
+            alpha = sdiv(rho, dot(p, q))
             tv = alpha .* p
             x .+= tv
             d .-= alpha .* q
@@ -140,11 +141,11 @@ function _mf6_reference(A, b, st::KrylovSettings; kstp = 1)
             p = it == 1 ? copy(d) : d .+ ((rho / rho0) * (alpha0 / omega0)) .* (p .- omega0 .* v)
             phat = dinv .* p
             v = A * phat
-            alpha = rho / sgn(dot(dhat, v))
+            alpha = sdiv(rho, dot(dhat, v))
             q = d .- alpha .* v
             qhat = dinv .* q
             t = A * qhat
-            omega = dot(t, q) / sgn(dot(t, t))
+            omega = sdiv(dot(t, q), dot(t, t))
             tv = alpha .* phat .+ omega .* qhat
             x .+= tv
             d = q .- omega .* t

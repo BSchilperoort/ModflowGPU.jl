@@ -7,7 +7,7 @@ so it runs on the CPU and on any GPU backend with a package extension (see `ext/
 module ModflowGPU
 
 using KernelAbstractions: KernelAbstractions, Backend, CPU, get_backend, @kernel, @index, @Const, @localmem, @synchronize
-using Printf: @sprintf
+using Printf: @sprintf, @printf
 using Adapt: Adapt
 
 include("backend_setup.jl")
@@ -54,6 +54,13 @@ include("boundaries/evt.jl")
 include("solver/csr.jl")
 include("solver/krylov.jl")
 
+# Time stepping, the model on a device, outer iterations, flows and budgets
+include("timing.jl")
+include("gwf/model.jl")
+include("solver/underrelax.jl")
+include("solver/picard.jl")
+include("budget.jl")
+
 # MF6 output files (host only): heads, budgets, binary grid files, listing budgets
 include("output/binary.jl")
 include("output/grb.jl")
@@ -61,5 +68,9 @@ include("output/layout.jl")
 include("output/hds.jl")
 include("output/cbc.jl")
 include("output/listing.jl")
+include("output/oc.jl")
+
+# Running a simulation
+include("run.jl")
 
 end

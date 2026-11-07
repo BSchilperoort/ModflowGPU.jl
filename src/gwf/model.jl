@@ -1,0 +1,132 @@
+# One GWF model on a device: the host setup (connectivity, NPF, reference heads; Float64)
+# and every device array the outer iterations, flows and budgets work on (PLAN.md
+# sections 3.3, 3.4 and 3.7).
+
+"""
+    GwfModel{T}
+
+A GWF model ready to run on a device in precision `T` (state and assembly):
+
+- host: `spec::GwfSpec`, `conn::Connectivity`, `setup::NpfSetup` (condsat, reference heads
+  `r` and differences, Float64), `ibound_host` (1 active, −1 constant head), `kper`
+  (stress period applied last, 0 before the first);
+- device: `csr::CsrStructure`, `npf::NpfModel{T}`, `sys::LinearSystem{T}`, `packages`
+  (`BoundaryPackage`s in MF6's order, `GwfSpec.boundaries`), `sto` (`StoragePackage` or
+  `nothing`), `area` (cell areas, for RCH/EVT), `ibound`, the offset heads `h` and the
+  heads at the start of the step `hold`, the residual `res`, the correction `δ`, `flowja`
+  (`nja`).
+
+    GwfModel(backend, T, spec::GwfSpec, nper)
+"""
+mutable struct GwfModel{T <: AbstractFloat, B <: Backend, C <: CsrStructure, N <: NpfModel{T}, S <: LinearSystem{T}, ST, V <: AbstractVector{T}, VI <: AbstractVector{Int32}}
+    const spec::GwfSpec
+    const backend::B
+    const conn::Connectivity
+    const setup::NpfSetup
+    const csr::C
+    const npf::N
+    const sys::S
+    const packages::Vector{BoundaryPackage}
+    const sto::ST
+    const area::V
+    const ibound::VI
+    ibound_host::Vector{Int32}
+    const h::V
+    const hold::V
+    const res::V
+    const δ::V
+    const flowja::V
+    kper::Int
+end
+
+function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) where {T <: AbstractFloat}
+    spec.newton && throw(MF6UnsupportedError(spec.file, "unsupported: NEWTON in model $(spec.name) (Newton-Raphson arrives with T6.1)"))
+    conn = build_connectivity(spec)
+    setup = npf_setup(spec, conn)
+    csr = CsrStructure(backend, conn)
+    npf = NpfModel(backend, T, setup)
+    sys = LinearSystem(backend, T, csr)
+    packages = BoundaryPackage[BoundaryPackage(backend, T, b, conn, spec.dis) for b in spec.boundaries]
+    sto = isnothing(spec.sto) ? nothing : StoragePackage(backend, T, spec.sto, conn, nper)
+    z() = KernelAbstractions.zeros(backend, T, conn.nodes)
+    ibh = ones(Int32, conn.nodes)
+    h = initial_heads(backend, T, spec.ic, conn, setup.r)
+    hold = _device_copy(backend, Array(h))
+    return GwfModel(
+        spec, backend, conn, setup, csr, npf, sys, packages, sto, _device_copy(backend, T.(conn.area)),
+        _device_copy(backend, ibh), ibh, h, hold, z(), z(), KernelAbstractions.zeros(backend, T, conn.nja), 0,
+    )
+end
+
+Base.eltype(::GwfModel{T}) where {T} = T
+KernelAbstractions.get_backend(m::GwfModel) = m.backend
+Base.show(io::IO, m::GwfModel{T}) where {T} =
+    print(io, "GwfModel{", T, "}(\"", m.spec.name, "\", ", m.conn.nodes, " cells, ", length(m.packages), " stress package(s))")
+
+"""
+    apply_period!(m::GwfModel, kper) -> m
+
+Start stress period `kper` (`bnd_rp`, `sto_rp`, `chd_rp`), once per period: the period
+data of every stress package (host, Float64, then copied), the storage setting and the
+IBOUND of the constant heads (copied to the device when it changed).
+"""
+function apply_period!(m::GwfModel, kper::Integer)
+    for pkg in m.packages
+        apply_period!(pkg, kper, m.setup.r)
+    end
+    isnothing(m.sto) || apply_period!(m.sto, kper)
+    ib = boundary_ibound(m.conn, m.packages)
+    if ib != m.ibound_host
+        m.ibound_host = ib
+        copyto!(m.ibound, ib)
+    end
+    m.kper = kper
+    return m
+end
+
+"""
+    start_timestep!(m::GwfModel, delt) -> m
+
+Start a time step of length `delt` (Float64, host): `rho = SC/delt` (`set_timestep!`),
+`hold ← h` (`gwf_ad`), and the constant heads applied to both (`chd_ad`).
+"""
+function start_timestep!(m::GwfModel, delt::Float64)
+    isnothing(m.sto) || set_timestep!(m.sto, delt)
+    copyto!(m.hold, m.h)
+    for pkg in m.packages
+        if boundary_kind(pkg) === :CHD
+            apply_chd_heads!(m.h, pkg)
+            apply_chd_heads!(m.hold, pkg)
+        end
+    end
+    return m
+end
+
+"""
+    formulate!(m::GwfModel; symmetric = false, scale = nothing) -> m
+
+Formulate and assemble the system of an outer iteration from the current offset heads
+(`bnd_cf`/`bnd_fc` of every stress package except CHD, `sto_fc`, `npf_fc`, `sln_ls`), then
+the flux-form residual `m.res` (PLAN.md section 3.7, rule 2; with `scale`, also the
+row sums `Σ |terms|`, see `flux_residual!`). Device work only.
+"""
+function formulate!(m::GwfModel; symmetric::Bool = false, scale = nothing)
+    reset_terms!(m.sys)
+    for pkg in m.packages
+        boundary_kind(pkg) === :CHD && continue
+        formulate!(pkg, m.h, m.ibound, m.area)
+        add_terms!(m.sys, m.csr, pkg)
+    end
+    isnothing(m.sto) || add_terms!(m.sys, m.csr, m.sto, m.hold, m.ibound)
+    assemble!(m.sys, m.csr, m.npf, m.h, m.ibound; symmetric)
+    flux_residual!(m.res, m.sys, m.csr, m.npf, m.h, m.ibound; scale)
+    return m
+end
+
+"""
+    absolute_heads(m::GwfModel) -> Vector{Float64}
+
+The heads per reduced node on the host in Float64, `r + h'` (PLAN.md section 3.7, rule 1:
+absolute heads exist only on the host).
+"""
+absolute_heads(m::GwfModel) = m.setup.r .+ Float64.(Array(m.h))
