@@ -6,7 +6,7 @@ so it runs on the CPU and on any GPU backend with a package extension (see `ext/
 """
 module ModflowGPU
 
-using KernelAbstractions: KernelAbstractions, Backend, CPU, get_backend, @kernel, @index, @Const
+using KernelAbstractions: KernelAbstractions, Backend, CPU, get_backend, @kernel, @index, @Const, @localmem, @synchronize
 using Printf: @sprintf
 using Adapt: Adapt
 
@@ -52,6 +52,7 @@ include("boundaries/evt.jl")
 
 # Assembly and residual (KA kernels)
 include("solver/csr.jl")
+include("solver/krylov.jl")
 
 # MF6 output files (host only): heads, budgets, binary grid files, listing budgets
 include("output/binary.jl")
