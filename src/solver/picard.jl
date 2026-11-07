@@ -182,6 +182,12 @@ function solve_timestep!(ps::PicardSolver, m::GwfModel{T}, kstp::Integer) where 
         inner += res.iterations
         hncg, hmax, _, _ = _mapreduce!(ps.reducer, backend, _dxmax_term, _DXMAX_OPS, n, m.δ, m.ibound, m.h)
         dvclose = max(st.dvclose, st.dvclose_head_factor * eps(T) * abs(hmax))
+        if !isfinite(hncg) || !isfinite(hmax)
+            # The linear solve diverged (NaN or Inf): the step cannot converge.
+            @warn "Outer iteration $it: the correction or the heads are not finite (the linear solver diverged); stopping the outer iterations of this time step"
+            converged = false
+            break
+        end
         converged = res.converged && abs(hncg) <= dvclose
         underrelax!(ps.ur, m.h, m.δ, m.ibound, it, hncg; converged)
         converged && break

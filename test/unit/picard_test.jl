@@ -186,3 +186,43 @@ end
         end
     end
 end
+
+@testset "Non-convergence (ConvergenceError, CONTINUE)" begin
+    sim = load_simulation(joinpath(@__DIR__, "..", "models", "coupling_rde"))
+    for_each_precision() do p
+        mktempdir() do out
+            err = try
+                ModflowGPU.run(sim; backend = TEST_BACKEND, precision = p.preset, outdir = out, closures = (; outer_maximum = 1))
+                nothing
+            catch e
+                e
+            end
+            @test err isa ModflowGPU.ConvergenceError
+            @test (err.kper, err.kstp, err.iterations) == (1, 1, 1)
+            # The failed step's output is written first, with its budget table.
+            lst = read(joinpath(out, "rde.lst"), String)
+            @test occursin("FAILED TO MEET SOLVER CONVERGENCE CRITERIA IN TIME STEP 1 OF STRESS PERIOD 1", lst)
+            @test length(read_listing_budgets(joinpath(out, "rde.lst"))) == 1
+            @test isfile(joinpath(out, "rde.hds"))
+        end
+        simc = ModflowGPU.SimulationSpec(; (f => getfield(sim, f) for f in fieldnames(typeof(sim)))..., continue_on_nonconvergence = true)
+        r = @test_logs (:warn,) match_mode = :any ModflowGPU.run(simc; backend = TEST_BACKEND, precision = p.preset, write_output = false, closures = (; outer_maximum = 1))
+        @test !r.converged && length(r.steps) == 10 && all(s -> s.outer.iterations == 1, r.steps)
+        @test r.head_file == "" && r.listing_file == ""
+    end
+end
+
+@testset "Diverged linear solve (non-finite heads) stops the outer iterations" begin
+    sim = load_simulation(joinpath(@__DIR__, "..", "models", "coupling_rde"))
+    spec = only(sim.models)
+    ims = only(only(sim.solution_groups).solutions)
+    for_each_precision() do p
+        m = GwfModel(TEST_BACKEND, p.T, spec, 3)
+        ps = PicardSolver(m, PicardSettings(ims, p.T))
+        ModflowGPU.apply_period!(m, 1)
+        start_timestep!(m, 1.0)
+        fill!(m.h, p.T(NaN))
+        r = @test_logs (:warn, r"not finite") match_mode = :any solve_timestep!(ps, m, 1)
+        @test !r.converged && r.iterations == 1 && isnan(r.hncg)
+    end
+end

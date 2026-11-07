@@ -45,8 +45,9 @@ struct _SumOp end
 struct _MaxAbsOp end
 
 @inline _combine(::_SumOp, a, b) = a + b
-# Signed value of largest magnitude (the first one on ties).
-@inline _combine(::_MaxAbsOp, a, b) = abs(b) > abs(a) ? b : a
+# Signed value of largest magnitude (the first one on ties); NaN propagates, so a
+# diverged vector is never reported as converged.
+@inline _combine(::_MaxAbsOp, a, b) = (abs(b) > abs(a) || isnan(b)) ? b : a
 
 const _SUM4 = (_SumOp(), _SumOp(), _SumOp(), _SumOp())
 
