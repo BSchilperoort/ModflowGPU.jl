@@ -155,6 +155,7 @@ function highest_active(conn::Connectivity, n::Integer, ibound::AbstractVector{<
         n = next
         ibound[n] != 0 && return n
     end
+    return
 end
 
 # The reduced node of user node `nu` (0 when the cell is not in the reduced grid).
