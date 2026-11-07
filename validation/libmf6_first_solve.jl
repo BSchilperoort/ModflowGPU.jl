@@ -10,7 +10,7 @@
 #   IA.bin, JA.bin             SLN_1/IA, SLN_1/JA (Int32)
 #   AMAT.bin, RHS.bin, X.bin   SLN_1/AMAT, SLN_1/RHS and SLN_1/X after the solve (Float64)
 #
-# plus `index.toml` with the lengths, the time step length `delt` and the model names.
+# plus `index.toml` with the lengths, the time step length `delt` (TDIS/DELT) and the model names.
 # AMAT and RHS after the solve hold the system that iteration assembled, after the
 # adjustments of `sln_ls` (docs/reference_tooling.md, section 3); parity runs use no IMS
 # scaling.
@@ -37,7 +37,7 @@ function main(simdir, outdir)
     names = BMI.get_input_var_names(mf)
     models = sort!([String(split(n, "/")[1]) for n in names if endswith(n, "/CON/IA") && count('/', n) == 2])
     MF.prepare_time_step(mf, 0.0)
-    delt = BMI.get_time_step(mf)
+    delt = only(BMI.get_value_ptr(mf, "TDIS/DELT"))  # (BMI get_time_step is not the step length)
     MF.prepare_solve(mf, 1)
     write(joinpath(outdir, "X0.bin"), collect(vec(BMI.get_value_ptr(mf, "SLN_1/X"))))
     MF.solve(mf, 1)
