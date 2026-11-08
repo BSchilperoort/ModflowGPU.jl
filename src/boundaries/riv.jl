@@ -8,9 +8,9 @@ mult_column(::BoundaryKind{:RIV}) = 2
 
 # riv_ck: the stage must not be below the river bottom, and the conductance not negative.
 # (The checks against the cell bottom apply to convertible cells only, T6.1.)
-function check_records(::BoundaryKind{:RIV}, pkg, n)
+function check_records(::BoundaryKind{:RIV}, pkg, bound, n)
     for i in 1:n
-        stage, cond, rbot = pkg.bound_host[1, i], pkg.bound_host[2, i], pkg.bound_host[3, i]
+        stage, cond, rbot = bound[1, i], bound[2, i], bound[3, i]
         stage < rbot &&
             throw(MF6InputError(pkg.spec.file, 0, "$(pkg.spec.name): RIV BOUNDARY ($i) RIVER STAGE ($stage) IS LESS THAN RIVER BOTTOM ($rbot)"))
         cond < 0 &&

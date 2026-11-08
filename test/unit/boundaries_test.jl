@@ -179,8 +179,8 @@ end
                 n1, n2 = red(1, 2, 2), red(2, 5, 3)
                 @test chd.nodelist_host[1:2] == [n1, n2]
                 # MULTIPLIER before the offset: 101.25 * 0.5 − r
-                @test chd.bound_host[1, 1:2] == [245.5 - r[n1], 101.25 * 0.5 - r[n2]]
-                @test Array(chd.bound)[1, 1:2] == T.(chd.bound_host[1, 1:2])
+                @test ModflowGPU.bound_values(chd, r)[1, 1:2] == [245.5 - r[n1], 101.25 * 0.5 - r[n2]]
+                @test Array(chd.bound)[1, 1:2] == T.(ModflowGPU.bound_values(chd, r)[1, 1:2])
                 ib = boundary_ibound(conn, values(pk))
                 @test findall(<(0), ib) == sort([n1, n2])
                 hc = copy(h)
@@ -242,8 +242,8 @@ end
                 ghb = pk["GHB"]
                 apply_period!(ghb, 1, r)
                 n1, n2 = ghb.nodelist_host[1:2]
-                @test ghb.bound_host[:, 1] == [238.75 - r[n1], 25.0]   # MULTIPLIER on cond
-                @test ghb.bound_host[:, 2] == [100.5 - r[n2], 3.0]
+                @test ModflowGPU.bound_values(ghb, r)[:, 1] == [238.75 - r[n1], 25.0]   # MULTIPLIER on cond
+                @test ModflowGPU.bound_values(ghb, r)[:, 2] == [100.5 - r[n2], 3.0]
                 check_package(ghb, [-25.0, -3.0], [-25.0 * (238.75 - r[n1]), -3.0 * (100.5 - r[n2])])
                 # The flow is cond·(bhead − h), independent of the reference.
                 sv = Array(ghb.simvals)[1:2]
@@ -256,7 +256,7 @@ end
                 apply_period!(rch, 1, r)
                 n1, n2 = rch.nodelist_host[1:2]
                 @test n2 == red(2, 3, 4)
-                @test rch.bound_host[1, 1:2] == [0.0005, 0.002]
+                @test ModflowGPU.bound_values(rch, r)[1, 1:2] == [0.0005, 0.002]
                 check_package(rch, zeros(2), [-0.0005 * conn.area[n1], -0.002 * conn.area[n2]])
             end
 
@@ -312,5 +312,57 @@ end
                 end
             end
         end
+    end
+
+    # T4.6: a PERIOD block with the cells of the block in force keeps the nodes and the
+    # node→record map and copies only `bound`; the result equals a full application.
+    @testset "period data: same-cell fast path" begin
+        botm = cat(fill(5.0, 4, 3), fill(0.0, 4, 3); dims = 3)
+        dis = ModflowGPU.build_dis(; delr = 10.0, delc = 10.0, top = 10.0, botm)
+        conn = build_connectivity(dis)
+        r = collect(range(6.0, 8.0; length = conn.nodes))
+        a = [3, 1, 3, 7, 20]   # user nodes; node 3 twice
+        b = [2, 9, 13, 24]
+        vals(k, n) = hcat(9.0 .+ 0.1k .+ 0.01 .* (1:n), fill(2.0 + k, n), fill(1.0, n))
+        aux(k, n) = reshape(0.5 .+ 0.1k .+ 0.0 .* (1:n), n, 1)
+        periods = [
+            1 => (; cells = a, values = vals(1, 5), aux = aux(1, 5)),
+            2 => (; cells = copy(a), values = vals(2, 5), aux = aux(2, 5)),   # equal cells, other array
+            3 => (; cells = b, values = vals(3, 4), aux = aux(3, 4)),
+            4 => (; cells = b, values = vals(4, 4), aux = aux(4, 4)),
+        ]
+        spec = ModflowGPU.build_boundary(:RIV, dis; name = "riv", periods, auxnames = ["MULT"], auxmultname = "MULT")
+        for_each_precision() do p
+            T = p.T
+            pkg = BoundaryPackage(TEST_BACKEND, T, spec, conn, dis)
+            for (kper, expect) in ((1, :structure), (2, :values), (3, :structure), (4, :values))
+                @test ModflowGPU._apply_period!(pkg, kper, r, nothing) === expect
+                fresh = BoundaryPackage(TEST_BACKEND, T, spec, conn, dis)
+                pkg.iblock == kper && apply_period!(fresh, kper, r)
+                n = pkg.nbound
+                @test n == fresh.nbound == (kper <= 2 ? 5 : 4)
+                @test pkg.nodelist_host[1:n] == fresh.nodelist_host[1:n]
+                @test Array(pkg.nodelist)[1:n] == Array(fresh.nodelist)[1:n]
+                @test Array(pkg.nodeptr) == Array(fresh.nodeptr)
+                @test Array(pkg.noderec) == Array(fresh.noderec)
+                @test Array(pkg.bound)[:, 1:n] == Array(fresh.bound)[:, 1:n] == T.(ModflowGPU.bound_values(fresh, r))
+                @test ModflowGPU.bound_values(pkg, r) == ModflowGPU.bound_values(fresh, r)
+                nd = pkg.nodelist_host[1]
+                @test ModflowGPU.bound_values(pkg, r)[:, 1] == [9.0 + 0.1kper + 0.01 - r[nd], (2.0 + kper) * (0.5 + 0.1kper), 1.0 - r[nd]]
+            end
+            @test ModflowGPU._apply_period!(pkg, 4, r, nothing) === :unchanged
+            # set_bound! (stepping API): only `bound` changes, through the same pass.
+            v0 = pkg.bound_version
+            ModflowGPU.bound_user!(pkg)[1, 2] = 9.75
+            ModflowGPU.set_bound!(pkg, r)
+            @test pkg.bound_version == v0 + 1
+            @test Array(pkg.bound)[:, 1:4] == T.(ModflowGPU.bound_values(pkg, r))
+            @test Array(pkg.bound)[1, 2] == T(9.75 - r[pkg.nodelist_host[2]])
+        end
+        # riv_ck still runs on the fast path.
+        bad = ModflowGPU.build_boundary(:RIV, dis; periods = [1 => (; cells = a, values = vals(1, 5)), 2 => (; cells = a, values = hcat(fill(0.5, 5), ones(5), ones(5)))])
+        pkg = BoundaryPackage(TEST_BACKEND, Float64, bad, conn, dis)
+        apply_period!(pkg, 1, r)
+        @test_throws MF6InputError apply_period!(pkg, 2, r)
     end
 end
