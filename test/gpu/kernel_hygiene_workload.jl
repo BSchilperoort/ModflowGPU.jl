@@ -52,10 +52,10 @@ end
 
 # The outer loop of a few steps with an IMS variant (inner solver, scaling,
 # orthogonalisation, under-relaxation), flows and budgets.
-function _steps(sim, ims)
+function _steps(sim, ims; pc...)
     spec = only(sim.models)
     m = M.GwfModel(BACKEND, T, spec, M.nper(sim.tdis))
-    ps = M.PicardSolver(m, M.PicardSettings(ims, T))
+    ps = M.PicardSolver(m, M.PicardSettings(ims, T; pc...))
     acc = M.BudgetAccumulator(m)
     for st in M.time_steps(sim.tdis)[1:3]
         st.kstp == 1 && M.apply_period!(m, st.kper)
@@ -96,6 +96,11 @@ function workload(dir)
         scale = similar(m.res)
         bound = similar(m.res)
         M.flux_residual!(m.res, m.sys, m.csr, m.npf, m.h, m.ibound; scale, bound)
+    end
+    # AMG (T4.3) with several levels: fused and generic finest level, CG and BiCGSTAB.
+    for method in (:cg, :bicgstab), fine_degree in (0, 1)
+        ims = M.ImsSpec(; linear_acceleration = method, outer_dvclose = 1.0e-5, inner_dvclose = 1.0e-6, inner_rclose = 1.0e-4)
+        _steps(sim, ims; preconditioner = :amg, precond_options = (; max_coarse = 20, fine_degree))
     end
     KernelAbstractions.synchronize(BACKEND)
     return nothing

@@ -3,7 +3,7 @@
 #
 # - models: the Tier 0–2 examples that load with `strict = true` and have a tight run in
 #   reference/runs/<example>/tight (ex-gwf-hwell-a only with MFGPU_TEST_HWELL=1: 153164
-#   cells and 60 steps with the Jacobi preconditioner take minutes), and the synthetic
+#   cells and 60 steps; run with the AMG preconditioner, T4.3), and the synthetic
 #   models test/models/fhb_const and test/models/coupling_rde, run with mf6 at test time;
 # - heads: every saved step of our HDS file (read back with our reader) vs MF6's:
 #   `:double` max |Δh| < max(1e-6 m, 1e-7 × head range), `:single` < 1e-3 m;
@@ -116,7 +116,8 @@ end
     _run_models() do name, rundir
         nmodels[] += 1
         @testset "$name" begin
-            _run_parity(name, rundir)
+            # ex-gwf-hwell-a: Jacobi BiCGSTAB does not converge in :single (T2.8); AMG does (T4.3).
+            _run_parity(name, rundir; (name == "ex-gwf-hwell-a" ? (; preconditioner = :amg) : (;))...)
         end
     end
     @info "Run parity test: $(nmodels[]) model(s)"
