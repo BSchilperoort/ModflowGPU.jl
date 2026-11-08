@@ -479,6 +479,7 @@ function _build_hierarchy(A::_HostCsr, B::Vector{Float64}, opt::AMGOptions)
         push!(levels, _HostLevel(A, idiag, dinv, lmax, nothing, nothing, Bool[], B, Int32[], Float64[], Int32[]))
         return levels
     end
+    return
 end
 
 # Dense inverse of a (small) CSR matrix; the pseudo-inverse when it is singular.
