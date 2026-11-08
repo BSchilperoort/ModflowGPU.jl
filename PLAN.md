@@ -98,7 +98,7 @@ CG-compatible boundaries the matrix is symmetric, so preconditioned CG applies.
   kernel on (section 3.7). Engine structs are parametric in `T` (state and
   assembly), `Ts` (Krylov), `Tp` (preconditioner) and `Ti` (indices, default
   `Int32`). Every unit and parity test runs for the `:single` and `:double`
-  presets, plus `:mixed` once T4.4 adds it. **A card is not done if it passes
+  presets; the solver and end-to-end tests also for `:mixed` (T4.4). **A card is not done if it passes
   only in Float64.** Follow the formulation rules of section 3.7 in every
   kernel. Host-side parsing, specs and setup stay Float64.
 - **No scalar indexing on device arrays.** GPU tests run with
@@ -273,7 +273,7 @@ preset is a keyword (`precision = :auto`) and a config option:
 | `:double` | Float64 | Float64 | Float64 | Exact MF6 parity |
 | `:single` | Float32 | Float32 | Float32 | Backends without Float64; less memory everywhere |
 | `:mixed` (T4.4) | Float64 | Float64 | Float32 | Float64 accuracy with a cheaper preconditioner |
-| `:auto` | `:double` if `supports_float64(backend)`, else `:single` | | | Until T4.4 sets the production default |
+| `:auto` | `:mixed` if `supports_float64(backend)`, else `:single` | | | Production default (T4.4, with `preconditioner = :auto` = `:mc_ilu0`; docs/precision.md) |
 
 `supports_float64(::Backend)` is an extension hook like mGV's `pin_memory!`.
 CPU, CUDA and ROCm return `true`, Metal returns `false`, and oneAPI and OpenCL

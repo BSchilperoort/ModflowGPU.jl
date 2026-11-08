@@ -111,7 +111,7 @@ function _run_parity(name, rundir; preconditioner::Symbol = RUN_PRECONDITIONER, 
     mf6_inner = sum(last, values(iters); init = 0)
     heads = Dict{Symbol, Vector{Float64}}()
     stats = Dict{Symbol, Any}()
-    for_each_precision() do p
+    for_each_precision(; presets = SOLVER_TEST_PRESETS) do p
         mktempdir() do out
             t = @elapsed r = ModflowGPU.run(rundir; backend = TEST_BACKEND, precision = p.preset, outdir = out, pc...)
             @test r.converged

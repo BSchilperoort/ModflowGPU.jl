@@ -1,9 +1,16 @@
 # Helpers shared by the test files. Expects `TEST_BACKEND` to be defined (see runtests.jl).
 
 """
-Precision presets every test runs in. T4.4 adds `:mixed`.
+Precision presets every test runs in. `:mixed` differs from `:double` only in the
+preconditioner type `Tp`, so it runs only where `Tp` matters (`SOLVER_TEST_PRESETS`).
 """
 const TEST_PRESETS = (:single, :double)
+
+"""
+Presets of the solver, preconditioner and end-to-end tests (groups krylov, amg,
+run, stepping): `TEST_PRESETS` plus `:mixed` (T4.4).
+"""
+const SOLVER_TEST_PRESETS = (:single, :mixed, :double)
 
 """
     for_each_precision(f; backend = TEST_BACKEND, presets = TEST_PRESETS)

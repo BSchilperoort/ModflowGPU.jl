@@ -42,6 +42,23 @@ algebraic multigrid, src/solver/precond/amg.jl).
 const PRECONDITIONERS = (:jacobi, :chebyshev, :mc_sgs, :mc_ilu0, :amg)
 
 """
+    DEFAULT_PRECONDITIONER
+
+What `preconditioner = :auto` (the default of `ModflowGPU.run`, `initialize` and
+`KrylovSettings(ims)`) selects: `:mc_ilu0`, the fastest preconditioner in the T4.4
+benchmark on every model, precision and backend (steady state and transient steps;
+docs/precision.md).
+"""
+const DEFAULT_PRECONDITIONER = :mc_ilu0
+
+"""
+    resolve_preconditioner(kind::Symbol) -> Symbol
+
+`kind`, or [`DEFAULT_PRECONDITIONER`](@ref) for `:auto`.
+"""
+resolve_preconditioner(kind::Symbol) = kind === :auto ? DEFAULT_PRECONDITIONER : kind
+
+"""
     precond_setup!(P::AbstractPreconditioner, solver::KrylovSolver, amat) -> P
 
 Set up `P` from the assembled matrix `amat` and the row and column factors of `solver`

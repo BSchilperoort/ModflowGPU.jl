@@ -7,6 +7,7 @@ ModflowGPU.supports_float64(::FakeNoFloat64Backend) = false
 @testset "Precision presets" begin
     double = (; T = Float64, Ts = Float64, Tp = Float64)
     single = (; T = Float32, Ts = Float32, Tp = Float32)
+    mixed = (; T = Float64, Ts = Float64, Tp = Float32)
 
     @test ModflowGPU.supports_float64(CPU())
     @test ModflowGPU.supports_float64(FakeFloat64Backend())  # default is true
@@ -14,12 +15,14 @@ ModflowGPU.supports_float64(::FakeNoFloat64Backend) = false
 
     @testset "Backend with Float64" begin
         for backend in (CPU(), FakeFloat64Backend())
-            @test ModflowGPU.resolve_precision(backend) == double
-            @test ModflowGPU.resolve_precision(backend, :auto) == double
+            @test ModflowGPU.resolve_precision(backend) == mixed  # T4.4 default
+            @test ModflowGPU.resolve_precision(backend, :auto) == mixed
             @test ModflowGPU.resolve_precision(backend, :double) == double
             @test ModflowGPU.resolve_precision(backend, :single) == single
             @test ModflowGPU.resolve_precision(backend, "single") == single
             @test ModflowGPU.resolve_precision(backend, "Double") == double
+            @test ModflowGPU.resolve_precision(backend, :mixed) == mixed
+            @test ModflowGPU.resolve_precision(backend, "mixed") == mixed
         end
         T, Ts, Tp = ModflowGPU.resolve_precision(CPU(), :single)
         @test (T, Ts, Tp) == (Float32, Float32, Float32)
@@ -34,11 +37,13 @@ ModflowGPU.supports_float64(::FakeNoFloat64Backend) = false
         @test_throws "does not support Float64" ModflowGPU.resolve_precision(backend, :double)
         @test_throws "FakeNoFloat64Backend" ModflowGPU.resolve_precision(backend, :double)
         @test_throws "precision = :single" ModflowGPU.resolve_precision(backend, :double)
+        @test_throws "does not support Float64" ModflowGPU.resolve_precision(backend, :mixed)
+        @test_throws "precision = :single" ModflowGPU.resolve_precision(backend, :mixed)
     end
 
     @testset "Unknown presets" begin
         @test_throws "Unknown precision preset :quad" ModflowGPU.resolve_precision(CPU(), :quad)
-        @test_throws "Unknown precision preset :mixed" ModflowGPU.resolve_precision(CPU(), :mixed)  # until T4.4
+        @test_throws "Unknown precision preset :quad" ModflowGPU.resolve_precision(CPU(), "quad")
     end
 
     @testset "for_each_precision" begin
@@ -56,5 +61,13 @@ ModflowGPU.supports_float64(::FakeNoFloat64Backend) = false
             @test p.T == Float32
         end
         @test seen == [:single]
+
+        empty!(seen)
+        for_each_precision(; backend = CPU(), presets = SOLVER_TEST_PRESETS) do p
+            push!(seen, p.preset)
+            @test p.T == p.Ts == Float64 || p.preset === :single
+            @test p.Tp == (p.preset === :double ? Float64 : Float32)
+        end
+        @test seen == [:single, :mixed, :double]
     end
 end

@@ -12,7 +12,8 @@
 # the Markdown table rows there), `maxsteady=<s>` (skip the transient steps of a case whose
 # steady step took longer than this, e.g. on the CPU backend), `precond=jacobi` (inner
 # preconditioners, comma-separated: `jacobi`, `chebyshev`, `mc_sgs`, `mc_ilu0`, `amg`;
-# the engine column then names it, e.g. `rocm (mc_ilu0)`), and per preconditioner its
+# the engine column then names it, e.g. `rocm (mc_ilu0)`; `precision=double,mixed,single`
+# also reports the head differences from the first `:double` case), and per preconditioner its
 # `precond_options` as `<name>=key:value,...` (e.g. `amg=theta:0.1,degree:3,smoother:jacobi`
 # for `AMGOptions`, `chebyshev=degree:6`, `mc_ilu0=relax:0.97`). With AMG each case also
 # prints the hierarchy (rows per level), its device bytes, and the host build and device
@@ -133,7 +134,9 @@ end
 
 _gib(b) = b / 2.0^30
 
-function run_steps!(s, backend, nsteps; timer = nothing, maxsteady = Inf)
+# `heads`: if a vector, receives the absolute heads (host Float64) after the steady step and
+# after the last step (copied outside the timed region).
+function run_steps!(s, backend, nsteps; timer = nothing, maxsteady = Inf, heads = nothing)
     rows = NamedTuple{(:time, :outer, :inner, :converged), Tuple{Float64, Int, Int, Bool}}[]
     for k in 1:(nsteps + 1)
         isnothing(timer) || ModflowGPU.section_begin(timer, k == 1 ? :steady_step : :transient_step)
@@ -145,7 +148,9 @@ function run_steps!(s, backend, nsteps; timer = nothing, maxsteady = Inf)
         r = last(s.results).outer
         push!(rows, (; time = dt, outer = r.iterations, inner = r.inner, converged = r.converged))
         r.converged || @warn "step $k did not converge ($(r.iterations) outer, $(r.inner) inner)"
-        (k == 1 && dt > maxsteady) && (@info "steady step took $(round(dt; digits = 1)) s > maxsteady: skipping the transient steps"; break)
+        stop = k == 1 && dt > maxsteady
+        isnothing(heads) || (k == 1 || k == nsteps + 1 || stop) && push!(heads, ModflowGPU.absolute_heads(s.model))
+        stop && (@info "steady step took $(round(dt; digits = 1)) s > maxsteady: skipping the transient steps"; break)
     end
     return rows
 end
@@ -182,7 +187,8 @@ function run_case(preset, pre, backend, bname; nsteps, timed, ims, maxsteady, pc
     m0 = mem_used()
     tinit = @elapsed s = ModflowGPU.initialize(spec; backend, precision = pre, write_output = false, pc...)
     minit = mem_used() - m0
-    rows = run_steps!(s, backend, nsteps; maxsteady)
+    heads = Vector{Float64}[]
+    rows = run_steps!(s, backend, nsteps; maxsteady, heads)
     peak = mem_peak()
     amg = ModflowGPU.amg_stats(s.solver.krylov)
     isnothing(amg) || (amg = deepcopy(amg))
@@ -211,7 +217,7 @@ function run_case(preset, pre, backend, bname; nsteps, timed, ims, maxsteady, pc
         st = nothing
     end
     pc.preconditioner === :jacobi || (bname = "$bname ($(pc.preconditioner))")
-    return (; preset, pre, bname, nodes = c.nodes, nja = c.nja, tinit, minit, peak, rows, sp, split, amg)
+    return (; preset, pre, bname, nodes = c.nodes, nja = c.nja, tinit, minit, peak, rows, sp, split, amg, heads, dh = Ref((NaN, NaN)))
 end
 
 function report(r; io = stdout)
@@ -226,10 +232,11 @@ function report(r; io = stdout)
     trs = ntr == 0 ? "skipped | – | –" : @sprintf("%.3f | %.1f | %.1f", tsum / ntr, oi / ntr, ii / ntr)
     dot = isnothing(r.split) ? "–" : @sprintf("%.0f", r.split.spmv_dot_gbs)
     mem = r.peak > 0 ? @sprintf("%.3f", _gib(r.peak)) : "–"
+    dh(x) = isnan(x) ? "–" : @sprintf("%.1e", x)
     @printf(
-        io, "| %s | %d | %s | `:%s` | %.2f | %.2f | %d | %d | %.0f | %s | %.2f | %.0f | %s | %s |%s\n",
+        io, "| %s | %d | %s | `:%s` | %.2f | %.2f | %d | %d | %.0f | %s | %.2f | %.0f | %s | %s | %s | %s |%s\n",
         r.preset, r.nodes, r.bname, r.pre, r.tinit, st.time, st.outer, st.inner, us, trs, st.time + tsum,
-        r.sp.gbs, dot, mem, conv ? "" : " NOT CONVERGED"
+        r.sp.gbs, dot, mem, dh(r.dh[][1]), dh(r.dh[][2]), conv ? "" : " NOT CONVERGED"
     )
     return nothing
 end
@@ -324,8 +331,8 @@ end
 # ---------------------------------------------------------------------------------------
 
 const HEADER = """
-| Preset | nodes | engine | precision | init (s) | steady (s) | outer | inner | µs/inner | daily step (s) | outer/step | inner/step | total (s) | SpMV GB/s | in-solver GB/s | peak GiB |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"""
+| Preset | nodes | engine | precision | init (s) | steady (s) | outer | inner | µs/inner | daily step (s) | outer/step | inner/step | total (s) | SpMV GB/s | in-solver GB/s | peak GiB | Δh steady (m) | Δh last (m) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"""
 const AMG_HEADER = """
 | Preset | precision | rows per level | builds | build time (s) | updates | ms per update | hierarchy GiB | outer iterations |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |"""
@@ -383,8 +390,17 @@ function main(args)
         end
         splits = IOBuffer()
         amgs = IOBuffer()
+        # Δh columns: max |h − h_ref| after the steady step and after the last step, against
+        # the first `:double` case of the preset (list `double` first in `precision=`).
+        refheads = Dict{Symbol, Vector{Vector{Float64}}}()
         for p in presets, pre in precisions, pc in pcs
             r = run_case(p, pre, backend, bname; nsteps, timed, ims, maxsteady, pc)
+            pre === :double && !haskey(refheads, p) && (refheads[p] = r.heads)
+            if haskey(refheads, p)
+                ref = refheads[p]
+                d(i) = i <= min(length(ref), length(r.heads)) && length(ref[i]) == length(r.heads[i]) ? maximum(abs.(r.heads[i] .- ref[i])) : NaN
+                r.dh[] = (d(1), length(ref) == length(r.heads) ? d(length(ref)) : NaN)
+            end
             report(r; io = out)
             report_split(r; io = splits)
             report_amg(r; io = amgs)

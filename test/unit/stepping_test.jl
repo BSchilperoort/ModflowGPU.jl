@@ -84,7 +84,7 @@ end
 _budget_rates(b) = [(t.name, t.package, t.rate_in, t.rate_out, t.cum_in, t.cum_out) for t in b.terms]
 
 @testset "stepping" begin
-    for_each_precision() do p
+    for_each_precision(; presets = SOLVER_TEST_PRESETS) do p
         kw = (; backend = TEST_BACKEND, precision = p.preset, write_output = false)
         ref = ModflowGPU.run(STEPPING_MODEL; kw...)
 

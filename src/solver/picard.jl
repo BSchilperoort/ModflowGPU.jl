@@ -42,7 +42,7 @@ under-relaxation), `symmetric` (CG: the constant-head columns go to the right-ha
 `sln_ls`), and the Float32 floors `dvclose_head_factor` and `rclose_floor_factor` (see
 `FLOAT32_CLOSURES`; 0 for Float64).
 
-    PicardSettings(ims::ImsSpec, T; closures = nothing, preconditioner = :jacobi, precond_options = (;))
+    PicardSettings(ims::ImsSpec, T; closures = nothing, preconditioner = :auto, precond_options = (;))
 
 Takes OUTER_DVCLOSE, OUTER_MAXIMUM and the inner settings from `ims` (`preconditioner`
 and `precond_options` as in `KrylovSettings(::ImsSpec)`). `closures` (a
@@ -63,7 +63,7 @@ struct PicardSettings
 end
 
 function PicardSettings(
-        ims::ImsSpec, ::Type{T}; closures = nothing, preconditioner::Symbol = :jacobi,
+        ims::ImsSpec, ::Type{T}; closures = nothing, preconditioner::Symbol = :auto,
         precond_options::NamedTuple = (;),
     ) where {T <: AbstractFloat}
     get_c(k, default) = (isnothing(closures) || !haskey(closures, k)) ? default : getfield(closures, k)

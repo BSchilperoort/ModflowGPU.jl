@@ -43,12 +43,12 @@ Base.showerror(io::IO, e::ConvergenceError) = print(
 
 """
     ModflowGPU.run(simdir; backend = CPU(), precision = :auto, outdir = simdir,
-                   closures = nothing, write_output = true, preconditioner = :jacobi,
+                   closures = nothing, write_output = true, preconditioner = :auto,
                    precond_options = (;)) -> RunResult
 
 Run the MF6 simulation in `simdir` (one GWF model with one IMS solution; exchanges arrive
-in Phase 3) on `backend` in precision `precision` (`resolve_precision`: `:auto`,
-`:double`, `:single`). Per time step: stress period data once per period, the outer
+in Phase 3) on `backend` in precision `precision` (`resolve_precision`: `:auto` =
+`:mixed` on backends with Float64, else `:single`; `:double`, `:mixed`, `:single`). Per time step: stress period data once per period, the outer
 iterations (`solve_timestep!`), flows and budget (`calc_flows!`, `model_budget!`), and the
 output selected by OC: HDS and CBC files and the model listing file (budget tables at the
 end of each period, with PRINT BUDGET, and after a failed step), written to `outdir` under
@@ -59,14 +59,14 @@ the names of the input (the listing file under its name-file name or `<model>.ls
 after its output, unless the simulation has the CONTINUE option.
 
 `preconditioner` (a ModflowGPU option, not in MF6 input) selects the inner preconditioner
-in place of the ILU0/MILU0/ILUT of IMS: `:jacobi` (the default), `:chebyshev`, `:mc_sgs`,
-`:mc_ilu0` or `:amg` (`PRECONDITIONERS`). `precond_options` is a NamedTuple of keywords
+in place of the ILU0/MILU0/ILUT of IMS: `:auto` (the default, `DEFAULT_PRECONDITIONER` =
+`:mc_ilu0`), `:jacobi`, `:chebyshev`, `:mc_sgs`, `:mc_ilu0` or `:amg` (`PRECONDITIONERS`). `precond_options` is a NamedTuple of keywords
 for its constructor (see `build_preconditioner`; for `:amg` those of `AMGOptions`). See
 `KrylovSettings` and docs/mf6_notes.md (IMS linear solver mapping).
 """
 function run(
         simdir::AbstractString; backend::Backend = CPU(), precision::Symbol = :auto, outdir::AbstractString = simdir,
-        closures = nothing, write_output::Bool = true, preconditioner::Symbol = :jacobi,
+        closures = nothing, write_output::Bool = true, preconditioner::Symbol = :auto,
         precond_options::NamedTuple = (;),
     )
     sim = load_simulation(simdir)
@@ -75,7 +75,7 @@ end
 
 function run(
         sim::SimulationSpec; backend::Backend = CPU(), precision::Symbol = :auto, outdir::AbstractString = sim.simdir,
-        closures = nothing, write_output::Bool = true, preconditioner::Symbol = :jacobi,
+        closures = nothing, write_output::Bool = true, preconditioner::Symbol = :auto,
         precond_options::NamedTuple = (;),
     )
     s = initialize(sim; backend, precision, outdir, closures, write_output, preconditioner, precond_options)
