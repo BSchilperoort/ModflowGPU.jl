@@ -1,0 +1,906 @@
+# Smoothed-aggregation algebraic multigrid (T4.3; PLAN.md section 3.5), our own
+# implementation (Vaněk, Mandel and Brezina 1996, as in PyAMG's `smoothed_aggregation_solver`
+# and ML), used as the preconditioner of CG and BiCGSTAB (`preconditioner = :amg`). MF6 has
+# no AMG (IMS uses ILU0); the solution is the same, only the inner iteration counts differ.
+#
+# Operator: the scaled (for CG sign-adjusted) matrix `Â = diag(rowfac)·A·diag(colfac)` that
+# the Krylov solvers iterate on (src/solver/krylov.jl). Its near-null space is
+# `B = 1 ./ colfac` (A's is the constant vector).
+#
+# Setup on the host, in Float64 (`_build_hierarchy`), from a copy of `Â`:
+# 1. strength: `j` is a strong neighbour of `i` when `|â_ij| ≥ θ·√|â_ii·â_jj|` (rows
+#    without off-diagonal entries, such as constant heads, are isolated and never
+#    aggregated). With the strong vertical coupling of 2-layer models only the vertical
+#    connections are strong at the finest level, so the first level aggregates each
+#    vertical column, and the next levels coarsen the 2-D problem.
+# 2. aggregation: the three passes of standard aggregation (a node and its free strong
+#    neighbours; leftovers join a neighbouring aggregate; the rest form new aggregates).
+# 3. tentative prolongator from `B` (one column per aggregate, normalised), and the
+#    coarse `B`.
+# 4. prolongator smoothing `P = (I − ω·D_F⁻¹·A_F)·P_t` with the filtered matrix `A_F` (weak
+#    connections lumped into the diagonal so that `A_F·B = A·B`), `ω = 4/(3·ρ(D_F⁻¹A_F))`
+#    (Gershgorin bound of ρ).
+# 5. Galerkin coarse operator `A_c = R·A·P` with `R = Pᵀ` (threaded Gustavson products).
+# 6. repeat until `max_coarse` nodes; the coarsest level is solved with a dense inverse.
+#    `ρ(D⁻¹A)` of each level (power iteration, × 1.1) bounds the smoother interval.
+#
+# Device (KA kernels, data in `Tp`): the V-cycle with a Chebyshev (default) or damped
+# Jacobi smoother on `D⁻¹A`, the same polynomial before and after the coarse correction so
+# that the V-cycle is symmetric (CG stays valid), CSR restriction and prolongation, and the
+# dense coarsest solve. The finest level uses the current `Â` itself (the Krylov operator,
+# `_op_row`) and the solver's Jacobi diagonal.
+#
+# Reuse: the aggregates and prolongators are kept, and each `precond_setup!` (once per
+# outer iteration) recomputes only the Galerkin products `R·A·P` on the device from the
+# current matrix (`galerkin_kernel!`, accumulated in Float64 where the backend has it,
+# rule 4), plus the dense coarsest inverse on the host. The hierarchy is rebuilt on the
+# host when a solve needs more than `rebuild_factor` times the inner iterations of the
+# first solve after the last build (at least `rebuild_min` more), and before a failed
+# solve is repeated (`_precond_retry!`).
+
+"""
+    AMGOptions(; theta = 0.08, smoother = :chebyshev, degree = 2, cheb_ratio = 0.3,
+               max_coarse = 400, max_levels = 20, smooth = true, rebuild_factor = 2.0,
+               rebuild_min = 10, power_iterations = 10)
+
+Options of `AMGPreconditioner` (`precond_options` of `KrylovSettings`):
+
+- `theta`: strength threshold (`|a_ij| ≥ θ·√|a_ii·a_jj|`);
+- `smoother`: `:chebyshev` (polynomial of degree `degree` on `[cheb_ratio·λ, λ]`, λ the
+  estimated largest eigenvalue of `D⁻¹A`) or `:jacobi` (`degree` sweeps of damped Jacobi,
+  `ω = 4/(3λ)`), before and after the coarse correction;
+- `max_coarse`: coarsest size (dense inverse), `max_levels`: most levels;
+- `smooth`: smooth the tentative prolongator (smoothed aggregation) or not (plain
+  aggregation);
+- `rebuild_factor`, `rebuild_min`: rebuild the hierarchy when a solve takes more than
+  `max(rebuild_factor·n₀, n₀ + rebuild_min)` iterations, with `n₀` those of the first
+  solve after the last build;
+- `power_iterations`: iterations of the eigenvalue estimate per level.
+"""
+Base.@kwdef struct AMGOptions
+    theta::Float64 = 0.08
+    smoother::Symbol = :chebyshev
+    degree::Int = 2
+    cheb_ratio::Float64 = 0.3
+    max_coarse::Int = 400
+    max_levels::Int = 20
+    smooth::Bool = true
+    rebuild_factor::Float64 = 2.0
+    rebuild_min::Int = 10
+    power_iterations::Int = 10
+    function AMGOptions(theta, smoother, degree, cheb_ratio, max_coarse, max_levels, smooth, rebuild_factor, rebuild_min, power_iterations)
+        theta >= 0 || throw(ArgumentError("AMG theta must be >= 0"))
+        smoother in (:chebyshev, :jacobi) || throw(ArgumentError("unknown AMG smoother $smoother (expected :chebyshev or :jacobi)"))
+        degree >= 1 || throw(ArgumentError("AMG smoother degree must be >= 1"))
+        0 < cheb_ratio < 1 || throw(ArgumentError("AMG cheb_ratio must be in (0, 1)"))
+        max_coarse >= 1 && max_levels >= 1 || throw(ArgumentError("AMG max_coarse and max_levels must be >= 1"))
+        return new(theta, smoother, degree, cheb_ratio, max_coarse, max_levels, smooth, rebuild_factor, rebuild_min, power_iterations)
+    end
+end
+
+# ---------------------------------------------------------------------------------------
+# Host CSR matrices and products (Float64)
+
+struct _HostCsr
+    nrow::Int
+    ncol::Int
+    ia::Vector{Int}
+    ja::Vector{Int32}
+    a::Vector{Float64}
+end
+
+_nnz(A::_HostCsr) = length(A.ja)
+
+# Row ranges of `1:n` for the threads.
+_chunks(n) = (k = max(1, min(Threads.nthreads(), cld(n, 4096))); [(1 + div((c - 1) * n, k)):div(c * n, k) for c in 1:k])
+
+# Concatenate per-chunk rows (lengths, columns, values) into a CSR matrix.
+function _concat_rows(nrow, ncol, parts)
+    ia = Vector{Int}(undef, nrow + 1)
+    ia[1] = 1
+    i = 1
+    for (len, _, _) in parts, l in len
+        ia[i + 1] = ia[i] + l
+        i += 1
+    end
+    nnz = ia[end] - 1
+    ja = Vector{Int32}(undef, nnz)
+    a = Vector{Float64}(undef, nnz)
+    pos = 1
+    for (_, cols, vals) in parts
+        copyto!(ja, pos, cols, 1, length(cols))
+        copyto!(a, pos, vals, 1, length(vals))
+        pos += length(cols)
+    end
+    return _HostCsr(nrow, ncol, ia, ja, a)
+end
+
+# Insertion sort of cols[lo:hi] with vals alongside (rows are short).
+function _sort_row!(cols, vals, lo, hi)
+    @inbounds for k in (lo + 1):hi
+        c = cols[k]
+        v = vals[k]
+        j = k - 1
+        while j >= lo && cols[j] > c
+            cols[j + 1] = cols[j]
+            vals[j + 1] = vals[j]
+            j -= 1
+        end
+        cols[j + 1] = c
+        vals[j + 1] = v
+    end
+    return nothing
+end
+
+# C = A·B (Gustavson, rows in parallel), columns sorted per row. Every structural product
+# is kept (also when its value is zero), so the pattern does not depend on the values.
+function _spgemm(A::_HostCsr, B::_HostCsr)
+    A.ncol == B.nrow || throw(DimensionMismatch("AMG product"))
+    chunks = _chunks(A.nrow)
+    parts = Vector{Tuple{Vector{Int32}, Vector{Int32}, Vector{Float64}}}(undef, length(chunks))
+    Threads.@threads for c in eachindex(chunks)
+        marker = zeros(Int, B.ncol)
+        len = Int32[]
+        cols = Int32[]
+        vals = Float64[]
+        sizehint!(len, length(chunks[c]))
+        @inbounds for i in chunks[c]
+            start = length(cols)
+            for ii in A.ia[i]:(A.ia[i + 1] - 1)
+                j = A.ja[ii]
+                av = A.a[ii]
+                for jj in B.ia[j]:(B.ia[j + 1] - 1)
+                    k = B.ja[jj]
+                    pos = marker[k]
+                    if pos <= start
+                        push!(cols, k)
+                        push!(vals, av * B.a[jj])
+                        marker[k] = length(cols)
+                    else
+                        vals[pos] += av * B.a[jj]
+                    end
+                end
+            end
+            _sort_row!(cols, vals, start + 1, length(cols))
+            push!(len, length(cols) - start)
+        end
+        parts[c] = (len, cols, vals)
+    end
+    return _concat_rows(A.nrow, B.ncol, parts)
+end
+
+function _transpose(A::_HostCsr)
+    cnt = zeros(Int, A.ncol + 1)
+    @inbounds for k in A.ja
+        cnt[k + 1] += 1
+    end
+    ia = cumsum!(cnt, cnt) .+ 1
+    ia[1] = 1
+    next = ia[1:(end - 1)]
+    ja = Vector{Int32}(undef, _nnz(A))
+    a = Vector{Float64}(undef, _nnz(A))
+    @inbounds for i in 1:A.nrow, ii in A.ia[i]:(A.ia[i + 1] - 1)
+        k = A.ja[ii]
+        p = next[k]
+        ja[p] = i
+        a[p] = A.a[ii]
+        next[k] = p + 1
+    end
+    return _HostCsr(A.ncol, A.nrow, ia, ja, a)
+end
+
+# Position of the diagonal in each row (0 when absent) and its value.
+function _diagonal(A::_HostCsr)
+    idx = zeros(Int, A.nrow)
+    Threads.@threads for i in 1:A.nrow
+        @inbounds for ii in A.ia[i]:(A.ia[i + 1] - 1)
+            if A.ja[ii] == i
+                idx[i] = ii
+                break
+            end
+        end
+    end
+    d = [k > 0 ? A.a[k] : 0.0 for k in idx]
+    return idx, d
+end
+
+# y = D⁻¹·A·x
+function _dinv_spmv!(y, A::_HostCsr, dinv, x)
+    Threads.@threads for i in 1:A.nrow
+        s = 0.0
+        @inbounds for ii in A.ia[i]:(A.ia[i + 1] - 1)
+            s += A.a[ii] * x[A.ja[ii]]
+        end
+        @inbounds y[i] = dinv[i] * s
+    end
+    return y
+end
+
+# Largest eigenvalue of D⁻¹A: power iteration from a fixed pseudo-random vector, × 1.1,
+# and at most the Gershgorin bound max_i Σ_j |a_ij / a_ii|.
+function _lambda_max(A::_HostCsr, dinv, iters)
+    n = A.nrow
+    gersh = 0.0
+    for i in 1:n
+        s = 0.0
+        @inbounds for ii in A.ia[i]:(A.ia[i + 1] - 1)
+            s += abs(A.a[ii])
+        end
+        gersh = max(gersh, s * abs(dinv[i]))
+    end
+    iters > 0 || return gersh
+    x = [mod(0.6180339887498949 * i, 1.0) - 0.5 for i in 1:n]
+    y = similar(x)
+    λ = 0.0
+    for _ in 1:iters
+        nx = sqrt(sum(abs2, x))
+        nx == 0 && break
+        _dinv_spmv!(y, A, dinv, x)
+        λ = sqrt(sum(abs2, y)) / nx
+        x, y = y, x
+    end
+    λ = min(1.1 * λ, gersh)
+    return λ > 0 ? λ : gersh
+end
+
+# ---------------------------------------------------------------------------------------
+# Host setup: strength, aggregation, prolongators, Galerkin products
+
+# Strong connections (a mask over the entries of A; never the diagonal).
+function _strength(A::_HostCsr, d, θ)
+    n = A.nrow
+    isolated = trues(n)
+    for i in 1:n
+        @inbounds for ii in A.ia[i]:(A.ia[i + 1] - 1)
+            if A.ja[ii] != i && A.a[ii] != 0
+                isolated[i] = false
+                break
+            end
+        end
+    end
+    strong = falses(_nnz(A))
+    for i in 1:n
+        isolated[i] && continue
+        @inbounds for ii in A.ia[i]:(A.ia[i + 1] - 1)
+            j = A.ja[ii]
+            (j == i || isolated[j]) && continue
+            v = abs(A.a[ii])
+            strong[ii] = v > 0 && v >= θ * sqrt(abs(d[i] * d[j]))
+        end
+    end
+    return strong
+end
+
+# Standard aggregation (three passes); returns the aggregate of each node (0: none) and
+# the number of aggregates.
+function _aggregate(A::_HostCsr, strong)
+    n = A.nrow
+    agg = zeros(Int32, n)
+    nc = Int32(0)
+    # pass 1: a node whose strong neighbours are all free forms an aggregate with them
+    @inbounds for i in 1:n
+        agg[i] == 0 || continue
+        has = false
+        free = true
+        for ii in A.ia[i]:(A.ia[i + 1] - 1)
+            strong[ii] || continue
+            has = true
+            if agg[A.ja[ii]] != 0
+                free = false
+                break
+            end
+        end
+        if !has
+            agg[i] = -1  # no strong neighbours: not aggregated
+        elseif free
+            nc += Int32(1)
+            agg[i] = nc
+            for ii in A.ia[i]:(A.ia[i + 1] - 1)
+                strong[ii] && (agg[A.ja[ii]] = nc)
+            end
+        end
+    end
+    # pass 2: join the aggregate of a strong neighbour from pass 1
+    p1 = copy(agg)
+    @inbounds for i in 1:n
+        agg[i] == 0 || continue
+        for ii in A.ia[i]:(A.ia[i + 1] - 1)
+            if strong[ii] && p1[A.ja[ii]] > 0
+                agg[i] = p1[A.ja[ii]]
+                break
+            end
+        end
+    end
+    # pass 3: the rest form aggregates with their unaggregated strong neighbours
+    @inbounds for i in 1:n
+        agg[i] == 0 || continue
+        nc += Int32(1)
+        agg[i] = nc
+        for ii in A.ia[i]:(A.ia[i + 1] - 1)
+            strong[ii] && agg[A.ja[ii]] == 0 && (agg[A.ja[ii]] = nc)
+        end
+    end
+    @inbounds for i in 1:n
+        agg[i] < 0 && (agg[i] = 0)
+    end
+    return agg, Int(nc)
+end
+
+# Tentative prolongator (n × nc, one entry per aggregated node) and the coarse B.
+function _tentative(agg, nc, B)
+    n = length(agg)
+    nrm = zeros(nc)
+    @inbounds for i in 1:n
+        agg[i] > 0 && (nrm[agg[i]] += B[i]^2)
+    end
+    nrm .= sqrt.(nrm)
+    ia = Vector{Int}(undef, n + 1)
+    ia[1] = 1
+    ja = Int32[]
+    a = Float64[]
+    @inbounds for i in 1:n
+        if agg[i] > 0
+            push!(ja, agg[i])
+            push!(a, nrm[agg[i]] > 0 ? B[i] / nrm[agg[i]] : 0.0)
+        end
+        ia[i + 1] = length(ja) + 1
+    end
+    return _HostCsr(n, nc, ia, ja, a), nrm
+end
+
+# S = I − ω·D_F⁻¹·A_F with the filtered matrix A_F: strong entries, and the weak ones
+# lumped into the diagonal so that A_F·B = A·B; ω = 4/(3·ρ) with the Gershgorin bound ρ.
+function _smoother_matrix(A::_HostCsr, d, strong, B)
+    n = A.nrow
+    dF = copy(d)
+    @inbounds for i in 1:n, ii in A.ia[i]:(A.ia[i + 1] - 1)
+        j = A.ja[ii]
+        (j == i || strong[ii]) && continue
+        B[i] != 0 && (dF[i] += A.a[ii] * B[j] / B[i])
+    end
+    # Keep the original diagonal where lumping would flip or nearly cancel it.
+    @inbounds for i in 1:n
+        (sign(dF[i]) != sign(d[i]) || abs(dF[i]) < 1.0e-3 * abs(d[i])) && (dF[i] = d[i])
+    end
+    ρ = 0.0
+    @inbounds for i in 1:n
+        dF[i] == 0 && continue
+        s = abs(dF[i])
+        for ii in A.ia[i]:(A.ia[i + 1] - 1)
+            strong[ii] && (s += abs(A.a[ii]))
+        end
+        ρ = max(ρ, s / abs(dF[i]))
+    end
+    ω = ρ > 0 ? 4 / (3ρ) : 0.0
+    ia = Vector{Int}(undef, n + 1)
+    ia[1] = 1
+    ja = Int32[]
+    a = Float64[]
+    @inbounds for i in 1:n
+        f = dF[i] != 0 ? ω / dF[i] : 0.0
+        push!(ja, i)
+        push!(a, dF[i] != 0 ? 1 - ω : 1.0)
+        for ii in A.ia[i]:(A.ia[i + 1] - 1)
+            if strong[ii]
+                push!(ja, A.ja[ii])
+                push!(a, -f * A.a[ii])
+            end
+        end
+        ia[i + 1] = length(ja) + 1
+    end
+    return _HostCsr(n, n, ia, ja, a)
+end
+
+# One level of the host hierarchy: the operator A, its D⁻¹ and λmax, and (except on the
+# coarsest level) P to the next level and R = Pᵀ.
+struct _HostLevel
+    A::_HostCsr
+    idiag::Vector{Int}
+    dinv::Vector{Float64}
+    lmax::Float64
+    P::Union{Nothing, _HostCsr}
+    R::Union{Nothing, _HostCsr}
+end
+
+_inv_or_one(d) = d != 0 ? 1 / d : 1.0
+
+function _build_hierarchy(A::_HostCsr, B::Vector{Float64}, opt::AMGOptions)
+    levels = _HostLevel[]
+    while true
+        idiag, d = _diagonal(A)
+        dinv = _inv_or_one.(d)
+        lmax = _lambda_max(A, dinv, opt.power_iterations)
+        coarsest = A.nrow <= opt.max_coarse || length(levels) + 1 >= opt.max_levels
+        if !coarsest
+            strong = _strength(A, d, opt.theta)
+            agg, nc = _aggregate(A, strong)
+            if nc == 0 || nc >= A.nrow
+                coarsest = true
+            else
+                Pt, Bc = _tentative(agg, nc, B)
+                P = opt.smooth ? _spgemm(_smoother_matrix(A, d, strong, B), Pt) : Pt
+                R = _transpose(P)
+                Ac = _spgemm(R, _spgemm(A, P))
+                push!(levels, _HostLevel(A, idiag, dinv, lmax, P, R))
+                A, B = Ac, Bc
+                continue
+            end
+        end
+        push!(levels, _HostLevel(A, idiag, dinv, lmax, nothing, nothing))
+        return levels
+    end
+end
+
+# Dense inverse of a (small) CSR matrix; the pseudo-inverse when it is singular.
+function _dense_inverse(ia, ja, a, n)
+    M = zeros(n, n)
+    @inbounds for i in 1:n, ii in ia[i]:(ia[i + 1] - 1)
+        M[i, ja[ii]] += a[ii]
+    end
+    F = LinearAlgebra.lu(M; check = false)
+    return LinearAlgebra.issuccess(F) && all(isfinite, F.U) ? inv(F) : LinearAlgebra.pinv(M)
+end
+
+# ---------------------------------------------------------------------------------------
+# Device hierarchy
+
+# Operators in the kernels: the finest level is the Krylov operator itself (`_op_row`),
+# coarser levels are CSR matrices.
+struct _FineOp{A, VI, VS}
+    amat::A
+    ia::VI
+    ja::VI
+    rowfac::VS
+    colfac::VS
+end
+Adapt.@adapt_structure _FineOp
+
+struct _CsrOp{VI, VP}
+    ia::VI
+    ja::VI
+    a::VP
+end
+Adapt.@adapt_structure _CsrOp
+
+@inline _row(op::_FineOp, n, x) = _op_row(n, op.amat, op.ia, op.ja, op.rowfac, op.colfac, x)
+@inline function _row(op::_CsrOp, n, x)
+    T = eltype(x)
+    s = zero(T)
+    @inbounds for ii in op.ia[n]:(op.ia[n + 1] - Int32(1))
+        s += T(op.a[ii]) * x[op.ja[ii]]
+    end
+    return s
+end
+
+@inline _val(op::_FineOp, ::Type{Ta}, ii, i, j) where {Ta} = @inbounds Ta(op.rowfac[i]) * Ta(op.amat[ii]) * Ta(op.colfac[j])
+@inline _val(op::_CsrOp, ::Type{Ta}, ii, i, j) where {Ta} = @inbounds Ta(op.a[ii])
+
+"""
+    AMGLevel
+
+One level of the device hierarchy of `AMGPreconditioner`: size `n`, `lmax` (estimated
+largest eigenvalue of `D⁻¹A`), the operator in CSR (`ia`, `ja`, `a`, diagonal positions
+`idiag`, `dinv`; empty on the finest level, which uses the Krylov operator), the
+prolongator `P` (`pia`, `pja`, `pa`, from the next level) and restriction `R = Pᵀ`
+(`ria`, `rja`, `ra`; empty on the coarsest level), and work vectors `x`, `y`, `f`, `w`,
+`d` (empty on the finest level).
+"""
+struct AMGLevel{VI <: AbstractVector{Int32}, VP <: AbstractVector}
+    n::Int
+    lmax::Float64
+    ia::VI
+    ja::VI
+    a::VP
+    idiag::VI
+    dinv::VP
+    pia::VI
+    pja::VI
+    pa::VP
+    ria::VI
+    rja::VI
+    ra::VP
+    x::VP
+    y::VP
+    f::VP
+    w::VP
+    d::VP
+end
+
+"""
+    AMGStats
+
+Counters of an `AMGPreconditioner`: `builds` (host hierarchy builds) and `build_time`
+(s), `updates` (device Galerkin recomputations) and `update_time` (s, synchronised),
+`solves` (preconditioned solves), `sizes` (rows per level), `nnz` (entries
+of each level's operator) and `device_bytes` (hierarchy and work vectors on the device).
+"""
+mutable struct AMGStats
+    builds::Int
+    build_time::Float64
+    updates::Int
+    update_time::Float64
+    solves::Int
+    sizes::Vector{Int}
+    nnz::Vector{Int}
+    device_bytes::Int
+end
+
+AMGStats() = AMGStats(0, 0.0, 0, 0.0, 0, Int[], Int[], 0)
+
+"""
+    AMGPreconditioner{Ts, Tp, Ta}
+
+Smoothed-aggregation AMG preconditioner (see the header of src/solver/precond/amg.jl):
+host setup in Float64, device hierarchy and V-cycle in `Tp` (finest level in `Ts`),
+Galerkin products recomputed on the device in `Ta` once per `precond_setup!`. The
+hierarchy is built at the first `precond_setup!`. `stats::AMGStats` counts builds,
+updates and their times.
+
+    AMGPreconditioner(backend, n, Ts, Tp; options...)
+
+`options` are the keywords of `AMGOptions`.
+"""
+mutable struct AMGPreconditioner{Ts, Tp, Ta, B <: Backend, VS <: AbstractVector{Ts}, VP <: AbstractVector{Tp}, VA <: AbstractVector{Ta}, VI <: AbstractVector{Int32}} <: AbstractPreconditioner
+    const options::AMGOptions
+    const backend::B
+    const n::Int
+    levels::Vector{AMGLevel{VI, VP}}
+    fy::VS
+    fw::VS
+    fd::VS
+    gacc::VA
+    cinv::VP
+    # host: coarsest pattern (dense inverse updates) and the finest CSR structure
+    host_coarse::_HostCsr
+    host_ia::Vector{Int}
+    host_ja::Vector{Int32}
+    fine::Any
+    built::Bool
+    rebuild::Bool
+    fresh::Bool
+    base_iters::Int
+    const stats::AMGStats
+end
+
+function AMGPreconditioner(backend::Backend, n::Integer, ::Type{Ts}, ::Type{Tp}; options...) where {Ts, Tp}
+    opt = AMGOptions(; options...)
+    Ta = supports_float64(backend) ? Float64 : Tp
+    zs = KernelAbstractions.zeros(backend, Ts, 0)
+    zp = KernelAbstractions.zeros(backend, Tp, 0)
+    za = KernelAbstractions.zeros(backend, Ta, 0)
+    zi = KernelAbstractions.zeros(backend, Int32, 0)
+    empty = _HostCsr(0, 0, [1], Int32[], Float64[])
+    return AMGPreconditioner{Ts, Tp, Ta, typeof(backend), typeof(zs), typeof(zp), typeof(za), typeof(zi)}(
+        opt, backend, Int(n), AMGLevel{typeof(zi), typeof(zp)}[], zs, similar(zs), similar(zs), za, zp, empty,
+        Int[], Int32[], nothing, false, true, false, 0, AMGStats(),
+    )
+end
+
+# Adapt: an unbuilt preconditioner with the same options on the target backend.
+function Adapt.adapt_structure(to, P::AMGPreconditioner{Ts, Tp}) where {Ts, Tp}
+    backend = get_backend(adapt(to, P.fy))
+    opt = P.options
+    return AMGPreconditioner(backend, P.n, Ts, Tp; (f => getfield(opt, f) for f in fieldnames(AMGOptions))...)
+end
+
+_device(backend, ::Type{T}, x) where {T} = _device_copy(backend, convert(Vector{T}, x))
+
+function _upload_level(backend, ::Type{Tp}, h::_HostLevel, first::Bool) where {Tp}
+    zi() = KernelAbstractions.zeros(backend, Int32, 0)
+    zp(len = 0) = KernelAbstractions.zeros(backend, Tp, len)
+    A = h.A
+    n = A.nrow
+    if first
+        ia, ja, a, idiag, dinv = zi(), zi(), zp(), zi(), zp()
+        x, y, f, w, d = zp(), zp(), zp(), zp(), zp()
+    else
+        ia, ja, a = _device(backend, Int32, A.ia), _device(backend, Int32, A.ja), _device(backend, Tp, A.a)
+        idiag, dinv = _device(backend, Int32, h.idiag), _device(backend, Tp, h.dinv)
+        x, y, f, w, d = zp(n), zp(n), zp(n), zp(n), zp(n)
+    end
+    if isnothing(h.P)
+        pia, pja, pa, ria, rja, ra = zi(), zi(), zp(), zi(), zi(), zp()
+    else
+        pia, pja, pa = _device(backend, Int32, h.P.ia), _device(backend, Int32, h.P.ja), _device(backend, Tp, h.P.a)
+        ria, rja, ra = _device(backend, Int32, h.R.ia), _device(backend, Int32, h.R.ja), _device(backend, Tp, h.R.a)
+    end
+    return AMGLevel(n, h.lmax, ia, ja, a, idiag, dinv, pia, pja, pa, ria, rja, ra, x, y, f, w, d)
+end
+
+_bytes(x::AbstractArray) = length(x) * sizeof(eltype(x))
+_bytes(l::AMGLevel) = sum(_bytes(getfield(l, f)) for f in fieldnames(AMGLevel) if getfield(l, f) isa AbstractArray)
+
+# Host build from the current scaled operator (copied from the device).
+function _build!(P::AMGPreconditioner{Ts, Tp, Ta}, solver, amat) where {Ts, Tp, Ta}
+    t0 = time()
+    backend = P.backend
+    csr = solver.csr
+    n = P.n
+    if isempty(P.host_ia)
+        P.host_ia = Int.(Array(csr.ia))
+        P.host_ja = Array(csr.ja)
+    end
+    ia, ja = P.host_ia, P.host_ja
+    a = Float64.(Array(amat))
+    rf = Float64.(Array(solver.rowfac))
+    cf = Float64.(Array(solver.colfac))
+    Threads.@threads for i in 1:n
+        @inbounds for ii in ia[i]:(ia[i + 1] - 1)
+            a[ii] *= rf[i] * cf[ja[ii]]
+        end
+    end
+    B = [c != 0 ? 1 / c : 1.0 for c in cf]
+    hl = _build_hierarchy(_HostCsr(n, n, ia, copy(ja), a), B, P.options)
+    P.levels = [_upload_level(backend, Tp, hl[l], l == 1) for l in eachindex(hl)]
+    P.fy = KernelAbstractions.zeros(backend, Ts, n)
+    P.fw = KernelAbstractions.zeros(backend, Ts, n)
+    P.fd = KernelAbstractions.zeros(backend, Ts, n)
+    maxnnz = maximum((_nnz(h.A) for h in hl[2:end]); init = 0)
+    P.gacc = Ta === Tp ? KernelAbstractions.zeros(backend, Ta, 0) : KernelAbstractions.zeros(backend, Ta, maxnnz)
+    hc = last(hl).A
+    P.host_coarse = hc
+    nL = hc.nrow
+    P.cinv = _device(backend, Tp, vec(_dense_inverse(hc.ia, hc.ja, hc.a, nL)))
+    st = P.stats
+    st.builds += 1
+    st.sizes = [h.A.nrow for h in hl]
+    st.nnz = [_nnz(h.A) for h in hl]
+    st.device_bytes = sum(_bytes, P.levels) + _bytes(P.fy) * 3 + _bytes(P.gacc) + _bytes(P.cinv)
+    P.built = true
+    P.rebuild = false
+    P.fresh = true
+    KernelAbstractions.synchronize(backend)
+    st.build_time += time() - t0
+    return P
+end
+
+# --- device Galerkin product A_c = R·A·P on the fixed pattern of A_c
+
+# Position of column J in cja[lo:hi] (sorted); the pattern always contains it.
+@inline function _bsearch(cja, lo, hi, J)
+    @inbounds while lo < hi
+        mid = (lo + hi) >>> 1
+        if cja[mid] < J
+            lo = mid + Int32(1)
+        else
+            hi = mid
+        end
+    end
+    return lo
+end
+
+@kernel function galerkin_kernel!(acc, @Const(cia), @Const(cja), @Const(ria), @Const(rja), @Const(ra), op, @Const(pia), @Const(pja), @Const(pa))
+    I = @index(Global, Linear)
+    Ta = eltype(acc)
+    @inbounds if I < length(cia)
+        k0 = cia[I]
+        k1 = cia[I + 1] - Int32(1)
+        for k in k0:k1
+            acc[k] = zero(Ta)
+        end
+        for t in ria[I]:(ria[I + 1] - Int32(1))
+            i = rja[t]
+            rv = Ta(ra[t])
+            for ii in op.ia[i]:(op.ia[i + 1] - Int32(1))
+                j = op.ja[ii]
+                v = rv * _val(op, Ta, ii, i, j)
+                for s in pia[j]:(pia[j + 1] - Int32(1))
+                    k = _bsearch(cja, k0, k1, pja[s])
+                    acc[k] += v * Ta(pa[s])
+                end
+            end
+        end
+    end
+end
+
+@inline function _convert_entry(k, a, acc)
+    @inbounds a[k] = convert(eltype(a), acc[k])
+    return nothing
+end
+
+@inline function _coarse_dinv(i, dinv, a, idiag)
+    T = eltype(dinv)
+    @inbounds begin
+        k = idiag[i]
+        d = k > 0 ? a[k] : zero(T)
+        dinv[i] = d != zero(T) ? one(T) / d : one(T)
+    end
+    return nothing
+end
+
+# Recompute the coarse operators from the current matrix (device) and the dense
+# coarsest inverse (host).
+function _update!(P::AMGPreconditioner{Ts, Tp, Ta}, fineop) where {Ts, Tp, Ta}
+    t0 = time()
+    backend = P.backend
+    L = length(P.levels)
+    op = fineop
+    for l in 1:(L - 1)
+        lev = P.levels[l]
+        nxt = P.levels[l + 1]
+        acc = Ta === Tp ? nxt.a : view(P.gacc, 1:length(nxt.a))
+        galerkin_kernel!(backend)(acc, nxt.ia, nxt.ja, lev.ria, lev.rja, lev.ra, op, lev.pia, lev.pja, lev.pa; ndrange = nxt.n)
+        Ta === Tp || _map!(backend, _convert_entry, length(nxt.a), nxt.a, acc)
+        _map!(backend, _coarse_dinv, nxt.n, nxt.dinv, nxt.a, nxt.idiag)
+        op = _CsrOp(nxt.ia, nxt.ja, nxt.a)
+    end
+    if L > 1
+        hc = P.host_coarse
+        vals = Float64.(Array(P.levels[L].a))
+        copyto!(P.cinv, convert(Vector{Tp}, vec(_dense_inverse(hc.ia, hc.ja, vals, hc.nrow))))
+    else
+        # Single level: the dense inverse of the finest operator itself.
+        _build!(P, P.fine[3], P.fine[4])
+        return P
+    end
+    KernelAbstractions.synchronize(backend)
+    P.stats.updates += 1
+    P.stats.update_time += time() - t0
+    return P
+end
+
+function precond_setup!(P::AMGPreconditioner, solver, amat)
+    csr = solver.csr
+    op = _FineOp(amat, csr.ia, csr.ja, solver.rowfac, solver.colfac)
+    P.fine = (op, solver.minv, solver, amat)
+    if !P.built || P.rebuild
+        _build!(P, solver, amat)
+    else
+        P.fresh = false
+        _update!(P, op)
+    end
+    return P
+end
+
+function _precond_record!(P::AMGPreconditioner, result)
+    st = P.options
+    P.stats.solves += 1
+    if P.fresh
+        P.base_iters = result.iterations
+    elseif result.iterations > max(st.rebuild_factor * P.base_iters, P.base_iters + st.rebuild_min)
+        P.rebuild = true
+    end
+    return nothing
+end
+
+function _precond_retry!(P::AMGPreconditioner)
+    P.fresh && return false
+    P.rebuild = true
+    return true
+end
+
+# --- V-cycle
+
+# Smoother steps on A·x = f (D⁻¹ = dinv): the first from x = 0 (`_smooth_zero`), the others
+# `x_out = x_in + d`, `d = c1·d + c2·D⁻¹(f − A·x_in)`.
+@inline function _smooth_zero(n, xout, d, f, dinv, c2)
+    T = eltype(xout)
+    @inbounds begin
+        dn = c2 * T(dinv[n]) * f[n]
+        d[n] = dn
+        xout[n] = dn
+    end
+    return nothing
+end
+
+@inline function _smooth_step(n, xout, xin, d, f, dinv, op, c1, c2)
+    T = eltype(xout)
+    @inbounds begin
+        rn = f[n] - _row(op, n, xin)
+        dn = c2 * T(dinv[n]) * rn
+        c1 != zero(T) && (dn += c1 * d[n])
+        d[n] = dn
+        xout[n] = xin[n] + dn
+    end
+    return nothing
+end
+
+@inline function _residual(n, w, f, x, op)
+    @inbounds w[n] = f[n] - _row(op, n, x)
+    return nothing
+end
+
+# y = R·w (restriction, into the next level's type)
+@inline function _restrict(I, fc, ria, rja, ra, w)
+    T = eltype(fc)
+    s = zero(T)
+    @inbounds for t in ria[I]:(ria[I + 1] - Int32(1))
+        s += ra[t] * T(w[rja[t]])
+    end
+    @inbounds fc[I] = s
+    return nothing
+end
+
+# x += P·xc
+@inline function _prolong_add(i, x, pia, pja, pa, xc)
+    T = eltype(xc)
+    s = zero(T)
+    @inbounds for s_ in pia[i]:(pia[i + 1] - Int32(1))
+        s += pa[s_] * xc[pja[s_]]
+    end
+    @inbounds x[i] += convert(eltype(x), s)
+    return nothing
+end
+
+# x = M·f with a dense column-major n×n matrix M.
+@inline function _dense_apply(i, x, M, f, nc)
+    T = eltype(M)
+    s = zero(T)
+    @inbounds for j in 1:nc
+        s += M[i + (j - 1) * nc] * T(f[j])
+    end
+    @inbounds x[i] = convert(eltype(x), s)
+    return nothing
+end
+
+# Smoother coefficients (c1, c2) per step for λmax `lmax`.
+function _smoother_coefficients(opt::AMGOptions, lmax)
+    k = opt.degree
+    if opt.smoother === :jacobi
+        return [(0.0, 4 / (3lmax)) for _ in 1:k]
+    end
+    b = lmax
+    a = opt.cheb_ratio * lmax
+    θ = (a + b) / 2
+    δ = (b - a) / 2
+    σ = θ / δ
+    c = [(0.0, 1 / θ)]
+    ρold = 1 / σ
+    for _ in 2:k
+        ρ = 1 / (2σ - ρold)
+        push!(c, (ρ * ρold, 2ρ / δ))
+        ρold = ρ
+    end
+    return c
+end
+
+# Smooth A·x = f from x = 0 (`zero_guess`) or from `cur`; returns the buffer holding the
+# result (`cur` or `oth`).
+function _smooth!(backend, cur, oth, d, f, dinv, op, coefs, zero_guess)
+    T = eltype(cur)
+    n = length(f)
+    for (s, (c1, c2)) in enumerate(coefs)
+        if s == 1 && zero_guess
+            _map!(backend, _smooth_zero, n, cur, d, f, dinv, T(c2))
+        else
+            _map!(backend, _smooth_step, n, oth, cur, d, f, dinv, op, T(c1), T(c2))
+            cur, oth = oth, cur
+        end
+    end
+    return cur, oth
+end
+
+# x ≈ A_l⁻¹·f on level l (x from zero); `x` holds the result.
+function _cycle!(P::AMGPreconditioner, l, x, y, f, w, d, op, dinv)
+    backend = P.backend
+    L = length(P.levels)
+    lev = P.levels[l]
+    if l == L
+        _map!(backend, _dense_apply, lev.n, x, P.cinv, f, lev.n)
+        return x
+    end
+    coefs = _smoother_coefficients(P.options, lev.lmax)
+    # Pre-smoothing starts in `y` so that, after the 2·degree − 1 swaps of the pre- and
+    # post-smoothing, the result is in `x`.
+    cur, oth = _smooth!(backend, y, x, d, f, dinv, op, coefs, true)
+    _map!(backend, _residual, lev.n, w, f, cur, op)
+    nxt = P.levels[l + 1]
+    _map!(backend, _restrict, nxt.n, nxt.f, lev.ria, lev.rja, lev.ra, w)
+    _cycle!(P, l + 1, nxt.x, nxt.y, nxt.f, nxt.w, nxt.d, _CsrOp(nxt.ia, nxt.ja, nxt.a), nxt.dinv)
+    _map!(backend, _prolong_add, lev.n, cur, lev.pia, lev.pja, lev.pa, nxt.x)
+    cur, oth = _smooth!(backend, cur, oth, d, f, dinv, op, coefs, false)
+    cur === x || copyto!(x, cur)
+    return x
+end
+
+function precond_apply!(z, P::AMGPreconditioner, r)
+    op, minv = P.fine[1], P.fine[2]
+    return _cycle!(P, 1, z, P.fy, r, P.fw, P.fd, op, minv)
+end
+
+"""
+    amg_stats(solver::KrylovSolver) -> Union{AMGStats, Nothing}
+
+The `AMGStats` of the solver's AMG preconditioner (`nothing` for other preconditioners).
+"""
+amg_stats(solver) = solver.precond isa AMGPreconditioner ? solver.precond.stats : nothing

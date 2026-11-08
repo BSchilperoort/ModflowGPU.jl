@@ -9,6 +9,7 @@ module ModflowGPU
 using KernelAbstractions: KernelAbstractions, Backend, CPU, get_backend, @kernel, @index, @Const, @localmem, @synchronize
 using Printf: @sprintf, @printf
 using Adapt: Adapt, adapt
+using LinearAlgebra: LinearAlgebra
 
 include("backend_setup.jl")
 include("precision.jl")
@@ -57,7 +58,9 @@ include("boundaries/evt.jl")
 
 # Assembly and residual (KA kernels)
 include("solver/csr.jl")
+include("solver/precond/precond.jl")
 include("solver/krylov.jl")
+include("solver/precond/amg.jl")
 
 # Time stepping, the model on a device, outer iterations, flows and budgets
 include("timing.jl")
