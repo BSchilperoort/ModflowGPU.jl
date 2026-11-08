@@ -86,10 +86,6 @@ _precond_record!(P::AbstractPreconditioner, result) = nothing
 # hierarchy from an earlier matrix); the method prepares the rebuild.
 _precond_retry!(P::AbstractPreconditioner) = false
 
-# The version of the matrix's off-diagonal entries for the next `precond_setup!` (`solve!`'s
-# `offdiag_version`; −1 unknown). Preconditioners that can reuse work use it.
-_set_offdiag_version!(P::AbstractPreconditioner, v) = nothing
-
 """
     JacobiPreconditioner(minv)
 

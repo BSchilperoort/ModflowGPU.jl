@@ -347,7 +347,7 @@ end
     end
 end
 
-_map!(backend, f, len, args...) = (len > 0 && map_kernel!(backend)(f, len, args; ndrange = len); nothing)
+_map!(backend, f, len, args...) = (len > 0 && map_kernel!(backend, _WG)(f, len, args; ndrange = len); nothing)
 
 @inline _dot_term(::Type{Ta}, i, x, y) where {Ta} = @inbounds (Ta(x[i]) * Ta(y[i]), zero(Ta), zero(Ta), zero(Ta))
 @inline _maxabs_term(::Type{Ta}, i, x) where {Ta} = @inbounds (Ta(x[i]), zero(Ta), zero(Ta), zero(Ta))
@@ -870,19 +870,16 @@ const _CG_UPDATE_OPS = (_MaxAbsOp(), _MaxAbsOp(), _SumOp(), _SumOp())
 @inline _safe_div(num::T, d::T) where {T <: AbstractFloat} = num / (d + copysign(max(eps(T) * abs(num), floatmin(T)), d))
 
 """
-    solve!(δ, solver::KrylovSolver, amat, res; kstp = 1, offdiag_version = -1) -> KrylovResult
+    solve!(δ, solver::KrylovSolver, amat, res; kstp = 1) -> KrylovResult
 
 Solve the correction system `A·δ = res` (PLAN.md section 3.7, rule 3) with a zero
 initial guess: `amat` is MF6's matrix in the CSR layout of `solver.csr` (a
 `LinearSystem`'s `amat`, any float type), `res` the flux-form residual (`flux_residual!`),
 `δ` the output. Scaling and the preconditioner (`precond_setup!`) are set up from `amat`
 on every call (as `imslinear_ap` does). `kstp` (time step number) only matters for
-`rclose_option = :l2norm` (`ims_base_epfact`). `offdiag_version`: a number that changes
-whenever the off-diagonal entries of `amat` change (`GwfModel`'s `offdiag_version`; −1:
-unknown), so the preconditioner setup can skip work when only the diagonal changed.
-Returns a `KrylovResult` with the iteration count of this call.
+`rclose_option = :l2norm` (`ims_base_epfact`). Returns a `KrylovResult` with the iteration count of this call.
 """
-function solve!(δ, solver::KrylovSolver{Ts}, amat, res; kstp::Integer = 1, offdiag_version::Integer = -1) where {Ts}
+function solve!(δ, solver::KrylovSolver{Ts}, amat, res; kstp::Integer = 1) where {Ts}
     st = solver.settings
     csr = solver.csr
     backend = get_backend(solver)
@@ -892,7 +889,6 @@ function solve!(δ, solver::KrylovSolver{Ts}, amat, res; kstp::Integer = 1, offd
     @timed_section :precond_setup begin
         _map!(backend, _setup_row, n, solver.rowfac, solver.colfac, amat, csr.ia, cg, scaling)
         scaling == 2 && _map!(backend, _setup_l2col, n, solver.colfac, solver.rowfac, amat, csr.ia, csr.ja, csr.isym)
-        _set_offdiag_version!(solver.precond, Int(offdiag_version))
         precond_setup!(solver.precond, solver, amat)
     end
     result = cg ? _solve_cg!(solver, amat, kstp, res) : _solve_bcgs!(solver, amat, kstp, res)
@@ -900,10 +896,7 @@ function solve!(δ, solver::KrylovSolver{Ts}, amat, res; kstp::Integer = 1, offd
     if !result.converged && _precond_retry!(solver.precond)
         # A preconditioner set up from an earlier matrix (AMG hierarchy reuse): rebuild it
         # and solve again from zero; the iterations of both attempts count.
-        @timed_section :precond_setup begin
-            _set_offdiag_version!(solver.precond, -1)
-            precond_setup!(solver.precond, solver, amat)
-        end
+        @timed_section :precond_setup precond_setup!(solver.precond, solver, amat)
         first = result
         result = cg ? _solve_cg!(solver, amat, kstp, res) : _solve_bcgs!(solver, amat, kstp, res)
         _precond_record!(solver.precond, result)

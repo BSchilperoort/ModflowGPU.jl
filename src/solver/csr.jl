@@ -33,8 +33,10 @@
 Device view of the CSR structure of a `Connectivity` (PLAN.md section 3.3; MF6 layout,
 diagonal first in each row): `nodes`, `nja`, and the `Int32` vectors `ia` `(nodes + 1)`,
 `ja`, `jas`, `isym` `(nja)`, `idiag = ia[1:nodes]` (diagonal positions, for
-`add_to_system!` into a matrix) and `inode = 1:nodes` (for `add_to_system!` into a vector
-of per-node diagonal terms). Moved to a device with `Adapt`.
+`add_to_system!` into a matrix), `inode = 1:nodes` (for `add_to_system!` into a vector
+of per-node diagonal terms) and `irow` `(nja)`, the row of each entry (T4.5: kernels with
+one work item per entry, whose writes are coalesced, unlike those of a work item per row).
+Moved to a device with `Adapt`.
 """
 struct CsrStructure{VI <: AbstractVector{Int32}}
     nodes::Int32
@@ -45,9 +47,22 @@ struct CsrStructure{VI <: AbstractVector{Int32}}
     isym::VI
     idiag::VI
     inode::VI
+    irow::VI
 end
 
 Adapt.@adapt_structure CsrStructure
+
+# Without `irow`: computed from `ia` (on the host).
+function CsrStructure(nodes, nja, ia::VI, ja::VI, jas::VI, isym::VI, idiag::VI, inode::VI) where {VI}
+    iah = Array(ia)
+    irow = Vector{Int32}(undef, Int(nja))
+    for n in 1:Int(nodes), ii in iah[n]:(iah[n + 1] - 1)
+        irow[ii] = n
+    end
+    dirow = similar(ia, Int(nja))
+    copyto!(dirow, irow)
+    return CsrStructure{VI}(Int32(nodes), Int32(nja), ia, ja, jas, isym, idiag, inode, dirow)
+end
 
 """
     CsrStructure(backend, conn::Connectivity) -> CsrStructure
@@ -190,7 +205,7 @@ for a symmetric solver.
 """
 function assemble!(sys::LinearSystem, csr::CsrStructure, npf::NpfModel, h, ibound; symmetric::Bool = false)
     backend = get_backend(sys.amat)
-    assemble_kernel!(backend)(
+    assemble_kernel!(backend, _WG)(
         sys.amat, sys.rhs, csr.ia, csr.ja, csr.jas, npf.condsat, npf.Δr, sys.bdiag, sys.brhs, h, ibound, symmetric,
         eltype(sys)(1.0e-15); ndrange = csr.nodes,
     )
@@ -251,7 +266,7 @@ times `eps(T)` bounds the effect of rounding the heads to `T`.
 """
 function flux_residual!(res, sys::LinearSystem, csr::CsrStructure, npf::NpfModel, h, ibound; scale = nothing, bound = nothing)
     backend = get_backend(res)
-    flux_residual_kernel!(backend)(
+    flux_residual_kernel!(backend, _WG)(
         res, scale, bound, csr.ia, csr.ja, csr.jas, npf.condsat, npf.Δr, sys.bdiag, sys.brhs, h, ibound;
         ndrange = csr.nodes,
     )
@@ -370,7 +385,7 @@ function formulate_system!(
         symmetric::Bool = false, offdiag::Bool = true, scale = nothing,
     )
     backend = get_backend(sys.amat)
-    formulate_kernel!(backend)(
+    formulate_kernel!(backend, _WG)(
         sys.amat, sys.rhs, sys.bdiag, sys.brhs, res, scale, csr.ia, csr.ja, csr.jas, npf.condsat, npf.Δr, h, ibound,
         packages, storage, symmetric, offdiag, eltype(sys)(1.0e-15); ndrange = csr.nodes,
     )
@@ -396,6 +411,6 @@ end
 ImsLinearBase.f90), one work item per row, accumulated in `eltype(y)`.
 """
 function spmv!(y, amat, csr::CsrStructure, x)
-    spmv_kernel!(get_backend(y))(y, amat, csr.ia, csr.ja, x; ndrange = csr.nodes)
+    spmv_kernel!(get_backend(y), _WG)(y, amat, csr.ia, csr.ja, x; ndrange = csr.nodes)
     return y
 end

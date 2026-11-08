@@ -11,8 +11,7 @@ A GWF model ready to run on a device in precision `T` (state and assembly):
   `r` and differences, Float64), `ibound_host` (1 active, −1 constant head), `kper`
   (stress period applied last, 0 before the first), `offdiag` (the `symmetric` setting
   the off-diagonal entries of `sys.amat` were last assembled for, `nothing` when they are
-  stale: T4.5, see `formulate!`), `offdiag_version` (counts their rewrites, so a
-  preconditioner can tell whether only the diagonal changed);
+  stale: T4.5, see `formulate!`);
 - device: `csr::CsrStructure`, `npf::NpfModel{T}`, `sys::LinearSystem{T}`, `packages`
   (`BoundaryPackage`s in MF6's order, `GwfSpec.boundaries`), `sto` (`StoragePackage` or
   `nothing`), `area` (cell areas, for RCH/EVT), `ibound`, the offset heads `h` and the
@@ -41,7 +40,6 @@ mutable struct GwfModel{T <: AbstractFloat, B <: Backend, C <: CsrStructure, N <
     const flowja::V
     kper::Int
     offdiag::Union{Nothing, Bool}
-    offdiag_version::Int
 end
 
 function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) where {T <: AbstractFloat}
@@ -60,7 +58,7 @@ function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) whe
     return GwfModel(
         spec, backend, conn, setup, csr, npf, sys, packages, sto, _device_copy(backend, T.(conn.area)),
         _device_copy(backend, ibh), ibh, h, hold, z(), z(), KernelAbstractions.zeros(backend, T, conn.nja), 0,
-        nothing, 0,
+        nothing,
     )
 end
 
@@ -72,7 +70,7 @@ function Adapt.adapt_structure(to, m::GwfModel)
         m.spec, get_backend(h), m.conn, m.setup, adapt(to, m.csr), adapt(to, m.npf), adapt(to, m.sys),
         BoundaryPackage[adapt(to, p) for p in m.packages], adapt(to, m.sto), adapt(to, m.area), adapt(to, m.ibound),
         copy(m.ibound_host), h, adapt(to, m.hold), adapt(to, m.res), adapt(to, m.δ), adapt(to, m.flowja), m.kper,
-        nothing, m.offdiag_version + 1,
+        nothing,
     )
 end
 
@@ -150,10 +148,7 @@ function formulate!(m::GwfModel; symmetric::Bool = false, scale = nothing)
     end
     offdiag = m.offdiag !== symmetric
     formulate_system!(m.sys, m.res, m.csr, m.npf, m.h, m.ibound, pkgs, storage; symmetric, offdiag, scale)
-    if offdiag
-        m.offdiag = symmetric
-        m.offdiag_version += 1
-    end
+    m.offdiag = symmetric
     return m
 end
 

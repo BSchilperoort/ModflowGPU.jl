@@ -135,3 +135,9 @@ function _device_copy(backend::Backend, x::AbstractArray{T}) where {T}
     copyto!(d, x)
     return d
 end
+
+# Work-group size of the package's element-wise kernels (T4.5). A static size keeps KA from
+# tuning the work group at every launch, and its launch mode from depending on the problem
+# size (KA 0.10 launches dynamically sized kernels over large ranges as `LinearLaunch`,
+# which compiled the host launch code anew for the first large model of a session).
+const _WG = 256

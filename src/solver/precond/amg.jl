@@ -880,8 +880,8 @@ function _update!(P::AMGPreconditioner{Ts, Tp, Ta}, fineop) where {Ts, Tp, Ta}
         nxt = P.levels[l + 1]
         P.options.smooth && _update_prolongator!(P, lev, op)
         acc = Ta === Tp ? nxt.a : view(P.gacc, 1:length(nxt.a))
-        galerkin_kernel!(backend)(acc, nxt.ia, nxt.ja, lev.ria, lev.rja, lev.ra, op, lev.pia, lev.pja, lev.pa; ndrange = nxt.n)
-        Ta === Tp || galerkin_store_kernel!(backend)(nxt.a, acc; ndrange = length(nxt.a))
+        galerkin_kernel!(backend, _WG)(acc, nxt.ia, nxt.ja, lev.ria, lev.rja, lev.ra, op, lev.pia, lev.pja, lev.pa; ndrange = nxt.n)
+        Ta === Tp || galerkin_store_kernel!(backend, _WG)(nxt.a, acc; ndrange = length(nxt.a))
         _map!(backend, _coarse_dinv, nxt.n, nxt.dinv, nxt.a, nxt.idiag)
         P.lmax[l] = _mapreduce!(P.reducer, backend, _gershgorin_term, _GERSH_OPS, lev.n, op, l == 1 ? P.fine[2] : lev.dinv)[1]
         op = _CsrOp(nxt.ia, nxt.ja, nxt.a)

@@ -21,14 +21,13 @@
 #   factorisation with a larger diagonal shift DELTA instead).
 # For two colours (red–black) ILU0 only modifies the diagonal of the second colour.
 #
-# Red–black ILU0 setup (T4.5): `ctr` holds, for each lower entry (n, m) of a second-colour
+# Red–black ILU0 setup (T4.5): the scaled matrix is copied with one work item per entry
+# (`CsrStructure.irow`), then `ctr` gives, for each lower entry (n, m) of a second-colour
 # row, the position of the transposed entry (m, n) in row m, so the pivot update reads one
-# value instead of searching row m (with MILU relaxation the row is still scanned). When the
-# off-diagonal entries of the matrix are unchanged since the last setup (the
-# `offdiag_version` that `solve!` passes on; e.g. confined models between outer iterations
-# and time steps) and the scaling is `:none`, the first-colour rows keep their off-diagonal
-# values (unless their row factor changed) and only their pivots are recomputed. Both give
-# bitwise the same factors.
+# value instead of searching row m (with MILU relaxation the row is still scanned). Bitwise
+# the same factors as the row-by-row setup. (Copying only the pivots of the first colour
+# when the off-diagonal entries are unchanged was tried: checking the row factors cost more
+# than the writes it saved.)
 
 """
     greedy_colors(ia, ja) -> Vector{Int32}
@@ -138,9 +137,6 @@ struct MulticolorPreconditioner{VI <: AbstractVector{Int32}, VP <: AbstractVecto
     dinv::VP
     relax::Float64
     ctr::VI
-    rf1::VP
-    version::Base.RefValue{Int}
-    pending::Base.RefValue{Int}
 end
 
 ncolors(P::MulticolorPreconditioner) = length(P.cptr) - 1
@@ -213,7 +209,7 @@ function MulticolorPreconditioner(
     return MulticolorPreconditioner(
         csr, kind === :ilu0, cptr, dev(Int32.(perm)), dev(iperm), dev(cia), dev(cja), dev(cup), dev(csrc),
         KernelAbstractions.zeros(backend, Tp, length(ja)), KernelAbstractions.zeros(backend, Tp, n), Float64(relax),
-        dev(ctr), KernelAbstractions.zeros(backend, Tp, rb ? cptr[2] - 1 : 0), Ref(-1), Ref(-1),
+        dev(ctr),
     )
 end
 
@@ -236,11 +232,8 @@ end
 
 Adapt.adapt_structure(to, P::MulticolorPreconditioner) = MulticolorPreconditioner(
     adapt(to, P.csr), P.ilu, copy(P.cptr), adapt(to, P.perm), adapt(to, P.iperm), adapt(to, P.cia), adapt(to, P.cja),
-    adapt(to, P.cup), adapt(to, P.csrc), adapt(to, P.vals), adapt(to, P.dinv), P.relax, adapt(to, P.ctr), adapt(to, P.rf1),
-    Ref(-1), Ref(-1),
+    adapt(to, P.cup), adapt(to, P.csrc), adapt(to, P.vals), adapt(to, P.dinv), P.relax, adapt(to, P.ctr),
 )
-
-_set_offdiag_version!(P::MulticolorPreconditioner, v) = (P.pending[] = v; nothing)
 
 # --- setup
 
@@ -310,30 +303,20 @@ end
     return nothing
 end
 
-# Red–black ILU0, step 1: copy the scaled row of node n, in natural order (coalesced reads
-# of `amat`; with two colours the coloured row is the original row, see the constructor).
-# First-colour rows also get their pivot (the diagonal). With `keep` (off-diagonal entries
-# unchanged, no scaling) a first-colour row only gets its pivot unless its row factor
-# changed (`rf1`: the row factor of its last copy).
-@inline function _mc_rb_copy(n, n1, keep::Bool, vals, dinv, iperm, cia, rf1, amat, ia, ja, rowfac, colfac)
+# Red–black ILU0, step 1: copy the scaled entries, one work item per entry `ii` of `amat`
+# (coalesced reads, and writes in two streams: with two colours the coloured row is the
+# original row, see the constructor). The diagonal of a first-colour row also gives its pivot.
+@inline function _mc_rb_copy(ii, n1, vals, dinv, iperm, cia, amat, ia, ja, irow, rowfac, colfac)
     Tp = eltype(vals)
     Ts = eltype(rowfac)
     @inbounds begin
+        n = irow[ii]
         i = iperm[n]
-        rf = rowfac[n]
-        p0 = cia[i]
-        a0 = ia[n]
-        len = ia[n + 1] - a0
-        first = i <= n1
-        diag_only = first && keep && Tp(rf) == rf1[i]
-        last = diag_only ? zero(len) : len - one(len)
-        for t in zero(len):last
-            vals[p0 + t] = Tp(rf * Ts(amat[a0 + t]) * colfac[ja[a0 + t]])
-        end
-        if first
-            rf1[i] = Tp(rf)
-            d = vals[p0]
-            dinv[i] = d != zero(Tp) ? one(Tp) / d : one(Tp)
+        t = ii - ia[n]
+        v = Tp(rowfac[n] * Ts(amat[ii]) * colfac[ja[ii]])
+        vals[cia[i] + t] = v
+        if i <= n1 && t == zero(t)
+            dinv[i] = v != zero(Tp) ? one(Tp) / v : one(Tp)
         end
     end
     return nothing
@@ -386,17 +369,12 @@ function precond_setup!(P::MulticolorPreconditioner, solver, amat)
     len(c) = P.cptr[c + 1] - P.cptr[c]
     off(c) = Int32(P.cptr[c] - 1)
     if P.ilu && nc == 2
-        # Off-diagonal values of the first colour still valid: same matrix off-diagonals,
-        # no scaling (column factors 1; the row factors are checked per row).
-        v = P.pending[]
-        keep = v >= 0 && v == P.version[] && solver.settings.scaling === :none
         csr = P.csr
         _map!(
-            backend, _mc_rb_copy, n, Int32(len(1)), keep, P.vals, P.dinv, P.iperm, P.cia, P.rf1, amat, csr.ia, csr.ja,
+            backend, _mc_rb_copy, Int(csr.nja), Int32(len(1)), P.vals, P.dinv, P.iperm, P.cia, amat, csr.ia, csr.ja, csr.irow,
             solver.rowfac, solver.colfac,
         )
         _map!(backend, _mc_rb_factor, len(2), off(2), P.vals, P.dinv, P.perm, P.iperm, P.cia, P.cja, P.cup, P.ctr, relax, P.relax != 0)
-        P.version[] = v
         return P
     end
     _map!(backend, _mc_copy_row, n, P.vals, P.dinv, P.perm, P.cia, P.cja, P.csrc, amat, solver.rowfac, solver.colfac, !P.ilu)

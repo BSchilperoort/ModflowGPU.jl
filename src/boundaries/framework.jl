@@ -645,7 +645,7 @@ reduced node). Records in constant-head or inactive cells get zeros.
 function formulate!(pkg::BoundaryPackage{K}, h, ibound, area) where {K}
     pkg.nbound == 0 && return pkg
     backend = get_backend(pkg.hcof)
-    boundary_formulate_kernel!(backend)(
+    boundary_formulate_kernel!(backend, _WG)(
         pkg.hcof, pkg.rhs, BoundaryKind{K}(), pkg.nodelist, pkg.bound, h, ibound, area; ndrange = pkg.nbound,
     )
     return pkg
@@ -681,7 +681,7 @@ records (`bnd_fc`), one work item per node, records in order. For MF6's CSR layo
 function add_to_system!(amat, b, idiag, pkg::BoundaryPackage)
     pkg.nbound == 0 && return amat
     backend = get_backend(b)
-    boundary_add_kernel!(backend)(amat, b, idiag, pkg.hcof, pkg.rhs, pkg.nodeptr, pkg.noderec; ndrange = pkg.conn.nodes)
+    boundary_add_kernel!(backend, _WG)(amat, b, idiag, pkg.hcof, pkg.rhs, pkg.nodeptr, pkg.noderec; ndrange = pkg.conn.nodes)
     return amat
 end
 
@@ -708,7 +708,7 @@ function calc_simvals!(pkg::BoundaryPackage{K}, h, ibound) where {K}
     K === :CHD && throw(ArgumentError("calc_simvals!: CHD flows come from calc_chd_rate!"))
     pkg.nbound == 0 && return pkg
     backend = get_backend(pkg.simvals)
-    boundary_simvals_kernel!(backend)(pkg.simvals, pkg.nodelist, pkg.hcof, pkg.rhs, h, ibound; ndrange = pkg.nbound)
+    boundary_simvals_kernel!(backend, _WG)(pkg.simvals, pkg.nodelist, pkg.hcof, pkg.rhs, h, ibound; ndrange = pkg.nbound)
     return pkg
 end
 

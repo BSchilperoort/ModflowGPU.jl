@@ -27,7 +27,7 @@ Set the offset head of every constant-head cell to its CHD head (`chd_ad`: `xnew
 """
 function apply_chd_heads!(h, pkg::BoundaryPackage{:CHD})
     pkg.nbound == 0 && return h
-    chd_heads_kernel!(get_backend(h))(h, pkg.nodelist, pkg.bound; ndrange = pkg.nbound)
+    chd_heads_kernel!(get_backend(h), _WG)(h, pkg.nodelist, pkg.bound; ndrange = pkg.nbound)
     return h
 end
 
@@ -72,6 +72,6 @@ cell is in one record only, so the diagonal update needs no atomics.
 """
 function calc_chd_rate!(pkg::BoundaryPackage{:CHD}, flowja, ia, ja, ibound)
     pkg.nbound == 0 && return pkg
-    chd_rate_kernel!(get_backend(flowja))(pkg.simvals, pkg.ratein, pkg.rateout, flowja, pkg.nodelist, ia, ja, ibound; ndrange = pkg.nbound)
+    chd_rate_kernel!(get_backend(flowja), _WG)(pkg.simvals, pkg.ratein, pkg.rateout, flowja, pkg.nodelist, ia, ja, ibound; ndrange = pkg.nbound)
     return pkg
 end

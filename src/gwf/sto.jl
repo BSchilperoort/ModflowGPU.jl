@@ -167,7 +167,7 @@ function add_to_system!(amat, b, idiag, sto::StoragePackage, hold, ibound)
     sto.transient || return amat
     _check_timestep(sto)
     backend = get_backend(b)
-    storage_add_kernel!(backend)(amat, b, idiag, sto.rho, hold, ibound; ndrange = sto.conn.nodes)
+    storage_add_kernel!(backend, _WG)(amat, b, idiag, sto.rho, hold, ibound; ndrange = sto.conn.nodes)
     return amat
 end
 
@@ -197,7 +197,7 @@ function calc_storage_rates!(sto::StoragePackage, hnew, hold, ibound)
     end
     _check_timestep(sto)
     backend = get_backend(sto.strgss)
-    storage_rate_kernel!(backend)(sto.strgss, sto.rho, hnew, hold, ibound; ndrange = sto.conn.nodes)
+    storage_rate_kernel!(backend, _WG)(sto.strgss, sto.rho, hnew, hold, ibound; ndrange = sto.conn.nodes)
     return sto
 end
 
@@ -214,7 +214,7 @@ Add the storage rates to the diagonal positions `idiag[n]` (`ia[n]`) of `flowja`
 """
 function add_storage_flowja!(flowja, idiag, sto::StoragePackage)
     backend = get_backend(flowja)
-    storage_flowja_kernel!(backend)(flowja, idiag, sto.strgss; ndrange = sto.conn.nodes)
+    storage_flowja_kernel!(backend, _WG)(flowja, idiag, sto.strgss; ndrange = sto.conn.nodes)
     return flowja
 end
 
