@@ -274,28 +274,32 @@ end
 
 # --- application
 
-# Forward: z_n = (r_n − Σ_lower v_nm·z_m), times the inverse diagonal for SGS.
-@inline function _mc_forward(k, off, z, r, vals, dinv, perm, cia, cja, cup, sgs::Bool)
+# Forward: z_n = r_n − Σ_lower v_nm·y_m with the lower-colour values `y` read from `src`
+# (`z`, or `r` when all lower neighbours have the first colour, whose `y` is `r`), times
+# the inverse diagonal when `scale` (SGS; ILU0 for the last colour, which has no upper
+# entries, so its backward step is fused here).
+@inline function _mc_forward(k, off, z, src, r, vals, dinv, perm, cia, cja, cup, scale::Bool)
     Ts = eltype(z)
     @inbounds begin
         i = off + k
         n = perm[i]
         t = r[n]
         for kk in (cia[i] + Int32(1)):(cup[i] - Int32(1))
-            t -= Ts(vals[kk]) * z[cja[kk]]
+            t -= Ts(vals[kk]) * src[cja[kk]]
         end
-        z[n] = sgs ? t * Ts(dinv[i]) : t
+        z[n] = scale ? t * Ts(dinv[i]) : t
     end
     return nothing
 end
 
-# Backward, ILU0: z_n = (z_n − Σ_upper u_nm·z_m) / u_nn.
-@inline function _mc_backward_ilu(k, off, z, vals, dinv, perm, cia, cja, cup)
+# Backward, ILU0: z_n = (y_n − Σ_upper u_nm·z_m) / u_nn, with `y` = `z` (the forward
+# result) or `r` (the first colour of a red–black ordering, whose forward step is y = r).
+@inline function _mc_backward_ilu(k, off, z, y, vals, dinv, perm, cia, cja, cup)
     Ts = eltype(z)
     @inbounds begin
         i = off + k
         n = perm[i]
-        t = z[n]
+        t = y[n]
         for kk in cup[i]:(cia[i + 1] - Int32(1))
             t -= Ts(vals[kk]) * z[cja[kk]]
         end
@@ -324,14 +328,21 @@ function precond_apply!(z, P::MulticolorPreconditioner, r)
     nc = ncolors(P)
     len(c) = P.cptr[c + 1] - P.cptr[c]
     off(c) = Int32(P.cptr[c] - 1)
-    for c in 1:nc
-        _map!(backend, _mc_forward, len(c), off(c), z, r, P.vals, P.dinv, P.perm, P.cia, P.cja, P.cup, !P.ilu)
-    end
-    if P.ilu
-        for c in nc:-1:1
-            _map!(backend, _mc_backward_ilu, len(c), off(c), z, P.vals, P.dinv, P.perm, P.cia, P.cja, P.cup)
+    if P.ilu && nc == 2
+        # Red–black: two kernels (y_1 = r; the second colour's backward step is fused).
+        _map!(backend, _mc_forward, len(2), off(2), z, r, r, P.vals, P.dinv, P.perm, P.cia, P.cja, P.cup, true)
+        _map!(backend, _mc_backward_ilu, len(1), off(1), z, r, P.vals, P.dinv, P.perm, P.cia, P.cja, P.cup)
+    elseif P.ilu
+        for c in 1:nc
+            _map!(backend, _mc_forward, len(c), off(c), z, z, r, P.vals, P.dinv, P.perm, P.cia, P.cja, P.cup, c == nc)
+        end
+        for c in (nc - 1):-1:1
+            _map!(backend, _mc_backward_ilu, len(c), off(c), z, z, P.vals, P.dinv, P.perm, P.cia, P.cja, P.cup)
         end
     else
+        for c in 1:nc
+            _map!(backend, _mc_forward, len(c), off(c), z, z, r, P.vals, P.dinv, P.perm, P.cia, P.cja, P.cup, true)
+        end
         for c in (nc - 1):-1:1
             _map!(backend, _mc_backward_sgs, len(c), off(c), z, r, P.vals, P.dinv, P.perm, P.cia, P.cja)
         end

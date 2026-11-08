@@ -124,6 +124,22 @@ end
                     _host_chebyshev(A, s.precond.bounds, s.precond.degree, r)
                 @test _relerr(z, ref) < tol
             end
+            # Red–black colours of a DIS grid (the two-kernel ILU0 path).
+            dis = _synthetic_coupling_dis()
+            conn = build_connectivity(dis)
+            gc = grid_colors(conn, dis)
+            @test maximum(gc) == 2
+            ga = _mmatrix(MersenneTwister(17), Int.(conn.ia), Int.(conn.ja), Int.(conn.isym); symmetric = false, negate = true, shift = 0.01)
+            GA = _dense(Int.(conn.ia), Int.(conn.ja), ga)
+            gr = randn(MersenneTwister(18), Int(conn.nodes))
+            for kind in (:mc_sgs, :mc_ilu0)
+                st = KrylovSettings(; method = :bicgstab, maxiter = 1, preconditioner = kind)
+                gs = KrylovSolver(TEST_BACKEND, CsrStructure(TEST_BACKEND, conn), st; Ts = p.Ts, Tp = p.Tp, colors = gc)
+                nn = Int(conn.nodes)
+                solve!(to_test_device(zeros(p.T, nn)), gs, to_test_device(p.T.(ga)), to_test_device(ones(p.T, nn)))
+                ref = kind === :mc_sgs ? _host_sgs(GA, gc, gr) : _host_ilu0(GA, gc, gr)
+                @test _relerr(_apply(gs, p, gr), ref) < tol
+            end
             # Jacobi through the generic interface equals the fused path's minv·r.
             s = _setup_solver(p, csr, anon, :jacobi)
             @test s.precond isa JacobiPreconditioner && s.precond.minv === s.minv
