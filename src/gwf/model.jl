@@ -146,6 +146,11 @@ function formulate!(m::GwfModel; symmetric::Bool = false, scale = nothing)
         _check_timestep(m.sto)
         storage = (m.sto.rho, m.hold)
     end
+    # Valid while the off-diagonals depend only on the constant `condsat`, `ibound` and
+    # `symmetric`. Whatever changes them must set `m.offdiag = nothing`: `apply_period!`
+    # (IBOUND) does; head-dependent conductances (convertible cells, Newton, T6.x) must
+    # either do so every outer iteration or pass `offdiag = true`. Calling `assemble!` on
+    # `m.sys` directly also leaves `m.offdiag` stale.
     offdiag = m.offdiag !== symmetric
     formulate_system!(m.sys, m.res, m.csr, m.npf, m.h, m.ibound, pkgs, storage; symmetric, offdiag, scale)
     m.offdiag = symmetric
