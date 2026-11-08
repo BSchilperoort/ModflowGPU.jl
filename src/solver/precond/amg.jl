@@ -151,7 +151,7 @@ function _spgemm(A::_HostCsr, B::_HostCsr)
     chunks = _chunks(A.nrow)
     parts = Vector{Tuple{Vector{Int32}, Vector{Int32}, Vector{Float64}}}(undef, length(chunks))
     Threads.@threads for c in eachindex(chunks)
-        marker = zeros(Int, B.ncol)
+        marker = zeros(Int32, B.ncol)
         len = Int32[]
         cols = Int32[]
         vals = Float64[]
@@ -167,7 +167,7 @@ function _spgemm(A::_HostCsr, B::_HostCsr)
                     if pos <= start
                         push!(cols, k)
                         push!(vals, av * B.a[jj])
-                        marker[k] = length(cols)
+                        marker[k] = length(cols) % Int32
                     else
                         vals[pos] += av * B.a[jj]
                     end
@@ -239,8 +239,8 @@ end
 # θ·max_k |a_ik|` (`:offdiag`) or `|a_ij| ≥ θ·√|a_ii·a_jj|` (`:symmetric`).
 function _strength(A::_HostCsr, d, θ, measure::Symbol)
     n = A.nrow
-    isolated = trues(n)
-    for i in 1:n
+    isolated = fill(true, n)
+    Threads.@threads for i in 1:n
         @inbounds for ii in A.ia[i]:(A.ia[i + 1] - 1)
             if A.ja[ii] != i && A.a[ii] != 0
                 isolated[i] = false
@@ -248,9 +248,9 @@ function _strength(A::_HostCsr, d, θ, measure::Symbol)
             end
         end
     end
-    strong = falses(_nnz(A))
+    strong = fill(false, _nnz(A))
     offdiag = measure === :offdiag
-    for i in 1:n
+    Threads.@threads for i in 1:n
         isolated[i] && continue
         amax = 0.0
         if offdiag
@@ -334,14 +334,17 @@ function _tentative(agg, nc, B)
     nrm .= sqrt.(nrm)
     ia = Vector{Int}(undef, n + 1)
     ia[1] = 1
-    ja = Int32[]
-    a = Float64[]
     @inbounds for i in 1:n
-        if agg[i] > 0
-            push!(ja, agg[i])
-            push!(a, nrm[agg[i]] > 0 ? B[i] / nrm[agg[i]] : 0.0)
+        ia[i + 1] = ia[i] + (agg[i] > 0)
+    end
+    ja = Vector{Int32}(undef, ia[end] - 1)
+    a = Vector{Float64}(undef, ia[end] - 1)
+    Threads.@threads for i in 1:n
+        @inbounds if agg[i] > 0
+            k = ia[i]
+            ja[k] = agg[i]
+            a[k] = nrm[agg[i]] > 0 ? B[i] / nrm[agg[i]] : 0.0
         end
-        ia[i + 1] = length(ja) + 1
     end
     return _HostCsr(n, nc, ia, ja, a), nrm
 end
@@ -352,40 +355,58 @@ end
 function _smoother_matrix(A::_HostCsr, d, strong, B)
     n = A.nrow
     dF = copy(d)
-    @inbounds for i in 1:n, ii in A.ia[i]:(A.ia[i + 1] - 1)
-        j = A.ja[ii]
-        (j == i || strong[ii]) && continue
-        B[i] != 0 && (dF[i] += A.a[ii] * B[j] / B[i])
-    end
-    # Keep the original diagonal where lumping would flip or nearly cancel it.
-    @inbounds for i in 1:n
-        (sign(dF[i]) != sign(d[i]) || abs(dF[i]) < 1.0e-3 * abs(d[i])) && (dF[i] = d[i])
-    end
-    ρ = 0.0
-    @inbounds for i in 1:n
-        dF[i] == 0 && continue
-        s = abs(dF[i])
-        for ii in A.ia[i]:(A.ia[i + 1] - 1)
-            strong[ii] && (s += abs(A.a[ii]))
+    cnt = zeros(Int, n)
+    rho = zeros(n)
+    Threads.@threads for i in 1:n
+        @inbounds begin
+            w = 0.0
+            c = 0
+            for ii in A.ia[i]:(A.ia[i + 1] - 1)
+                j = A.ja[ii]
+                j == i && continue
+                if strong[ii]
+                    c += 1
+                elseif B[i] != 0
+                    w += A.a[ii] * B[j] / B[i]
+                end
+            end
+            f = d[i] + w
+            # Keep the original diagonal where lumping would flip or nearly cancel it.
+            (sign(f) != sign(d[i]) || abs(f) < 1.0e-3 * abs(d[i])) && (f = d[i])
+            dF[i] = f
+            cnt[i] = c
+            if f != 0
+                g = abs(f)
+                for ii in A.ia[i]:(A.ia[i + 1] - 1)
+                    strong[ii] && (g += abs(A.a[ii]))
+                end
+                rho[i] = g / abs(f)
+            end
         end
-        ρ = max(ρ, s / abs(dF[i]))
     end
+    ρ = maximum(rho; init = 0.0)
     ω = ρ > 0 ? 4 / (3ρ) : 0.0
     ia = Vector{Int}(undef, n + 1)
     ia[1] = 1
-    ja = Int32[]
-    a = Float64[]
     @inbounds for i in 1:n
-        f = dF[i] != 0 ? ω / dF[i] : 0.0
-        push!(ja, i)
-        push!(a, dF[i] != 0 ? 1 - ω : 1.0)
-        for ii in A.ia[i]:(A.ia[i + 1] - 1)
-            if strong[ii]
-                push!(ja, A.ja[ii])
-                push!(a, -f * A.a[ii])
+        ia[i + 1] = ia[i] + 1 + cnt[i]
+    end
+    ja = Vector{Int32}(undef, ia[end] - 1)
+    a = Vector{Float64}(undef, ia[end] - 1)
+    Threads.@threads for i in 1:n
+        @inbounds begin
+            f = dF[i] != 0 ? ω / dF[i] : 0.0
+            k = ia[i]
+            ja[k] = i
+            a[k] = dF[i] != 0 ? 1 - ω : 1.0
+            for ii in A.ia[i]:(A.ia[i + 1] - 1)
+                if strong[ii]
+                    k += 1
+                    ja[k] = A.ja[ii]
+                    a[k] = -f * A.a[ii]
+                end
             end
         end
-        ia[i + 1] = length(ja) + 1
     end
     return _HostCsr(n, n, ia, ja, a)
 end
@@ -401,7 +422,7 @@ struct _HostLevel
     lmax::Float64
     P::Union{Nothing, _HostCsr}
     R::Union{Nothing, _HostCsr}
-    strong::BitVector
+    strong::Vector{Bool}
     B::Vector{Float64}
     agg::Vector{Int32}
     pt::Vector{Float64}
@@ -436,7 +457,7 @@ function _build_hierarchy(A::_HostCsr, B::Vector{Float64}, opt::AMGOptions)
                 continue
             end
         end
-        push!(levels, _HostLevel(A, idiag, dinv, lmax, nothing, nothing, falses(0), B, Int32[], Float64[], Int32[]))
+        push!(levels, _HostLevel(A, idiag, dinv, lmax, nothing, nothing, Bool[], B, Int32[], Float64[], Int32[]))
         return levels
     end
 end
@@ -662,7 +683,7 @@ function _build!(P::AMGPreconditioner{Ts, Tp, Ta}, solver, amat) where {Ts, Tp, 
         end
     end
     B = [c != 0 ? 1 / c : 1.0 for c in cf]
-    hl = _build_hierarchy(_HostCsr(n, n, ia, copy(ja), a), B, P.options)
+    hl = _build_hierarchy(_HostCsr(n, n, ia, ja, a), B, P.options)
     P.levels = [_upload_level(backend, Tp, hl[l], l == 1, P.options.smooth) for l in eachindex(hl)]
     P.lmax = [h.lmax for h in hl]
     P.fy = KernelAbstractions.zeros(backend, Ts, n)
@@ -871,6 +892,9 @@ end
         s += abs(v)
         t += v
     end
+    # Rounded to the stored type, so that an unchanged matrix gives no change.
+    s = Ta(convert(eltype(sig_new), s))
+    t = Ta(convert(eltype(sig_new), t))
     @inbounds begin
         sig_new[i] = s
         sig_new[n + i] = t
