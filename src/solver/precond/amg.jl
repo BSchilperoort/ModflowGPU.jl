@@ -617,6 +617,8 @@ mutable struct AMGPreconditioner{Ts, Tp, Ta, B <: Backend, VS <: AbstractVector{
     host_ia::Vector{Int}
     host_ja::Vector{Int32}
     fine::Any
+    coefs::Vector{Vector{Tuple{Float64, Float64}}}
+    coef_lmax::Vector{Float64}
     built::Bool
     rebuild::Bool
     fresh::Bool
@@ -638,7 +640,7 @@ function AMGPreconditioner(backend::Backend, n::Integer, ::Type{Ts}, ::Type{Tp};
     red = Reducer(backend, n, Ta)
     return AMGPreconditioner{Ts, Tp, Ta, typeof(backend), typeof(zs), typeof(zp), typeof(za), typeof(zi), typeof(zb), typeof(red)}(
         opt, backend, Int(n), red, AMGLevel{typeof(zi), typeof(zp), typeof(zb)}[], Float64[], zs, similar(zs), similar(zs), similar(zs), similar(zs), za, zp, empty,
-        Int[], Int32[], nothing, false, true, false, false, false, 0, AMGStats(),
+        Int[], Int32[], nothing, Vector{Tuple{Float64, Float64}}[], Float64[], false, true, false, false, false, 0, AMGStats(),
     )
 end
 
@@ -1061,6 +1063,22 @@ function _smoother_coefficients(opt::AMGOptions, lmax, k = opt.degree)
     return c
 end
 
+# The smoother coefficients of level l, cached per level for its current λmax (T4.5: no
+# allocation per V-cycle).
+function _level_coefficients(P::AMGPreconditioner, l)
+    L = length(P.lmax)
+    if length(P.coefs) != L
+        resize!(P.coefs, L)
+        P.coef_lmax = fill(NaN, L)
+    end
+    if !(P.coef_lmax[l] === P.lmax[l])
+        opt = P.options
+        P.coefs[l] = _smoother_coefficients(opt, P.lmax[l], l == 1 && opt.fine_degree > 0 ? opt.fine_degree : opt.degree)
+        P.coef_lmax[l] = P.lmax[l]
+    end
+    return P.coefs[l]
+end
+
 # Smooth A·x = f from x = 0 (`zero_guess`) or from `cur`; returns the buffer holding the
 # result (`cur` or `oth`).
 function _smooth!(backend, cur, oth, d, f, dinv, op, coefs, zero_guess)
@@ -1087,7 +1105,7 @@ function _cycle!(P::AMGPreconditioner, l, x, y, f, w, d, op, dinv)
         return x
     end
     opt = P.options
-    coefs = _smoother_coefficients(opt, P.lmax[l], l == 1 && opt.fine_degree > 0 ? opt.fine_degree : opt.degree)
+    coefs = _level_coefficients(P, l)
     # Pre-smoothing starts in `y` so that, after the 2·degree − 1 swaps of the pre- and
     # post-smoothing, the result is in `x`.
     cur, oth = _smooth!(backend, y, x, d, f, dinv, op, coefs, true)
@@ -1101,16 +1119,20 @@ function _cycle!(P::AMGPreconditioner, l, x, y, f, w, d, op, dinv)
     return x
 end
 
-function precond_apply!(z, P::AMGPreconditioner, r)
-    op, minv = P.fine[1], P.fine[2]
-    _fused_fine(P) && return (_fine_cycle1!(P, z, r, op, minv, nothing); z)
-    return _cycle!(P, 1, z, P.fy, r, P.fw, P.fd, op, minv)
-end
+# `P.fine` is untyped (its operator type depends on the matrix): one dynamic dispatch per
+# application, into the type-stable `_amg_apply!` (T4.5).
+precond_apply!(z, P::AMGPreconditioner, r) = (_amg_apply!(P, z, r, P.fine[1], P.fine[2], nothing); z)
 
 function _precond_apply_dot!(z, P::AMGPreconditioner, r, reducer, post, sa, ss)
     _fused_fine(P) || return (precond_apply!(z, P, r); false)
-    _fine_cycle1!(P, z, r, P.fine[1], P.fine[2], (reducer, post, sa, ss))
+    _amg_apply!(P, z, r, P.fine[1], P.fine[2], (reducer, post, sa, ss))
     return true
+end
+
+function _amg_apply!(P::AMGPreconditioner, z, r, op, minv, red)
+    _fused_fine(P) && return _fine_cycle1!(P, z, r, op, minv, red)
+    _cycle!(P, 1, z, P.fy, r, P.fw, P.fd, op, minv)
+    return nothing
 end
 
 _fused_fine(P::AMGPreconditioner) = P.options.fine_degree == 1 && length(P.levels) > 1
@@ -1162,7 +1184,7 @@ function _fine_cycle1!(P::AMGPreconditioner, z, r, op, dinv, red)
     nxt = P.levels[2]
     n = lev.n
     T = eltype(z)
-    c = T(_smoother_coefficients(P.options, P.lmax[1], 1)[1][2])
+    c = T(_level_coefficients(P, 1)[1][2])
     _map!(backend, _residual, n, P.fw, r, _ScaledVec(r, dinv, c), op)
     _map!(backend, _restrict, nxt.n, nxt.f, lev.ria, lev.rja, lev.ra, P.fw)
     _cycle!(P, 2, nxt.x, nxt.y, nxt.f, nxt.w, nxt.d, _CsrOp(nxt.ia, nxt.ja, nxt.a), nxt.dinv)

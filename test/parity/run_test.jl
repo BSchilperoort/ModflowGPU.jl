@@ -14,7 +14,8 @@
 #   `read_listing_budgets`) vs MF6's, within the same criterion plus the listing rounding;
 #   percent discrepancy < 0.01 % in `:single`;
 # - outer and inner iterations are reported next to MF6's (mfsim.lst), not tested: the
-#   preconditioner is Jacobi until Phase 4 (MF6: ILU0);
+#   preconditioner is the production default (`:auto` = red–black MC-ILU0 since T4.5;
+#   MF6: ILU0 in natural order), `MFGPU_TEST_PRECONDITIONER` chooses another;
 # - on a GPU backend, the run is repeated on the CPU backend: `:double` heads within 1e-10
 #   relative, `:single` within 1e-4 m.
 # The comparison helpers (`_run_parity`, ...) are in test/run_parity.jl.

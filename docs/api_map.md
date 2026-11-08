@@ -10,7 +10,7 @@ it. Underscore-prefixed helpers are omitted.
 
 - **backend_setup.jl**: backend registry, adapted from mGV. `select_backend` (name → KA
   backend), `register_backend!` (called by `ext/*Ext.jl`), `backend_options`,
-  `backend_name`, `known_backend_package`, `pin_memory!` (extension hook; returns a handle to keep, or `nothing`; CUDA, ROCm >= AMDGPU 2.10 since T4.6), `host_mapped_zeros`
+  `backend_name`, `known_backend_package`, `_WG` (T4.5: static work-group size 256 of the element-wise kernels), `pin_memory!` (extension hook; returns a handle to keep, or `nothing`; CUDA, ROCm >= AMDGPU 2.10 since T4.6), `host_mapped_zeros`
   (extension hook, T3.1: device view of a host vector for reduction results; CPU, ROCm), `BackendEntry`, `BACKEND_REGISTRY`, `KNOWN_BACKENDS`; `_device_copy` (host array → new device array). Tests: backend.
 - **ext/*Ext.jl** (AMDGPU, CUDA, Metal, oneAPI, OpenCL): `__init__` registers the backend;
   overrides `supports_float64` where needed; AMDGPUExt adds `host_mapped_zeros` and
@@ -172,7 +172,10 @@ it. Underscore-prefixed helpers are omitted.
   assembly (parity: universal residual on Tier 0–2 + synthetic models, libmf6 first-solve
   AMAT/RHS oracle via validation/libmf6_first_solve.jl, cancellation test), also used by
   boundaries, sto, riv_drn_evt through `flux_residual` in test/residual.jl. Also `spmv!`
-  (`y = A·x`, T2.7; tests: krylov).
+  (`y = A·x`, T2.7; tests: krylov). T4.5: `formulate_system!` (`formulate_kernel!`:
+  boundary/storage terms, assembly and residual in one pass, bitwise as the separate
+  kernels; `offdiag = false` skips the off-diagonal writes), `CsrStructure.irow` (row of
+  each entry, for entry-parallel kernels); tests: picard, run, stepping.
 
 ## Linear solvers
 
@@ -186,6 +189,11 @@ it. Underscore-prefixed helpers are omitted.
   iterations, status, dvmax, rmax, l2norm0, l2norm). Device reductions: `Reducer`,
   `accumulation_type`, `device_dot`, `device_maxabs`, `device_argmaxabs` (T3.1; fused
   map-reduce kernels `mapreduce_kernel!` / `finalize_reduction_kernel!`, `map_kernel!`;
+  T4.5: `_reduce_async!` / `_reduce_stage1!` / `_finalize_async!` / `_reduced` (launch
+  without waiting, read after one synchronisation) and `post` maps of the finalisation
+  (`_SetRho`, `_AlphaPost`, `_OmegaPost`: rho, alpha, omega kept on the device in `sa`/`ss`),
+  so CG and BiCGSTAB synchronise once per iteration (`KrylovSolver` fields `reducer2`,
+  `reducer3`, `sa`, `ss`).
   `_ArgMaxAbsOp` as the first op also returns the first index of the largest magnitude,
   `_mapreduce_loc!`; results land in host-mapped memory where `host_mapped_zeros` allows).
   Adapt rules on `KrylovSolver` and `Reducer` (a new one on the target). IMS mapping in
@@ -209,7 +217,9 @@ it. Underscore-prefixed helpers are omitted.
   `dis_parity_colors` (red–black), `grid_colors` (used by `PicardSolver`),
   `is_valid_coloring`; `MulticolorPreconditioner` (`:sgs` / `:ilu0`; colour-ordered CSR copy
   in `Tp`, per-colour kernels for the ILU0 factorisation and the sweeps; option `relax`,
-  MILU), `ncolors`. Tests: krylov.
+  MILU), `ncolors`. Red–black ILU0 (T4.5): entry-parallel copy `_mc_rb_copy`, pivots
+  `_mc_rb_factor` through the transpose positions `ctr`, `r·z` fused into the two apply
+  kernels (`_precond_apply_dot!`). Tests: krylov.
 - **solver/precond/amg.jl** (T4.3): smoothed-aggregation AMG. `AMGOptions`,
   `AMGPreconditioner` (host Float64 setup: `_strength`, `_aggregate`, `_tentative`,
   `_smoother_matrix`, threaded `_spgemm`, `_build_hierarchy`; device `AMGLevel`s in `Tp`),
@@ -218,7 +228,8 @@ it. Underscore-prefixed helpers are omitted.
   `galerkin_store_kernel!`, accumulated in Float64 where available; exempt in the
   kernel-hygiene test) when the matrix changed (row signatures, `_matrix_change!`);
   Gershgorin bounds for the Chebyshev/Jacobi smoother; V-cycle `_cycle!`, fused finest
-  level `_fine_cycle1!`, dense coarsest inverse. Tests: amg (also kernel_hygiene, run:
+  level `_fine_cycle1!`, dense coarsest inverse; T4.5: `_amg_apply!` (function barrier
+  for the untyped `fine`), smoother coefficients cached per level (`_level_coefficients`). Tests: amg (also kernel_hygiene, run:
   ex-gwf-hwell-a).
 
 ## Time stepping, outer iterations, flows and budgets (T2.8)
@@ -230,7 +241,8 @@ it. Underscore-prefixed helpers are omitted.
   NpfModel, LinearSystem, boundary packages, STO, ibound, offset heads `h`/`hold`, `res`,
   `δ`, `flowja`; Adapt, e.g. `adapt(backend, m)`, T3.1), `apply_period!(::GwfModel, kper)` (once per period: package period
   data, STO, CHD ibound, rebuilt only when a CHD package has new cells), `start_timestep!` (`rho`, `hold ← h`, CHD heads), `formulate!`
-  (formulate, assemble, flux residual), `absolute_heads` (host Float64 `r + h'`). Tests:
+  (per-package formulation, then `formulate_system!`; off-diagonals rewritten only when
+  `ibound` or `symmetric` changed, field `offdiag`, T4.5), `absolute_heads` (host Float64 `r + h'`). Tests:
   picard, run.
 - **solver/underrelax.jl**: `sln_underrelax`. `UnderRelaxation` (SIMPLE, COOLEY host
   scalars, DBD device state), `underrelax!` (`relax_update_kernel!`,
@@ -242,7 +254,7 @@ it. Underscore-prefixed helpers are omitted.
   argmax reduction, the dvclose/rclose used); `OuterState` + `outer_iteration!` (one outer
   iteration, T3.3; `solve_timestep!` loops over it).
   Tests: picard, run, stepping.
-- **budget.jl**: `gwf_cq`/`gwf_bd`. `npf_flowja!`, `calc_flows!` (NPF, STO, packages with
+- **budget.jl**: `gwf_cq`/`gwf_bd`. `npf_flowja!` (one work item per entry, T4.5), `calc_flows!` (NPF, STO, packages with
   `bnd_cf` + `simvals`, CHD `calc_chd_rate!`, `csr_diagsum`), `BudgetTerm`, `ModelBudget`
   (`total_rate_in`/`_out`, `total_cum_in`/`_out`, `percent_discrepancy`,
   `cum_percent_discrepancy`), `BudgetAccumulator` (Adapt), `model_budget!` (device reductions,
