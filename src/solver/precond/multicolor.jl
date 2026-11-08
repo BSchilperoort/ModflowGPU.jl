@@ -161,21 +161,39 @@ function MulticolorPreconditioner(
     csrc = Vector{Int32}(undef, length(ja))
     cup = Vector{Int32}(undef, n)
     pos = 1
+    lower = Int[]
     for i in 1:n
         node = perm[i]
         cn = colors[node]
         cia[i] = pos
         i0, i1 = Int(ia[node]), Int(ia[node + 1]) - 1
-        # diagonal, then lower colours (by colour), then higher colours
-        off = [ii for ii in (i0 + 1):i1]
-        lower = sort!([ii for ii in off if colors[ja[ii]] < cn]; by = ii -> colors[ja[ii]], alg = Base.Sort.DEFAULT_STABLE)
-        upper = [ii for ii in off if colors[ja[ii]] > cn]
-        for ii in Iterators.flatten(((i0,), lower, upper))
+        # diagonal, then lower colours (stable insertion sort by colour), then higher colours
+        cja[pos] = ja[i0]
+        csrc[pos] = i0
+        pos += 1
+        empty!(lower)
+        for ii in (i0 + 1):i1
+            c = colors[ja[ii]]
+            c < cn || continue
+            push!(lower, ii)
+            k = length(lower)
+            while k > 1 && colors[ja[lower[k - 1]]] > c
+                lower[k], lower[k - 1] = lower[k - 1], lower[k]
+                k -= 1
+            end
+        end
+        for ii in lower
             cja[pos] = ja[ii]
             csrc[pos] = ii
             pos += 1
         end
-        cup[i] = cia[i] + 1 + length(lower)
+        cup[i] = pos
+        for ii in (i0 + 1):i1
+            colors[ja[ii]] > cn || continue
+            cja[pos] = ja[ii]
+            csrc[pos] = ii
+            pos += 1
+        end
     end
     cia[n + 1] = pos
     pos == length(ja) + 1 || throw(ArgumentError("CSR rows must hold their diagonal first"))
@@ -259,14 +277,63 @@ end
     return nothing
 end
 
+# Red–black ILU0 of coloured row i = off + k in one pass with the copy: first-colour rows
+# are only copied (pivot = diagonal); in a second-colour row only the diagonal receives
+# fill inside the pattern (second-colour nodes are not connected), so each lower entry
+# (n, m) updates `d −= l_nm·u_mn` and drops the rest of row m (MILU: `rs`).
+@inline function _mc_rb_row(k, off, second::Bool, vals, dinv, perm, iperm, cia, cja, cup, csrc, amat, rowfac, colfac, relax)
+    Tp = eltype(vals)
+    _mc_copy_row(off + k, vals, dinv, perm, cia, cja, csrc, amat, rowfac, colfac, !second)
+    second || return nothing
+    @inbounds begin
+        i = off + k
+        n = perm[i]
+        i0 = cia[i]
+        d0 = vals[i0]
+        d = d0
+        rs = zero(Tp)
+        for kk in (i0 + Int32(1)):(cup[i] - Int32(1))
+            im = iperm[cja[kk]]
+            l = vals[kk] * dinv[im]
+            vals[kk] = l
+            for mm in cup[im]:(cia[im + 1] - Int32(1))
+                if cja[mm] == n
+                    d -= l * vals[mm]
+                else
+                    rs += l * vals[mm]
+                end
+            end
+        end
+        d -= relax * rs
+        if d == zero(Tp) || signbit(d) != signbit(d0)
+            d = d0
+        end
+        vals[i0] = d
+        dinv[i] = d != zero(Tp) ? one(Tp) / d : one(Tp)
+    end
+    return nothing
+end
+
 function precond_setup!(P::MulticolorPreconditioner, solver, amat)
     backend = get_backend(P.vals)
     n = Int(P.csr.nodes)
+    nc = ncolors(P)
+    relax = eltype(P.vals)(P.relax)
+    len(c) = P.cptr[c + 1] - P.cptr[c]
+    off(c) = Int32(P.cptr[c] - 1)
+    if P.ilu && nc == 2
+        for c in 1:2
+            _map!(
+                backend, _mc_rb_row, len(c), off(c), c == 2, P.vals, P.dinv, P.perm, P.iperm, P.cia, P.cja, P.cup, P.csrc,
+                amat, solver.rowfac, solver.colfac, relax,
+            )
+        end
+        return P
+    end
     _map!(backend, _mc_copy_row, n, P.vals, P.dinv, P.perm, P.cia, P.cja, P.csrc, amat, solver.rowfac, solver.colfac, !P.ilu)
     if P.ilu
-        for c in 1:ncolors(P)
-            off = Int32(P.cptr[c] - 1)
-            _map!(backend, _mc_ilu_row, P.cptr[c + 1] - P.cptr[c], off, P.vals, P.dinv, P.iperm, P.cia, P.cja, P.cup, eltype(P.vals)(P.relax))
+        for c in 1:nc
+            _map!(backend, _mc_ilu_row, len(c), off(c), P.vals, P.dinv, P.iperm, P.cia, P.cja, P.cup, relax)
         end
     end
     return P
