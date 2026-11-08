@@ -1,4 +1,4 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 139c597e0c8055d9c57b4fd0a5e03012325a72dd Mon Sep 17 00:00:00 2001
 From: Bart Schilperoort <b.schilperoort@esciencecenter.nl>
 Date: Sun, 8 Nov 2026 19:56:20 +0100
 Subject: [PATCH] T5.1: engine switch
@@ -22,8 +22,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  src/config.jl             |  24 ++-
  src/gpu_engine.jl         | 108 +++++++++++++
  src/model.jl              |  76 +++++----
- test/runtests.jl          |  85 +++++++++-
- 9 files changed, 591 insertions(+), 48 deletions(-)
+ test/runtests.jl          |  90 ++++++++++-
+ 9 files changed, 596 insertions(+), 48 deletions(-)
  create mode 100644 src/gpu_engine.jl
 
 diff --git a/Manifest.toml b/Manifest.toml
@@ -950,7 +950,7 @@ index b69517e..086791a 100644
      end
      ACTIVE_MODEL[] === m && (ACTIVE_MODEL[] = nothing)
 diff --git a/test/runtests.jl b/test/runtests.jl
-index 3620b00..2dcc6c6 100644
+index 3620b00..0b19ec2 100644
 --- a/test/runtests.jl
 +++ b/test/runtests.jl
 @@ -12,11 +12,17 @@ import BasicModelInterface as BMI
@@ -1011,7 +1011,7 @@ index 3620b00..2dcc6c6 100644
          BMI.update(m2)
          BMI.finalize(m2)
      end
-@@ -204,6 +223,60 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+@@ -204,6 +223,65 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
          shuffled = reverse(s.dem; dims = 2)
          @test isequal(align_to_grid(shuffled, s.lon, reverse(s.lat), s), s.dem)
      end
@@ -1040,21 +1040,14 @@ index 3620b00..2dcc6c6 100644
 +        @testset "engine parity" begin
 +            active = cat(s.idomain .> 0, s.idomain .> 0; dims = 3)
 +            maxdiff(a, b) = maximum(abs.(a .- b)[active])
-+            # Production closures (OUTER_DVCLOSE 5 m): the outer iterations stop at
-+            # different heads (ModflowGPU: mc_ilu0 for ILUT, no backtracking).
-+            for k in eachindex(FORCING)
-+                d = maxdiff(case_heads["gpu"][k], case_heads["mf6"][k])
-+                @info "Case 1/2 month $k, production closures: max |h_gpu - h_mf6| = $d m"
-+                @test d < INDUS.solver.outer_dvclose
-+            end
 +            # Tight closures: the same heads.
 +            tight = MC.SolverSettings(; outer_dvclose = 1e-6, inner_dvclose = 1e-7, inner_rclose = 1e-2,
 +                                      outer_maximum = 500, inner_maximum = 2000)
 +            heads = Dict(map(("mf6", "gpu")) do engine
-+                c = test_config(joinpath(tmp, "tight_$engine"); stop = Date(1979, 2, 28), write_monthly_output = false,
++                c = test_config(joinpath(tmp, "tight_$engine"); write_monthly_output = false,
 +                                solver = with_engine(tight, engine))
 +                m = GroundwaterModel(c)
-+                h = map(FORCING[1:2]) do frac
++                h = map(FORCING) do frac
 +                    force!(m, frac)
 +                    BMI.update(m)
 +                    copy(m.head)
@@ -1062,17 +1055,29 @@ index 3620b00..2dcc6c6 100644
 +                BMI.finalize(m)
 +                engine => h
 +            end)
-+            for k in 1:2
++            for k in eachindex(FORCING)
 +                d = maxdiff(heads["gpu"][k], heads["mf6"][k])
 +                @info "Case 1/2 month $k, tight closures: max |h_gpu - h_mf6| = $d m"
 +                @test d < 1e-6
++            end
++            # Production closures (OUTER_DVCLOSE 5 m): the outer iterations stop at
++            # different heads (ModflowGPU: mc_ilu0 for ILUT, no backtracking). Measured
++            # (T5.1 review): ModflowGPU stops within 1e-5 m of the tight heads, MF6 up to
++            # 1.9 m away, so the engine difference is MF6's own closure error.
++            for k in eachindex(FORCING)
++                d = maxdiff(case_heads["gpu"][k], case_heads["mf6"][k])
++                emf6 = maxdiff(case_heads["mf6"][k], heads["mf6"][k])
++                egpu = maxdiff(case_heads["gpu"][k], heads["mf6"][k])
++                @info "Case 1/2 month $k, production closures: max |h_gpu - h_mf6| = $d m (distance to the tight heads: mf6 $emf6 m, gpu $egpu m)"
++                @test d < INDUS.solver.outer_dvclose
++                @test egpu < 1e-2   # so d <= emf6 + 1e-2
 +            end
 +        end
 +    end
  
      @testset "config" begin
          # Relative paths resolve against the config's directory
-@@ -240,6 +313,12 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+@@ -240,6 +318,12 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
          @test_throws r"initial_head_file or inputs.steady_head" MC.validate(nohead)
          nofoc = Config(cfg; foc = false, inputs = filter(kv -> !startswith(kv[1], "cp"), cfg.inputs))
          @test MC.validate(nofoc) === nofoc
@@ -1085,3 +1090,6 @@ index 3620b00..2dcc6c6 100644
      end
  
      @testset "sub-domain from larger maps" begin
+-- 
+2.43.0
+
