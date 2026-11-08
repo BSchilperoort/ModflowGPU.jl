@@ -597,7 +597,8 @@ end
     return nothing
 end
 
-@inline _precond(minv, x, n) = @inbounds oftype(x, minv[n] * convert(eltype(minv), x))
+# Jacobi: z_n = minv_n · r_n, multiplied in the Krylov type (minv may be Float32 in :mixed).
+@inline _precond(minv, x, n) = @inbounds x * convert(typeof(x), minv[n])
 
 # Row n of the operator: rowfac_n · Σ_m a_nm · colfac_m · p_m (amux on the scaled matrix).
 @inline function _op_row(n, amat, ia, ja, rowfac, colfac, p)

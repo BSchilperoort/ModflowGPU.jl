@@ -233,7 +233,7 @@ _tight(T, method; kw...) = KrylovSettings(;
 
     @testset "device reductions" begin
         rng = MersenneTwister(1)
-        for_each_precision() do p
+        for_each_precision(; presets = SOLVER_TEST_PRESETS) do p
             for n in (1, 255, 256, 257, 70_001)
                 x = rand(rng, p.Ts, n) .- p.Ts(0.5)
                 y = rand(rng, p.Ts, n)
@@ -270,7 +270,7 @@ _tight(T, method; kw...) = KrylovSettings(;
         csr = _device_csr(ia, ja, isym)
         a = _mmatrix(rng, ia, ja, isym; symmetric = false)
         x = rand(rng, 300)
-        for_each_precision() do p
+        for_each_precision(; presets = SOLVER_TEST_PRESETS) do p
             y = to_test_device(zeros(p.T, 300))
             spmv!(y, to_test_device(p.T.(a)), csr, to_test_device(p.T.(x)))
             @test _relerr(Float64.(Array(y)), _dense(ia, ja, a) * x) < (p.T == Float64 ? 1.0e-14 : 1.0e-6)
@@ -301,7 +301,7 @@ _tight(T, method; kw...) = KrylovSettings(;
                 b = A * xref
                 xs = A \ b
                 w = haskey(mkw, :rowscale) ? sqrt.(abs.([A[i, i] for i in 1:n])) : 1
-                for_each_precision() do p
+                for_each_precision(; presets = SOLVER_TEST_PRESETS) do p
                     # RELATIVE_RCLOSE: stop when ‖r‖₂ <= rclose·‖r₀‖₂ (scaled units).
                     st = KrylovSettings(;
                         method, maxiter = 2000, dvclose = 0.0, rclose_option = :relative, scaling,
@@ -331,7 +331,7 @@ _tight(T, method; kw...) = KrylovSettings(;
             b = A * randn(rng, n)
             b[chd] .= 0  # the correction residual of a constant-head row
             xs = A \ b
-            for_each_precision() do p
+            for_each_precision(; presets = SOLVER_TEST_PRESETS) do p
                 st = _tight(p.Ts, method; rclose = (p.Ts == Float64 ? 1.0e-13 : 1.0e-6) * maximum(abs, b))
                 x, r = _device_solve(p, csr, a, b, st)
                 @test _relerr(x, xs) < (p.Ts == Float64 ? 1.0e-10 : 1.0e-4)
@@ -362,12 +362,13 @@ _tight(T, method; kw...) = KrylovSettings(;
             A = _dense(ia, ja, a)
             st = KrylovSettings(; method, maxiter = get(cfg, :maxiter, 500), cfg...)
             xr, itr, icr = _mf6_reference(A, b, st)
-            for_each_precision() do p
+            for_each_precision(; presets = SOLVER_TEST_PRESETS) do p
                 x, r = _device_solve(p, csr, a, b, st)
                 if p.Ts == Float64
                     @test r.iterations == itr
                     @test r.converged == (icr == 1)
-                    @test _relerr(x, xr) < 1.0e-10
+                    # the host port has a Float64 minv; :mixed rounds it to Float32
+                    @test _relerr(x, xr) < (p.Tp == Float64 ? 1.0e-10 : 1.0e-6)
                 end
                 # The status agrees with ims_base_testcnvg on the reported norms.
                 rc = st.icnvgopt >= 2 ? r.l2norm : r.rmax
@@ -386,7 +387,7 @@ _tight(T, method; kw...) = KrylovSettings(;
             for method in (:cg, :bicgstab)
                 a = method === :cg ? asym : anon
                 st = KrylovSettings(; method, maxiter = 200, dvclose = 1.0e-9, rclose = 1.0e-8)
-                for_each_precision() do p
+                for_each_precision(; presets = SOLVER_TEST_PRESETS) do p
                     x, r = _device_solve(p, csr, a, b, st)
                     cpu = KrylovSolver(CPU(), _device_csr(ia, ja, isym; backend = CPU()), st; Ts = p.Ts, Tp = p.Tp)
                     δ = zeros(p.T, n)
@@ -397,7 +398,7 @@ _tight(T, method; kw...) = KrylovSettings(;
             end
         end
         # zero right-hand side: no iterations, converged
-        for_each_precision() do p
+        for_each_precision(; presets = SOLVER_TEST_PRESETS) do p
             x, r = _device_solve(p, csr, asym, zeros(n), KrylovSettings())
             @test r.iterations == 0 && r.converged && all(==(0), x)
         end

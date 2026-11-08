@@ -113,7 +113,7 @@ end
         @test KrylovSettings(; preconditioner = :amg, precond_options = (; theta = 0.2)).precond_options.theta == 0.2
     end
 
-    for_each_precision() do p
+    for_each_precision(; presets = SOLVER_TEST_PRESETS) do p
         T = p.T
         tol = T == Float64 ? 1.0e-8 : 2.0e-3
         @testset "CG and BiCGSTAB vs \\ ($method)" for method in (:cg, :bicgstab)
@@ -164,7 +164,7 @@ end
             y = [cos(0.7i) + 0.1 for i in 1:n]
             x[7] = y[7] = 0  # the constant-head row is the identity
             mx, my = _amg_apply(solver, x), _amg_apply(solver, y)
-            @test abs(dot(mx, y) - dot(x, my)) <= (T == Float64 ? 1.0e-10 : 1.0e-4) * norm(mx) * norm(y)
+            @test abs(dot(mx, y) - dot(x, my)) <= (p.Tp == Float64 ? 1.0e-10 : 1.0e-4) * norm(mx) * norm(y)
             @test dot(mx, x) > 0 && dot(my, y) > 0
         end
 
@@ -188,7 +188,7 @@ end
             _, _, fresh = _amg_solve(p, csr, a2, ones(n), st)
             v = [sin(0.11i) for i in 1:n]
             z1, z2 = _amg_apply(solver, v), _amg_apply(fresh, v)
-            @test maximum(abs, z1 .- z2) <= (T == Float64 ? 1.0e-10 : 1.0e-4) * maximum(abs, z2)
+            @test maximum(abs, z1 .- z2) <= (p.Tp == Float64 ? 1.0e-10 : 1.0e-4) * maximum(abs, z2)
             # An unchanged matrix keeps the coarse levels.
             solve!(δ, solver, to_test_device(T.(a2)), b)
             @test stats.skipped == 1 && stats.updates == 1
@@ -208,7 +208,7 @@ end
             end
             # n <= max_coarse: the dense inverse of the whole matrix (a direct solve).
             x, res, solver = _amg_solve(p, csr, a, b, _amg_settings(:cg, T; max_coarse = 1000))
-            @test res.converged && res.iterations <= (T == Float64 ? 2 : 6) && length(amg_stats(solver).sizes) == 1
+            @test res.converged && res.iterations <= (p.Tp == Float64 ? 2 : 6) && length(amg_stats(solver).sizes) == 1
             @test maximum(abs, x .- xr) / maximum(abs, xr) < tol
         end
 

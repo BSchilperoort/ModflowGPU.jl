@@ -114,8 +114,8 @@ end
         anon = _mmatrix(MersenneTwister(13), ia, ja, isym; symmetric = false, negate = true, shift = 0.01)
         A = _dense(ia, ja, anon)
         r = randn(rng, n)
-        for_each_precision() do p
-            tol = p.Ts == Float64 ? 1.0e-11 : 2.0e-4
+        for_each_precision(; presets = SOLVER_TEST_PRESETS) do p
+            tol = p.Tp == Float64 ? 1.0e-11 : 2.0e-4
             for kind in _NEW_PRECONDITIONERS
                 s = _setup_solver(p, csr, anon, kind)  # BiCGSTAB, no scaling: the operator is A
                 z = _apply(s, p, r)
@@ -143,7 +143,7 @@ end
             # Jacobi through the generic interface equals the fused path's minv·r.
             s = _setup_solver(p, csr, anon, :jacobi)
             @test s.precond isa JacobiPreconditioner && s.precond.minv === s.minv
-            @test _relerr(_apply(s, p, r), r ./ [A[i, i] for i in 1:n]) < (p.Ts == Float64 ? 1.0e-14 : 1.0e-6)
+            @test _relerr(_apply(s, p, r), r ./ [A[i, i] for i in 1:n]) < (p.Tp == Float64 ? 1.0e-14 : 1.0e-6)
         end
     end
 
@@ -152,8 +152,8 @@ end
         A = -_dense(ia, ja, asym)  # CG iterates on S·A = −A
         u, v = randn(rng, n), randn(rng, n)
         λ = LinearAlgebra.eigvals(LinearAlgebra.Symmetric(LinearAlgebra.Diagonal(1 ./ sqrt.([A[i, i] for i in 1:n])) * A * LinearAlgebra.Diagonal(1 ./ sqrt.([A[i, i] for i in 1:n]))))
-        for_each_precision() do p
-            tol = p.Ts == Float64 ? 1.0e-11 : 1.0e-4
+        for_each_precision(; presets = SOLVER_TEST_PRESETS) do p
+            tol = p.Tp == Float64 ? 1.0e-11 : 1.0e-4
             for kind in _NEW_PRECONDITIONERS
                 s = _setup_solver(p, csr, asym, kind; method = :cg)
                 mu, mv = _apply(s, p, u), _apply(s, p, v)
@@ -185,7 +185,7 @@ end
                 b = A * randn(rng, n)
                 xs = A \ b
                 w = haskey(mkw, :rowscale) ? sqrt.(abs.([A[i, i] for i in 1:n])) : 1
-                for_each_precision() do p
+                for_each_precision(; presets = SOLVER_TEST_PRESETS) do p
                     kw = (; method, maxiter = 2000, dvclose = 0.0, rclose_option = :relative, scaling, north, rclose = p.Ts == Float64 ? 1.0e-11 : 1.0e-6)
                     x, r = _device_solve(p, csr, a, b, KrylovSettings(; kw..., preconditioner = kind))
                     _, rj = _device_solve(p, csr, a, b, KrylovSettings(; kw...))
@@ -211,7 +211,7 @@ end
             b[chd] .= 0
             xs = A \ b
             colors = grid_colors(conn, _synthetic_coupling_dis())
-            for_each_precision() do p
+            for_each_precision(; presets = SOLVER_TEST_PRESETS) do p
                 for kind in _NEW_PRECONDITIONERS
                     st = _tight(p.Ts, method; rclose = (p.Ts == Float64 ? 1.0e-13 : 1.0e-6) * maximum(abs, b), preconditioner = kind)
                     solver = KrylovSolver(TEST_BACKEND, gcsr, st; Ts = p.Ts, Tp = p.Tp, colors)
@@ -235,7 +235,7 @@ end
 
     @testset "run: coupling_rde with each preconditioner (and AMG)" begin
         dir = joinpath(@__DIR__, "..", "models", "coupling_rde")
-        for_each_precision() do p
+        for_each_precision(; presets = SOLVER_TEST_PRESETS) do p
             mktempdir() do tmp
                 ref = ModflowGPU.run(dir; backend = TEST_BACKEND, precision = p.preset, outdir = tmp, write_output = false)
                 @test ref.converged
