@@ -71,6 +71,7 @@ Base.@kwdef struct AMGOptions
     strength::Symbol = :offdiag
     smoother::Symbol = :chebyshev
     degree::Int = 2
+    fine_degree::Int = 0
     cheb_ratio::Float64 = 0.3
     max_coarse::Int = 400
     max_levels::Int = 20
@@ -79,14 +80,15 @@ Base.@kwdef struct AMGOptions
     rebuild_min::Int = 10
     reuse::Bool = true
     update_tol::Float64 = 0.0
-    function AMGOptions(theta, strength, smoother, degree, cheb_ratio, max_coarse, max_levels, smooth, rebuild_factor, rebuild_min, reuse, update_tol)
+    function AMGOptions(theta, strength, smoother, degree, fine_degree, cheb_ratio, max_coarse, max_levels, smooth, rebuild_factor, rebuild_min, reuse, update_tol)
         theta >= 0 || throw(ArgumentError("AMG theta must be >= 0"))
         strength in (:offdiag, :symmetric) || throw(ArgumentError("unknown AMG strength measure $strength (expected :offdiag or :symmetric)"))
         smoother in (:chebyshev, :jacobi) || throw(ArgumentError("unknown AMG smoother $smoother (expected :chebyshev or :jacobi)"))
         degree >= 1 || throw(ArgumentError("AMG smoother degree must be >= 1"))
+        fine_degree >= 0 || throw(ArgumentError("AMG fine_degree must be >= 0"))
         0 < cheb_ratio < 1 || throw(ArgumentError("AMG cheb_ratio must be in (0, 1)"))
         max_coarse >= 1 && max_levels >= 1 || throw(ArgumentError("AMG max_coarse and max_levels must be >= 1"))
-        return new(theta, strength, smoother, degree, cheb_ratio, max_coarse, max_levels, smooth, rebuild_factor, rebuild_min, reuse, update_tol)
+        return new(theta, strength, smoother, degree, fine_degree, cheb_ratio, max_coarse, max_levels, smooth, rebuild_factor, rebuild_min, reuse, update_tol)
     end
 end
 
@@ -156,6 +158,13 @@ function _spgemm(A::_HostCsr, B::_HostCsr)
         cols = Int32[]
         vals = Float64[]
         sizehint!(len, length(chunks[c]))
+        # At most one entry per product.
+        est = 0
+        @inbounds for i in chunks[c], ii in A.ia[i]:(A.ia[i + 1] - 1)
+            est += B.ia[A.ja[ii] + 1] - B.ia[A.ja[ii]]
+        end
+        sizehint!(cols, est)
+        sizehint!(vals, est)
         @inbounds for i in chunks[c]
             start = length(cols)
             for ii in A.ia[i]:(A.ia[i + 1] - 1)
@@ -1020,8 +1029,7 @@ end
 end
 
 # Smoother coefficients (c1, c2) per step for λmax `lmax`.
-function _smoother_coefficients(opt::AMGOptions, lmax)
-    k = opt.degree
+function _smoother_coefficients(opt::AMGOptions, lmax, k = opt.degree)
     if opt.smoother === :jacobi
         return [(0.0, 4 / (3lmax)) for _ in 1:k]
     end
@@ -1065,7 +1073,8 @@ function _cycle!(P::AMGPreconditioner, l, x, y, f, w, d, op, dinv)
         _map!(backend, _dense_apply, lev.n, x, P.cinv, f, lev.n)
         return x
     end
-    coefs = _smoother_coefficients(P.options, P.lmax[l])
+    opt = P.options
+    coefs = _smoother_coefficients(opt, P.lmax[l], l == 1 && opt.fine_degree > 0 ? opt.fine_degree : opt.degree)
     # Pre-smoothing starts in `y` so that, after the 2·degree − 1 swaps of the pre- and
     # post-smoothing, the result is in `x`.
     cur, oth = _smooth!(backend, y, x, d, f, dinv, op, coefs, true)

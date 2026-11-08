@@ -82,9 +82,9 @@ Routines: `imslinear_ar`, `imslinear_ap` (`ImsLinear.f90`); `ims_base_cg`,
 | --- | --- | --- |
 | LINEAR_ACCELERATION CG (SIMPLE default) | PCG on `A` (negative definite active block) | PCG on `S·A`, `S = diag(sign(a_nn))` (`−A` on active rows); same iterates for the correction solve |
 | LINEAR_ACCELERATION BICGSTAB (MODERATE, COMPLEX default) | right-preconditioned BiCGSTAB | the same |
-| preconditioner: ILU0 (SIMPLE), MILU0 (RELAXATION_FACTOR > 0; MODERATE 0.97), ILUT/MILUT (PRECONDITIONER_LEVELS > 0; COMPLEX 5, drop tolerance 1e-4) | `resolve_ipc(level, relax)` | Jacobi, with a logged warning; ILU/AMG arrive in Phase 4 |
+| preconditioner: ILU0 (SIMPLE), MILU0 (RELAXATION_FACTOR > 0; MODERATE 0.97), ILUT/MILUT (PRECONDITIONER_LEVELS > 0; COMPLEX 5, drop tolerance 1e-4) | `resolve_ipc(level, relax)` | Jacobi, with a logged warning, unless the ModflowGPU option `preconditioner` is given (T4.3, below); the default for production is decided in T4.4 |
 | SCALING_METHOD NONE / DIAGONAL / L2NORM | `ims_base_scale` ISCL 0/1/2 (matrix scaled in place) | the same factors applied in the operator (the matrix is not modified); a warning for L2NORM with CG (the scaled matrix is nonsymmetric, as in MF6) |
-| REORDERING_METHOD RCM / MD | permutes the system before ILU | ignored (no effect with Jacobi), logged |
+| REORDERING_METHOD RCM / MD | permutes the system before ILU | ignored (no effect with Jacobi or AMG), logged |
 | INNER_MAXIMUM, INNER_DVCLOSE, INNER_RCLOSE (+ STRICT, L2NORM_RCLOSE, RELATIVE_RCLOSE, L2NORM_RELATIVE_RCLOSE) | `ims_base_testcnvg` options 0–4, `ims_base_epfact` | the same, on the host in Float64 |
 | NUMBER_ORTHOGONALIZATIONS (COMPLEX default 2) | residual recomputed from `x` every `north` iterations | the same |
 | initial guess | the current heads `x` | zero (correction solve `A·δ = res`, PLAN.md 3.7 rule 3); the residuals, `L2NORM0` and updates are the same quantities |
@@ -106,6 +106,24 @@ Semantics kept from MF6:
   (ex-gwf-hanir `:double`: 16 outer / 14402 inner with it, 4 / 222 without; coupling_rde 226 / 215792
   → 103 / 5722).
 - `L2NORM0 == 0` gives zero iterations and convergence.
+
+**Preconditioner option (T4.3).** Not an MF6 input: `ModflowGPU.run`, `initialize` (and
+`PicardSettings`, `KrylovSettings`) take `preconditioner = :jacobi | :amg` and
+`precond_options` (a NamedTuple; for `:amg` the keywords of `AMGOptions`). With
+`preconditioner = nothing` (the default) IMS's ILU0/MILU0/ILUT map to Jacobi with a
+warning, as before; a given preconditioner replaces IMS's (logged). Interface:
+`src/solver/precond/precond.jl` (`precond_setup!` once per linear solve after the scaling,
+`precond_apply!` whole-vector `z = M⁻¹·r`); Jacobi stays fused into the CG/BiCGSTAB kernels.
+
+`:amg` is smoothed-aggregation AMG (`src/solver/precond/amg.jl`; MF6 has no AMG): host
+setup in Float64 on the scaled (for CG sign-adjusted) operator, V-cycle on the device with
+a Chebyshev smoother (symmetric, so CG stays valid; BiCGSTAB uses it as MF6 uses ILU, as
+a right preconditioner), dense coarsest solve. Aggregates are kept between outer
+iterations and time steps; each linear solve whose matrix changed recomputes the smoothed
+prolongators and the Galerkin coarse operators on the device. The hierarchy is rebuilt
+when a solve degrades (`rebuild_factor`) and before a failed solve is repeated (the
+inner iterations of both attempts count). Differences from MF6 are in the inner
+iteration counts only; the convergence tests are unchanged.
 
 ## Outer iterations, time steps, budgets and output (T2.8)
 
