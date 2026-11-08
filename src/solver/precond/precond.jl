@@ -60,6 +60,10 @@ _precond_record!(P::AbstractPreconditioner, result) = nothing
 # from an earlier matrix); the method prepares the rebuild.
 _precond_retry!(P::AbstractPreconditioner) = false
 
+# `z = M⁻¹·r`, and `r·z` (Float64) when the preconditioner fuses it into its last kernel
+# (with `reducer`), else `nothing` (the solver then computes the dot product).
+_precond_apply_dot!(z, P::AbstractPreconditioner, r, reducer) = (precond_apply!(z, P, r); nothing)
+
 const PRECONDITIONERS = (:jacobi, :amg)
 
 """

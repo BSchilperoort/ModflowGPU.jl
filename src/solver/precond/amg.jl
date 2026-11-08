@@ -39,7 +39,8 @@
 # solve is repeated (`_precond_retry!`).
 
 """
-    AMGOptions(; theta = 0.08, smoother = :chebyshev, degree = 2, cheb_ratio = 0.3,
+    AMGOptions(; theta = 0.08, strength = :offdiag, smoother = :chebyshev, degree = 3,
+               fine_degree = 1, cheb_ratio = 0.3,
                max_coarse = 400, max_levels = 20, smooth = true, rebuild_factor = 2.0,
                rebuild_min = 10, reuse = true, update_tol = 0.0)
 
@@ -48,7 +49,12 @@ Options of `AMGPreconditioner` (`precond_options` of `KrylovSettings`):
 - `theta`: strength threshold (`|a_ij| ≥ θ·√|a_ii·a_jj|`);
 - `smoother`: `:chebyshev` (polynomial of degree `degree` on `[cheb_ratio·λ, λ]`, λ the
   estimated largest eigenvalue of `D⁻¹A`) or `:jacobi` (`degree` sweeps of damped Jacobi,
-  `ω = 4/(3λ)`), before and after the coarse correction;
+  `ω = 4/(3λ)`), before and after the coarse correction; `fine_degree` on the finest level
+  (0: `degree`; 1, the default, fuses the pre-smoothing into the residual and the
+  post-smoothing with the dot product of CG);
+- `strength`: `:offdiag` (`|a_ij| ≥ θ·max_k |a_ik|`, independent of the diagonal, so the
+  aggregates stay valid when boundary and storage terms change) or `:symmetric`
+  (`|a_ij| ≥ θ·√|a_ii·a_jj|`);
 - `max_coarse`: coarsest size (dense inverse), `max_levels`: most levels;
 - `smooth`: smooth the tentative prolongator (smoothed aggregation) or not (plain
   aggregation);
@@ -70,8 +76,8 @@ Base.@kwdef struct AMGOptions
     theta::Float64 = 0.08
     strength::Symbol = :offdiag
     smoother::Symbol = :chebyshev
-    degree::Int = 2
-    fine_degree::Int = 0
+    degree::Int = 3
+    fine_degree::Int = 1
     cheb_ratio::Float64 = 0.3
     max_coarse::Int = 400
     max_levels::Int = 20
@@ -1090,7 +1096,73 @@ end
 
 function precond_apply!(z, P::AMGPreconditioner, r)
     op, minv = P.fine[1], P.fine[2]
+    _fused_fine(P) && return (_fine_cycle1!(P, z, r, op, minv, nothing); z)
     return _cycle!(P, 1, z, P.fy, r, P.fw, P.fd, op, minv)
+end
+
+function _precond_apply_dot!(z, P::AMGPreconditioner, r, reducer)
+    _fused_fine(P) || return (precond_apply!(z, P, r); nothing)
+    return _fine_cycle1!(P, z, r, P.fine[1], P.fine[2], reducer)
+end
+
+_fused_fine(P::AMGPreconditioner) = P.options.fine_degree == 1 && length(P.levels) > 1
+
+# `c·D⁻¹·f` as a lazily evaluated vector (the degree-1 pre-smoothing from zero).
+struct _ScaledVec{V, D, T}
+    f::V
+    dinv::D
+    c::T
+end
+Adapt.@adapt_structure _ScaledVec
+Base.@propagate_inbounds Base.getindex(v::_ScaledVec{V, D, T}, j) where {V, D, T} = v.c * T(v.dinv[j]) * v.f[j]
+Base.eltype(::Type{<:_ScaledVec{V, D, T}}) where {V, D, T} = T
+
+# y = c·D⁻¹·f + P·xc (pre-smoothing plus coarse correction)
+@inline function _prolong_set(i, y, f, dinv, c, pia, pja, pa, xc)
+    T = eltype(xc)
+    s = zero(T)
+    @inbounds for k in pia[i]:(pia[i + 1] - Int32(1))
+        s += pa[k] * xc[pja[k]]
+    end
+    @inbounds y[i] = c * eltype(y)(dinv[i]) * f[i] + convert(eltype(y), s)
+    return nothing
+end
+
+# z = y + c·D⁻¹·(f − A·y) (post-smoothing), and f·z.
+@inline function _smooth_last_dot(::Type{Ta}, n, z, y, f, dinv, op, c) where {Ta}
+    T = eltype(z)
+    @inbounds begin
+        zn = y[n] + c * T(dinv[n]) * (f[n] - _row(op, n, y))
+        z[n] = zn
+        return (Ta(f[n]) * Ta(zn), zero(Ta), zero(Ta), zero(Ta))
+    end
+end
+
+@inline function _smooth_last(n, z, y, f, dinv, op, c)
+    T = eltype(z)
+    @inbounds z[n] = y[n] + c * T(dinv[n]) * (f[n] - _row(op, n, y))
+    return nothing
+end
+
+# The finest level with a degree-1 smoother, fused: residual of the pre-smoothed `c·D⁻¹·r`
+# (one SpMV), restriction, coarse cycle, `y = c·D⁻¹·r + P·xc`, post-smoothing (one SpMV,
+# with `r·z` when `reducer` is given). The same V-cycle as `_cycle!` with degree 1.
+function _fine_cycle1!(P::AMGPreconditioner, z, r, op, dinv, reducer)
+    backend = P.backend
+    lev = P.levels[1]
+    nxt = P.levels[2]
+    n = lev.n
+    T = eltype(z)
+    c = T(_smoother_coefficients(P.options, P.lmax[1], 1)[1][2])
+    _map!(backend, _residual, n, P.fw, r, _ScaledVec(r, dinv, c), op)
+    _map!(backend, _restrict, nxt.n, nxt.f, lev.ria, lev.rja, lev.ra, P.fw)
+    _cycle!(P, 2, nxt.x, nxt.y, nxt.f, nxt.w, nxt.d, _CsrOp(nxt.ia, nxt.ja, nxt.a), nxt.dinv)
+    _map!(backend, _prolong_set, n, P.fy, r, dinv, c, lev.pia, lev.pja, lev.pa, nxt.x)
+    if isnothing(reducer)
+        _map!(backend, _smooth_last, n, z, P.fy, r, dinv, op, c)
+        return nothing
+    end
+    return _mapreduce!(reducer, backend, _smooth_last_dot, _SUM4, n, z, P.fy, r, dinv, op, c)[1]
 end
 
 """

@@ -588,7 +588,8 @@ end
 # `z = M⁻¹·r` with an unfused preconditioner, and `r·z` (one more reduction).
 function _apply_precond_dot!(s::KrylovSolver, z, r)
     backend = get_backend(s)
-    @timed_section :precond_apply precond_apply!(z, s.precond, r)
+    rz = @timed_section :precond_apply _precond_apply_dot!(z, s.precond, r, s.reducer)
+    isnothing(rz) || return rz
     return @timed_section :update_reduce _mapreduce!(s.reducer, backend, _dot_term, _SUM4, Int(s.csr.nodes), r, z)[1]
 end
 
