@@ -21,9 +21,9 @@ end
 
 # drn_ck: the conductance must not be negative. (The check against the cell bottom applies
 # to convertible cells only, T6.1.)
-function check_records(::BoundaryKind{:DRN}, pkg, n)
+function check_records(::BoundaryKind{:DRN}, pkg, bound, n)
     for i in 1:n
-        cond = pkg.bound_host[2, i]
+        cond = bound[2, i]
         cond < 0 &&
             throw(MF6InputError(pkg.spec.file, 0, "$(pkg.spec.name): DRN BOUNDARY ($i) CONDUCTANCE ($cond) IS LESS THAN ZERO"))
     end

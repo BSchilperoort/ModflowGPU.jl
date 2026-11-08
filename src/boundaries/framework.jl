@@ -47,12 +47,13 @@ auxiliary variable `iaux`, or a `Float64` constant. The default is one `(name, 1
 bound_layout(kind::BoundaryKind, ::BoundarySpec) = Any[(name, 1) for name in bound_columns(kind)]
 
 """
-    check_records(kind::BoundaryKind, pkg, n)
+    check_records(kind::BoundaryKind, pkg, bound, n)
 
-Check the first `n` host records of `pkg` after period data are read (Float64, before
-offsets; the package `*_ck` routine). Throws `MF6InputError`. The default checks nothing.
+Check the first `n` host records of `pkg` after period data are read: `bound[c, i]` are
+the values with the MULTIPLIER applied, before offsets (Float64, a `MultipliedBound`; the
+package `*_ck` routine). Throws `MF6InputError`. The default checks nothing.
 """
-check_records(::BoundaryKind, pkg, n) = nothing
+check_records(::BoundaryKind, pkg, bound, n) = nothing
 
 """
     head_columns(::BoundaryKind) -> Tuple of Int
@@ -103,9 +104,12 @@ map (records of node `n` are `noderec[nodeptr[n]:nodeptr[n+1]-1]`, in record ord
 also has `ratein` and `rateout` (`calc_chd_rate`; empty for other kinds).
 
 Host fields: `spec`, `nbound`, `iblock` (index of the PERIOD block in force, 0 before the
-first one), `nodelist_host`, `bound_host` (Float64 values before the cast to `T`), `bound_user` (the
-values as given: absolute, before the multiplier; what the stepping API reads and writes,
-see `set_bound!`), `boundname`.
+first one), `nodelist_host`, `bound_user` (the values as given: absolute, before the
+multiplier; what the stepping API reads and writes, see `set_bound!`), `boundname`,
+`bound_version` (incremented whenever `bound_user` changes: new period data or a stepping
+API write), `staging` (`(ncol, maxbound)` in `T`: the values copied to `bound`, registered
+with `pin_memory!`, whose result is kept in `pinned`), `nodeptr_host` / `noderec_host` (the
+node→record map on the host). `bound_values(pkg, r)` gives the Float64 values of `bound`.
 """
 mutable struct BoundaryPackage{K, T <: AbstractFloat, VI <: AbstractVector{Int32}, VT <: AbstractVector{T}, MT <: AbstractMatrix{T}}
     const spec::BoundarySpec{K}
@@ -123,9 +127,21 @@ mutable struct BoundaryPackage{K, T <: AbstractFloat, VI <: AbstractVector{Int32
     nbound::Int
     iblock::Int
     const nodelist_host::Vector{Int32}
-    const bound_host::Matrix{Float64}
     const bound_user::Matrix{Float64}
     const boundname::Vector{String}
+    bound_version::Int
+    const staging::Matrix{T}
+    const pinned::Any
+    const nodeptr_host::Vector{Int32}
+    const noderec_host::Vector{Int32}
+end
+
+# The staging buffer of `bound` on the host, and the result of `pin_memory!` (kept so the
+# registration lives as long as the package).
+function _staging_buffer(backend::Backend, ::Type{T}, ncol, maxbound) where {T}
+    staging = zeros(T, ncol, maxbound)
+    pinned = isempty(staging) ? nothing : pin_memory!(backend, staging)
+    return staging, pinned
 end
 
 function BoundaryPackage{K, T}(backend::Backend, spec::BoundarySpec{K}, conn::Connectivity, dis::AbstractDisSpec) where {K, T <: AbstractFloat}
@@ -136,10 +152,12 @@ function BoundaryPackage{K, T}(backend::Backend, spec::BoundarySpec{K}, conn::Co
     zi(n) = KernelAbstractions.zeros(backend, Int32, n)
     zt(dims...) = KernelAbstractions.zeros(backend, T, dims...)
     nchd = K === :CHD ? maxbound : 0
+    staging, pinned = _staging_buffer(backend, T, ncol, maxbound)
     return BoundaryPackage(
         spec, conn, grid, zi(maxbound), zt(ncol, maxbound), zt(maxbound), zt(maxbound), zt(maxbound),
         zt(nchd), zt(nchd), KernelAbstractions.ones(backend, Int32, conn.nodes + 1), zi(maxbound), 0, 0,
-        zeros(Int32, maxbound), zeros(Float64, ncol, maxbound), zeros(Float64, ncol, maxbound), String[],
+        zeros(Int32, maxbound), zeros(Float64, ncol, maxbound), String[], 0, staging, pinned,
+        zeros(Int32, conn.nodes + 1), zeros(Int32, maxbound),
     )
 end
 
@@ -147,12 +165,19 @@ BoundaryPackage(backend::Backend, ::Type{T}, spec::BoundarySpec{K}, conn::Connec
     BoundaryPackage{K, T}(backend, spec, conn, dis)
 
 # Adapt (e.g. `adapt(backend, pkg)`): the device arrays move; the host period state is
-# copied, so the two packages can take different periods.
-Adapt.adapt_structure(to, p::BoundaryPackage) = BoundaryPackage(
-    p.spec, p.conn, p.grid, adapt(to, p.nodelist), adapt(to, p.bound), adapt(to, p.hcof), adapt(to, p.rhs),
-    adapt(to, p.simvals), adapt(to, p.ratein), adapt(to, p.rateout), adapt(to, p.nodeptr), adapt(to, p.noderec),
-    p.nbound, p.iblock, copy(p.nodelist_host), copy(p.bound_host), copy(p.bound_user), copy(p.boundname),
-)
+# copied, so the two packages can take different periods (with a new staging buffer,
+# pinned for the target backend).
+function Adapt.adapt_structure(to, p::BoundaryPackage)
+    bound = adapt(to, p.bound)
+    staging, pinned = _staging_buffer(get_backend(bound), eltype(bound), size(p.staging)...)
+    copyto!(staging, p.staging)
+    return BoundaryPackage(
+        p.spec, p.conn, p.grid, adapt(to, p.nodelist), bound, adapt(to, p.hcof), adapt(to, p.rhs),
+        adapt(to, p.simvals), adapt(to, p.ratein), adapt(to, p.rateout), adapt(to, p.nodeptr), adapt(to, p.noderec),
+        p.nbound, p.iblock, copy(p.nodelist_host), copy(p.bound_user), copy(p.boundname), p.bound_version,
+        staging, pinned, copy(p.nodeptr_host), copy(p.noderec_host),
+    )
+end
 
 boundary_kind(::BoundaryPackage{K}) where {K} = K
 Base.eltype(::BoundaryPackage{K, T}) where {K, T} = T
@@ -203,82 +228,175 @@ function _source_values(src::Tuple, a::ArrayPeriod, rows, n)
     return a.values[src[1]]
 end
 
-# Fill `pkg.nodelist_host`, `pkg.bound_user` (values as given) and `pkg.boundname` from
-# PERIOD block `ib`; returns nbound.
-function _period_records!(pkg::BoundaryPackage{K}, ib::Integer) where {K}
-    spec = pkg.spec
-    kind = BoundaryKind{K}()
-    layout = bound_layout(kind, spec)
-    empty!(pkg.boundname)
-    data = spec.periods.data[ib]
-    rows = Dict{String, Int}()
+# Period data in three parts (T4.6): the cells of a PERIOD block (`_period_nodes!`: cellid
+# → reduced node, rebuilt only when the block's cells differ from those in force), the
+# values as given (`_period_values!` → `bound_user`), and one fused host pass that applies
+# the multiplier and the offsets in Float64 and casts to `T` into the staging buffer, which
+# is copied to the device in one `copyto!` (`_stage_bound!`).
+
+# Time-series input is rejected until T6.3.
+function _check_period_ts(spec::BoundarySpec, data)
     if data isa ArrayPeriod
         isempty(data.tas) ||
             throw(MF6UnsupportedError(spec.file, "unsupported: TIMEARRAYSERIES in $(spec.name) (time series arrive with T6.3)"))
-        nodeu = array_nodes(data, pkg.grid)
-        n = length(nodeu)
-        n <= length(pkg.nodelist_host) || throw(ArgumentError("$(spec.name): $n cells for $(length(pkg.nodelist_host)) records"))
-        for i in 1:n
-            pkg.nodelist_host[i] = _reduced(pkg.conn, nodeu[i])
-        end
     else
-        p = data::PeriodList
-        isempty(p.ts) ||
-            throw(MF6UnsupportedError(spec.file, "unsupported: time series $(first(p.ts).name) in $(spec.name) (time series arrive with T6.3)"))
-        n = length(p.nodeu)
-        n <= length(pkg.nodelist_host) ||
-            throw(MF6InputError(spec.file, 0, "$(spec.name): $n records in a PERIOD block, but MAXBOUND is $(length(pkg.nodelist_host))"))
+        isempty(data.ts) ||
+            throw(MF6UnsupportedError(spec.file, "unsupported: time series $(first(data.ts).name) in $(spec.name) (time series arrive with T6.3)"))
+    end
+    return nothing
+end
+
+# Whether two PERIOD blocks of a package give the same cells (user nodes; array input: the
+# same layer per cell column), so the reduced nodes and the node→record map carry over.
+_same_cells(a::PeriodList, b::PeriodList) = a.nodeu === b.nodeu || a.nodeu == b.nodeu
+_same_cells(a::ArrayPeriod, b::ArrayPeriod) = a.layer === b.layer || a.layer == b.layer
+_same_cells(a, b) = false
+
+# Fill `pkg.nodelist_host` from the cells of `data`; returns the number of records.
+function _period_nodes!(pkg::BoundaryPackage, data::ArrayPeriod)
+    nodeu = array_nodes(data, pkg.grid)
+    n = length(nodeu)
+    n <= length(pkg.nodelist_host) || throw(ArgumentError("$(pkg.spec.name): $n cells for $(length(pkg.nodelist_host)) records"))
+    for i in 1:n
+        pkg.nodelist_host[i] = _reduced(pkg.conn, nodeu[i])
+    end
+    return n
+end
+
+function _period_nodes!(pkg::BoundaryPackage, p::PeriodList)
+    spec = pkg.spec
+    n = length(p.nodeu)
+    n <= length(pkg.nodelist_host) ||
+        throw(MF6InputError(spec.file, 0, "$(spec.name): $n records in a PERIOD block, but MAXBOUND is $(length(pkg.nodelist_host))"))
+    for i in 1:n
+        nd = _reduced(pkg.conn, p.nodeu[i])
+        # cellid_to_nlist (BoundaryPackageExt.f90): a list record in a cell outside the
+        # reduced grid (IDOMAIN <= 0) is an error.
+        nd > 0 || throw(MF6InputError(spec.file, 0, "$(spec.name): Cell is outside active grid domain (user node $(p.nodeu[i]))."))
+        pkg.nodelist_host[i] = nd
+    end
+    return n
+end
+
+# Fill `pkg.bound_user` (values as given) and `pkg.boundname` for records 1:n from `data`.
+function _period_values!(pkg::BoundaryPackage{K}, data, n) where {K}
+    spec = pkg.spec
+    layout = bound_layout(BoundaryKind{K}(), spec)
+    empty!(pkg.boundname)
+    rows = Dict{String, Int}()
+    if data isa PeriodList
         for src in layout
             (src isa Tuple && src[1] isa String) || continue
             c = list_column(spec.schema, src[1])
             isnothing(c) && throw(ArgumentError("$(spec.name): no column $(src[1]) in the list schema"))
             rows[src[1]] = c.first
         end
-        for i in 1:n
-            nd = _reduced(pkg.conn, p.nodeu[i])
-            # cellid_to_nlist (BoundaryPackageExt.f90): a list record in a cell outside the
-            # reduced grid (IDOMAIN <= 0) is an error.
-            nd > 0 || throw(MF6InputError(spec.file, 0, "$(spec.name): Cell is outside active grid domain (user node $(p.nodeu[i]))."))
-            pkg.nodelist_host[i] = nd
-        end
-        append!(pkg.boundname, p.boundname)
+        append!(pkg.boundname, data.boundname)
     end
     for (c, src) in enumerate(layout)
         _fill_column!(pkg.bound_user, c, _source_values(src, data, rows, n), n)
     end
-    return n
+    return nothing
 end
 
 # Column `c` of `bound` for records 1:n (a function barrier: `vals` is concrete here, so the
 # record loop does not dispatch per element).
 function _fill_column!(bound, c, vals, n)
-    for i in 1:n
+    @inbounds for i in 1:n
         bound[c, i] = Float64(vals[i])
     end
     return nothing
 end
 
-# `bound_host ← bound_user` for records 1:n, with the MULTIPLIER aux variable of the PERIOD
-# block in force (`pkg.iblock`) applied to the multiplier column (`bnd_rp`, `cond_mult`).
-function _apply_multiplier!(pkg::BoundaryPackage{K}, n) where {K}
-    mcol = mult_column(BoundaryKind{K}())
+# The MULTIPLIER aux values of the PERIOD block in force (`(naux, n)`), or `nothing`.
+function _mult_aux(pkg::BoundaryPackage)
     imult = Int(pkg.spec.auxmultcol)
-    aux = (imult > 0 && pkg.iblock > 0) ? pkg.spec.periods.data[pkg.iblock].auxvar : nothing
-    for i in 1:n, c in axes(pkg.bound_user, 1)
-        v = pkg.bound_user[c, i]
-        (c == mcol && !isnothing(aux)) && (v *= aux[imult, i])
-        pkg.bound_host[c, i] = v
+    (imult > 0 && pkg.iblock > 0) || return nothing
+    return pkg.spec.periods.data[pkg.iblock].auxvar::Matrix{Float64}
+end
+
+"""
+    MultipliedBound <: AbstractMatrix{Float64}
+
+The values of `bound_user` with the MULTIPLIER aux variable of the PERIOD block in force
+applied to the multiplier column (`bnd_rp`, `cond_mult`), before the offsets: what the
+`check_records` hooks check. A lazy host view; `getindex` only.
+"""
+struct MultipliedBound{A <: Union{Nothing, Matrix{Float64}}} <: AbstractMatrix{Float64}
+    user::Matrix{Float64}
+    aux::A
+    imult::Int
+    mcol::Int
+end
+MultipliedBound(pkg::BoundaryPackage{K}) where {K} =
+    MultipliedBound(pkg.bound_user, _mult_aux(pkg), Int(pkg.spec.auxmultcol), mult_column(BoundaryKind{K}()))
+Base.size(b::MultipliedBound) = size(b.user)
+Base.@propagate_inbounds function Base.getindex(b::MultipliedBound, c::Int, i::Int)
+    v = b.user[c, i]
+    (b.aux !== nothing && c == b.mcol) && (v *= b.aux[b.imult, i])
+    return v
+end
+
+# Record i of the staging pass, column c: the multiplier (Float64), then the offset from
+# the reference of the record's cell (`to_offsets`: `v − r[n]`, records without a cell keep
+# their value). The caller casts to T once.
+Base.@propagate_inbounds function _staged_value(b::MultipliedBound, hcols, nodes, r, c, i)
+    v = b[c, i]
+    if c in hcols
+        nd = nodes[i]
+        nd > 0 && (v = v - r[nd])
+    end
+    return v
+end
+
+"""
+    bound_values(pkg::BoundaryPackage, r) -> Matrix{Float64}
+
+The `bound` of the records in force `(ncol, nbound)` in Float64 before the cast to `T`: the
+MULTIPLIER aux variable applied and the head-like columns as offsets from `r`. What
+`apply_period!` and `set_bound!` cast and copy to the device (allocates; for inspection
+and tests).
+"""
+function bound_values(pkg::BoundaryPackage{K}, r::AbstractVector{Float64}) where {K}
+    b = MultipliedBound(pkg)
+    hcols = head_columns(BoundaryKind{K}())
+    n = pkg.nbound
+    return Float64[_staged_value(b, hcols, pkg.nodelist_host, r, c, i) for c in axes(pkg.bound_user, 1), i in 1:n]
+end
+
+# Records i in `range`: staging[:, i] = T(multiplier and offsets of bound_user[:, i]).
+function _stage_range!(staging::AbstractMatrix{T}, b::MultipliedBound, hcols, nodes, r, range) where {T}
+    ncol = size(staging, 1)
+    @inbounds for i in range, c in 1:ncol
+        staging[c, i] = T(_staged_value(b, hcols, nodes, r, c, i))
     end
     return nothing
 end
 
-# The head-like columns of `bound_host` (records 1:n) as offsets from `r` (`to_offsets`).
-function _bound_offsets!(pkg::BoundaryPackage{K}, n, r) where {K}
-    nodes = view(pkg.nodelist_host, 1:n)
-    for c in head_columns(BoundaryKind{K}())
-        pkg.bound_host[c, 1:n] .= to_offsets(r, view(pkg.bound_host, c, 1:n), nodes)
+# Records per task of the threaded staging pass.
+const STAGING_CHUNK = 1 << 16
+
+# The fused host pass for records 1:n (Float64 multiplier and offsets, one cast to T, into
+# the preallocated staging buffer; threaded when Julia has threads), then one `copyto!` of
+# the `ncol·n` values to the device. Elementwise, so the result does not depend on the
+# number of threads.
+function _stage_bound!(pkg::BoundaryPackage{K, T}, r::AbstractVector{Float64}) where {K, T}
+    n = pkg.nbound
+    n == 0 && return pkg
+    # A copy from pinned memory may still be in flight: wait before overwriting the buffer.
+    isnothing(pkg.pinned) || KernelAbstractions.synchronize(get_backend(pkg.bound))
+    b = MultipliedBound(pkg)
+    hcols = head_columns(BoundaryKind{K}())
+    nodes = pkg.nodelist_host
+    if Threads.nthreads() > 1 && n > 2STAGING_CHUNK
+        Threads.@threads :static for k in 1:cld(n, STAGING_CHUNK)
+            _stage_range!(pkg.staging, b, hcols, nodes, r, ((k - 1) * STAGING_CHUNK + 1):min(k * STAGING_CHUNK, n))
+        end
+    else
+        _stage_range!(pkg.staging, b, hcols, nodes, r, 1:n)
     end
-    return nothing
+    copyto!(pkg.bound, 1, pkg.staging, 1, size(pkg.staging, 1) * n)
+    return pkg
 end
 
 """
@@ -296,27 +414,50 @@ convert the head-like columns to offsets from the references `r` of the (moved) 
 is active). Then cast to `T`, copy to the device and rebuild the node→record map.
 Returns `true`.
 
+When the new block has the same cells as the block in force (array input with the same
+layers; ModflowCoupling changing only the values), the reduced nodes, the highest-active
+moves and the node→record map carry over and only `bound` is copied (T4.6); the records
+are still checked. This fast path is not taken for RCH and EVT without FIXED_CELL when an
+`ibound` is given.
+
 Time-series values (`TsRef`, TIMEARRAYSERIES) are rejected (`MF6UnsupportedError`) until
 T6.3.
 """
-function apply_period!(pkg::BoundaryPackage{K, T}, kper::Integer, r::AbstractVector{Float64}; ibound::Union{Nothing, AbstractVector{<:Integer}} = nothing) where {K, T}
+function apply_period!(pkg::BoundaryPackage, kper::Integer, r::AbstractVector{Float64}; ibound::Union{Nothing, AbstractVector{<:Integer}} = nothing)
+    return _apply_period!(pkg, kper, r, ibound) !== :unchanged
+end
+
+# `apply_period!`; returns `:unchanged` (block in force), `:values` (same cells, new
+# values) or `:structure` (new cells: nodes and the node→record map rebuilt).
+function _apply_period!(pkg::BoundaryPackage{K, T}, kper::Integer, r::AbstractVector{Float64}, ibound) where {K, T}
     length(r) == pkg.conn.nodes || throw(ArgumentError("apply_period!: length(r) = $(length(r)), expected $(pkg.conn.nodes)"))
     ib = period_block(pkg.spec.periods, kper)
-    ib == pkg.iblock && return false
-    n = ib == 0 ? 0 : _period_records!(pkg, ib)
-    nodes = view(pkg.nodelist_host, 1:n)
+    ib == pkg.iblock && return :unchanged
+    spec = pkg.spec
+    moves = K in (:RCH, :EVT) && !spec.fixed_cell && !isnothing(ibound)
+    data = ib == 0 ? nothing : spec.periods.data[ib]
+    isnothing(data) || _check_period_ts(spec, data)
+    same = !moves && ib > 0 && pkg.iblock > 0 && _same_cells(spec.periods.data[pkg.iblock], data)
+    if same
+        n = pkg.nbound
+    else
+        n = isnothing(data) ? 0 : _period_nodes!(pkg, data)
+    end
+    isnothing(data) || _period_values!(pkg, data, n)
+    isnothing(data) && empty!(pkg.boundname)
+    pkg.bound_version += 1
     pkg.iblock = ib
-    _apply_multiplier!(pkg, n)
-    check_records(BoundaryKind{K}(), pkg, n)
-    if K in (:RCH, :EVT) && !pkg.spec.fixed_cell && !isnothing(ibound)
+    pkg.nbound = n
+    check_records(BoundaryKind{K}(), pkg, MultipliedBound(pkg), n)
+    if moves
+        nodes = pkg.nodelist_host
         for i in 1:n
             nodes[i] > 0 && ibound[nodes[i]] == 0 && (nodes[i] = highest_active(pkg.conn, nodes[i], ibound))
         end
     end
-    _bound_offsets!(pkg, n, r)
-    pkg.nbound = n
-    _upload_records!(pkg)
-    return true
+    same || _upload_structure!(pkg)
+    _stage_bound!(pkg, r)
+    return same ? :values : :structure
 end
 
 """
@@ -325,23 +466,26 @@ end
 After a change of `pkg.bound_user` (the stepping API, `set_value` of `BOUND`): apply the
 MULTIPLIER aux variable of the PERIOD block in force and convert the head-like columns to
 offsets from `r`, exactly as `apply_period!` does for period data (host, Float64), then
-cast to `T` and copy `bound` to the device. Records are not checked (`riv_ck` etc. run in
-`bnd_rp` only, as in MF6) and are not moved (RCH/EVT keep their cells).
+cast to `T` and copy `bound` to the device (one fused pass into the staging buffer and one
+copy). Records are not checked (`riv_ck` etc. run in `bnd_rp` only, as in MF6) and are not
+moved (RCH/EVT keep their cells).
 """
-function set_bound!(pkg::BoundaryPackage{K, T}, r::AbstractVector{Float64}) where {K, T}
-    n = pkg.nbound
-    _apply_multiplier!(pkg, n)
-    _bound_offsets!(pkg, n, r)
-    copyto!(pkg.bound, T.(pkg.bound_host))
+function set_bound!(pkg::BoundaryPackage, r::AbstractVector{Float64})
+    pkg.bound_version += 1
+    _stage_bound!(pkg, r)
     return pkg
 end
 
-# Copy the host records of `pkg` to the device and rebuild the node→record map.
-function _upload_records!(pkg::BoundaryPackage{K, T}) where {K, T}
+# Copy the node list of `pkg` to the device and rebuild the node→record map (counting sort
+# of the records by node; stable: record order within a node). Uses the host buffers
+# `nodeptr_host` and `noderec_host`.
+function _upload_structure!(pkg::BoundaryPackage)
     n = pkg.nbound
     nodes = pkg.conn.nodes
-    # Counting sort of the records by node (stable: record order within a node).
-    ptr = zeros(Int32, nodes + 1)
+    ptr = pkg.nodeptr_host
+    rec = pkg.noderec_host
+    fill!(ptr, Int32(0))
+    fill!(rec, Int32(0))
     for i in 1:n
         nd = pkg.nodelist_host[i]
         nd > 0 && (ptr[nd + 1] += Int32(1))
@@ -350,16 +494,18 @@ function _upload_records!(pkg::BoundaryPackage{K, T}) where {K, T}
     for nd in 1:nodes
         ptr[nd + 1] += ptr[nd]
     end
-    rec = zeros(Int32, length(pkg.nodelist_host))
-    next = ptr[1:nodes]
+    # Fill: `ptr[nd]` advances to the end of node nd's range, then shift back.
     for i in 1:n
         nd = pkg.nodelist_host[i]
         nd > 0 || continue
-        rec[next[nd]] = i
-        next[nd] += Int32(1)
+        rec[ptr[nd]] = i
+        ptr[nd] += Int32(1)
     end
+    for nd in nodes:-1:2
+        ptr[nd] = ptr[nd - 1]
+    end
+    ptr[1] = 1
     copyto!(pkg.nodelist, pkg.nodelist_host)
-    copyto!(pkg.bound, T.(pkg.bound_host))
     copyto!(pkg.nodeptr, ptr)
     copyto!(pkg.noderec, rec)
     return pkg

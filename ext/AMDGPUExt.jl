@@ -16,6 +16,14 @@ function ModflowGPU.host_mapped_zeros(::ROCBackend, ::Type{T}, n::Integer) where
     return (unsafe_wrap(AMDGPU.ROCArray, host), host)
 end
 
+# Page-lock a host array by registering it with HIP (the wrapper keeps the registration
+# and the array alive; copies from the array then use DMA without a staging copy). Not on
+# AMDGPU < 2.10, for the reason above.
+function ModflowGPU.pin_memory!(::ROCBackend, arr::Array)
+    applicable(unsafe_wrap, AMDGPU.ROCArray, arr) || return nothing
+    return unsafe_wrap(AMDGPU.ROCArray, arr)
+end
+
 function __init__()
     return ModflowGPU.register_backend!("rocm", "AMDGPU", AMDGPU.functional, ROCBackend)
 end

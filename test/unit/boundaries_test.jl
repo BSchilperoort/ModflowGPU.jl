@@ -179,8 +179,8 @@ end
                 n1, n2 = red(1, 2, 2), red(2, 5, 3)
                 @test chd.nodelist_host[1:2] == [n1, n2]
                 # MULTIPLIER before the offset: 101.25 * 0.5 − r
-                @test chd.bound_host[1, 1:2] == [245.5 - r[n1], 101.25 * 0.5 - r[n2]]
-                @test Array(chd.bound)[1, 1:2] == T.(chd.bound_host[1, 1:2])
+                @test ModflowGPU.bound_values(chd, r)[1, 1:2] == [245.5 - r[n1], 101.25 * 0.5 - r[n2]]
+                @test Array(chd.bound)[1, 1:2] == T.(ModflowGPU.bound_values(chd, r)[1, 1:2])
                 ib = boundary_ibound(conn, values(pk))
                 @test findall(<(0), ib) == sort([n1, n2])
                 hc = copy(h)
@@ -242,8 +242,8 @@ end
                 ghb = pk["GHB"]
                 apply_period!(ghb, 1, r)
                 n1, n2 = ghb.nodelist_host[1:2]
-                @test ghb.bound_host[:, 1] == [238.75 - r[n1], 25.0]   # MULTIPLIER on cond
-                @test ghb.bound_host[:, 2] == [100.5 - r[n2], 3.0]
+                @test ModflowGPU.bound_values(ghb, r)[:, 1] == [238.75 - r[n1], 25.0]   # MULTIPLIER on cond
+                @test ModflowGPU.bound_values(ghb, r)[:, 2] == [100.5 - r[n2], 3.0]
                 check_package(ghb, [-25.0, -3.0], [-25.0 * (238.75 - r[n1]), -3.0 * (100.5 - r[n2])])
                 # The flow is cond·(bhead − h), independent of the reference.
                 sv = Array(ghb.simvals)[1:2]
@@ -256,7 +256,7 @@ end
                 apply_period!(rch, 1, r)
                 n1, n2 = rch.nodelist_host[1:2]
                 @test n2 == red(2, 3, 4)
-                @test rch.bound_host[1, 1:2] == [0.0005, 0.002]
+                @test ModflowGPU.bound_values(rch, r)[1, 1:2] == [0.0005, 0.002]
                 check_package(rch, zeros(2), [-0.0005 * conn.area[n1], -0.002 * conn.area[n2]])
             end
 
