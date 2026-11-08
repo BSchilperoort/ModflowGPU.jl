@@ -7,8 +7,8 @@ preconditioner type `Tp`, so it runs only where `Tp` matters (`SOLVER_TEST_PRESE
 const TEST_PRESETS = (:single, :double)
 
 """
-Presets of the solver, preconditioner and end-to-end tests (groups krylov, amg, picard,
-run, stepping, synthetic): `TEST_PRESETS` plus `:mixed` (T4.4).
+Presets of the solver, preconditioner and end-to-end tests (groups krylov, amg,
+run, stepping): `TEST_PRESETS` plus `:mixed` (T4.4).
 """
 const SOLVER_TEST_PRESETS = (:single, :mixed, :double)
 

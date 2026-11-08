@@ -262,14 +262,15 @@ state + 30 daily steps, tight closures), `:mixed` vs `:double`:
   precision, and in the daily steps; AMG wins only the steady state of indus and
   continental (CPU continental `:mixed` 3.36 vs 6.76 s). A per-solve switch (AMG for
   steady periods) would gain at most 0.2 s on rocm continental and nothing on global5m,
-  at +50 % memory for a second preconditioner: not adopted.
+  at +50 % memory for a second preconditioner: not adopted (on the CPU backend it would
+  save 3.4 of 17.2 s on continental; an open option for CPU runs with long steady states).
 
 **Production defaults** (`precision = :auto`, `preconditioner = :auto`, the defaults of
 `ModflowGPU.run` and `initialize`):
 
 | Backend class | precision | preconditioner | Why |
 | --- | --- | --- | --- |
-| with Float64 (CPU, ROCm, CUDA; oneAPI/OpenCL devices with fp64) | `:mixed` | `:mc_ilu0` | `:double` accuracy and parity tolerances, faster and smaller than `:double` |
+| with Float64 (CPU, ROCm, CUDA; oneAPI/OpenCL devices with fp64) | `:mixed` | `:mc_ilu0` | `:double` accuracy and parity tolerances; on GPU faster and smaller than `:double` (CPU: within ±7 %) |
 | without Float64 (Metal; oneAPI/OpenCL without fp64) | `:single` | `:mc_ilu0` | fastest everywhere; converges on hwell-a in `:single` where Jacobi BiCGSTAB diverges (T4.2) |
 
 `:single` on a Float64 backend is the opt-in fast mode (global5m 2.4× faster than `:mixed`
