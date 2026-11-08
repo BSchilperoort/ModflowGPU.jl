@@ -243,6 +243,17 @@ end
 
 function mf6_case(preset, mf6exe, workdir; nsteps, ims)
     dir = mktempdir(workdir; prefix = "mf6_$(preset)_", cleanup = false)
+    # The input of global5m is ~7.5 GB: removed after a normal termination or an exception
+    # (e.g. an interrupt); kept, for inspection, only when mf6 itself fails.
+    try
+        return _mf6_case(dir, preset, mf6exe; nsteps, ims)
+    catch
+        rm(dir; recursive = true, force = true)
+        rethrow()
+    end
+end
+
+function _mf6_case(dir, preset, mf6exe; nsteps, ims)
     tw = @elapsed spec = write_synthetic(dir, preset; maxcells = 10^8, output = :none, ntransient = nsteps, ims = synthetic_ims(ims))
     c = synthetic_counts(spec)
     stamps = Float64[]

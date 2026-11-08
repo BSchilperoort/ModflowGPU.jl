@@ -379,6 +379,7 @@ module SyntheticModels
         riv = land[isriv]
         drn = land[.!isriv]
         ntransient >= 1 || throw(ArgumentError("ntransient must be at least 1"))
+        output isa Bool || output === :none || throw(ArgumentError("output must be true, false or :none, got $(repr(output))"))
         nper = 1 + ntransient
         # CHD: sea level in both layers of the rim.
         chd = build_boundary(:CHD, dis; name = "chd", save_flows = true, periods = [1 => (; cells = [rim; rim .+ Int32(ncpl)], values = zeros(2length(rim)))])
