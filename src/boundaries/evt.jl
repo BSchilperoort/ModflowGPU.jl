@@ -36,13 +36,13 @@ end
 
 # check_pxdp: with NSEG > 1 every PXDP is strictly between 0 and 1 and the PXDP values of a
 # record increase monotonically.
-function check_records(::BoundaryKind{:EVT}, pkg, n)
+function check_records(::BoundaryKind{:EVT}, pkg, bound, n)
     nseg = Int(pkg.spec.nseg)
     nseg > 1 || return nothing
     for i in 1:n
         pxdp1 = 0.0
         for j in 1:(nseg - 1)
-            pxdp2 = pkg.bound_host[4 + j, i]
+            pxdp2 = bound[4 + j, i]
             (pxdp2 <= 0 || pxdp2 >= 1) &&
                 throw(MF6InputError(pkg.spec.file, 0, "$(pkg.spec.name): PXDP must be between 0 and 1.  Found $pxdp2 for record $i"))
             pxdp2 < pxdp1 &&

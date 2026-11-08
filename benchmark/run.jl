@@ -10,11 +10,13 @@
 # (daily transient steps after the steady state), `timed=1` (also a timed run with the
 # section timer; `0` skips it), `ims=parity` (`synthetic_ims` kind), `log=<file>` (append
 # the Markdown table rows there), `maxsteady=<s>` (skip the transient steps of a case whose
-# steady step took longer than this, e.g. on the CPU backend), `precond=jacobi` (the
-# `preconditioner` option: `jacobi` or `amg`, T4.3), `amg=key:value,...` (`AMGOptions`,
-# e.g. `amg=theta:0.1,degree:3,smoother:jacobi`). With AMG each case also prints the
-# hierarchy (rows per level), its device bytes, and the host build and device Galerkin
-# update times (`AMGStats`).
+# steady step took longer than this, e.g. on the CPU backend), `precond=jacobi` (inner
+# preconditioners, comma-separated: `jacobi`, `chebyshev`, `mc_sgs`, `mc_ilu0`, `amg`;
+# the engine column then names it, e.g. `rocm (mc_ilu0)`), and per preconditioner its
+# `precond_options` as `<name>=key:value,...` (e.g. `amg=theta:0.1,degree:3,smoother:jacobi`
+# for `AMGOptions`, `chebyshev=degree:6`, `mc_ilu0=relax:0.97`). With AMG each case also
+# prints the hierarchy (rows per level), its device bytes, and the host build and device
+# Galerkin update times (`AMGStats`).
 #
 # Per case (preset × precision) the harness does:
 #
@@ -34,8 +36,9 @@
 #
 # Time split categories (leaf sections of src/; see src/instrument.jl):
 # assembly (`assembly`: boundary formulation, CSR assembly, flux residual), SpMV
-# (`spmv_dot`, `true_residual`), preconditioner (`precond_setup`: scaling and Jacobi setup;
-# the Jacobi application is fused into the update kernels), reductions and vector updates
+# (`spmv_dot`, `true_residual`), preconditioner (`precond_setup`: scaling and
+# preconditioner setup; `precond_apply`: other than Jacobi, whose application is fused into
+# the update kernels), reductions and vector updates
 # (`update_reduce`: axpy + Jacobi + 4 reductions in one kernel, `vector_update`,
 # `outer_reduction`), host transfers (`period_data`, `mirrors`, `output`), other
 # (`underrelax`, `start_timestep`, `flows`, `budget`, and the host time between sections).
@@ -170,7 +173,7 @@ function spmv_bench(s, backend)
     return (; t = median(ts), gbs = bytes / median(ts) / 1.0e9, bytes)
 end
 
-function run_case(preset, pre, backend, bname; nsteps, timed, ims, maxsteady, pc = (;))
+function run_case(preset, pre, backend, bname; nsteps, timed, ims, maxsteady, pc = (; preconditioner = :jacobi, precond_options = (;)))
     f = synthetic_fields(preset)
     spec = synthetic_simulation(preset; fields = f, output = false, ntransient = nsteps, ims = synthetic_ims(ims))
     c = synthetic_counts(f)
@@ -207,7 +210,7 @@ function run_case(preset, pre, backend, bname; nsteps, timed, ims, maxsteady, pc
         split = (; ttotal, cat, tot, spmv_dot_t = sd[1] / max(sd[2], 1), spmv_dot_gbs = sd[2] > 0 ? bdot * sd[2] / sd[1] / 1.0e9 : NaN, to = timer.to)
         st = nothing
     end
-    bname = isempty(pc) ? bname : "$bname $(pc.preconditioner)"
+    pc.preconditioner === :jacobi || (bname = "$bname ($(pc.preconditioner))")
     return (; preset, pre, bname, nodes = c.nodes, nja = c.nja, tinit, minit, peak, rows, sp, split, amg)
 end
 
@@ -330,12 +333,14 @@ const SPLIT_HEADER = """
 | Preset | engine | precision | untimed (s) | timed (s) | assembly % | SpMV % | precond % | reductions + updates % | host transfers % | other % | µs per spmv_dot |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"""
 
-# `precond=amg amg=theta:0.1,degree:3` → keywords of `ModflowGPU.initialize`.
-function parse_precond(name, amg)
-    isempty(name) && isempty(amg) && return (;)
+# `precond=jacobi,amg amg=theta:0.1,degree:3` → per preconditioner the keywords
+# `preconditioner` and `precond_options` of `ModflowGPU.initialize`.
+function parse_precond(opts)
     val(v) = something(tryparse(Int, v), tryparse(Float64, v), v in ("true", "false") ? v == "true" : Symbol(v))
-    kv = [Symbol(k) => val(v) for (k, v) in (split(x, ':') for x in split(amg, ',') if !isempty(x))]
-    return (; preconditioner = Symbol(isempty(name) ? "amg" : name), precond_options = NamedTuple(kv))
+    return map(split(get(opts, "precond", "jacobi"), ",")) do name
+        kv = [Symbol(k) => val(v) for (k, v) in (split(x, ':') for x in split(get(opts, name, ""), ',') if !isempty(x))]
+        (; preconditioner = Symbol(name), precond_options = NamedTuple(kv))
+    end
 end
 
 function main(args)
@@ -347,7 +352,7 @@ function main(args)
     ims = Symbol(get(opts, "ims", "parity"))
     logf = get(opts, "log", "")
     maxsteady = parse(Float64, get(opts, "maxsteady", "Inf"))
-    pc = parse_precond(get(opts, "precond", ""), get(opts, "amg", ""))
+    pcs = parse_precond(opts)
     out = IOBuffer()
     println("# $(now()) $(join(args, " "))")
     if bname == "mf6"
@@ -365,7 +370,7 @@ function main(args)
         precisions = Symbol.(split(get(opts, "precision", "double,single"), ","))
         timed = get(opts, "timed", "1") == "1"
         # Warm-up: compile every kernel in both presets on a small model.
-        for pre in precisions
+        for pre in precisions, pc in pcs
             spec = synthetic_simulation(:tiny; output = false, ntransient = 1, ims = synthetic_ims(ims))
             s = ModflowGPU.initialize(spec; backend, precision = pre, write_output = false, pc...)
             run_steps!(s, backend, 1)
@@ -378,7 +383,7 @@ function main(args)
         end
         splits = IOBuffer()
         amgs = IOBuffer()
-        for p in presets, pre in precisions
+        for p in presets, pre in precisions, pc in pcs
             r = run_case(p, pre, backend, bname; nsteps, timed, ims, maxsteady, pc)
             report(r; io = out)
             report_split(r; io = splits)

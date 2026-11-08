@@ -43,7 +43,7 @@ Base.showerror(io::IO, e::ConvergenceError) = print(
 
 """
     ModflowGPU.run(simdir; backend = CPU(), precision = :auto, outdir = simdir,
-                   closures = nothing, write_output = true, preconditioner = nothing,
+                   closures = nothing, write_output = true, preconditioner = :jacobi,
                    precond_options = (;)) -> RunResult
 
 Run the MF6 simulation in `simdir` (one GWF model with one IMS solution; exchanges arrive
@@ -58,15 +58,15 @@ the names of the input (the listing file under its name-file name or `<model>.ls
 `FLOAT32_CLOSURES` are raised. A step that does not converge throws a `ConvergenceError`
 after its output, unless the simulation has the CONTINUE option.
 
-`preconditioner` (a ModflowGPU option, not in MF6 input) selects the inner solver's
-preconditioner: `nothing` (IMS's preconditioner maps to Jacobi), `:jacobi`, or `:amg`
-(smoothed-aggregation AMG, `AMGPreconditioner`). `precond_options` is a NamedTuple of
-options for it (for `:amg` the keywords of `AMGOptions`). See docs/mf6_notes.md (IMS
-linear solver mapping).
+`preconditioner` (a ModflowGPU option, not in MF6 input) selects the inner preconditioner
+in place of the ILU0/MILU0/ILUT of IMS: `:jacobi` (the default), `:chebyshev`, `:mc_sgs`,
+`:mc_ilu0` or `:amg` (`PRECONDITIONERS`). `precond_options` is a NamedTuple of keywords
+for its constructor (see `build_preconditioner`; for `:amg` those of `AMGOptions`). See
+`KrylovSettings` and docs/mf6_notes.md (IMS linear solver mapping).
 """
 function run(
         simdir::AbstractString; backend::Backend = CPU(), precision::Symbol = :auto, outdir::AbstractString = simdir,
-        closures = nothing, write_output::Bool = true, preconditioner::Union{Nothing, Symbol} = nothing,
+        closures = nothing, write_output::Bool = true, preconditioner::Symbol = :jacobi,
         precond_options::NamedTuple = (;),
     )
     sim = load_simulation(simdir)
@@ -75,7 +75,7 @@ end
 
 function run(
         sim::SimulationSpec; backend::Backend = CPU(), precision::Symbol = :auto, outdir::AbstractString = sim.simdir,
-        closures = nothing, write_output::Bool = true, preconditioner::Union{Nothing, Symbol} = nothing,
+        closures = nothing, write_output::Bool = true, preconditioner::Symbol = :jacobi,
         precond_options::NamedTuple = (;),
     )
     s = initialize(sim; backend, precision, outdir, closures, write_output, preconditioner, precond_options)
@@ -99,7 +99,7 @@ function _listing_header(io::IO, m::GwfModel, ps::PicardSolver, T, Ts, Tp, backe
     println(io, " BACKEND: ", backend_name(backend), ", PRECISION: T = ", T, ", Ts = ", Ts, ", Tp = ", Tp)
     k = st.krylov
     @printf(io, " OUTER_DVCLOSE = %.4e, OUTER_MAXIMUM = %d, UNDER_RELAXATION = %s\n", st.dvclose, st.maxiter, uppercase(String(st.ims.under_relaxation)))
-    @printf(io, " LINEAR_ACCELERATION = %s (Jacobi), INNER_MAXIMUM = %d, INNER_DVCLOSE = %.4e, INNER_RCLOSE = %.4e (option %d)\n", uppercase(String(k.method)), k.maxiter, k.dvclose, k.rclose, k.icnvgopt)
+    @printf(io, " LINEAR_ACCELERATION = %s (%s), INNER_MAXIMUM = %d, INNER_DVCLOSE = %.4e, INNER_RCLOSE = %.4e (option %d)\n", uppercase(String(k.method)), k.preconditioner === :jacobi ? "Jacobi" : String(k.preconditioner), k.maxiter, k.dvclose, k.rclose, k.icnvgopt)
     return nothing
 end
 

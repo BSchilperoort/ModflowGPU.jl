@@ -42,7 +42,7 @@ under-relaxation), `symmetric` (CG: the constant-head columns go to the right-ha
 `sln_ls`), and the Float32 floors `dvclose_head_factor` and `rclose_floor_factor` (see
 `FLOAT32_CLOSURES`; 0 for Float64).
 
-    PicardSettings(ims::ImsSpec, T; closures = nothing, preconditioner = nothing, precond_options = (;))
+    PicardSettings(ims::ImsSpec, T; closures = nothing, preconditioner = :jacobi, precond_options = (;))
 
 Takes OUTER_DVCLOSE, OUTER_MAXIMUM and the inner settings from `ims` (`preconditioner`
 and `precond_options` as in `KrylovSettings(::ImsSpec)`). `closures` (a
@@ -63,7 +63,7 @@ struct PicardSettings
 end
 
 function PicardSettings(
-        ims::ImsSpec, ::Type{T}; closures = nothing, preconditioner::Union{Nothing, Symbol} = nothing,
+        ims::ImsSpec, ::Type{T}; closures = nothing, preconditioner::Symbol = :jacobi,
         precond_options::NamedTuple = (;),
     ) where {T <: AbstractFloat}
     get_c(k, default) = (isnothing(closures) || !haskey(closures, k)) ? default : getfield(closures, k)
@@ -140,7 +140,8 @@ end
 function PicardSolver(m::GwfModel{T}, settings::PicardSettings; Ts::Type = T, Tp::Type = Ts) where {T}
     backend = m.backend
     n = Int(m.conn.nodes)
-    krylov = KrylovSolver(backend, m.csr, settings.krylov; Ts, Tp)
+    colors = settings.krylov.preconditioner in (:mc_sgs, :mc_ilu0) ? grid_colors(m.conn, m.spec.dis) : nothing
+    krylov = KrylovSolver(backend, m.csr, settings.krylov; Ts, Tp, colors)
     ur = UnderRelaxation(backend, T, settings.ims, n)
     red = Reducer(backend, n, accumulation_type(backend, T))
     scale = KernelAbstractions.zeros(backend, T, settings.rclose_floor_factor > 0 ? n : 0)

@@ -6,7 +6,7 @@
 using LinearAlgebra: LinearAlgebra, dot, norm
 const adapt = ModflowGPU.adapt
 using ModflowGPU: AMGOptions, AMGPreconditioner, KrylovSettings, KrylovSolver, CsrStructure, solve!, precond_apply!,
-    precond_setup!, amg_stats, JacobiPreconditioner, make_preconditioner
+    precond_setup!, amg_stats, JacobiPreconditioner, build_preconditioner
 isdefined(@__MODULE__, :SyntheticModels) || include(joinpath(@__DIR__, "..", "..", "benchmark", "synthetic.jl"))
 
 # A 2-layer nx × ny grid in MF6's CSR layout (diagonal first, MF6 sign): horizontal
@@ -99,7 +99,16 @@ end
         @test_throws ArgumentError AMGOptions(; strength = :classical)
         @test_throws ArgumentError AMGOptions(; degree = 0)
         @test_throws ArgumentError KrylovSettings(; preconditioner = :ilu0)
-        @test_throws ArgumentError make_preconditioner(:jacobi, TEST_BACKEND, nothing, Float64, Float64; theta = 0.1)
+        @test_throws ArgumentError build_preconditioner(:jacobi, TEST_BACKEND, nothing, nothing; Ts = Float64, Tp = Float64, theta = 0.1)
+        @test_throws ArgumentError KrylovSettings(; precond_options = (; theta = 0.1))
+        # precond_options reach the constructor of each preconditioner (T4.2's settings too).
+        gia, gja, gisym, _ = _amg_grid(3, 2)
+        gcsr = _amg_csr(gia, gja, gisym)
+        ks(pc, o) = KrylovSolver(TEST_BACKEND, gcsr, KrylovSettings(; preconditioner = pc, precond_options = o))
+        @test ks(:chebyshev, (; degree = 6, ratio = 20.0)).precond.degree == 6
+        @test ks(:mc_ilu0, (; relax = 0.5)).precond.relax == 0.5
+        @test ks(:amg, (; theta = 0.2)).precond.options.theta == 0.2
+        @test_throws MethodError ks(:chebyshev, (; theta = 0.1))
         @test KrylovSettings().preconditioner === :jacobi
         @test KrylovSettings(; preconditioner = :amg, precond_options = (; theta = 0.2)).precond_options.theta == 0.2
     end

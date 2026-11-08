@@ -23,7 +23,9 @@
 #     last synchronised), through the same conversion as period data (`set_bound!`);
 #   - every mirror is refreshed from the engine at the end of `initialize`,
 #     `prepare_time_step`, `prepare_solve` and `finalize_solve` (so X during the outer
-#     iterations is the X at the start of the step; read it with `get_value`).
+#     iterations is the X at the start of the step; read it with `get_value`). BOUND and
+#     NODELIST mirrors are versioned (T4.6): they are copied only when the engine value
+#     changed (new period data, a write) or, in `finalize_solve`, when the mirror differs.
 #   - writes into a mirror between `prepare_solve` and `finalize_solve` are discarded by
 #     the refresh in `finalize_solve`, with a warning (use `set_value` there).
 #
@@ -44,19 +46,33 @@ end
 
 # A variable reachable by address: `get(sim)` returns a new host array (Float64 values
 # absolute; Int32 indices), `set(sim, values)` writes the engine (nothing: read-only),
-# `device(sim)` the engine array (nothing: host only).
+# `device(sim)` the engine array (nothing: host only). Versioned variables (T4.6: BOUND,
+# NODELIST) also have `version(sim)`, a counter that changes whenever the engine value
+# changes, and `source(sim)`, the engine's host array itself (equal to `get(sim)`, not
+# copied).
 struct _Variable
     get::Function
     set::Union{Nothing, Function}
     device::Union{Nothing, Function}
     units::String
+    version::Union{Nothing, Function}
+    source::Union{Nothing, Function}
 end
+_Variable(get, set, device, units) = _Variable(get, set, device, units, nothing, nothing)
 
-# A host mirror (`get_value_ptr`) and its value at the last synchronisation.
+# A host mirror (`get_value_ptr`), its value at the last synchronisation (`synced`; empty
+# for a versioned variable, whose engine array `source` is that value) and the engine
+# version at the last synchronisation.
 struct _Mirror
     var::_Variable
     host::Array
     synced::Array
+    version::Base.RefValue{Int}
+end
+function _Mirror(s, var::_Variable)
+    h = var.get(s)
+    isnothing(var.version) && return _Mirror(var, h, copy(h), Ref(0))
+    return _Mirror(var, h, similar(h, 0), Ref(var.version(s)))
 end
 
 """
@@ -94,17 +110,16 @@ Base.show(io::IO, s::Simulation) = print(
 """
     initialize(simdir or spec::SimulationSpec; backend = CPU(), precision = :auto,
                outdir = simdir, closures = nothing, write_output = true,
-               preconditioner = nothing, precond_options = (;)) -> Simulation
+               preconditioner = :jacobi, precond_options = (;)) -> Simulation
 
 Load the simulation (one GWF model with one IMS solution), build the model, the outer
 solver and the budget accumulator on `backend` in `precision` (`resolve_precision`), and
 open the output files (`write_output`; see `ModflowGPU.run` for the keywords, including
-the `preconditioner` option). Before the
-first `prepare_time_step` the heads are the starting heads and no period data is applied.
+`preconditioner` and `precond_options`). Before the first `prepare_time_step` the heads are the starting heads and no period data is applied.
 """
 function initialize(
         simdir::AbstractString; backend::Backend = CPU(), precision::Symbol = :auto, outdir::AbstractString = simdir,
-        closures = nothing, write_output::Bool = true, preconditioner::Union{Nothing, Symbol} = nothing,
+        closures = nothing, write_output::Bool = true, preconditioner::Symbol = :jacobi,
         precond_options::NamedTuple = (;),
     )
     return initialize(load_simulation(simdir); backend, precision, outdir, closures, write_output, preconditioner, precond_options)
@@ -112,7 +127,7 @@ end
 
 function initialize(
         sim::SimulationSpec; backend::Backend = CPU(), precision::Symbol = :auto, outdir::AbstractString = sim.simdir,
-        closures = nothing, write_output::Bool = true, preconditioner::Union{Nothing, Symbol} = nothing,
+        closures = nothing, write_output::Bool = true, preconditioner::Symbol = :jacobi,
         precond_options::NamedTuple = (;),
     )
     (length(sim.models) == 1 && isempty(sim.exchanges)) ||
@@ -364,11 +379,13 @@ function _variable(s::Simulation, address::AbstractString)
         end
         v = parts[3]
         v == "BOUND" && return _Variable(
-            s -> copy(pkg(s).bound_user),
+            s -> copy(bound_user!(pkg(s))),
             (s, x) -> (copyto!(pkg(s).bound_user, x); set_bound!(pkg(s), s.model.setup.r)),
-            s -> pkg(s).bound, "-",
+            s -> pkg(s).bound, "-", s -> pkg(s).bound_version, s -> bound_user!(pkg(s)),
         )
-        v == "NODELIST" && return _Variable(s -> copy(pkg(s).nodelist_host), nothing, s -> pkg(s).nodelist, "-")
+        v == "NODELIST" && return _Variable(
+            s -> copy(pkg(s).nodelist_host), nothing, s -> pkg(s).nodelist, "-", s -> pkg(s).bound_version, s -> pkg(s).nodelist_host,
+        )
         v == "SIMVALS" && return _Variable(s -> Float64.(Array(pkg(s).simvals)), nothing, s -> pkg(s).simvals, "L3/T")
         v == "NBOUND" && return _Variable(s -> _scalar(Int32(pkg(s).nbound)), nothing, nothing, "-")
         v == "MAXBOUND" && return _Variable(s -> _scalar(Int32(length(pkg(s).nodelist_host))), nothing, nothing, "-")
@@ -421,10 +438,7 @@ function get_value_ptr(s::Simulation, address::AbstractString; device::Bool = fa
         return var.device(s)
     end
     key = uppercase(address)
-    mir = get!(s.mirrors, key) do
-        h = var.get(s)
-        _Mirror(var, h, copy(h))
-    end
+    mir = get!(() -> _Mirror(s, var), s.mirrors, key)
     return mir.host
 end
 
@@ -456,7 +470,7 @@ function set_value(s::Simulation, address::AbstractString, values::AbstractArray
     mir = get(s.mirrors, uppercase(address), nothing)
     if !isnothing(mir)
         copyto!(mir.host, cur)
-        copyto!(mir.synced, cur)
+        isnothing(var.version) ? copyto!(mir.synced, cur) : (mir.version[] = var.version(s))
     end
     return s
 end
@@ -467,12 +481,37 @@ function _push_mirrors!(s::Simulation)
     return nothing
 end
 
+# Whether two host arrays hold the same bits (a memcmp for bits types; -0.0 and 0.0
+# differ, which only costs an unneeded push).
+function _same_bits(a::Array{T}, b::Array{T}) where {T}
+    size(a) == size(b) || return false
+    isbitstype(T) || return isequal(a, b)
+    return GC.@preserve a b ccall(:memcmp, Cint, (Ptr{Cvoid}, Ptr{Cvoid}, Csize_t), a, b, sizeof(a)) == 0
+end
+_same_bits(a, b) = isequal(a, b)
+
+# The value a mirror was last synchronised with (versioned: the engine array, unless the
+# engine changed since; then `nothing`).
+function _synced_value(s::Simulation, mir::_Mirror)
+    var = mir.var
+    isnothing(var.version) && return mir.synced
+    return var.version(s) == mir.version[] ? var.source(s) : nothing
+end
+
+# Send the writable mirrors that were written since the last synchronisation (dirty: they
+# differ from the synchronised value). A versioned mirror whose engine value changed
+# outside the API (no stepping call in between) is not pushed; the next pull replaces it.
 function _push_mirrors_all!(s::Simulation)
     for mir in values(s.mirrors)
         isnothing(mir.var.set) && continue
-        isequal(mir.host, mir.synced) && continue
-        mir.var.set(s, copy(mir.host))
-        copyto!(mir.synced, mir.host)
+        ref = _synced_value(s, mir)
+        (isnothing(ref) || _same_bits(mir.host, ref)) && continue
+        mir.var.set(s, mir.host)
+        if isnothing(mir.var.version)
+            copyto!(mir.synced, mir.host)
+        else
+            mir.version[] = mir.var.version(s)
+        end
     end
     return nothing
 end
@@ -485,13 +524,24 @@ function _pull_mirrors!(s::Simulation; lost::Bool = false)
     return nothing
 end
 
+#
+# Versioned mirrors are refreshed only when the engine value changed (new period data, a
+# write) or, with `lost`, when the mirror was written: no copy otherwise.
 function _pull_mirrors_all!(s::Simulation, lost::Bool)
     for (key, mir) in s.mirrors
-        lost && !isnothing(mir.var.set) && !isequal(mir.host, mir.synced) &&
+        var = mir.var
+        ref = _synced_value(s, mir)
+        dirty = lost && !isnothing(ref) && !_same_bits(mir.host, ref)
+        lost && !isnothing(var.set) && dirty &&
             @warn "\"$key\" was written through get_value_ptr after prepare_solve; the write is discarded (write before prepare_solve, or use set_value)"
-        v = mir.var.get(s)
-        copyto!(mir.host, v)
-        copyto!(mir.synced, v)
+        if isnothing(var.version)
+            v = var.get(s)
+            copyto!(mir.host, v)
+            copyto!(mir.synced, v)
+        elseif isnothing(ref) || dirty
+            copyto!(mir.host, var.source(s))
+            mir.version[] = var.version(s)
+        end
     end
     return nothing
 end

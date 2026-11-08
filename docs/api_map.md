@@ -10,18 +10,18 @@ it. Underscore-prefixed helpers are omitted.
 
 - **backend_setup.jl**: backend registry, adapted from mGV. `select_backend` (name → KA
   backend), `register_backend!` (called by `ext/*Ext.jl`), `backend_options`,
-  `backend_name`, `known_backend_package`, `pin_memory!` (extension hook), `host_mapped_zeros`
+  `backend_name`, `known_backend_package`, `pin_memory!` (extension hook; returns a handle to keep, or `nothing`; CUDA, ROCm >= AMDGPU 2.10 since T4.6), `host_mapped_zeros`
   (extension hook, T3.1: device view of a host vector for reduction results; CPU, ROCm), `BackendEntry`, `BACKEND_REGISTRY`, `KNOWN_BACKENDS`; `_device_copy` (host array → new device array). Tests: backend.
 - **ext/*Ext.jl** (AMDGPU, CUDA, Metal, oneAPI, OpenCL): `__init__` registers the backend;
-  overrides `supports_float64` where needed; AMDGPUExt adds `host_mapped_zeros` (registered
-  host memory; AMDGPU >= 2.10 only, older versions copy). Tests: backend (GPU file with `MFGPU_TEST_BACKEND`).
+  overrides `supports_float64` where needed; AMDGPUExt adds `host_mapped_zeros` and
+  `pin_memory!` (registered host memory; AMDGPU >= 2.10 only, older versions copy). Tests: backend (GPU file with `MFGPU_TEST_BACKEND`).
 - **precision.jl**: precision presets (PLAN.md 3.7). `resolve_precision(backend, preset)`
   → `(; T, Ts, Tp)`, `PRECISION_PRESETS`, `supports_float64` (extension hook). Tests: precision, kernel.
 - **instrument.jl** (T4.1): optional timing of the hot loop. `@timed_section name expr`
   (one `Ref` load and a branch when off; no closure), `set_section_timer!` /
   `section_timer`, hooks `section_begin` / `section_end` (methods come from the timer type,
   e.g. benchmark/run.jl's `SyncTimer`). Sections: `assembly`, `linear_solve`
-  (`precond_setup`, `spmv_dot`, `update_reduce`, `vector_update`, `true_residual`),
+  (`precond_setup`, `precond_apply`, `spmv_dot`, `update_reduce`, `vector_update`, `true_residual`),
   `outer_reduction`, `underrelax` (picard.jl, krylov.jl); `period_data`,
   `start_timestep`, `flows`, `budget`, `output`, `mirrors` (stepping.jl). Tests: stepping.
 
@@ -140,6 +140,15 @@ it. Underscore-prefixed helpers are omitted.
   `boundary_kind`. Tests: boundaries.
   T3.3: `bound_user` (host values as given, before the multiplier) and `set_bound!` (stepping
   API writes: multiplier + offsets as period data, then copy to the device); tests: stepping.
+  T4.6 (period-data path): a block with the cells in force keeps nodes and the node→record
+  map (`_apply_period!` → `:unchanged` / `:values` / `:structure`); values are read from the
+  PERIOD block through `BoundSource` (lazy `(ncol, n)` view, multiplier applied; what
+  `check_records(kind, pkg, bound, n)` sees) and staged in one fused pass (Float64
+  multiplier and offsets with per-record references `rrec`, one cast) into the pinned
+  `staging` buffer, one `copyto!` (Float64 pass-through columns are copied directly);
+  `bound_user!` fills `bound_user` on demand; `bound_version` counts value changes;
+  `bound_values(pkg, r)` (Float64 `bound`, replaces the `bound_host` field). Tests:
+  boundaries (fast path vs full application).
 - **boundaries/chd.jl**: CHD (gwf-chd.f90; see `docs/mf6_notes.md`). `apply_chd_heads!`,
   `calc_chd_rate!`. Tests: boundaries (parity vs MF6 CBC).
 - **boundaries/wel.jl**, **rch.jl**, **ghb.jl**: WEL, RCH (list and RCHA arrays, cell
@@ -171,7 +180,7 @@ it. Underscore-prefixed helpers are omitted.
   (PLAN.md 3.7 rules 3–4; ImsLinearBase.f90 `ims_base_cg`, `ims_base_bcgs`,
   `ims_base_scale`, `ims_base_testcnvg`, `ims_base_epfact`). `KrylovSettings` (host; from
   an `ImsSpec`: LINEAR_ACCELERATION, INNER_*, rclose options, NUMBER_ORTHOGONALIZATIONS,
-  SCALING_METHOD; ILU0/MILU0/ILUT → Jacobi with a warning), `ims_preconditioner`
+  SCALING_METHOD, `preconditioner`; ILU0/MILU0/ILUT → `preconditioner`, Jacobi by default with a warning), `ims_preconditioner`
   (`resolve_ipc`), `ims_testcnvg`, `ims_epfact`, `KrylovSolver{Ts,Tp,Ta}` (device
   workspace), `solve!(δ, solver, amat, res; kstp)` → `KrylovResult` (converged,
   iterations, status, dvmax, rmax, l2norm0, l2norm). Device reductions: `Reducer`,
@@ -181,13 +190,25 @@ it. Underscore-prefixed helpers are omitted.
   `_mapreduce_loc!`; results land in host-mapped memory where `host_mapped_zeros` allows).
   Adapt rules on `KrylovSolver` and `Reducer` (a new one on the target). IMS mapping in
   docs/mf6_notes.md, accuracy and timing in docs/precision.md. Tests: krylov.
-  T4.3: `KrylovSettings` has `preconditioner` and `precond_options`, `KrylovSolver` a
-  `precond` field; unfused preconditioners via `precond_apply!` (one more dot per CG
-  iteration, or fused by `_precond_apply_dot!`), `_precond_record!` / `_precond_retry!`
-  after a solve (a failed solve is repeated once after a rebuild).
-- **solver/precond/precond.jl** (T4.3): preconditioner interface. `AbstractPreconditioner`,
-  `JacobiPreconditioner` (fused into the Krylov kernels), `precond_setup!`,
-  `precond_apply!`, `make_preconditioner`, `PRECONDITIONERS`. Tests: krylov, amg.
+  `KrylovSettings` has `preconditioner` and `precond_options`, `KrylovSolver` a `precond`
+  field. Non-Jacobi preconditioners run through `precond_apply!` between non-fused kernels
+  (`_cg_init_nf`, `_cg_update_nf`, `_bcgs_direction_nf`, `_bcgs_half_nf`; section
+  `precond_apply`; CG's `r·z` fused by `_precond_apply_dot!` where the preconditioner
+  does); `_precond_record!` / `_precond_retry!` after a solve (a failed solve is repeated
+  once after an AMG rebuild); `KrylovSolver(...; colors)` passes a host colouring.
+- **solver/precond/precond.jl** (T4.2, T4.3): preconditioner interface. `AbstractPreconditioner`,
+  `precond_setup!(P, solver, amat)` (per `solve!`, after scaling), `precond_apply!(z, P, r)`,
+  `JacobiPreconditioner` (wraps the solver's `minv`; fused path), `PRECONDITIONERS`
+  (`:jacobi`, `:chebyshev`, `:mc_sgs`, `:mc_ilu0`, `:amg`), `build_preconditioner` (the
+  constructor; `precond_options` as its keywords). Tests: krylov (unit/precond_test.jl), amg.
+- **solver/precond/chebyshev.jl** (T4.2): `ChebyshevPreconditioner` (scaled operator copy in
+  `Tp`, host interval `bounds`; options `degree`, `ratio`, `lanczos`, `safety`),
+  `lanczos_extremes`. Tests: krylov.
+- **solver/precond/multicolor.jl** (T4.2): host colouring `greedy_colors`,
+  `dis_parity_colors` (red–black), `grid_colors` (used by `PicardSolver`),
+  `is_valid_coloring`; `MulticolorPreconditioner` (`:sgs` / `:ilu0`; colour-ordered CSR copy
+  in `Tp`, per-colour kernels for the ILU0 factorisation and the sweeps; option `relax`,
+  MILU), `ncolors`. Tests: krylov.
 - **solver/precond/amg.jl** (T4.3): smoothed-aggregation AMG. `AMGOptions`,
   `AMGPreconditioner` (host Float64 setup: `_strength`, `_aggregate`, `_tentative`,
   `_smoother_matrix`, threaded `_spgemm`, `_build_hierarchy`; device `AMGLevel`s in `Tp`),
@@ -207,7 +228,7 @@ it. Underscore-prefixed helpers are omitted.
 - **gwf/model.jl**: one model on a device. `GwfModel{T}` (spec, conn, NpfSetup, CSR,
   NpfModel, LinearSystem, boundary packages, STO, ibound, offset heads `h`/`hold`, `res`,
   `δ`, `flowja`; Adapt, e.g. `adapt(backend, m)`, T3.1), `apply_period!(::GwfModel, kper)` (once per period: package period
-  data, STO, CHD ibound), `start_timestep!` (`rho`, `hold ← h`, CHD heads), `formulate!`
+  data, STO, CHD ibound, rebuilt only when a CHD package has new cells), `start_timestep!` (`rho`, `hold ← h`, CHD heads), `formulate!`
   (formulate, assemble, flux residual), `absolute_heads` (host Float64 `r + h'`). Tests:
   picard, run.
 - **solver/underrelax.jl**: `sln_underrelax`. `UnderRelaxation` (SIMPLE, COOLEY host
@@ -263,7 +284,9 @@ it. Underscore-prefixed helpers are omitted.
   `get_current_time` / `get_start_time` / `get_end_time` / `get_time_step`, `StepResult`;
   addresses `get_var_address`, `var_addresses`, `input_addresses`, `get_value_ptr` (host
   Float64 mirror, absolute; `device = true` for the engine array), `get_value`,
-  `set_value` (X, BOUND). Mirror sync rules in the file header. Tests: stepping.
+  `set_value` (X, BOUND). Mirror sync rules in the file header; BOUND and NODELIST
+  mirrors are versioned (T4.6: copied only when the engine values changed, dirty check by
+  memcmp). Tests: stepping.
 - **bmi.jl** (T3.3): BasicModelInterface methods on `Simulation` (`BMI.initialize`,
   `update`, `update_until`, time, variables, `get_value(_ptr)`, `set_value(_at_indices)`,
   grid 1 = model grid). Tests: stepping.
@@ -302,7 +325,7 @@ it. Underscore-prefixed helpers are omitted.
 - **hardware.jl** (T0.4): hardware baseline (stream, SpMV, dot, atomics).
 - **run.jl** (T4.1): benchmark harness: indus / continental / global5m, steady state + 30
   daily steps (`synthetic_simulation(...; ntransient)`), on a backend in `:double` and
-  `:single` (wall time per step, iterations, pool peak memory, SpMV GB/s, TimerOutputs
+  `:single`, with `precond=` preconditioners (wall time per step, iterations, pool peak memory, SpMV GB/s, TimerOutputs
   time split through `SyncTimer`) or with mf6 (serial, per-step times from stdout).
   T4.3: `precond=amg`, `amg=key:value,...` (`AMGOptions`), AMG hierarchy/setup table.
   Results: benchmark/results/<date>.md.

@@ -243,20 +243,20 @@ end
             riv = BoundaryPackage(TEST_BACKEND, Float64, byname["RIV"], conn, m.dis)
             apply_period!(riv, 1, r)
             n1 = red(1, 2, 2)
-            @test riv.bound_host[:, 1] == [240.0 - r[n1], 20.0, 235.0 - r[n1]]   # MULTIPLIER on cond
+            @test ModflowGPU.bound_values(riv, r)[:, 1] == [240.0 - r[n1], 20.0, 235.0 - r[n1]]   # MULTIPLIER on cond
             @test riv.boundname == ["R1", "R2", "R3", "R4"] || riv.boundname == ["r1", "r2", "r3", "r4"]
             drn = BoundaryPackage(TEST_BACKEND, Float64, byname["DRN"], conn, m.dis)
             apply_period!(drn, 1, r)
             n = red(1, 4, 3)
-            @test drn.bound_host[:, 5] == [230.0 - r[n], 6.0, -2.0]
+            @test ModflowGPU.bound_values(drn, r)[:, 5] == [230.0 - r[n], 6.0, -2.0]
             evt = BoundaryPackage(TEST_BACKEND, Float64, byname["EVT"], conn, m.dis)
             apply_period!(evt, 1, r)
             n = red(1, 5, 2)
-            @test size(evt.bound_host, 1) == 8
-            @test evt.bound_host[:, 1] == [245.0 - r[n], 0.001, 10.0, 0.9, 0.3, 0.6, 0.7, 0.2]
+            @test size(ModflowGPU.bound_values(evt, r), 1) == 8
+            @test ModflowGPU.bound_values(evt, r)[:, 1] == [245.0 - r[n], 0.001, 10.0, 0.9, 0.3, 0.6, 0.7, 0.2]
             evt1 = BoundaryPackage(TEST_BACKEND, Float64, byname["EVT1"], conn, m.dis)
             apply_period!(evt1, 1, r)
-            @test evt1.bound_host[:, 1] == [245.0 - r[red(1, 2, 5)], 0.003, 5.0, 1.0]   # MULTIPLIER on rate, PETM0 = 1
+            @test ModflowGPU.bound_values(evt1, r)[:, 1] == [245.0 - r[red(1, 2, 5)], 0.003, 5.0, 1.0]   # MULTIPLIER on rate, PETM0 = 1
         end
 
         @testset "EVT: highest active cell (no FIXED_CELL)" begin
@@ -267,7 +267,7 @@ end
             apply_period!(evta, 1, r; ibound = ibh)
             n21 = highest_active(conn, n11, ibh)
             @test evta.nodelist_host[1] == n21 == red(2, 1, 1)
-            @test evta.bound_host[1, 1] == m.dis.top[1, 1] - r[n21]   # offset from the moved cell
+            @test ModflowGPU.bound_values(evta, r)[1, 1] == m.dis.top[1, 1] - r[n21]   # offset from the moved cell
             evt1 = BoundaryPackage(TEST_BACKEND, Float64, byname["EVT1"], conn, m.dis)
             ibh[red(1, 2, 5)] = 0
             apply_period!(evt1, 1, r; ibound = ibh)

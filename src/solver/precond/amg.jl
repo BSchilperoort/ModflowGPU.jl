@@ -935,6 +935,8 @@ end
 
 function precond_setup!(P::AMGPreconditioner, solver, amat)
     csr = solver.csr
+    # The Jacobi diagonal of the scaled operator: the finest-level smoother.
+    _map!(P.backend, _setup_jacobi, P.n, solver.minv, solver.rowfac, solver.colfac, amat, csr.ia)
     op = _FineOp(amat, csr.ia, csr.ja, solver.rowfac, solver.colfac)
     P.fine = (op, solver.minv, solver, amat)
     if !P.built || P.rebuild || !P.options.reuse

@@ -51,7 +51,7 @@ function _workload_model(dir)
 end
 
 # The outer loop of a few steps with an IMS variant (inner solver, scaling,
-# orthogonalisation, under-relaxation), flows and budgets.
+# orthogonalisation, under-relaxation) and a preconditioner (T4.2, T4.3), flows and budgets.
 function _steps(sim, ims; pc...)
     spec = only(sim.models)
     m = M.GwfModel(BACKEND, T, spec, M.nper(sim.tdis))
@@ -81,12 +81,14 @@ function workload(dir)
     r = M.run(rundir; backend = BACKEND, precision = :single, outdir = joinpath(dir, "out"))
     r.T === T || error("expected a Float32 run")
     sim = M.load_simulation(rundir)
-    for v in IMS_VARIANTS
+    # (AMG separately below, with a small coarsest level.)
+    for v in IMS_VARIANTS, preconditioner in filter(!=(:amg), M.PRECONDITIONERS)
         ims = M.ImsSpec(;
             v..., outer_dvclose = 1.0e-5, outer_maximum = 50, inner_maximum = 200, inner_dvclose = 1.0e-6,
             inner_rclose = 1.0e-4, under_relaxation_gamma = 0.5, under_relaxation_theta = 0.7, under_relaxation_kappa = 0.1,
         )
-        m = _steps(sim, ims)
+        m = _steps(sim, ims; preconditioner)
+        preconditioner === :jacobi || continue
         # Other entry points: SpMV, the convenience reductions, the residual with bounds.
         y = similar(m.res)
         M.spmv!(y, m.sys.amat, m.csr, m.h)

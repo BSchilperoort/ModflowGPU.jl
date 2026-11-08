@@ -116,8 +116,10 @@ end
     _run_models() do name, rundir
         nmodels[] += 1
         @testset "$name" begin
-            # ex-gwf-hwell-a: Jacobi BiCGSTAB does not converge in :single (T2.8); AMG does (T4.3).
-            _run_parity(name, rundir; (name == "ex-gwf-hwell-a" ? (; preconditioner = :amg) : (;))...)
+            # ex-gwf-hwell-a: Jacobi BiCGSTAB does not converge in :single (T2.8); AMG does
+            # (T4.3), unless MFGPU_TEST_PRECONDITIONER chooses another preconditioner.
+            hwell_amg = name == "ex-gwf-hwell-a" && !haskey(ENV, "MFGPU_TEST_PRECONDITIONER")
+            _run_parity(name, rundir; preconditioner = hwell_amg ? :amg : RUN_PRECONDITIONER)
         end
     end
     @info "Run parity test: $(nmodels[]) model(s)"

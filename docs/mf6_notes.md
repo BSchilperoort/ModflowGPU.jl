@@ -78,16 +78,36 @@ Routines: `imslinear_ar`, `imslinear_ap` (`ImsLinear.f90`); `ims_base_cg`,
 (`ImsLinearSettings.f90`). Implementation: `src/solver/krylov.jl`
 (`KrylovSettings(::ImsSpec)`, `KrylovSolver`, `solve!`).
 
-| IMS input | MF6 | ModflowGPU (until Phase 4) |
+| IMS input | MF6 | ModflowGPU |
 | --- | --- | --- |
 | LINEAR_ACCELERATION CG (SIMPLE default) | PCG on `A` (negative definite active block) | PCG on `S·A`, `S = diag(sign(a_nn))` (`−A` on active rows); same iterates for the correction solve |
 | LINEAR_ACCELERATION BICGSTAB (MODERATE, COMPLEX default) | right-preconditioned BiCGSTAB | the same |
-| preconditioner: ILU0 (SIMPLE), MILU0 (RELAXATION_FACTOR > 0; MODERATE 0.97), ILUT/MILUT (PRECONDITIONER_LEVELS > 0; COMPLEX 5, drop tolerance 1e-4) | `resolve_ipc(level, relax)` | Jacobi, with a logged warning, unless the ModflowGPU option `preconditioner` is given (T4.3, below); the default for production is decided in T4.4 |
+| preconditioner: ILU0 (SIMPLE), MILU0 (RELAXATION_FACTOR > 0; MODERATE 0.97), ILUT/MILUT (PRECONDITIONER_LEVELS > 0; COMPLEX 5, drop tolerance 1e-4) | `resolve_ipc(level, relax)`, `ims_base_pcilu0` / `ims_base_ilu0a` in natural order | replaced by the ModflowGPU option `preconditioner` (keyword of `ModflowGPU.run` / `initialize`, stored in `KrylovSettings` with `precond_options`; T4.2, T4.3): `:jacobi` (default, with a logged warning), `:chebyshev`, `:mc_sgs`, `:mc_ilu0`, `:amg` (see below); the default is decided in T4.4 |
 | SCALING_METHOD NONE / DIAGONAL / L2NORM | `ims_base_scale` ISCL 0/1/2 (matrix scaled in place) | the same factors applied in the operator (the matrix is not modified); a warning for L2NORM with CG (the scaled matrix is nonsymmetric, as in MF6) |
-| REORDERING_METHOD RCM / MD | permutes the system before ILU | ignored (no effect with Jacobi or AMG), logged |
+| REORDERING_METHOD RCM / MD | permutes the system before ILU | ignored, logged (`:mc_*` use their own colour ordering; no effect with Jacobi or AMG) |
 | INNER_MAXIMUM, INNER_DVCLOSE, INNER_RCLOSE (+ STRICT, L2NORM_RCLOSE, RELATIVE_RCLOSE, L2NORM_RELATIVE_RCLOSE) | `ims_base_testcnvg` options 0–4, `ims_base_epfact` | the same, on the host in Float64 |
 | NUMBER_ORTHOGONALIZATIONS (COMPLEX default 2) | residual recomputed from `x` every `north` iterations | the same |
 | initial guess | the current heads `x` | zero (correction solve `A·δ = res`, PLAN.md 3.7 rule 3); the residuals, `L2NORM0` and updates are the same quantities |
+
+Preconditioners (T4.2, `src/solver/precond/`; all on the scaled, for CG sign-adjusted
+operator `Â`, set up at every `solve!` as `imslinear_ap` does):
+
+- `:mc_ilu0`: ILU(0) of `Â` (IKJ, `ims_base_pcilu0` without DELTA restarts) in
+  **multicolour order** instead of MF6's natural order: DIS grids red–black by
+  `(i + j + k)` parity, other grids (and DIS with pass-through cells) greedy colours. Each
+  colour is one parallel kernel in the factorisation and in the forward/backward solves
+  (`ims_base_ilu0a`). Red–black ILU0 is a weaker preconditioner than natural-order ILU0
+  (about 2.5× MF6's inner iterations on the synthetic models), but runs in parallel.
+  Pivots that change sign or vanish are replaced by the unfactorised diagonal (MF6
+  restarts with a larger DELTA). MILU relaxation (`precond_options = (; relax)`) is
+  implemented but off: IMS RELAXATION_FACTOR is not used, and on red–black orderings it
+  did not help (indus: 1055 → 1274 inner iterations at 0.97).
+- `:mc_sgs`: symmetric Gauss–Seidel in the same colour order (`(D+L)·D⁻¹·(D+U)`).
+- `:chebyshev`: Jacobi-preconditioned Chebyshev polynomial, degree 4 on
+  `[λmax/30, λmax]`, `λmax` from 10 Lanczos (Jacobi-PCG) steps × 1.1, capped by Gershgorin
+  (`precond_options` `degree`, `ratio`, `lanczos`, `safety`).
+- All are SPD for SPD `Â` (CG). The iterates differ from MF6's (other preconditioner);
+  the IMS convergence tests are unchanged.
 
 Semantics kept from MF6:
 
@@ -107,13 +127,11 @@ Semantics kept from MF6:
   → 103 / 5722).
 - `L2NORM0 == 0` gives zero iterations and convergence.
 
-**Preconditioner option (T4.3).** Not an MF6 input: `ModflowGPU.run`, `initialize` (and
-`PicardSettings`, `KrylovSettings`) take `preconditioner = :jacobi | :amg` and
-`precond_options` (a NamedTuple; for `:amg` the keywords of `AMGOptions`). With
-`preconditioner = nothing` (the default) IMS's ILU0/MILU0/ILUT map to Jacobi with a
-warning, as before; a given preconditioner replaces IMS's (logged). Interface:
-`src/solver/precond/precond.jl` (`precond_setup!` once per linear solve after the scaling,
-`precond_apply!` whole-vector `z = M⁻¹·r`); Jacobi stays fused into the CG/BiCGSTAB kernels.
+**Preconditioner options (T4.3).** `precond_options` (a NamedTuple, next to
+`preconditioner` in `ModflowGPU.run`, `initialize`, `PicardSettings`, `KrylovSettings`) are
+the keywords of the preconditioner's constructor (`build_preconditioner`): for `:amg` those
+of `AMGOptions`, for `:chebyshev` `degree`, `ratio`, `lanczos`, `safety`, for `:mc_ilu0`
+`relax`; Jacobi has none.
 
 `:amg` is smoothed-aggregation AMG (`src/solver/precond/amg.jl`; MF6 has no AMG): host
 setup in Float64 on the scaled (for CG sign-adjusted) operator, V-cycle on the device with

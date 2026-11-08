@@ -82,14 +82,20 @@ data of every stress package (host, Float64, then copied), the storage setting a
 IBOUND of the constant heads (copied to the device when it changed).
 """
 function apply_period!(m::GwfModel, kper::Integer)
+    # The IBOUND of the constant heads depends on the CHD cells only (T4.6: not rebuilt
+    # when no CHD package has new cells).
+    chd = m.kper == 0
     for pkg in m.packages
-        apply_period!(pkg, kper, m.setup.r)
+        st = _apply_period!(pkg, kper, m.setup.r, nothing)
+        chd |= st === :structure && boundary_kind(pkg) === :CHD
     end
     isnothing(m.sto) || apply_period!(m.sto, kper)
-    ib = boundary_ibound(m.conn, m.packages)
-    if ib != m.ibound_host
-        m.ibound_host = ib
-        copyto!(m.ibound, ib)
+    if chd
+        ib = boundary_ibound(m.conn, m.packages)
+        if ib != m.ibound_host
+            m.ibound_host = ib
+            copyto!(m.ibound, ib)
+        end
     end
     m.kper = kper
     return m

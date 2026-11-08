@@ -61,6 +61,8 @@ include("solver/csr.jl")
 include("solver/precond/precond.jl")
 include("solver/krylov.jl")
 include("solver/precond/amg.jl")
+include("solver/precond/chebyshev.jl")
+include("solver/precond/multicolor.jl")
 
 # Time stepping, the model on a device, outer iterations, flows and budgets
 include("timing.jl")
