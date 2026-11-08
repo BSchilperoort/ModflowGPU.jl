@@ -14,7 +14,7 @@
 #   second-to-last colour down (the last colour's backward update equals its forward one).
 #   SPD for SPD `Â`, so it can precondition CG.
 # - `:ilu0`: ILU(0) of `Â` in colour order (IKJ, as ims_base_pcilu0 in MF6's natural order,
-#   without MILU relaxation), factorised colour by colour on the device at every setup;
+#   with optional MILU relaxation, `MULTICOLOR_OPTIONS`), factorised colour by colour on the device at every setup;
 #   applied as a forward (unit lower) and a backward (upper) solve per colour
 #   (ims_base_ilu0a). For symmetric `Â`, `L·U = L·D·Lᵀ` is symmetric. A pivot that changes
 #   sign or vanishes is replaced by the unfactorised diagonal (MF6 restarts the
@@ -98,6 +98,14 @@ function grid_colors(conn::Connectivity, dis)
 end
 
 """
+    MULTICOLOR_OPTIONS
+
+Settings of `:mc_ilu0` (a `Ref` to a NamedTuple, read when the preconditioner is built):
+`relax`, the MILU relaxation factor (0: ILU0; IMS RELAXATION_FACTOR).
+"""
+const MULTICOLOR_OPTIONS = Ref((; relax = 0.0))
+
+"""
     MulticolorPreconditioner{Tp}
 
 Multicolour symmetric Gauss–Seidel (`kind = :sgs`) or ILU0 (`:ilu0`) on the scaled
@@ -105,9 +113,9 @@ operator (src/solver/precond/multicolor.jl). Host: `cptr` (rows `cptr[c]:cptr[c+
 the coloured CSR have colour `c`). Device (Int32): `perm` (coloured row → node), `iperm`,
 `cia`, `cja`, `cup` (first entry of a higher colour in each row), `csrc` (position of each
 entry in the original CSR); in `Tp`: `vals` (`Â` or the ILU factors) and `dinv` (inverse
-diagonal or pivots, by coloured row).
+diagonal or pivots, by coloured row); `relax` (MILU relaxation factor, `MULTICOLOR_OPTIONS`).
 
-    MulticolorPreconditioner(backend, csr, kind; Ts, Tp, colors = nothing)
+    MulticolorPreconditioner(backend, csr, kind; Ts, Tp, colors = nothing, relax)
 
 `colors` is a host vector of colours `1:ncolors` per node (`greedy_colors` of the structure
 when `nothing`).
@@ -124,11 +132,15 @@ struct MulticolorPreconditioner{VI <: AbstractVector{Int32}, VP <: AbstractVecto
     csrc::VI
     vals::VP
     dinv::VP
+    relax::Float64
 end
 
 ncolors(P::MulticolorPreconditioner) = length(P.cptr) - 1
 
-function MulticolorPreconditioner(backend::Backend, csr::CsrStructure, kind::Symbol; Ts::Type, Tp::Type, colors = nothing)
+function MulticolorPreconditioner(
+        backend::Backend, csr::CsrStructure, kind::Symbol; Ts::Type, Tp::Type, colors = nothing,
+        relax::Real = MULTICOLOR_OPTIONS[].relax,
+    )
     kind in (:sgs, :ilu0) || throw(ArgumentError("unknown multicolour preconditioner $kind (expected :sgs or :ilu0)"))
     ia = Array(csr.ia)
     ja = Array(csr.ja)
@@ -170,13 +182,13 @@ function MulticolorPreconditioner(backend::Backend, csr::CsrStructure, kind::Sym
     dev(x) = _device_copy(backend, x)
     return MulticolorPreconditioner(
         csr, kind === :ilu0, cptr, dev(Int32.(perm)), dev(iperm), dev(cia), dev(cja), dev(cup), dev(csrc),
-        KernelAbstractions.zeros(backend, Tp, length(ja)), KernelAbstractions.zeros(backend, Tp, n),
+        KernelAbstractions.zeros(backend, Tp, length(ja)), KernelAbstractions.zeros(backend, Tp, n), Float64(relax),
     )
 end
 
 Adapt.adapt_structure(to, P::MulticolorPreconditioner) = MulticolorPreconditioner(
     adapt(to, P.csr), P.ilu, copy(P.cptr), adapt(to, P.perm), adapt(to, P.iperm), adapt(to, P.cia), adapt(to, P.cja),
-    adapt(to, P.cup), adapt(to, P.csrc), adapt(to, P.vals), adapt(to, P.dinv),
+    adapt(to, P.cup), adapt(to, P.csrc), adapt(to, P.vals), adapt(to, P.dinv), P.relax,
 )
 
 # --- setup
@@ -199,46 +211,49 @@ Adapt.adapt_structure(to, P::MulticolorPreconditioner) = MulticolorPreconditione
     return nothing
 end
 
-# vals[jj] -= l·u_mj when column j = cja[jj] is in the upper part m0:m1 of row m.
-@inline function _ilu_sub!(vals, jj, cja, l, m0, m1)
+# Position of column j among the diagonal i0 and the entries j0:i1 of a coloured row (0
+# when absent).
+@inline function _find_col(cja, j, i0, j0, i1)
     @inbounds begin
-        j = cja[jj]
-        for mm in m0:m1
-            if cja[mm] == j
-                vals[jj] -= l * vals[mm]
-                return nothing
-            end
+        cja[i0] == j && return i0
+        for jj in j0:i1
+            cja[jj] == j && return jj
         end
     end
-    return nothing
+    return zero(i0)
 end
 
-# ILU0 (IKJ) of coloured row i = off + k, after the rows of all lower colours.
-@inline function _mc_ilu_row(k, off, vals, dinv, iperm, cia, cja, cup)
+# ILU0 (IKJ) of coloured row i = off + k, after the rows of all lower colours
+# (ims_base_pcilu0: fill outside the pattern is dropped, and with MILU relaxation `relax`
+# its row sum `rs` is taken off the pivot, `tl = d − relax·rs`).
+@inline function _mc_ilu_row(k, off, vals, dinv, iperm, cia, cja, cup, relax)
     Tp = eltype(vals)
     @inbounds begin
         i = off + k
         i0 = cia[i]
         i1 = cia[i + 1] - Int32(1)
         d0 = vals[i0]
+        rs = zero(Tp)
         for kk in (i0 + Int32(1)):(cup[i] - Int32(1))
             im = iperm[cja[kk]]
             l = vals[kk] * dinv[im]
             vals[kk] = l
-            m0 = cup[im]
-            m1 = cia[im + 1] - Int32(1)
-            # a_ij -= l·u_mj for the remaining entries of row i (and its diagonal) that
-            # are in the upper part of row m.
-            _ilu_sub!(vals, i0, cja, l, m0, m1)
-            for jj in (kk + Int32(1)):i1
-                _ilu_sub!(vals, jj, cja, l, m0, m1)
+            # a_ij -= l·u_mj for the upper entries j of row m: in row i they are its
+            # diagonal or after kk (the earlier entries have colours <= that of m).
+            for mm in cup[im]:(cia[im + 1] - Int32(1))
+                jj = _find_col(cja, cja[mm], i0, kk + Int32(1), i1)
+                if jj != zero(jj)
+                    vals[jj] -= l * vals[mm]
+                else
+                    rs += l * vals[mm]
+                end
             end
         end
-        d = vals[i0]
+        d = vals[i0] - relax * rs
         if d == zero(Tp) || signbit(d) != signbit(d0)
             d = d0
-            vals[i0] = d
         end
+        vals[i0] = d
         dinv[i] = d != zero(Tp) ? one(Tp) / d : one(Tp)
     end
     return nothing
@@ -251,7 +266,7 @@ function precond_setup!(P::MulticolorPreconditioner, solver, amat)
     if P.ilu
         for c in 1:ncolors(P)
             off = Int32(P.cptr[c] - 1)
-            _map!(backend, _mc_ilu_row, P.cptr[c + 1] - P.cptr[c], off, P.vals, P.dinv, P.iperm, P.cia, P.cja, P.cup)
+            _map!(backend, _mc_ilu_row, P.cptr[c + 1] - P.cptr[c], off, P.vals, P.dinv, P.iperm, P.cia, P.cja, P.cup, eltype(P.vals)(P.relax))
         end
     end
     return P
