@@ -34,10 +34,11 @@ through the same engine checks.
 
 Accepted with a different behaviour (logged warnings, not errors):
 
-- Preconditioner: always Jacobi. ILU0, MILU0 (RELAXATION_FACTOR > 0) and ILUT / MILUT
+- Preconditioner: ILU0, MILU0 (RELAXATION_FACTOR > 0) and ILUT / MILUT
   (PRECONDITIONER_LEVELS > 0, PRECONDITIONER_DROP_TOLERANCE) are accepted and replaced by
-  Jacobi with a warning until Phase 4 (T4.2 smoothers, T4.3 AMG). RED_BLACK_ORDERING is
-  accepted (it only affects MF6's ILU).
+  the ModflowGPU option `preconditioner` (`ModflowGPU.run` / `initialize` keyword):
+  `:jacobi` (default, with a warning), `:chebyshev`, `:mc_sgs`, `:mc_ilu0` (multicolour
+  ILU0, T4.2; docs/mf6_notes.md). RED_BLACK_ORDERING is accepted (it only affects MF6's ILU).
 - Backtracking (BACKTRACKING_* and COMPLEXITY COMPLEX's implicit backtracking): accepted,
   not applied, with a warning (T6.2).
 - `:single`: closures below the Float32 floors (`FLOAT32_CLOSURES`, docs/precision.md) are
