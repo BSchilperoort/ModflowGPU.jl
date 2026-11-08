@@ -417,7 +417,7 @@ marked; their merge commits on `main` hold the card reports.
   - T3.3 Stepping API (done)
   - T3.4 Synthetic coupling-model generator (done)
 - **Phase 4: solver performance**: [docs/plan/phase4.md](docs/plan/phase4.md)
-  - T4.1 Benchmark harness
+  - T4.1 Benchmark harness (done)
   - T4.2 Chebyshev and multicolour smoothers
   - T4.3 Algebraic multigrid preconditioner
   - T4.4 `:mixed` preset and production default
