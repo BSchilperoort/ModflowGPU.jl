@@ -46,4 +46,4 @@ commit here, in `validation/fetch_reference.sh` and in
 
 | Patch | Card | Description |
 | --- | --- | --- |
-| (none yet) | | |
+| `0001-T5.1-engine-switch.patch` | T5.1 | `[sources]` ModflowGPU; `[solver] engine = "mf6" \| "gpu"`, `backend`, `precision`, `preconditioner` (`"auto"`); GPU engine built in memory (`build_spec`, builder API) and run through the stepping API; RCH per unit area; river stages absolute into the BOUND mirror (offsets from `GWF/HREF`); tests with both engines (`MODFLOWCOUPLING_ENGINES`), Manifest.toml updated |
