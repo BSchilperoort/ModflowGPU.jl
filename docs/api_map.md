@@ -16,7 +16,7 @@ it. Underscore-prefixed helpers are omitted.
   overrides `supports_float64` where needed; AMDGPUExt adds `host_mapped_zeros` and
   `pin_memory!` (registered host memory; AMDGPU >= 2.10 only, older versions copy). Tests: backend (GPU file with `MFGPU_TEST_BACKEND`).
 - **precision.jl**: precision presets (PLAN.md 3.7). `resolve_precision(backend, preset)`
-  → `(; T, Ts, Tp)`, `PRECISION_PRESETS`, `supports_float64` (extension hook). Tests: precision, kernel.
+  → `(; T, Ts, Tp)` (`:double`, `:mixed` = Float64 with Float32 `Tp` since T4.4, `:single`; `:auto` = `:mixed` with Float64, else `:single`), `PRECISION_PRESETS`, `supports_float64` (extension hook). Tests: precision, kernel.
 - **instrument.jl** (T4.1): optional timing of the hot loop. `@timed_section name expr`
   (one `Ref` load and a branch when off; no closure), `set_section_timer!` /
   `section_timer`, hooks `section_begin` / `section_end` (methods come from the timer type,
@@ -180,7 +180,7 @@ it. Underscore-prefixed helpers are omitted.
   (PLAN.md 3.7 rules 3–4; ImsLinearBase.f90 `ims_base_cg`, `ims_base_bcgs`,
   `ims_base_scale`, `ims_base_testcnvg`, `ims_base_epfact`). `KrylovSettings` (host; from
   an `ImsSpec`: LINEAR_ACCELERATION, INNER_*, rclose options, NUMBER_ORTHOGONALIZATIONS,
-  SCALING_METHOD, `preconditioner`; ILU0/MILU0/ILUT → `preconditioner`, Jacobi by default with a warning), `ims_preconditioner`
+  SCALING_METHOD, `preconditioner`; ILU0/MILU0/ILUT → `preconditioner`, `:auto` = `:mc_ilu0` by default since T4.4), `ims_preconditioner`
   (`resolve_ipc`), `ims_testcnvg`, `ims_epfact`, `KrylovSolver{Ts,Tp,Ta}` (device
   workspace), `solve!(δ, solver, amat, res; kstp)` → `KrylovResult` (converged,
   iterations, status, dvmax, rmax, l2norm0, l2norm). Device reductions: `Reducer`,
@@ -199,7 +199,8 @@ it. Underscore-prefixed helpers are omitted.
 - **solver/precond/precond.jl** (T4.2, T4.3): preconditioner interface. `AbstractPreconditioner`,
   `precond_setup!(P, solver, amat)` (per `solve!`, after scaling), `precond_apply!(z, P, r)`,
   `JacobiPreconditioner` (wraps the solver's `minv`; fused path), `PRECONDITIONERS`
-  (`:jacobi`, `:chebyshev`, `:mc_sgs`, `:mc_ilu0`, `:amg`), `build_preconditioner` (the
+  (`:jacobi`, `:chebyshev`, `:mc_sgs`, `:mc_ilu0`, `:amg`), `DEFAULT_PRECONDITIONER` /
+  `resolve_preconditioner` (`:auto` → `:mc_ilu0`, T4.4), `build_preconditioner` (the
   constructor; `precond_options` as its keywords). Tests: krylov (unit/precond_test.jl), amg.
 - **solver/precond/chebyshev.jl** (T4.2): `ChebyshevPreconditioner` (scaled operator copy in
   `Tp`, host interval `bounds`; options `degree`, `ratio`, `lanczos`, `safety`),

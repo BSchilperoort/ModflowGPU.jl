@@ -37,8 +37,8 @@ Accepted with a different behaviour (logged warnings, not errors):
 - Preconditioner: ILU0, MILU0 (RELAXATION_FACTOR > 0) and ILUT / MILUT
   (PRECONDITIONER_LEVELS > 0, PRECONDITIONER_DROP_TOLERANCE) are accepted and replaced by
   the ModflowGPU option `preconditioner` (`ModflowGPU.run` / `initialize` keyword):
-  `:jacobi` (default, with a warning), `:chebyshev`, `:mc_sgs`, `:mc_ilu0` (multicolour
-  ILU0, T4.2), `:amg` (smoothed-aggregation AMG, T4.3), with `precond_options`
+  `:auto` (default: `:mc_ilu0`, T4.4; logged as a message for ILU0, a warning for the
+  others), `:jacobi`, `:chebyshev`, `:mc_sgs`, `:mc_ilu0` (multicolour ILU0, T4.2), `:amg` (smoothed-aggregation AMG, T4.3), with `precond_options`
   (docs/mf6_notes.md). RED_BLACK_ORDERING is accepted (it only affects MF6's ILU).
 - Backtracking (BACKTRACKING_* and COMPLEXITY COMPLEX's implicit backtracking): accepted,
   not applied, with a warning (T6.2).
@@ -67,7 +67,7 @@ Accepted with a different behaviour (logged warnings, not errors):
 | Feature | Status |
 | --- | --- |
 | Formulation | confined (ICELLTYPE 0), Picard outer iterations, flux-form residual, heads as offsets (PLAN.md 3.7) |
-| Precision presets | `:double`, `:single`, `:auto` (`:mixed` arrives with T4.4) |
+| Precision presets | `:double`, `:mixed` (T4.4), `:single`, `:auto` (`:mixed` with Float64, else `:single`) |
 | Backends | CPU (KernelAbstractions), ROCm (tested on the RX 7800 XT); CUDA, Metal, oneAPI, OpenCL registered but untested |
 | Output | HDS, CBC (FLOW-JA-FACE, STO-SS, package lists), listing budget tables and PRINT HEAD, DIS GRB |
 | Stepping | libmf6/XMI-like stepping API and BMI (`get_value_ptr`, `set_value` of X and BOUND), T3.3 |

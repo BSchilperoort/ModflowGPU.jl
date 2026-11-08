@@ -15,8 +15,8 @@ ModflowGPU.supports_float64(::FakeNoFloat64Backend) = false
 
     @testset "Backend with Float64" begin
         for backend in (CPU(), FakeFloat64Backend())
-            @test ModflowGPU.resolve_precision(backend) == double
-            @test ModflowGPU.resolve_precision(backend, :auto) == double
+            @test ModflowGPU.resolve_precision(backend) == mixed  # T4.4 default
+            @test ModflowGPU.resolve_precision(backend, :auto) == mixed
             @test ModflowGPU.resolve_precision(backend, :double) == double
             @test ModflowGPU.resolve_precision(backend, :single) == single
             @test ModflowGPU.resolve_precision(backend, "single") == single

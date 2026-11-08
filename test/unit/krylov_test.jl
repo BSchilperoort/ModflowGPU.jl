@@ -219,12 +219,15 @@ _tight(T, method; kw...) = KrylovSettings(;
         @test ims_preconditioner(5, 0.5) === :milut
         for (cx, method, pc, north) in ((:simple, :cg, "ILU0", 0), (:moderate, :bicgstab, "MILU0", 0), (:complex, :bicgstab, "ILUT", 2))
             ims = ims_defaults(cx)
-            st = @test_logs (:warn, Regex("preconditioner $pc .*Jacobi")) KrylovSettings(ims)
+            level = pc == "ILU0" ? :info : :warn  # the default mc_ilu0 is ILU0 in red–black order
+            st = @test_logs (level, Regex("preconditioner $pc is replaced by mc_ilu0")) KrylovSettings(ims)
+            @test st.preconditioner === ModflowGPU.DEFAULT_PRECONDITIONER === :mc_ilu0
+            @test (@test_logs (:info, Regex("$pc replaced by the ModflowGPU preconditioner jacobi")) KrylovSettings(ims; preconditioner = :jacobi)).preconditioner === :jacobi
             @test st.method === method && st.north == north && st.maxiter == ims.inner_maximum
             @test st.dvclose == ims.inner_dvclose && st.rclose == ims.inner_rclose && st.icnvgopt == 0
         end
         ims = ImsSpec(; rclose_option = :l2norm_relative, scaling_method = :diagonal, reordering_method = :rcm)
-        st = @test_logs (:warn,) (:info, r"REORDERING_METHOD RCM") KrylovSettings(ims)
+        st = @test_logs (:info,) (:info, r"REORDERING_METHOD RCM") KrylovSettings(ims)
         @test st.icnvgopt == 4 && st.scaling === :diagonal
         @test_throws ArgumentError KrylovSettings(; method = :gmres)
         @test_throws ArgumentError KrylovSettings(; rclose = 0.0)

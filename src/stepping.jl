@@ -110,7 +110,7 @@ Base.show(io::IO, s::Simulation) = print(
 """
     initialize(simdir or spec::SimulationSpec; backend = CPU(), precision = :auto,
                outdir = simdir, closures = nothing, write_output = true,
-               preconditioner = :jacobi, precond_options = (;)) -> Simulation
+               preconditioner = :auto, precond_options = (;)) -> Simulation
 
 Load the simulation (one GWF model with one IMS solution), build the model, the outer
 solver and the budget accumulator on `backend` in `precision` (`resolve_precision`), and
@@ -119,7 +119,7 @@ open the output files (`write_output`; see `ModflowGPU.run` for the keywords, in
 """
 function initialize(
         simdir::AbstractString; backend::Backend = CPU(), precision::Symbol = :auto, outdir::AbstractString = simdir,
-        closures = nothing, write_output::Bool = true, preconditioner::Symbol = :jacobi,
+        closures = nothing, write_output::Bool = true, preconditioner::Symbol = :auto,
         precond_options::NamedTuple = (;),
     )
     return initialize(load_simulation(simdir); backend, precision, outdir, closures, write_output, preconditioner, precond_options)
@@ -127,7 +127,7 @@ end
 
 function initialize(
         sim::SimulationSpec; backend::Backend = CPU(), precision::Symbol = :auto, outdir::AbstractString = sim.simdir,
-        closures = nothing, write_output::Bool = true, preconditioner::Symbol = :jacobi,
+        closures = nothing, write_output::Bool = true, preconditioner::Symbol = :auto,
         precond_options::NamedTuple = (;),
     )
     (length(sim.models) == 1 && isempty(sim.exchanges)) ||

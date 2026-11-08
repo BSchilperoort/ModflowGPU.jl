@@ -237,8 +237,12 @@ end
         dir = joinpath(@__DIR__, "..", "models", "coupling_rde")
         for_each_precision(; presets = SOLVER_TEST_PRESETS) do p
             mktempdir() do tmp
-                ref = ModflowGPU.run(dir; backend = TEST_BACKEND, precision = p.preset, outdir = tmp, write_output = false)
+                ref = ModflowGPU.run(dir; backend = TEST_BACKEND, precision = p.preset, outdir = tmp, write_output = false, preconditioner = :jacobi)
                 @test ref.converged
+                # the default (:auto) is mc_ilu0
+                ra = ModflowGPU.run(dir; backend = TEST_BACKEND, precision = p.preset, write_output = false)
+                rm = ModflowGPU.run(dir; backend = TEST_BACKEND, precision = p.preset, write_output = false, preconditioner = :mc_ilu0)
+                @test ra.heads == rm.heads && [s.outer.inner for s in ra.steps] == [s.outer.inner for s in rm.steps]
                 for kind in (_NEW_PRECONDITIONERS..., :amg)
                     r = ModflowGPU.run(dir; backend = TEST_BACKEND, precision = p.preset, outdir = tmp, write_output = false, preconditioner = kind)
                     @test r.converged

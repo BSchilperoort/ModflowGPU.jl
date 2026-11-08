@@ -20,11 +20,12 @@
 # - `ims_base_residual` for NUMBER_ORTHOGONALIZATIONS (recompute the residual every
 #   `north` iterations).
 #
-# The preconditioner is Jacobi by default, fused into the update kernels (`_precond`).
-# Other preconditioners (`KrylovSettings(; preconditioner)`, src/solver/precond/) are set
-# up by `precond_setup!` and applied by `precond_apply!` between non-fused kernels. IMS's
-# ILU0, MILU0 and ILUT (`resolve_ipc`) map to Jacobi with a warning unless a preconditioner
-# is chosen (`KrylovSettings(::ImsSpec)`). REORDERING_METHOD only changes the ILU factors
+# Jacobi (the default of `KrylovSettings(; ...)`) is fused into the update kernels
+# (`_precond`). Other preconditioners (`KrylovSettings(; preconditioner)`,
+# src/solver/precond/) are set up by `precond_setup!` and applied by `precond_apply!`
+# between non-fused kernels. IMS's ILU0, MILU0 and ILUT (`resolve_ipc`) map to
+# `DEFAULT_PRECONDITIONER` (`:mc_ilu0`, T4.4) unless a preconditioner is chosen
+# (`KrylovSettings(::ImsSpec)`). REORDERING_METHOD only changes the ILU factors
 # in MF6 and is ignored.
 #
 # Precision: vectors in `Ts`, the preconditioner in `Tp`, and every dot product and norm
@@ -327,7 +328,7 @@ end
     KrylovSettings(; method = :cg, maxiter = 50, dvclose = 1e-3, rclose = 0.1,
                    rclose_option = :infinity_norm, north = 0, scaling = :none,
                    preconditioner = :jacobi, precond_options = (;))
-    KrylovSettings(ims::ImsSpec; preconditioner = :jacobi, precond_options = (;))
+    KrylovSettings(ims::ImsSpec; preconditioner = :auto, precond_options = (;))
 
 Inner solver settings (host): `method` (`:cg` or `:bicgstab`, IMS LINEAR_ACCELERATION),
 `maxiter` (INNER_MAXIMUM), `dvclose` (INNER_DVCLOSE), `rclose` (INNER_RCLOSE),
@@ -340,8 +341,10 @@ NamedTuple of keywords for its constructor, see `build_preconditioner`).
 
 From an `ImsSpec` (with its COMPLEXITY defaults already applied by the loader), IMS's
 preconditioner (`resolve_ipc`: ILU0, MILU0 when RELAXATION_FACTOR > 0, ILUT/MILUT when
-PRECONDITIONER_LEVELS > 0) is replaced by `preconditioner`, with a logged warning for the
-default Jacobi, and REORDERING_METHOD is ignored with a logged message. See
+PRECONDITIONER_LEVELS > 0) is replaced by `preconditioner`; `:auto` (the default) is
+`DEFAULT_PRECONDITIONER` (`:mc_ilu0`), logged as a message for ILU0 and as a warning for
+the others (their relaxation and fill levels are not used). REORDERING_METHOD is ignored
+with a logged message. See
 docs/mf6_notes.md (IMS linear solver mapping).
 """
 struct KrylovSettings
@@ -392,10 +395,13 @@ MF6's preconditioner for PRECONDITIONER_LEVELS and RELAXATION_FACTOR
 """
 ims_preconditioner(levels, relax) = levels > 0 ? (relax > 0 ? :milut : :ilut) : (relax > 0 ? :milu0 : :ilu0)
 
-function KrylovSettings(ims::ImsSpec; preconditioner::Symbol = :jacobi, precond_options::NamedTuple = (;))
+function KrylovSettings(ims::ImsSpec; preconditioner::Symbol = :auto, precond_options::NamedTuple = (;))
     pc = ims_preconditioner(ims.preconditioner_levels, ims.relaxation_factor)
-    if preconditioner === :jacobi
-        @warn "IMS preconditioner $(uppercase(String(pc))) is replaced by Jacobi (the default; see the `preconditioner` option)" ims.file
+    if preconditioner === :auto
+        preconditioner = resolve_preconditioner(preconditioner)
+        msg = "IMS preconditioner $(uppercase(String(pc))) is replaced by $preconditioner (multicolour ILU0 in red–black order, the default; see the `preconditioner` option)"
+        # ILU0 maps to ILU0 in another ordering; MILU0 / ILUT / MILUT lose their options.
+        pc === :ilu0 ? (@info msg ims.file) : (@warn msg ims.file)
     else
         @info "IMS preconditioner $(uppercase(String(pc))) replaced by the ModflowGPU preconditioner $preconditioner" ims.file
     end
