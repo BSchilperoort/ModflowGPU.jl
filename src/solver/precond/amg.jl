@@ -8,7 +8,7 @@
 # `B = 1 ./ colfac` (A's is the constant vector).
 #
 # Setup on the host, in Float64 (`_build_hierarchy`), from a copy of `Â`:
-# 1. strength: `j` is a strong neighbour of `i` when `|â_ij| ≥ θ·√|â_ii·â_jj|` (rows
+# 1. strength: `j` is a strong neighbour of `i` when `|â_ij| ≥ θ·max_k |â_ik|` (rows
 #    without off-diagonal entries, such as constant heads, are isolated and never
 #    aggregated). With the strong vertical coupling of 2-layer models only the vertical
 #    connections are strong at the finest level, so the first level aggregates each
@@ -22,7 +22,7 @@
 #    (Gershgorin bound of ρ).
 # 5. Galerkin coarse operator `A_c = R·A·P` with `R = Pᵀ` (threaded Gustavson products).
 # 6. repeat until `max_coarse` nodes; the coarsest level is solved with a dense inverse.
-#    `ρ(D⁻¹A)` of each level (power iteration, × 1.1) bounds the smoother interval.
+#    The Gershgorin bound of `ρ(D⁻¹A)` of each level gives the smoother interval.
 #
 # Device (KA kernels, data in `Tp`): the V-cycle with a Chebyshev (default) or damped
 # Jacobi smoother on `D⁻¹A`, the same polynomial before and after the coarse correction so
@@ -30,13 +30,17 @@
 # dense coarsest solve. The finest level uses the current `Â` itself (the Krylov operator,
 # `_op_row`) and the solver's Jacobi diagonal.
 #
-# Reuse: the aggregates and prolongators are kept, and each `precond_setup!` (once per
-# outer iteration) recomputes only the Galerkin products `R·A·P` on the device from the
-# current matrix (`galerkin_kernel!`, accumulated in Float64 where the backend has it,
-# rule 4), plus the dense coarsest inverse on the host. The hierarchy is rebuilt on the
-# host when a solve needs more than `rebuild_factor` times the inner iterations of the
-# first solve after the last build (at least `rebuild_min` more), and before a failed
-# solve is repeated (`_precond_retry!`).
+# Reuse: the aggregates (and the strong mask, B and the tentative prolongators) are kept
+# across outer iterations and time steps. When the matrix changed since the last update
+# (row signatures, `update_tol`), `precond_setup!` recomputes on the device the smoothed
+# prolongators (`_update_prolongator!`), the Galerkin products `R·A·P`
+# (`galerkin_kernel!`, accumulated in Float64 where the backend has it, rule 4), the
+# Gershgorin bounds, and on the host the dense coarsest inverse. With the default
+# `strength = :offdiag` the aggregates depend only on the off-diagonals, which are
+# constant for confined models. The hierarchy is rebuilt on the host when a solve takes
+# more than `rebuild_factor` times the inner iterations of the first solve after the last
+# build (at least `rebuild_min` more), and before a failed solve is repeated
+# (`_precond_retry!`).
 
 """
     AMGOptions(; theta = 0.08, strength = :offdiag, smoother = :chebyshev, degree = 3,

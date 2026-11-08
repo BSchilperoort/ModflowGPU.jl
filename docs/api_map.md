@@ -181,6 +181,23 @@ it. Underscore-prefixed helpers are omitted.
   `_mapreduce_loc!`; results land in host-mapped memory where `host_mapped_zeros` allows).
   Adapt rules on `KrylovSolver` and `Reducer` (a new one on the target). IMS mapping in
   docs/mf6_notes.md, accuracy and timing in docs/precision.md. Tests: krylov.
+  T4.3: `KrylovSettings` has `preconditioner` and `precond_options`, `KrylovSolver` a
+  `precond` field; unfused preconditioners via `precond_apply!` (one more dot per CG
+  iteration, or fused by `_precond_apply_dot!`), `_precond_record!` / `_precond_retry!`
+  after a solve (a failed solve is repeated once after a rebuild).
+- **solver/precond/precond.jl** (T4.3): preconditioner interface. `AbstractPreconditioner`,
+  `JacobiPreconditioner` (fused into the Krylov kernels), `precond_setup!`,
+  `precond_apply!`, `make_preconditioner`, `PRECONDITIONERS`. Tests: krylov, amg.
+- **solver/precond/amg.jl** (T4.3): smoothed-aggregation AMG. `AMGOptions`,
+  `AMGPreconditioner` (host Float64 setup: `_strength`, `_aggregate`, `_tentative`,
+  `_smoother_matrix`, threaded `_spgemm`, `_build_hierarchy`; device `AMGLevel`s in `Tp`),
+  `AMGStats` / `amg_stats(solver)`; device recomputation of prolongators
+  (`_update_prolongator!`) and Galerkin products (`galerkin_kernel!`,
+  `galerkin_store_kernel!`, accumulated in Float64 where available; exempt in the
+  kernel-hygiene test) when the matrix changed (row signatures, `_matrix_change!`);
+  Gershgorin bounds for the Chebyshev/Jacobi smoother; V-cycle `_cycle!`, fused finest
+  level `_fine_cycle1!`, dense coarsest inverse. Tests: amg (also kernel_hygiene, run:
+  ex-gwf-hwell-a).
 
 ## Time stepping, outer iterations, flows and budgets (T2.8)
 
@@ -235,7 +252,7 @@ it. Underscore-prefixed helpers are omitted.
 ## Running a simulation
 
 - **run.jl** (T2.8): `ModflowGPU.run(simdir or SimulationSpec; backend, precision,
-  outdir, closures, write_output)` (on the stepping API since T3.3) → `RunResult` (model, precision types, `StepResult`s,
+  outdir, closures, write_output, preconditioner, precond_options)` (on the stepping API since T3.3) → `RunResult` (model, precision types, `StepResult`s,
   `ModelBudget`s, final heads, output paths); `ConvergenceError`. One model, one IMS
   solution. Tests: run (parity vs MF6 on Tier 0, fhb_const, coupling_rde and IMS
   variants; flopy read-back with MFGPU_FLOPY=1).
@@ -287,6 +304,7 @@ it. Underscore-prefixed helpers are omitted.
   daily steps (`synthetic_simulation(...; ntransient)`), on a backend in `:double` and
   `:single` (wall time per step, iterations, pool peak memory, SpMV GB/s, TimerOutputs
   time split through `SyncTimer`) or with mf6 (serial, per-step times from stdout).
+  T4.3: `precond=amg`, `amg=key:value,...` (`AMGOptions`), AMG hierarchy/setup table.
   Results: benchmark/results/<date>.md.
 
 ## GPU tests (`test/gpu/`, T3.1)
