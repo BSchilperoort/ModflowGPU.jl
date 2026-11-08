@@ -123,3 +123,7 @@ regional30s, and 2.3 ms / 3.2 ms at global5m (outer iteration 2). Full runs: bel
 Both converge with CG + Jacobi: the dense coastline (CHD rim) and the strong DRN/RIV
 conductances keep the synthetic steady state well conditioned; the real global model
 (fewer drains, larger connected land masses) may be harder.
+
+**Benchmark baseline (T4.1)**: steady state + 30 daily steps on rocm, the CPU backend and
+mf6, with wall time per step, SpMV GB/s, peak device memory and the time split, in
+[benchmark/results/2026-11-07.md](../benchmark/results/2026-11-07.md) (`benchmark/run.jl`).

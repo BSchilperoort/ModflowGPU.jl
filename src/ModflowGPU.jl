@@ -12,6 +12,7 @@ using Adapt: Adapt, adapt
 
 include("backend_setup.jl")
 include("precision.jl")
+include("instrument.jl")
 
 # MF6 input (host only)
 include("input/tokenizer.jl")
