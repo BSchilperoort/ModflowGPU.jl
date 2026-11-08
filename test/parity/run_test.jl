@@ -2,8 +2,9 @@
 # PLAN.md section 4:
 #
 # - models: the Tier 0–2 examples that load with `strict = true` and have a tight run in
-#   reference/runs/<example>/tight (ex-gwf-hwell-a only with MFGPU_TEST_HWELL=1: 153164
-#   cells and 60 steps with the Jacobi preconditioner take minutes), and the synthetic
+#   reference/runs/<example>/tight (ex-gwf-hwell-a, 153164 cells and 60 steps, runs with
+#   the AMG preconditioner since T4.3, about 15 s on the CPU backend; MFGPU_TEST_HWELL=0
+#   skips it), and the synthetic
 #   models test/models/fhb_const and test/models/coupling_rde, run with mf6 at test time;
 # - heads: every saved step of our HDS file (read back with our reader) vs MF6's:
 #   `:double` max |Δh| < max(1e-6 m, 1e-7 × head range), `:single` < 1e-3 m;
@@ -19,7 +20,7 @@
 # The comparison helpers (`_run_parity`, ...) are in test/run_parity.jl.
 
 function _run_models(f)
-    hwell = get(ENV, "MFGPU_TEST_HWELL", "") == "1"
+    hwell = get(ENV, "MFGPU_TEST_HWELL", "1") != "0"
     for (name, _) in in_scope_examples(; tiers = 0:2)
         rundir = joinpath(REFERENCE_DIR, "runs", name, "tight")
         if !isdir(rundir)
@@ -27,7 +28,7 @@ function _run_models(f)
             continue
         end
         if name == "ex-gwf-hwell-a" && !hwell
-            @info "Skipping $name in the run parity test (153164 cells, 60 steps; set MFGPU_TEST_HWELL=1)"
+            @info "Skipping $name in the run parity test (MFGPU_TEST_HWELL=0)"
             continue
         end
         try
@@ -116,7 +117,10 @@ end
     _run_models() do name, rundir
         nmodels[] += 1
         @testset "$name" begin
-            _run_parity(name, rundir)
+            # ex-gwf-hwell-a: Jacobi BiCGSTAB does not converge in :single (T2.8); AMG does
+            # (T4.3), unless MFGPU_TEST_PRECONDITIONER chooses another preconditioner.
+            hwell_amg = name == "ex-gwf-hwell-a" && !haskey(ENV, "MFGPU_TEST_PRECONDITIONER")
+            _run_parity(name, rundir; preconditioner = hwell_amg ? :amg : RUN_PRECONDITIONER)
         end
     end
     @info "Run parity test: $(nmodels[]) model(s)"

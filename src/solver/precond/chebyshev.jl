@@ -13,24 +13,20 @@
 # with the scaled operator stored in `Tp` and no reductions (no host synchronisation).
 
 """
-    CHEBYSHEV_OPTIONS
-
-Settings of `:chebyshev` (a `Ref` to a NamedTuple, read when the preconditioner is built):
-`degree` (Chebyshev steps per application: `degree − 1` SpMVs), `ratio` (`λmax/λmin` of
-the interval), `lanczos` (Jacobi-PCG steps for the `λmax` estimate) and `safety` (factor
-on the estimate).
-"""
-const CHEBYSHEV_OPTIONS = Ref((; degree = 4, ratio = 30.0, lanczos = 10, safety = 1.1))
-
-"""
     ChebyshevPreconditioner{Tp}
 
 Jacobi-preconditioned Chebyshev polynomial (src/solver/precond/chebyshev.jl): the scaled
 operator `vals` (`nja`, in `Tp`, CSR of `csr`), its inverse diagonal `dinv`, two work
 vectors in `Ts`, the interval `bounds = [a, b]` (host, from the last setup) and the
-settings of `CHEBYSHEV_OPTIONS`.
+settings.
 
-    ChebyshevPreconditioner(backend, csr; Ts, Tp, degree, ratio, lanczos, safety)
+    ChebyshevPreconditioner(backend, csr; Ts, Tp, degree = 4, ratio = 30.0, lanczos = 10,
+                            safety = 1.1)
+
+Settings (`precond_options` of `KrylovSettings` with `preconditioner = :chebyshev`):
+`degree` (Chebyshev steps per application: `degree − 1` SpMVs), `ratio` (`λmax/λmin` of
+the interval), `lanczos` (Jacobi-PCG steps for the `λmax` estimate) and `safety` (factor
+on the estimate).
 """
 struct ChebyshevPreconditioner{VP <: AbstractVector, VS <: AbstractVector, C <: CsrStructure} <: AbstractPreconditioner
     csr::C
@@ -46,9 +42,8 @@ struct ChebyshevPreconditioner{VP <: AbstractVector, VS <: AbstractVector, C <: 
 end
 
 function ChebyshevPreconditioner(
-        backend::Backend, csr::CsrStructure; Ts::Type, Tp::Type, degree::Integer = CHEBYSHEV_OPTIONS[].degree,
-        ratio::Real = CHEBYSHEV_OPTIONS[].ratio, lanczos::Integer = CHEBYSHEV_OPTIONS[].lanczos,
-        safety::Real = CHEBYSHEV_OPTIONS[].safety,
+        backend::Backend, csr::CsrStructure; Ts::Type, Tp::Type, degree::Integer = 4,
+        ratio::Real = 30.0, lanczos::Integer = 10, safety::Real = 1.1,
     )
     degree >= 1 || throw(ArgumentError("Chebyshev degree must be >= 1"))
     ratio > 1 || throw(ArgumentError("Chebyshev ratio must be > 1"))

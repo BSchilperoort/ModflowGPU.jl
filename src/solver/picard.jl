@@ -42,10 +42,10 @@ under-relaxation), `symmetric` (CG: the constant-head columns go to the right-ha
 `sln_ls`), and the Float32 floors `dvclose_head_factor` and `rclose_floor_factor` (see
 `FLOAT32_CLOSURES`; 0 for Float64).
 
-    PicardSettings(ims::ImsSpec, T; closures = nothing, preconditioner = :jacobi)
+    PicardSettings(ims::ImsSpec, T; closures = nothing, preconditioner = :jacobi, precond_options = (;))
 
-Takes OUTER_DVCLOSE, OUTER_MAXIMUM and the inner settings from `ims`, with the inner
-preconditioner `preconditioner` (`KrylovSettings`). `closures` (a
+Takes OUTER_DVCLOSE, OUTER_MAXIMUM and the inner settings from `ims` (`preconditioner`
+and `precond_options` as in `KrylovSettings(::ImsSpec)`). `closures` (a
 NamedTuple with any of `outer_dvclose`, `outer_maximum`, `inner_dvclose`, `inner_rclose`,
 `inner_maximum`) overrides them. For `T = Float32`, closures below `FLOAT32_CLOSURES` are
 raised to them (logged), since Float32 cannot reach MF6's tight closures (PLAN.md 3.7).
@@ -62,14 +62,17 @@ struct PicardSettings
     rclose_floor_factor::Float64
 end
 
-function PicardSettings(ims::ImsSpec, ::Type{T}; closures = nothing, preconditioner::Symbol = :jacobi) where {T <: AbstractFloat}
+function PicardSettings(
+        ims::ImsSpec, ::Type{T}; closures = nothing, preconditioner::Symbol = :jacobi,
+        precond_options::NamedTuple = (;),
+    ) where {T <: AbstractFloat}
     get_c(k, default) = (isnothing(closures) || !haskey(closures, k)) ? default : getfield(closures, k)
     ims.backtracking_number > 0 &&
         @warn "IMS BACKTRACKING_NUMBER = $(ims.backtracking_number) (COMPLEXITY $(uppercase(String(ims.complexity))) or given): backtracking is not implemented until T6.2; outer iterations may differ from MF6" ims.file
     ims.under_relaxation in (:none, :simple, :cooley, :dbd) || throw(ArgumentError("unknown IMS UNDER_RELAXATION $(ims.under_relaxation)"))
     dvclose = Float64(get_c(:outer_dvclose, ims.outer_dvclose))
     maxiter = Int(get_c(:outer_maximum, ims.outer_maximum))
-    k = KrylovSettings(ims; preconditioner)
+    k = KrylovSettings(ims; preconditioner, precond_options)
     kdv = Float64(get_c(:inner_dvclose, k.dvclose))
     krc = Float64(get_c(:inner_rclose, k.rclose))
     kmax = Int(get_c(:inner_maximum, k.maxiter))
@@ -86,7 +89,7 @@ function PicardSettings(ims::ImsSpec, ::Type{T}; closures = nothing, preconditio
         # The absolute residual criteria (options 0, 1, 2 and the absolute part of 4).
         k.icnvgopt != 3 && (floor_factor = f.inner_rclose_factor)
     end
-    krylov = KrylovSettings(k.method, kmax, kdv, krc, k.icnvgopt, k.north, k.scaling, k.preconditioner)
+    krylov = _with(k; maxiter = kmax, dvclose = kdv, rclose = krc)
     return PicardSettings(dvclose, maxiter, krylov, ims, ims.linear_acceleration === :cg, head_factor, floor_factor)
 end
 
@@ -148,7 +151,7 @@ end
 Adapt.@adapt_structure PicardSolver
 
 # KrylovSettings with a different INNER_RCLOSE (the Float32 floor).
-_with_rclose(k::KrylovSettings, rclose) = KrylovSettings(k.method, k.maxiter, k.dvclose, Float64(rclose), k.icnvgopt, k.north, k.scaling, k.preconditioner)
+_with_rclose(k::KrylovSettings, rclose) = _with(k; rclose = Float64(rclose))
 
 _with_settings(s::KrylovSolver, st::KrylovSettings) = KrylovSolver(
     st, s.csr, s.x, s.r, s.p, s.q, s.z, s.b0, s.dhat, s.phat, s.qhat, s.t, s.v, s.minv, s.rowfac, s.colfac, s.reducer, s.precond,

@@ -60,6 +60,7 @@ include("boundaries/evt.jl")
 include("solver/csr.jl")
 include("solver/precond/precond.jl")
 include("solver/krylov.jl")
+include("solver/precond/amg.jl")
 include("solver/precond/chebyshev.jl")
 include("solver/precond/multicolor.jl")
 

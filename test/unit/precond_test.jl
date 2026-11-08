@@ -101,7 +101,7 @@ end
         @test is_valid_coloring(pconn.ia, pconn.ja, pc) && pc == greedy_colors(pconn.ia, pconn.ja)
         @test_throws ArgumentError KrylovSettings(; preconditioner = :ilut)
         @test KrylovSettings().preconditioner === :jacobi
-        @test PRECONDITIONERS == (:jacobi, :chebyshev, :mc_sgs, :mc_ilu0)
+        @test PRECONDITIONERS == (:jacobi, :chebyshev, :mc_sgs, :mc_ilu0, :amg)
     end
 
     rng = MersenneTwister(12)
@@ -233,17 +233,17 @@ end
         end
     end
 
-    @testset "run: coupling_rde with each preconditioner" begin
+    @testset "run: coupling_rde with each preconditioner (and AMG)" begin
         dir = joinpath(@__DIR__, "..", "models", "coupling_rde")
         for_each_precision() do p
             mktempdir() do tmp
                 ref = ModflowGPU.run(dir; backend = TEST_BACKEND, precision = p.preset, outdir = tmp, write_output = false)
                 @test ref.converged
-                for kind in _NEW_PRECONDITIONERS
+                for kind in (_NEW_PRECONDITIONERS..., :amg)
                     r = ModflowGPU.run(dir; backend = TEST_BACKEND, precision = p.preset, outdir = tmp, write_output = false, preconditioner = kind)
                     @test r.converged
                     @test maximum(abs, r.heads .- ref.heads) < (p.T == Float64 ? 1.0e-7 : 1.0e-3)
-                    kind === :mc_ilu0 && @test sum(s.outer.inner for s in r.steps) < sum(s.outer.inner for s in ref.steps)
+                    kind in (:mc_ilu0, :amg) && @test sum(s.outer.inner for s in r.steps) < sum(s.outer.inner for s in ref.steps)
                 end
             end
         end

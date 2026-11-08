@@ -326,8 +326,8 @@ end
 """
     KrylovSettings(; method = :cg, maxiter = 50, dvclose = 1e-3, rclose = 0.1,
                    rclose_option = :infinity_norm, north = 0, scaling = :none,
-                   preconditioner = :jacobi)
-    KrylovSettings(ims::ImsSpec; preconditioner = :jacobi)
+                   preconditioner = :jacobi, precond_options = (;))
+    KrylovSettings(ims::ImsSpec; preconditioner = :jacobi, precond_options = (;))
 
 Inner solver settings (host): `method` (`:cg` or `:bicgstab`, IMS LINEAR_ACCELERATION),
 `maxiter` (INNER_MAXIMUM), `dvclose` (INNER_DVCLOSE), `rclose` (INNER_RCLOSE),
@@ -335,7 +335,8 @@ Inner solver settings (host): `method` (`:cg` or `:bicgstab`, IMS LINEAR_ACCELER
 `:l2norm_relative`: `ims_base_testcnvg` options 0–4), `north`
 (NUMBER_ORTHOGONALIZATIONS), `scaling` (`:none`, `:diagonal`, `:l2norm`;
 SCALING_METHOD), `preconditioner` (one of `PRECONDITIONERS`: `:jacobi`, `:chebyshev`,
-`:mc_sgs`, `:mc_ilu0`; a ModflowGPU option, not in IMS).
+`:mc_sgs`, `:mc_ilu0`, `:amg`; a ModflowGPU option, not in IMS) and `precond_options` (a
+NamedTuple of keywords for its constructor, see `build_preconditioner`).
 
 From an `ImsSpec` (with its COMPLEXITY defaults already applied by the loader), IMS's
 preconditioner (`resolve_ipc`: ILU0, MILU0 when RELAXATION_FACTOR > 0, ILUT/MILUT when
@@ -352,6 +353,7 @@ struct KrylovSettings
     north::Int
     scaling::Symbol
     preconditioner::Symbol
+    precond_options::NamedTuple
 end
 
 const _RCLOSE_OPTIONS = (:infinity_norm, :strict, :l2norm, :relative, :l2norm_relative)
@@ -359,7 +361,7 @@ const _RCLOSE_OPTIONS = (:infinity_norm, :strict, :l2norm, :relative, :l2norm_re
 function KrylovSettings(;
         method::Symbol = :cg, maxiter::Integer = 50, dvclose::Real = 1.0e-3, rclose::Real = 0.1,
         rclose_option::Symbol = :infinity_norm, north::Integer = 0, scaling::Symbol = :none,
-        preconditioner::Symbol = :jacobi,
+        preconditioner::Symbol = :jacobi, precond_options::NamedTuple = (;),
     )
     preconditioner in PRECONDITIONERS ||
         throw(ArgumentError("unknown preconditioner $preconditioner (expected one of $(PRECONDITIONERS))"))
@@ -372,8 +374,15 @@ function KrylovSettings(;
     # ImsLinear.f90 imslinear_ar: RCLOSE must be > 0 except for RELATIVE_RCLOSE.
     (rclose > 0 || (rclose == 0 && rclose_option === :relative)) ||
         throw(ArgumentError("INNER_RCLOSE must be > 0"))
-    return KrylovSettings(method, Int(maxiter), Float64(dvclose), Float64(rclose), icnvgopt - 1, Int(north), scaling, preconditioner)
+    preconditioner === :jacobi && !isempty(precond_options) &&
+        throw(ArgumentError("the Jacobi preconditioner has no options (got $(keys(precond_options)))"))
+    return KrylovSettings(
+        method, Int(maxiter), Float64(dvclose), Float64(rclose), icnvgopt - 1, Int(north), scaling, preconditioner, precond_options,
+    )
 end
+
+# A copy of `k` with some fields replaced (keywords as the field names).
+_with(k::KrylovSettings; kw...) = KrylovSettings((get(kw, f, getfield(k, f)) for f in fieldnames(KrylovSettings))...)
 
 """
     ims_preconditioner(levels, relax) -> Symbol
@@ -383,7 +392,7 @@ MF6's preconditioner for PRECONDITIONER_LEVELS and RELAXATION_FACTOR
 """
 ims_preconditioner(levels, relax) = levels > 0 ? (relax > 0 ? :milut : :ilut) : (relax > 0 ? :milu0 : :ilu0)
 
-function KrylovSettings(ims::ImsSpec; preconditioner::Symbol = :jacobi)
+function KrylovSettings(ims::ImsSpec; preconditioner::Symbol = :jacobi, precond_options::NamedTuple = (;))
     pc = ims_preconditioner(ims.preconditioner_levels, ims.relaxation_factor)
     if preconditioner === :jacobi
         @warn "IMS preconditioner $(uppercase(String(pc))) is replaced by Jacobi (the default; see the `preconditioner` option)" ims.file
@@ -398,7 +407,7 @@ function KrylovSettings(ims::ImsSpec; preconditioner::Symbol = :jacobi)
     return KrylovSettings(;
         method = ims.linear_acceleration, maxiter = ims.inner_maximum, dvclose = ims.inner_dvclose,
         rclose = ims.inner_rclose, rclose_option = ims.rclose_option, north = ims.number_orthogonalizations,
-        scaling = ims.scaling_method, preconditioner,
+        scaling = ims.scaling_method, preconditioner, precond_options,
     )
 end
 
@@ -514,7 +523,7 @@ function KrylovSolver(
     bc = settings.method === :bicgstab ? n : 0
     cg = settings.method === :cg ? n : 0
     minv = KernelAbstractions.zeros(backend, Tp, n)
-    precond = build_preconditioner(settings.preconditioner, backend, csr, minv; Ts, Tp, colors)
+    precond = build_preconditioner(settings.preconditioner, backend, csr, minv; Ts, Tp, colors, settings.precond_options...)
     return KrylovSolver(
         settings, csr, z(n), z(n), z(n), z(n), z(cg), z(settings.north > 0 ? n : 0),
         z(bc), z(bc), z(bc), z(bc), z(bc), minv, z(n), z(n), Reducer(backend, n, Ta), precond,
@@ -680,9 +689,11 @@ end
     return nothing
 end
 
-# z = M⁻¹·r, then r·z (one reduction).
+# z = M⁻¹·r, then r·z (one reduction, unless the preconditioner fuses it into its last
+# kernel: `_precond_apply_dot!`).
 function _apply_dot!(s::KrylovSolver, backend, n)
-    @timed_section :precond_apply precond_apply!(s.z, s.precond, s.r)
+    rz = @timed_section :precond_apply _precond_apply_dot!(s.z, s.precond, s.r, s.reducer)
+    isnothing(rz) || return rz
     return @timed_section :update_reduce _mapreduce!(s.reducer, backend, _dot_term, _SUM4, n, s.r, s.z)[1]
 end
 
@@ -795,6 +806,19 @@ function solve!(δ, solver::KrylovSolver{Ts}, amat, res; kstp::Integer = 1) wher
         precond_setup!(solver.precond, solver, amat)
     end
     result = cg ? _solve_cg!(solver, amat, kstp, res) : _solve_bcgs!(solver, amat, kstp, res)
+    _precond_record!(solver.precond, result)
+    if !result.converged && _precond_retry!(solver.precond)
+        # A preconditioner set up from an earlier matrix (AMG hierarchy reuse): rebuild it
+        # and solve again from zero; the iterations of both attempts count.
+        @timed_section :precond_setup precond_setup!(solver.precond, solver, amat)
+        first = result
+        result = cg ? _solve_cg!(solver, amat, kstp, res) : _solve_bcgs!(solver, amat, kstp, res)
+        _precond_record!(solver.precond, result)
+        result = KrylovResult(
+            result.converged, first.iterations + result.iterations, result.status, result.dvmax, result.rmax,
+            result.l2norm0, result.l2norm,
+        )
+    end
     @timed_section :vector_update _map!(backend, _unscale, n, δ, solver.x, solver.colfac)
     return result
 end

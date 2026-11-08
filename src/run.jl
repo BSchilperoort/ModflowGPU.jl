@@ -43,7 +43,8 @@ Base.showerror(io::IO, e::ConvergenceError) = print(
 
 """
     ModflowGPU.run(simdir; backend = CPU(), precision = :auto, outdir = simdir,
-                   closures = nothing, write_output = true, preconditioner = :jacobi) -> RunResult
+                   closures = nothing, write_output = true, preconditioner = :jacobi,
+                   precond_options = (;)) -> RunResult
 
 Run the MF6 simulation in `simdir` (one GWF model with one IMS solution; exchanges arrive
 in Phase 3) on `backend` in precision `precision` (`resolve_precision`: `:auto`,
@@ -54,24 +55,30 @@ end of each period, with PRINT BUDGET, and after a failed step), written to `out
 the names of the input (the listing file under its name-file name or `<model>.lst`).
 
 `closures` overrides IMS closures (see `PicardSettings`); in `:single` closures below
-`FLOAT32_CLOSURES` are raised. `preconditioner` selects the inner preconditioner in place
-of IMS's ILU0/MILU0/ILUT (`:jacobi`, `:chebyshev`, `:mc_sgs`, `:mc_ilu0`; see
-`KrylovSettings` and docs/mf6_notes.md). A step that does not converge throws a `ConvergenceError`
+`FLOAT32_CLOSURES` are raised. A step that does not converge throws a `ConvergenceError`
 after its output, unless the simulation has the CONTINUE option.
+
+`preconditioner` (a ModflowGPU option, not in MF6 input) selects the inner preconditioner
+in place of the ILU0/MILU0/ILUT of IMS: `:jacobi` (the default), `:chebyshev`, `:mc_sgs`,
+`:mc_ilu0` or `:amg` (`PRECONDITIONERS`). `precond_options` is a NamedTuple of keywords
+for its constructor (see `build_preconditioner`; for `:amg` those of `AMGOptions`). See
+`KrylovSettings` and docs/mf6_notes.md (IMS linear solver mapping).
 """
 function run(
         simdir::AbstractString; backend::Backend = CPU(), precision::Symbol = :auto, outdir::AbstractString = simdir,
         closures = nothing, write_output::Bool = true, preconditioner::Symbol = :jacobi,
+        precond_options::NamedTuple = (;),
     )
     sim = load_simulation(simdir)
-    return run(sim; backend, precision, outdir, closures, write_output, preconditioner)
+    return run(sim; backend, precision, outdir, closures, write_output, preconditioner, precond_options)
 end
 
 function run(
         sim::SimulationSpec; backend::Backend = CPU(), precision::Symbol = :auto, outdir::AbstractString = sim.simdir,
         closures = nothing, write_output::Bool = true, preconditioner::Symbol = :jacobi,
+        precond_options::NamedTuple = (;),
     )
-    s = initialize(sim; backend, precision, outdir, closures, write_output, preconditioner)
+    s = initialize(sim; backend, precision, outdir, closures, write_output, preconditioner, precond_options)
     try
         while s.istep < length(s.steps)
             update(s) || (r = last(s.results); throw(ConvergenceError(r.step.kper, r.step.kstp, r.outer.iterations)))

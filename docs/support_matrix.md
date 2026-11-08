@@ -38,7 +38,8 @@ Accepted with a different behaviour (logged warnings, not errors):
   (PRECONDITIONER_LEVELS > 0, PRECONDITIONER_DROP_TOLERANCE) are accepted and replaced by
   the ModflowGPU option `preconditioner` (`ModflowGPU.run` / `initialize` keyword):
   `:jacobi` (default, with a warning), `:chebyshev`, `:mc_sgs`, `:mc_ilu0` (multicolour
-  ILU0, T4.2; docs/mf6_notes.md). RED_BLACK_ORDERING is accepted (it only affects MF6's ILU).
+  ILU0, T4.2), `:amg` (smoothed-aggregation AMG, T4.3), with `precond_options`
+  (docs/mf6_notes.md). RED_BLACK_ORDERING is accepted (it only affects MF6's ILU).
 - Backtracking (BACKTRACKING_* and COMPLEXITY COMPLEX's implicit backtracking): accepted,
   not applied, with a warning (T6.2).
 - `:single`: closures below the Float32 floors (`FLOAT32_CLOSURES`, docs/precision.md) are

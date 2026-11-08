@@ -190,21 +190,35 @@ it. Underscore-prefixed helpers are omitted.
   `_mapreduce_loc!`; results land in host-mapped memory where `host_mapped_zeros` allows).
   Adapt rules on `KrylovSolver` and `Reducer` (a new one on the target). IMS mapping in
   docs/mf6_notes.md, accuracy and timing in docs/precision.md. Tests: krylov.
-  Non-Jacobi preconditioners run through `precond_apply!` between non-fused kernels
+  `KrylovSettings` has `preconditioner` and `precond_options`, `KrylovSolver` a `precond`
+  field. Non-Jacobi preconditioners run through `precond_apply!` between non-fused kernels
   (`_cg_init_nf`, `_cg_update_nf`, `_bcgs_direction_nf`, `_bcgs_half_nf`; section
-  `precond_apply`); `KrylovSolver(...; colors)` passes a host colouring.
-- **solver/precond/precond.jl** (T4.2): preconditioner interface. `AbstractPreconditioner`,
+  `precond_apply`; CG's `r·z` fused by `_precond_apply_dot!` where the preconditioner
+  does); `_precond_record!` / `_precond_retry!` after a solve (a failed solve is repeated
+  once after an AMG rebuild); `KrylovSolver(...; colors)` passes a host colouring.
+- **solver/precond/precond.jl** (T4.2, T4.3): preconditioner interface. `AbstractPreconditioner`,
   `precond_setup!(P, solver, amat)` (per `solve!`, after scaling), `precond_apply!(z, P, r)`,
-  `JacobiPreconditioner` (wraps the solver's `minv`; fused path), `PRECONDITIONERS`,
-  `build_preconditioner`. Tests: krylov (unit/precond_test.jl).
+  `JacobiPreconditioner` (wraps the solver's `minv`; fused path), `PRECONDITIONERS`
+  (`:jacobi`, `:chebyshev`, `:mc_sgs`, `:mc_ilu0`, `:amg`), `build_preconditioner` (the
+  constructor; `precond_options` as its keywords). Tests: krylov (unit/precond_test.jl), amg.
 - **solver/precond/chebyshev.jl** (T4.2): `ChebyshevPreconditioner` (scaled operator copy in
-  `Tp`, host interval `bounds`), `CHEBYSHEV_OPTIONS` (degree, ratio, Lanczos steps,
-  safety), `lanczos_extremes`. Tests: krylov.
+  `Tp`, host interval `bounds`; options `degree`, `ratio`, `lanczos`, `safety`),
+  `lanczos_extremes`. Tests: krylov.
 - **solver/precond/multicolor.jl** (T4.2): host colouring `greedy_colors`,
   `dis_parity_colors` (red–black), `grid_colors` (used by `PicardSolver`),
   `is_valid_coloring`; `MulticolorPreconditioner` (`:sgs` / `:ilu0`; colour-ordered CSR copy
-  in `Tp`, per-colour kernels for the ILU0 factorisation and the sweeps), `ncolors`,
-  `MULTICOLOR_OPTIONS` (MILU relax). Tests: krylov.
+  in `Tp`, per-colour kernels for the ILU0 factorisation and the sweeps; option `relax`,
+  MILU), `ncolors`. Tests: krylov.
+- **solver/precond/amg.jl** (T4.3): smoothed-aggregation AMG. `AMGOptions`,
+  `AMGPreconditioner` (host Float64 setup: `_strength`, `_aggregate`, `_tentative`,
+  `_smoother_matrix`, threaded `_spgemm`, `_build_hierarchy`; device `AMGLevel`s in `Tp`),
+  `AMGStats` / `amg_stats(solver)`; device recomputation of prolongators
+  (`_update_prolongator!`) and Galerkin products (`galerkin_kernel!`,
+  `galerkin_store_kernel!`, accumulated in Float64 where available; exempt in the
+  kernel-hygiene test) when the matrix changed (row signatures, `_matrix_change!`);
+  Gershgorin bounds for the Chebyshev/Jacobi smoother; V-cycle `_cycle!`, fused finest
+  level `_fine_cycle1!`, dense coarsest inverse. Tests: amg (also kernel_hygiene, run:
+  ex-gwf-hwell-a).
 
 ## Time stepping, outer iterations, flows and budgets (T2.8)
 
@@ -259,7 +273,7 @@ it. Underscore-prefixed helpers are omitted.
 ## Running a simulation
 
 - **run.jl** (T2.8): `ModflowGPU.run(simdir or SimulationSpec; backend, precision,
-  outdir, closures, write_output)` (on the stepping API since T3.3) → `RunResult` (model, precision types, `StepResult`s,
+  outdir, closures, write_output, preconditioner, precond_options)` (on the stepping API since T3.3) → `RunResult` (model, precision types, `StepResult`s,
   `ModelBudget`s, final heads, output paths); `ConvergenceError`. One model, one IMS
   solution. Tests: run (parity vs MF6 on Tier 0, fhb_const, coupling_rde and IMS
   variants; flopy read-back with MFGPU_FLOPY=1).
@@ -313,6 +327,7 @@ it. Underscore-prefixed helpers are omitted.
   daily steps (`synthetic_simulation(...; ntransient)`), on a backend in `:double` and
   `:single`, with `precond=` preconditioners (wall time per step, iterations, pool peak memory, SpMV GB/s, TimerOutputs
   time split through `SyncTimer`) or with mf6 (serial, per-step times from stdout).
+  T4.3: `precond=amg`, `amg=key:value,...` (`AMGOptions`), AMG hierarchy/setup table.
   Results: benchmark/results/<date>.md.
 
 ## GPU tests (`test/gpu/`, T3.1)

@@ -14,7 +14,7 @@
 #   second-to-last colour down (the last colour's backward update equals its forward one).
 #   SPD for SPD `Â`, so it can precondition CG.
 # - `:ilu0`: ILU(0) of `Â` in colour order (IKJ, as ims_base_pcilu0 in MF6's natural order,
-#   with optional MILU relaxation, `MULTICOLOR_OPTIONS`), factorised colour by colour on the device at every setup;
+#   with optional MILU relaxation, option `relax`), factorised colour by colour on the device at every setup;
 #   applied as a forward (unit lower) and a backward (upper) solve per colour
 #   (ims_base_ilu0a). For symmetric `Â`, `L·U = L·D·Lᵀ` is symmetric. A pivot that changes
 #   sign or vanishes is replaced by the unfactorised diagonal (MF6 restarts the
@@ -98,14 +98,6 @@ function grid_colors(conn::Connectivity, dis)
 end
 
 """
-    MULTICOLOR_OPTIONS
-
-Settings of `:mc_ilu0` (a `Ref` to a NamedTuple, read when the preconditioner is built):
-`relax`, the MILU relaxation factor (0: ILU0; IMS RELAXATION_FACTOR).
-"""
-const MULTICOLOR_OPTIONS = Ref((; relax = 0.0))
-
-"""
     MulticolorPreconditioner{Tp}
 
 Multicolour symmetric Gauss–Seidel (`kind = :sgs`) or ILU0 (`:ilu0`) on the scaled
@@ -113,9 +105,12 @@ operator (src/solver/precond/multicolor.jl). Host: `cptr` (rows `cptr[c]:cptr[c+
 the coloured CSR have colour `c`). Device (Int32): `perm` (coloured row → node), `iperm`,
 `cia`, `cja`, `cup` (first entry of a higher colour in each row), `csrc` (position of each
 entry in the original CSR); in `Tp`: `vals` (`Â` or the ILU factors) and `dinv` (inverse
-diagonal or pivots, by coloured row); `relax` (MILU relaxation factor, `MULTICOLOR_OPTIONS`).
+diagonal or pivots, by coloured row); `relax` (MILU relaxation factor).
 
-    MulticolorPreconditioner(backend, csr, kind; Ts, Tp, colors = nothing, relax)
+    MulticolorPreconditioner(backend, csr, kind; Ts, Tp, colors = nothing, relax = 0.0)
+
+`relax` (`precond_options` of `KrylovSettings` with `preconditioner = :mc_ilu0`): the
+MILU relaxation factor of `:ilu0` (0: ILU0; IMS RELAXATION_FACTOR).
 
 `colors` is a host vector of colours `1:ncolors` per node (`greedy_colors` of the structure
 when `nothing`).
@@ -139,7 +134,7 @@ ncolors(P::MulticolorPreconditioner) = length(P.cptr) - 1
 
 function MulticolorPreconditioner(
         backend::Backend, csr::CsrStructure, kind::Symbol; Ts::Type, Tp::Type, colors = nothing,
-        relax::Real = MULTICOLOR_OPTIONS[].relax,
+        relax::Real = 0.0,
     )
     kind in (:sgs, :ilu0) || throw(ArgumentError("unknown multicolour preconditioner $kind (expected :sgs or :ilu0)"))
     ia = Array(csr.ia)

@@ -51,11 +51,11 @@ function _workload_model(dir)
 end
 
 # The outer loop of a few steps with an IMS variant (inner solver, scaling,
-# orthogonalisation, under-relaxation) and a preconditioner (T4.2), flows and budgets.
-function _steps(sim, ims; preconditioner = :jacobi)
+# orthogonalisation, under-relaxation) and a preconditioner (T4.2, T4.3), flows and budgets.
+function _steps(sim, ims; pc...)
     spec = only(sim.models)
     m = M.GwfModel(BACKEND, T, spec, M.nper(sim.tdis))
-    ps = M.PicardSolver(m, M.PicardSettings(ims, T; preconditioner))
+    ps = M.PicardSolver(m, M.PicardSettings(ims, T; pc...))
     acc = M.BudgetAccumulator(m)
     for st in M.time_steps(sim.tdis)[1:3]
         st.kstp == 1 && M.apply_period!(m, st.kper)
@@ -81,7 +81,8 @@ function workload(dir)
     r = M.run(rundir; backend = BACKEND, precision = :single, outdir = joinpath(dir, "out"))
     r.T === T || error("expected a Float32 run")
     sim = M.load_simulation(rundir)
-    for v in IMS_VARIANTS, preconditioner in M.PRECONDITIONERS
+    # (AMG separately below, with a small coarsest level.)
+    for v in IMS_VARIANTS, preconditioner in filter(!=(:amg), M.PRECONDITIONERS)
         ims = M.ImsSpec(;
             v..., outer_dvclose = 1.0e-5, outer_maximum = 50, inner_maximum = 200, inner_dvclose = 1.0e-6,
             inner_rclose = 1.0e-4, under_relaxation_gamma = 0.5, under_relaxation_theta = 0.7, under_relaxation_kappa = 0.1,
@@ -97,6 +98,11 @@ function workload(dir)
         scale = similar(m.res)
         bound = similar(m.res)
         M.flux_residual!(m.res, m.sys, m.csr, m.npf, m.h, m.ibound; scale, bound)
+    end
+    # AMG (T4.3) with several levels: fused and generic finest level, CG and BiCGSTAB.
+    for method in (:cg, :bicgstab), fine_degree in (0, 1)
+        ims = M.ImsSpec(; linear_acceleration = method, outer_dvclose = 1.0e-5, inner_dvclose = 1.0e-6, inner_rclose = 1.0e-4)
+        _steps(sim, ims; preconditioner = :amg, precond_options = (; max_coarse = 20, fine_degree))
     end
     KernelAbstractions.synchronize(BACKEND)
     return nothing

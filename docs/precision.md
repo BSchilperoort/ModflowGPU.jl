@@ -166,8 +166,9 @@ used in 3 of 125 outer iterations; ModflowGPU warns and does not backtrack (T6.2
 converged heads agree as above. In `:single` the outer loop stops at the Float32 floors,
 hence fewer outer iterations than MF6.
 
-**ex-gwf-hwell-a** (153164 cells, 60 steps, BiCGSTAB; opt-in `MFGPU_TEST_HWELL=1`, not
-part of the suite). `:single` on ROCm: steps 1–56 converge in 2–15 outer iterations and
+**ex-gwf-hwell-a** (153164 cells, 60 steps, BiCGSTAB; part of the run parity test with
+`preconditioner = :amg` since T4.3, where `:single` converges in every step, max |Δh|
+3.0e-7 m, 596 inner iterations; `MFGPU_TEST_HWELL=0` skips it). With Jacobi, `:single` on ROCm: steps 1–56 converge in 2–15 outer iterations and
 stay within 2e-5 m of MF6 (max |h'| 5.8 m); in step 57 (`delt` = 0.096 d) the Jacobi
 BiCGSTAB solve does not converge in 1000 iterations and returns a correction of 3656 m
 for a residual of 0.93, after which the outer iterations diverge (NaN by iteration 8).

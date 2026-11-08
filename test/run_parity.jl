@@ -98,7 +98,8 @@ end
 # Runs both presets on TEST_BACKEND (and on a GPU backend also on the CPU backend) and
 # returns per preset (; dh, dq, dl, pd, outer, inner, time, mf6_outer, mf6_inner,
 # backend_vs_cpu), plus :single_vs_double.
-function _run_parity(name, rundir)
+function _run_parity(name, rundir; preconditioner::Symbol = RUN_PRECONDITIONER, precond_options::NamedTuple = (;))
+    pc = (; preconditioner, precond_options)
     sim = load_simulation(rundir)
     m = only(sim.models)
     mf6_hds = _only_file(rundir, ".hds")
@@ -112,7 +113,7 @@ function _run_parity(name, rundir)
     stats = Dict{Symbol, Any}()
     for_each_precision() do p
         mktempdir() do out
-            t = @elapsed r = ModflowGPU.run(rundir; backend = TEST_BACKEND, precision = p.preset, outdir = out, preconditioner = RUN_PRECONDITIONER)
+            t = @elapsed r = ModflowGPU.run(rundir; backend = TEST_BACKEND, precision = p.preset, outdir = out, pc...)
             @test r.converged
             @test r.T === p.T
             heads[p.preset] = r.heads
@@ -130,10 +131,10 @@ function _run_parity(name, rundir)
             p.T === Float32 && @test pd < 0.01
             outer = sum(s -> s.outer.iterations, r.steps)
             inner = sum(s -> s.outer.inner, r.steps)
-            @info "Run parity: $name, :$(p.preset), $(backend_name(TEST_BACKEND)) ($RUN_PRECONDITIONER), $nsteps step(s), $(round(t; digits = 1)) s: max |Δh| = $(round(dh; sigdigits = 3)) m (tol $(round(hdtol; sigdigits = 2))), CBC max |Δq| / total in = $(round(dq; sigdigits = 3)) ($nrec records), listing $(round(dl; sigdigits = 3)) ($ntab tables), max |percent discrepancy| = $(round(pd; sigdigits = 3)); outer/inner iterations $outer/$inner (MF6 $mf6_outer/$mf6_inner)"
+            @info "Run parity: $name, :$(p.preset), $(backend_name(TEST_BACKEND)) ($preconditioner), $nsteps step(s), $(round(t; digits = 1)) s: max |Δh| = $(round(dh; sigdigits = 3)) m (tol $(round(hdtol; sigdigits = 2))), CBC max |Δq| / total in = $(round(dq; sigdigits = 3)) ($nrec records), listing $(round(dl; sigdigits = 3)) ($ntab tables), max |percent discrepancy| = $(round(pd; sigdigits = 3)); outer/inner iterations $outer/$inner (MF6 $mf6_outer/$mf6_inner)"
             stats[p.preset] = (; dh, dq, dl, pd, outer, inner, time = t, mf6_outer, mf6_inner, backend_vs_cpu = NaN)
             if !(TEST_BACKEND isa CPU)
-                rc = ModflowGPU.run(rundir; backend = CPU(), precision = p.preset, write_output = false, preconditioner = RUN_PRECONDITIONER)
+                rc = ModflowGPU.run(rundir; backend = CPU(), precision = p.preset, write_output = false, pc...)
                 d = maximum(abs.(r.heads .- rc.heads))
                 p.T === Float64 ? (@test d <= 1.0e-10 * maximum(abs, rc.heads)) : (@test d < 1.0e-4)
                 @info "Run $(backend_name(TEST_BACKEND)) vs CPU: $name, :$(p.preset): max |Δh| = $(round(d; sigdigits = 3)) m"

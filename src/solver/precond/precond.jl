@@ -14,9 +14,13 @@
 # `JacobiPreconditioner` is the default: CG and BiCGSTAB fuse its application into their
 # update kernels (`_precond` in krylov.jl) and only call `precond_setup!` for it; any other
 # preconditioner is applied with `precond_apply!` (non-fused kernels). Selection:
-# `KrylovSettings(; preconditioner)`, from `ModflowGPU.run` / `initialize`
-# (`preconditioner = :jacobi`, `:chebyshev`, `:mc_sgs`, `:mc_ilu0`; T4.3 adds `:amg`),
-# built by `build_preconditioner`.
+# `KrylovSettings(; preconditioner, precond_options)`, from `ModflowGPU.run` / `initialize`
+# (`preconditioner = :jacobi`, `:chebyshev`, `:mc_sgs`, `:mc_ilu0`, `:amg`), built by
+# `build_preconditioner` with `precond_options` as the keywords of its constructor.
+#
+# Optional hooks (defaults below): `_precond_apply_dot!` (fuse `r·z` into the last kernel
+# of the application), `_precond_record!` and `_precond_retry!` (after each solve; AMG's
+# hierarchy reuse and rebuild).
 
 """
     AbstractPreconditioner
@@ -32,9 +36,10 @@ abstract type AbstractPreconditioner end
 The preconditioners `KrylovSettings(; preconditioner)` accepts: `:jacobi` (default, fused
 into the Krylov kernels), `:chebyshev` (Jacobi-preconditioned Chebyshev polynomial,
 src/solver/precond/chebyshev.jl), `:mc_sgs` and `:mc_ilu0` (multicolour symmetric
-Gauss–Seidel and ILU0, src/solver/precond/multicolor.jl).
+Gauss–Seidel and ILU0, src/solver/precond/multicolor.jl), `:amg` (smoothed-aggregation
+algebraic multigrid, src/solver/precond/amg.jl).
 """
-const PRECONDITIONERS = (:jacobi, :chebyshev, :mc_sgs, :mc_ilu0)
+const PRECONDITIONERS = (:jacobi, :chebyshev, :mc_sgs, :mc_ilu0, :amg)
 
 """
     precond_setup!(P::AbstractPreconditioner, solver::KrylovSolver, amat) -> P
@@ -50,6 +55,17 @@ function precond_setup! end
 `z = M⁻¹·r` on the device (vectors in the Krylov precision `Ts`).
 """
 function precond_apply! end
+
+# `z = M⁻¹·r`, and `r·z` (Float64 where the backend has it) when the preconditioner fuses
+# it into its last kernel (with `reducer`), else `nothing` (the solver then reduces).
+_precond_apply_dot!(z, P::AbstractPreconditioner, r, reducer) = (precond_apply!(z, P, r); nothing)
+
+# Called after each linear solve with its `KrylovResult` (e.g. AMG's rebuild decision).
+_precond_record!(P::AbstractPreconditioner, result) = nothing
+
+# Whether a failed solve should be repeated after `precond_setup!` again (AMG with a
+# hierarchy from an earlier matrix); the method prepares the rebuild.
+_precond_retry!(P::AbstractPreconditioner) = false
 
 """
     JacobiPreconditioner(minv)
@@ -97,17 +113,25 @@ end
 end
 
 """
-    build_preconditioner(kind, backend, csr, minv; Ts, Tp, colors = nothing)
+    build_preconditioner(kind, backend, csr, minv; Ts, Tp, colors = nothing, options...)
         -> AbstractPreconditioner
 
 The preconditioner `kind` (one of `PRECONDITIONERS`) for the CSR structure `csr` on
 `backend`; `minv` is the solver's Jacobi vector, `colors` an optional host colouring (one
 colour per node, `1:ncolors`) for the multicolour preconditioners (otherwise greedy).
+`options` (`precond_options` of `KrylovSettings`) are the keywords of its constructor:
+none for `:jacobi`; `degree`, `ratio`, `lanczos`, `safety` for `:chebyshev`
+(`ChebyshevPreconditioner`); `relax` for `:mc_sgs`/`:mc_ilu0`
+(`MulticolorPreconditioner`); those of `AMGOptions` for `:amg`.
 """
-function build_preconditioner(kind::Symbol, backend::Backend, csr, minv; Ts::Type, Tp::Type, colors = nothing)
-    kind === :jacobi && return JacobiPreconditioner(minv)
-    kind === :chebyshev && return ChebyshevPreconditioner(backend, csr; Ts, Tp)
-    kind === :mc_sgs && return MulticolorPreconditioner(backend, csr, :sgs; Ts, Tp, colors)
-    kind === :mc_ilu0 && return MulticolorPreconditioner(backend, csr, :ilu0; Ts, Tp, colors)
+function build_preconditioner(kind::Symbol, backend::Backend, csr, minv; Ts::Type, Tp::Type, colors = nothing, options...)
+    if kind === :jacobi
+        isempty(options) || throw(ArgumentError("the Jacobi preconditioner has no options (got $(keys(options)))"))
+        return JacobiPreconditioner(minv)
+    end
+    kind === :chebyshev && return ChebyshevPreconditioner(backend, csr; Ts, Tp, options...)
+    kind === :mc_sgs && return MulticolorPreconditioner(backend, csr, :sgs; Ts, Tp, colors, options...)
+    kind === :mc_ilu0 && return MulticolorPreconditioner(backend, csr, :ilu0; Ts, Tp, colors, options...)
+    kind === :amg && return AMGPreconditioner(backend, Int(csr.nodes), Ts, Tp; options...)
     throw(ArgumentError("unknown preconditioner $kind (expected one of $(PRECONDITIONERS))"))
 end
