@@ -67,6 +67,28 @@ Each Phase 4 card reports its effect on these numbers with `benchmark/run.jl`.
   and without Float64) based on the numbers. `:auto` then follows that
   recommendation.
 
+**T4.6 Period-data path (S) ‖ with T4.2, T4.3**
+- Depends: T4.1.
+- Read: `src/boundaries/framework.jl` (`apply_period!`, `_period_records!`,
+  `_apply_multiplier!`, `_bound_offsets!`, `set_bound!`, `_upload_records!`),
+  `src/stepping.jl` (mirror push at `prepare_solve`), the T4.1 results
+  (64 ms per period on `global5m`, mostly RCH and RIV).
+- Deliver:
+  1. Structure fast path: when a new PERIOD block has the same cells as the block in
+     force (always for array input; ModflowCoupling's RIV changes only stage), skip
+     the cellid→reduced-node conversion, the highest-active search, the node→record
+     map rebuild and the `nodelist`/`nodeptr`/`noderec` uploads; upload `bound` only.
+     Value checks (`check_records`) still run.
+  2. One fused, allocation-free host pass: multiplier, `to_offsets` in Float64, cast
+     to `T`, into a preallocated staging buffer registered with `pin_memory!`, then
+     one `copyto!`. Precision rule 1 is unchanged (offsets on the host in Float64).
+     Optionally multithreaded.
+  3. Dirty tracking in the stepping API: push only BOUND mirrors that were written.
+  4. Optional: prepare the next period's file-based data while the device solves.
+- Done when: period data on `global5m` < 10 ms per period (`benchmark/run.jl`), and
+  heads, budgets and iteration counts are bitwise unchanged in both presets on CPU and
+  rocm (run, stepping, synthetic, boundaries, riv_drn_evt groups).
+
 **T4.5 Kernel fusion and matrix formats (M)**
 - Depends: T4.2 or T4.3.
 - Deliver: fused PCG/BiCGSTAB update kernels (axpy + dot in one pass),
