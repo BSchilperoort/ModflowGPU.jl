@@ -228,3 +228,53 @@ tolerances.
 Parity, device memory per preset and precision, and the `:single` BiCGSTAB + Jacobi
 divergence on the synthetic models: docs/scaling.md. The section 4 thresholds hold
 unchanged (`:single` tiny 1.7e-4 m, indus 1.0e-4 m; pd <= 2.7e-3 %).
+
+## `:mixed` preset and production default (T4.4)
+
+`:mixed`: state, assembly and Krylov vectors in Float64 (`T = Ts = Float64`), every
+preconditioner's data in Float32 (`Tp`: Jacobi `minv`, Chebyshev and multicolour operator
+copies, the MC-ILU0 factors, the AMG levels below the finest one, their smoother data and
+the dense coarsest inverse). The preconditioner kernels read `Tp` and compute in `Ts`
+(`Ts(vals[k]) * x`); the Jacobi product is now formed in `Ts` (`x * Ts(minv[n])`; bitwise
+unchanged for `Tp = Ts`). Rules 1–5 are unchanged; `:mixed` needs Float64 on the backend
+(`resolve_precision` errors otherwise).
+
+Measured with `benchmark/run.jl` (`benchmark/results/2026-11-08-T4.4.md`; rocm, steady
+state + 30 daily steps, tight closures), `:mixed` vs `:double`:
+
+| global5m, rocm | steady (s) | daily (s) | 31 steps (s) | peak GiB | Δh vs `:double` Jacobi (steady) |
+| --- | --- | --- | --- | --- | --- |
+| `:double` mc_ilu0 | 4.18 | 0.441 | 17.42 | 3.75 | 3.6e-9 m |
+| `:mixed` mc_ilu0 | **3.36** | **0.386** | **14.94** | 3.56 | 3.6e-9 m |
+| `:single` mc_ilu0 | 1.28 | 0.167 | 6.30 | 2.47 | 2.0e-6 m |
+| `:mixed` amg | 4.52 | 0.754 | 27.13 | 4.28 | 3.7e-9 m |
+| `:mixed` jacobi | 25.88 | 0.524 | 41.60 | 2.99 | 6.8e-13 m |
+
+- Accuracy: `:mixed` has the outer and inner iteration counts of `:double` (all models and
+  preconditioners; one exception, indus Jacobi 14292 vs 14306 inner) and heads at the
+  closure level of `:double`, also in the global5m steady state (worst conditioning). The
+  run parity tests (group `run`, Tier 0–2 and synthetic models) pass in `:mixed` with the
+  `:double` tolerances; e.g. hwell-a (AMG) 9.03e-10 m, toth 5.57e-9 m, the same as
+  `:double`.
+- Speed: −20 % steady and −12 % daily on global5m with MC-ILU0, −16 % over 31 steps with AMG; Jacobi
+  gains little (−2 to −7 %). CPU backend: within ±7 % of `:double`.
+- Preconditioners: MC-ILU0 is the fastest over 31 steps on every model, backend and
+  precision, and in the daily steps; AMG wins only the steady state of indus and
+  continental (CPU continental `:mixed` 3.36 vs 6.76 s). A per-solve switch (AMG for
+  steady periods) would gain at most 0.2 s on rocm continental and nothing on global5m,
+  at +50 % memory for a second preconditioner: not adopted.
+
+**Production defaults** (`precision = :auto`, `preconditioner = :auto`, the defaults of
+`ModflowGPU.run` and `initialize`):
+
+| Backend class | precision | preconditioner | Why |
+| --- | --- | --- | --- |
+| with Float64 (CPU, ROCm, CUDA; oneAPI/OpenCL devices with fp64) | `:mixed` | `:mc_ilu0` | `:double` accuracy and parity tolerances, faster and smaller than `:double` |
+| without Float64 (Metal; oneAPI/OpenCL without fp64) | `:single` | `:mc_ilu0` | fastest everywhere; converges on hwell-a in `:single` where Jacobi BiCGSTAB diverges (T4.2) |
+
+`:single` on a Float64 backend is the opt-in fast mode (global5m 2.4× faster than `:mixed`
+over 31 steps, heads within 2e-6–2e-4 m of `:double` on the synthetic models, i.e. inside
+the section 4 `:single` tolerance of 1e-3 m). `:amg` remains the choice for badly
+conditioned steady states where MC-ILU0 needs many iterations (e.g. on the CPU backend).
+IMS ILU0 maps to `:mc_ilu0` with a logged message; MILU0 / ILUT / MILUT with a warning
+(their relaxation and fill levels are not used).
