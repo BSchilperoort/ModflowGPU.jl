@@ -9,7 +9,10 @@ A GWF model ready to run on a device in precision `T` (state and assembly):
 
 - host: `spec::GwfSpec`, `conn::Connectivity`, `setup::NpfSetup` (condsat, reference heads
   `r` and differences, Float64), `ibound_host` (1 active, −1 constant head), `kper`
-  (stress period applied last, 0 before the first);
+  (stress period applied last, 0 before the first), `offdiag` (the `symmetric` setting
+  the off-diagonal entries of `sys.amat` were last assembled for, `nothing` when they are
+  stale: T4.5, see `formulate!`), `offdiag_version` (counts their rewrites, so a
+  preconditioner can tell whether only the diagonal changed);
 - device: `csr::CsrStructure`, `npf::NpfModel{T}`, `sys::LinearSystem{T}`, `packages`
   (`BoundaryPackage`s in MF6's order, `GwfSpec.boundaries`), `sto` (`StoragePackage` or
   `nothing`), `area` (cell areas, for RCH/EVT), `ibound`, the offset heads `h` and the
@@ -37,6 +40,8 @@ mutable struct GwfModel{T <: AbstractFloat, B <: Backend, C <: CsrStructure, N <
     const δ::V
     const flowja::V
     kper::Int
+    offdiag::Union{Nothing, Bool}
+    offdiag_version::Int
 end
 
 function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) where {T <: AbstractFloat}
@@ -55,6 +60,7 @@ function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) whe
     return GwfModel(
         spec, backend, conn, setup, csr, npf, sys, packages, sto, _device_copy(backend, T.(conn.area)),
         _device_copy(backend, ibh), ibh, h, hold, z(), z(), KernelAbstractions.zeros(backend, T, conn.nja), 0,
+        nothing, 0,
     )
 end
 
@@ -66,6 +72,7 @@ function Adapt.adapt_structure(to, m::GwfModel)
         m.spec, get_backend(h), m.conn, m.setup, adapt(to, m.csr), adapt(to, m.npf), adapt(to, m.sys),
         BoundaryPackage[adapt(to, p) for p in m.packages], adapt(to, m.sto), adapt(to, m.area), adapt(to, m.ibound),
         copy(m.ibound_host), h, adapt(to, m.hold), adapt(to, m.res), adapt(to, m.δ), adapt(to, m.flowja), m.kper,
+        nothing, m.offdiag_version + 1,
     )
 end
 
@@ -95,6 +102,7 @@ function apply_period!(m::GwfModel, kper::Integer)
         if ib != m.ibound_host
             m.ibound_host = ib
             copyto!(m.ibound, ib)
+            m.offdiag = nothing
         end
     end
     m.kper = kper
@@ -125,18 +133,27 @@ end
 Formulate and assemble the system of an outer iteration from the current offset heads
 (`bnd_cf`/`bnd_fc` of every stress package except CHD, `sto_fc`, `npf_fc`, `sln_ls`), then
 the flux-form residual `m.res` (PLAN.md section 3.7, rule 2; with `scale`, also the
-row sums `Σ |terms|`, see `flux_residual!`). Device work only.
+row sums `Σ |terms|`, see `flux_residual!`). Device work only: one formulation kernel per
+package, then `formulate_system!` (T4.5), which rewrites the off-diagonal entries of the
+matrix only when `ibound` or `symmetric` changed since they were last written.
 """
 function formulate!(m::GwfModel; symmetric::Bool = false, scale = nothing)
-    reset_terms!(m.sys)
     for pkg in m.packages
         boundary_kind(pkg) === :CHD && continue
         formulate!(pkg, m.h, m.ibound, m.area)
-        add_terms!(m.sys, m.csr, pkg)
     end
-    isnothing(m.sto) || add_terms!(m.sys, m.csr, m.sto, m.hold, m.ibound)
-    assemble!(m.sys, m.csr, m.npf, m.h, m.ibound; symmetric)
-    flux_residual!(m.res, m.sys, m.csr, m.npf, m.h, m.ibound; scale)
+    pkgs = Tuple((p.hcof, p.rhs, p.nodeptr, p.noderec) for p in m.packages if boundary_kind(p) !== :CHD && p.nbound > 0)
+    storage = nothing
+    if !isnothing(m.sto) && m.sto.transient
+        _check_timestep(m.sto)
+        storage = (m.sto.rho, m.hold)
+    end
+    offdiag = m.offdiag !== symmetric
+    formulate_system!(m.sys, m.res, m.csr, m.npf, m.h, m.ibound, pkgs, storage; symmetric, offdiag, scale)
+    if offdiag
+        m.offdiag = symmetric
+        m.offdiag_version += 1
+    end
     return m
 end
 

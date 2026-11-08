@@ -102,7 +102,7 @@ end
 # returns 4 values in `Ta`; each work group reduces them in local memory (a pairwise tree)
 # into one column of `partials` (4 × groups), and for an `_ArgMaxAbsOp` the index of the
 # first value into `ploc`.
-@kernel function mapreduce_kernel!(partials, ploc, f, ops, len, args)
+@kernel function mapreduce_kernel!(partials, ploc, f, ops, len, goff, args)
     Ta = eltype(partials)
     shared = @localmem eltype(partials) (256, 4)
     sloc = @localmem Int32 (256,)
@@ -131,7 +131,7 @@ end
     _tree_step!(shared, sloc, ops, li, 1)
     @synchronize
     if li == 1
-        g = @index(Group, Linear)
+        g = @index(Group, Linear) + goff
         @inbounds for k in 1:_RED_K
             partials[k, g] = shared[1, k]
         end
@@ -164,8 +164,10 @@ end
 end
 
 # Stage 2: one work group reduces the columns of `partials` into `out` (4 values), and
-# `ploc` into `outloc[1]` for an `_ArgMaxAbsOp`.
-@kernel function finalize_reduction_kernel!(out, outloc, @Const(partials), @Const(ploc), ops, ngroups)
+# `ploc` into `outloc[1]` for an `_ArgMaxAbsOp`. `post` (T4.5) then maps the 4 values on the
+# device (`_post`), e.g. to the step length of a Krylov iteration, and may store scalars in
+# the device vectors `sa` (in `Ta`) and `ss` (in the Krylov type) for later kernels.
+@kernel function finalize_reduction_kernel!(out, outloc, @Const(partials), @Const(ploc), ops, ngroups, post, sa, ss)
     shared = @localmem eltype(partials) (256, 4)
     sloc = @localmem Int32 (256,)
     li = @index(Local, Linear)
@@ -192,12 +194,47 @@ end
     _tree_step!(shared, sloc, ops, li, 1)
     @synchronize
     if li == 1
+        r = @inbounds _post(post, (shared[1, 1], shared[1, 2], shared[1, 3], shared[1, 4]), sa, ss)
         @inbounds for k in 1:_RED_K
-            out[k] = shared[1, k]
+            out[k] = r[k]
         end
         if ops[1] isa _ArgMaxAbsOp
             @inbounds outloc[1] = sloc[1]
         end
+    end
+end
+
+# Post-reduction maps (lane 1 of the finalisation; `sa` in `Ta`, `ss` in `Ts`).
+struct _NoPost end
+@inline _post(::_NoPost, v, sa, ss) = v
+
+# rho = v[K] (the next CG / BiCGSTAB rho), kept in `sa[1]`.
+struct _SetRho{K} end
+@inline function _post(::_SetRho{K}, v, sa, ss) where {K}
+    @inbounds sa[1] = v[K]
+    return v
+end
+
+# CG step length alpha = rho / (p·q) (ims_base_cg), and BiCGSTAB's rho / (dhat·v): `sa[2]`,
+# `ss[2]`; returns (p·q, alpha, 0, 0).
+struct _AlphaPost end
+@inline function _post(::_AlphaPost, v, sa, ss)
+    @inbounds begin
+        a = _safe_div(sa[1], v[1])
+        sa[2] = a
+        ss[2] = convert(eltype(ss), a)
+        return (v[1], a, zero(a), zero(a))
+    end
+end
+
+# BiCGSTAB omega = (t·q) / (t·t): `sa[3]`, `ss[3]`; returns (t·q, t·t, omega, 0).
+struct _OmegaPost end
+@inline function _post(::_OmegaPost, v, sa, ss)
+    @inbounds begin
+        w = _safe_div(v[1], v[2])
+        sa[3] = w
+        ss[3] = convert(eltype(ss), w)
+        return (v[1], v[2], w, zero(w))
     end
 end
 
@@ -222,7 +259,7 @@ end
 # `out` and `outloc` alias `host` and `hostloc` where the backend maps host memory
 # (`host_mapped_zeros`), so reading a result needs no device-to-host copy.
 function Reducer(backend::Backend, len::Integer, ::Type{Ta}) where {Ta}
-    ng = max(cld(len, _RED_WG), 1)
+    ng = cld(len, _RED_WG) + 1  # + 1: room for reductions split over kernels (`_reduce_stage1!`)
     partials = KernelAbstractions.zeros(backend, Ta, _RED_K, ng)
     ploc = KernelAbstractions.zeros(backend, Int32, ng)
     mo = host_mapped_zeros(backend, Ta, _RED_K)
@@ -237,7 +274,7 @@ end
 
 # Adapt: a Reducer is scratch space, so a new one is made on the target backend.
 Adapt.adapt_structure(to, r::Reducer{Ta}) where {Ta} =
-    Reducer(get_backend(adapt(to, r.partials)), size(r.partials, 2) * _RED_WG, Ta)
+    Reducer(get_backend(adapt(to, r.partials)), (size(r.partials, 2) - 1) * _RED_WG, Ta)
 
 """
     accumulation_type(backend, Ts) -> Type
@@ -266,13 +303,41 @@ function _mapreduce_loc!(red::Reducer, backend, f, ops::Tuple{_ArgMaxAbsOp, Vara
 end
 
 function _launch_reduction!(red::Reducer, backend, f, ops, len, args...)
+    _reduce_async!(red, backend, f, ops, len, args...) || return false
+    KernelAbstractions.synchronize(backend)
+    return true
+end
+
+# Launch the two stages without waiting (T4.5): the result is read later with
+# `_reduced(red)` after a synchronisation. `post`, `sa`, `ss`: see `finalize_reduction_kernel!`.
+# Returns false (nothing launched) when `len == 0`.
+function _reduce_async!(red::Reducer, backend, f, ops, len, args...; post = _NoPost(), sa = red.out, ss = red.out)
     ng = cld(len, _RED_WG)
     ng <= size(red.partials, 2) || throw(ArgumentError("reduction over $len entries exceeds the Reducer"))
     ng == 0 && return false
-    mapreduce_kernel!(backend, _RED_WG)(red.partials, red.ploc, f, ops, len, args; ndrange = ng * _RED_WG)
-    finalize_reduction_kernel!(backend, _RED_WG)(red.out, red.outloc, red.partials, red.ploc, ops, ng; ndrange = _RED_WG)
-    KernelAbstractions.synchronize(backend)
+    mapreduce_kernel!(backend, _RED_WG)(red.partials, red.ploc, f, ops, len, Int32(0), args; ndrange = ng * _RED_WG)
+    _finalize_async!(red, backend, ops, ng, post, sa, ss)
     return true
+end
+
+_finalize_async!(red::Reducer, backend, ops, ng, post, sa, ss) =
+    finalize_reduction_kernel!(backend, _RED_WG)(red.out, red.outloc, red.partials, red.ploc, ops, ng, post, sa, ss; ndrange = _RED_WG)
+
+# Stage 1 into the partial columns `goff + 1 : goff + cld(len, _RED_WG)` (several kernels
+# feeding one reduction, e.g. one per colour); returns the number of columns written.
+function _reduce_stage1!(red::Reducer, backend, goff::Integer, f, ops, len, args...)
+    ng = cld(len, _RED_WG)
+    goff + ng <= size(red.partials, 2) || throw(ArgumentError("reduction over $len entries exceeds the Reducer"))
+    ng == 0 && return 0
+    mapreduce_kernel!(backend, _RED_WG)(red.partials, red.ploc, f, ops, len, Int32(goff), args; ndrange = ng * _RED_WG)
+    return ng
+end
+
+# The 4 values of the last reduction of `red`, on the host (after a synchronisation).
+function _reduced(red::Reducer)
+    red.mapped || copyto!(red.host, red.out)
+    h = red.host
+    return (Float64(h[1]), Float64(h[2]), Float64(h[3]), Float64(h[4]))
 end
 
 @kernel function map_kernel!(f, len, args)
@@ -489,8 +554,10 @@ end
 
 Workspace of the inner solver for one CSR structure: `settings::KrylovSettings`, the
 structure, Krylov vectors in `Ts`, the Jacobi preconditioner (inverse diagonal) in `Tp`,
-the row and column factors of the scaled (and for CG sign-adjusted) operator, a
-`Reducer` accumulating in `Ta`, and the preconditioner `precond` (an
+the row and column factors of the scaled (and for CG sign-adjusted) operator, three
+`Reducer`s accumulating in `Ta` (so one iteration's reductions can all be read after one
+synchronisation, T4.5), device scalars `sa` (rho, alpha, omega in `Ta`) and `ss` (alpha,
+omega in `Ts`, read by the update kernels), and the preconditioner `precond` (an
 `AbstractPreconditioner` built from `settings.preconditioner`; for Jacobi it wraps `minv`).
 
     KrylovSolver(backend, csr::CsrStructure, settings; Ts = Float64, Tp = Ts,
@@ -499,7 +566,7 @@ the row and column factors of the scaled (and for CG sign-adjusted) operator, a
 `colors`: a host colouring for the multicolour preconditioners (`grid_colors`; greedy when
 `nothing`).
 """
-struct KrylovSolver{Ts, Tp, Ta, VS <: AbstractVector{Ts}, VP <: AbstractVector{Tp}, C <: CsrStructure, R <: Reducer{Ta}, P <: AbstractPreconditioner}
+struct KrylovSolver{Ts, Tp, Ta, VS <: AbstractVector{Ts}, VP <: AbstractVector{Tp}, C <: CsrStructure, R <: Reducer{Ta}, P <: AbstractPreconditioner, VA <: AbstractVector{Ta}}
     settings::KrylovSettings
     csr::C
     x::VS
@@ -518,6 +585,10 @@ struct KrylovSolver{Ts, Tp, Ta, VS <: AbstractVector{Ts}, VP <: AbstractVector{T
     colfac::VS
     reducer::R
     precond::P
+    reducer2::R
+    reducer3::R
+    sa::VA
+    ss::VS
 end
 
 function KrylovSolver(
@@ -530,9 +601,11 @@ function KrylovSolver(
     cg = settings.method === :cg ? n : 0
     minv = KernelAbstractions.zeros(backend, Tp, n)
     precond = build_preconditioner(settings.preconditioner, backend, csr, minv; Ts, Tp, colors, settings.precond_options...)
+    red() = Reducer(backend, n, Ta)
     return KrylovSolver(
         settings, csr, z(n), z(n), z(n), z(n), z(cg), z(settings.north > 0 ? n : 0),
-        z(bc), z(bc), z(bc), z(bc), z(bc), minv, z(n), z(n), Reducer(backend, n, Ta), precond,
+        z(bc), z(bc), z(bc), z(bc), z(bc), minv, z(n), z(n), red(), precond, red(), red(),
+        KernelAbstractions.zeros(backend, Ta, 4), z(4),
     )
 end
 
@@ -543,7 +616,7 @@ function Adapt.adapt_structure(to, s::KrylovSolver)
     precond = s.precond isa JacobiPreconditioner ? JacobiPreconditioner(minv) : a(s.precond)
     return KrylovSolver(
         s.settings, a(s.csr), a(s.x), a(s.r), a(s.p), a(s.q), a(s.z), a(s.b0), a(s.dhat), a(s.phat), a(s.qhat), a(s.t),
-        a(s.v), minv, a(s.rowfac), a(s.colfac), a(s.reducer), precond,
+        a(s.v), minv, a(s.rowfac), a(s.colfac), a(s.reducer), precond, a(s.reducer2), a(s.reducer3), a(s.sa), a(s.ss),
     )
 end
 
@@ -646,8 +719,9 @@ end
     return (@inbounds(Ta(w[n]) * Ta(qn)), zero(Ta), zero(Ta), zero(Ta))
 end
 
-@inline function _cg_update(::Type{Ta}, n, x, r, z, p, q, minv, alpha) where {Ta}
+@inline function _cg_update(::Type{Ta}, n, x, r, z, p, q, minv, ss) where {Ta}
     @inbounds begin
+        alpha = ss[2]
         tv = alpha * p[n]
         x[n] += tv
         rn = r[n] - alpha * q[n]
@@ -681,8 +755,9 @@ end
     return (Ta(rn) * Ta(rn), zero(Ta), zero(Ta), zero(Ta))
 end
 
-@inline function _cg_update_nf(::Type{Ta}, n, x, r, p, q, alpha) where {Ta}
+@inline function _cg_update_nf(::Type{Ta}, n, x, r, p, q, ss) where {Ta}
     @inbounds begin
+        alpha = ss[2]
         tv = alpha * p[n]
         x[n] += tv
         rn = r[n] - alpha * q[n]
@@ -696,13 +771,15 @@ end
     return nothing
 end
 
-# z = M⁻¹·r, then r·z (one reduction, unless the preconditioner fuses it into its last
-# kernel: `_precond_apply_dot!`).
-function _apply_dot!(s::KrylovSolver, backend, n)
-    rz = @timed_section :precond_apply _precond_apply_dot!(s.z, s.precond, s.r, s.reducer)
-    isnothing(rz) || return rz
-    return @timed_section :update_reduce _mapreduce!(s.reducer, backend, _dot_term, _SUM4, n, s.r, s.z)[1]
+# z = M⁻¹·r, then r·z into `red` (finalised with `post`), without synchronising: one
+# reduction, unless the preconditioner fuses it into its own kernels (`_precond_apply_dot!`).
+function _apply_dot_async!(s::KrylovSolver, backend, n, red, post)
+    fused = @timed_section :precond_apply _precond_apply_dot!(s.z, s.precond, s.r, red, post, s.sa, s.ss)
+    fused || @timed_section :update_reduce _reduce_async!(red, backend, _dot_term, _SUM4, n, s.r, s.z; post, s.sa, s.ss)
+    return nothing
 end
+
+_sync(backend) = KernelAbstractions.synchronize(backend)
 
 # --- BiCGSTAB (ims_base_bcgs)
 
@@ -729,9 +806,9 @@ end
     return nothing
 end
 
-@inline function _bcgs_half(n, q, qhat, r, v, minv, alpha)
+@inline function _bcgs_half(n, q, qhat, r, v, minv, ss)
     @inbounds begin
-        qn = r[n] - alpha * v[n]
+        qn = r[n] - ss[2] * v[n]
         q[n] = qn
         qhat[n] = _precond(minv, qn, n)
     end
@@ -743,8 +820,8 @@ end
     return nothing
 end
 
-@inline function _bcgs_half_nf(n, q, r, v, alpha)
-    @inbounds q[n] = r[n] - alpha * v[n]
+@inline function _bcgs_half_nf(n, q, r, v, ss)
+    @inbounds q[n] = r[n] - ss[2] * v[n]
     return nothing
 end
 
@@ -754,8 +831,10 @@ end
     return (@inbounds(Ta(tn) * Ta(q[n])), Ta(tn) * Ta(tn), zero(Ta), zero(Ta))
 end
 
-@inline function _bcgs_update(::Type{Ta}, n, x, r, dhat, phat, qhat, q, t, rowfac, alpha, omega) where {Ta}
+@inline function _bcgs_update(::Type{Ta}, n, x, r, dhat, phat, qhat, q, t, rowfac, ss) where {Ta}
     @inbounds begin
+        alpha = ss[2]
+        omega = ss[3]
         tv = alpha * phat[n] + omega * qhat[n]
         x[n] += tv
         rn = q[n] - omega * t[n]
@@ -787,20 +866,23 @@ const _CG_UPDATE_OPS = (_MaxAbsOp(), _MaxAbsOp(), _SumOp(), _SumOp())
 # fall to |r|^2 ~ 1e-16 well before INNER_RCLOSE, and the guard then stalls BiCGSTAB and CG
 # (ex-gwf-hanir :double: 16 outer / 14402 inner iterations instead of 4 / 222). The guard
 # here is relative to the numerator, so |num/d| <= 1/eps as in MF6 for O(1) values.
-_safe_div(num, d) = num / (d + copysign(max(eps(Float64) * abs(num), floatmin(Float64)), d))
+# Generic in the type, as the device computes it in `Ta` (`_AlphaPost`, `_OmegaPost`).
+@inline _safe_div(num::T, d::T) where {T <: AbstractFloat} = num / (d + copysign(max(eps(T) * abs(num), floatmin(T)), d))
 
 """
-    solve!(δ, solver::KrylovSolver, amat, res; kstp = 1) -> KrylovResult
+    solve!(δ, solver::KrylovSolver, amat, res; kstp = 1, offdiag_version = -1) -> KrylovResult
 
 Solve the correction system `A·δ = res` (PLAN.md section 3.7, rule 3) with a zero
 initial guess: `amat` is MF6's matrix in the CSR layout of `solver.csr` (a
 `LinearSystem`'s `amat`, any float type), `res` the flux-form residual (`flux_residual!`),
 `δ` the output. Scaling and the preconditioner (`precond_setup!`) are set up from `amat`
 on every call (as `imslinear_ap` does). `kstp` (time step number) only matters for
-`rclose_option = :l2norm` (`ims_base_epfact`). Returns a `KrylovResult` with the
-iteration count of this call.
+`rclose_option = :l2norm` (`ims_base_epfact`). `offdiag_version`: a number that changes
+whenever the off-diagonal entries of `amat` change (`GwfModel`'s `offdiag_version`; −1:
+unknown), so the preconditioner setup can skip work when only the diagonal changed.
+Returns a `KrylovResult` with the iteration count of this call.
 """
-function solve!(δ, solver::KrylovSolver{Ts}, amat, res; kstp::Integer = 1) where {Ts}
+function solve!(δ, solver::KrylovSolver{Ts}, amat, res; kstp::Integer = 1, offdiag_version::Integer = -1) where {Ts}
     st = solver.settings
     csr = solver.csr
     backend = get_backend(solver)
@@ -810,6 +892,7 @@ function solve!(δ, solver::KrylovSolver{Ts}, amat, res; kstp::Integer = 1) wher
     @timed_section :precond_setup begin
         _map!(backend, _setup_row, n, solver.rowfac, solver.colfac, amat, csr.ia, cg, scaling)
         scaling == 2 && _map!(backend, _setup_l2col, n, solver.colfac, solver.rowfac, amat, csr.ia, csr.ja, csr.isym)
+        _set_offdiag_version!(solver.precond, Int(offdiag_version))
         precond_setup!(solver.precond, solver, amat)
     end
     result = cg ? _solve_cg!(solver, amat, kstp, res) : _solve_bcgs!(solver, amat, kstp, res)
@@ -817,7 +900,10 @@ function solve!(δ, solver::KrylovSolver{Ts}, amat, res; kstp::Integer = 1) wher
     if !result.converged && _precond_retry!(solver.precond)
         # A preconditioner set up from an earlier matrix (AMG hierarchy reuse): rebuild it
         # and solve again from zero; the iterations of both attempts count.
-        @timed_section :precond_setup precond_setup!(solver.precond, solver, amat)
+        @timed_section :precond_setup begin
+            _set_offdiag_version!(solver.precond, -1)
+            precond_setup!(solver.precond, solver, amat)
+        end
         first = result
         result = cg ? _solve_cg!(solver, amat, kstp, res) : _solve_bcgs!(solver, amat, kstp, res)
         _precond_record!(solver.precond, result)
@@ -836,19 +922,32 @@ function _status(icnvg, iters, maxiter)
     return iters >= maxiter ? :maxiter : :stagnation
 end
 
+# One host synchronisation per iteration (T4.5): the step lengths are computed on the
+# device when the reductions finish (`_AlphaPost`, `_OmegaPost`, rho by `_SetRho`) and read
+# by the next kernels from `s.ss`; the host reads every reduction of the iteration after
+# one synchronisation and runs the same tests in the same order as before. The
+# preconditioner is applied before the convergence test (wasted in the last iteration).
 function _solve_cg!(s::KrylovSolver{Ts}, amat, kstp, res) where {Ts}
     st = s.settings
     csr = s.csr
     backend = get_backend(s)
-    red = s.reducer
+    red, red2, red3 = s.reducer, s.reducer2, s.reducer3
+    sa, ss = s.sa, s.ss
     n = Int(csr.nodes)
     epfact = ims_epfact(st.icnvgopt, kstp)
     jac = s.precond isa JacobiPreconditioner
     if jac
-        rr, rho, _, _ = @timed_section :update_reduce _mapreduce!(red, backend, _cg_init, _SUM4, n, s.x, s.r, s.p, s.z, s.b0, res, s.rowfac, s.minv)
+        @timed_section :update_reduce _reduce_async!(
+            red, backend, _cg_init, _SUM4, n, s.x, s.r, s.p, s.z, s.b0, res, s.rowfac, s.minv; post = _SetRho{2}(), sa, ss,
+        )
+        _sync(backend)
+        rr, rho, _, _ = _reduced(red)
     else
-        rr = @timed_section :update_reduce _mapreduce!(red, backend, _cg_init_nf, _SUM4, n, s.x, s.r, s.p, s.b0, res, s.rowfac)[1]
-        rho = rr == 0 ? 0.0 : _apply_dot!(s, backend, n)
+        @timed_section :update_reduce _reduce_async!(red, backend, _cg_init_nf, _SUM4, n, s.x, s.r, s.p, s.b0, res, s.rowfac)
+        _apply_dot_async!(s, backend, n, red3, _SetRho{1}())
+        _sync(backend)
+        rr = _reduced(red)[1]
+        rho = rr == 0 ? 0.0 : _reduced(red3)[1]
     end
     l2norm0 = sqrt(rr)
     icnvg = 0
@@ -865,34 +964,33 @@ function _solve_cg!(s::KrylovSolver{Ts}, amat, kstp, res) where {Ts}
         innerit += 1
         beta = iiter == 1 ? 0.0 : rho / rho0
         @timed_section :vector_update _map!(backend, _cg_direction, n, s.p, s.z, Ts(beta))
-        pq = @timed_section :spmv_dot _mapreduce!(red, backend, _apply_dot, _SUM4, n, s.q, s.p, s.p, amat, csr.ia, csr.ja, s.rowfac, s.colfac)[1]
-        alpha = _safe_div(rho, pq)
+        @timed_section :spmv_dot _reduce_async!(
+            red2, backend, _apply_dot, _SUM4, n, s.q, s.p, s.p, amat, csr.ia, csr.ja, s.rowfac, s.colfac; post = _AlphaPost(), sa, ss,
+        )
+        north = st.north > 0 && mod(iiter + 1, st.north) == 0
         if jac
-            deltax, rmax, l2sq, rho_next = @timed_section :update_reduce _mapreduce!(
-                red, backend, _cg_update, _CG_UPDATE_OPS, n, s.x, s.r, s.z, s.p, s.q, s.minv, Ts(alpha),
+            @timed_section :update_reduce _reduce_async!(
+                red, backend, _cg_update, _CG_UPDATE_OPS, n, s.x, s.r, s.z, s.p, s.q, s.minv, ss;
+                post = north ? _NoPost() : _SetRho{4}(), sa, ss,
+            )
+            north && @timed_section :true_residual _reduce_async!(
+                red3, backend, _cg_true_residual, _SUM4, n, s.r, s.z, s.x, s.b0, amat, csr.ia, csr.ja, s.rowfac, s.colfac, s.minv;
+                post = _SetRho{1}(), sa, ss,
             )
         else
-            deltax, rmax, l2sq, _ = @timed_section :update_reduce _mapreduce!(
-                red, backend, _cg_update_nf, _CG_UPDATE_OPS, n, s.x, s.r, s.p, s.q, Ts(alpha),
-            )
+            @timed_section :update_reduce _reduce_async!(red, backend, _cg_update_nf, _CG_UPDATE_OPS, n, s.x, s.r, s.p, s.q, ss)
+            north && @timed_section :true_residual _map!(backend, _true_residual_nf, n, s.r, s.x, s.b0, amat, csr.ia, csr.ja, s.rowfac, s.colfac)
+            _apply_dot_async!(s, backend, n, red3, _SetRho{1}())
         end
+        _sync(backend)
+        deltax, rmax, l2sq, rz = _reduced(red)
+        rho_next = (jac && !north) ? rz : _reduced(red3)[1]
         l2norm = sqrt(l2sq)
         rcnvg = st.icnvgopt >= 2 ? l2norm : rmax
         icnvg = ims_testcnvg(st.icnvgopt, innerit, deltax, rcnvg, l2norm0, epfact, st.dvclose, st.rclose)
         rcnvg == 0 && (icnvg = 1)
         icnvg != 0 && break
         _is_close(rho, rho0) && break
-        if st.north > 0 && mod(iiter + 1, st.north) == 0
-            if jac
-                rho_next = @timed_section :true_residual _mapreduce!(
-                    red, backend, _cg_true_residual, _SUM4, n, s.r, s.z, s.x, s.b0, amat, csr.ia, csr.ja,
-                    s.rowfac, s.colfac, s.minv,
-                )[1]
-            else
-                @timed_section :true_residual _map!(backend, _true_residual_nf, n, s.r, s.x, s.b0, amat, csr.ia, csr.ja, s.rowfac, s.colfac)
-            end
-        end
-        jac || (rho_next = _apply_dot!(s, backend, n))
         rho == 0 && break
         rho0 = rho
         rho = rho_next
@@ -904,11 +1002,16 @@ function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res) where {Ts}
     st = s.settings
     csr = s.csr
     backend = get_backend(s)
-    red = s.reducer
+    red, red2, red3 = s.reducer, s.reducer2, s.reducer3
+    sa, ss = s.sa, s.ss
     n = Int(csr.nodes)
     epfact = ims_epfact(st.icnvgopt, kstp)
     jac = s.precond isa JacobiPreconditioner
-    rr, rho, _, _ = @timed_section :update_reduce _mapreduce!(red, backend, _bcgs_init, _SUM4, n, s.x, s.r, s.dhat, s.p, s.v, s.b0, res, s.rowfac)
+    @timed_section :update_reduce _reduce_async!(
+        red, backend, _bcgs_init, _SUM4, n, s.x, s.r, s.dhat, s.p, s.v, s.b0, res, s.rowfac; post = _SetRho{2}(), sa, ss,
+    )
+    _sync(backend)
+    rr, rho, _, _ = _reduced(red)
     l2norm0 = sqrt(rr)
     icnvg = 0
     itmax = st.maxiter
@@ -929,32 +1032,42 @@ function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res) where {Ts}
             @timed_section :vector_update _map!(backend, _bcgs_direction_nf, n, s.p, s.r, s.v, Ts(beta), Ts(omega0))
             @timed_section :precond_apply precond_apply!(s.phat, s.precond, s.p)
         end
-        dv = @timed_section :spmv_dot _mapreduce!(red, backend, _apply_dot, _SUM4, n, s.v, s.phat, s.dhat, amat, csr.ia, csr.ja, s.rowfac, s.colfac)[1]
-        alpha = _safe_div(rho, dv)
+        @timed_section :spmv_dot _reduce_async!(
+            red2, backend, _apply_dot, _SUM4, n, s.v, s.phat, s.dhat, amat, csr.ia, csr.ja, s.rowfac, s.colfac; post = _AlphaPost(), sa, ss,
+        )
         if jac
-            @timed_section :vector_update _map!(backend, _bcgs_half, n, s.q, s.qhat, s.r, s.v, s.minv, Ts(alpha))
+            @timed_section :vector_update _map!(backend, _bcgs_half, n, s.q, s.qhat, s.r, s.v, s.minv, ss)
         else
-            @timed_section :vector_update _map!(backend, _bcgs_half_nf, n, s.q, s.r, s.v, Ts(alpha))
+            @timed_section :vector_update _map!(backend, _bcgs_half_nf, n, s.q, s.r, s.v, ss)
             @timed_section :precond_apply precond_apply!(s.qhat, s.precond, s.q)
         end
-        tq, tt, _, _ = @timed_section :spmv_dot _mapreduce!(red, backend, _bcgs_apply_t, _SUM4, n, s.t, s.qhat, s.q, amat, csr.ia, csr.ja, s.rowfac, s.colfac)
-        omega = _safe_div(tq, tt)
-        deltax, rmax, l2sq, rho_next = @timed_section :update_reduce _mapreduce!(
-            red, backend, _bcgs_update, _CG_UPDATE_OPS, n, s.x, s.r, s.dhat, s.phat, s.qhat, s.q, s.t, s.rowfac,
-            Ts(alpha), Ts(omega),
+        @timed_section :spmv_dot _reduce_async!(
+            red3, backend, _bcgs_apply_t, _SUM4, n, s.t, s.qhat, s.q, amat, csr.ia, csr.ja, s.rowfac, s.colfac; post = _OmegaPost(), sa, ss,
         )
+        north = st.north > 0 && mod(iiter + 1, st.north) == 0
+        @timed_section :update_reduce _reduce_async!(
+            red, backend, _bcgs_update, _CG_UPDATE_OPS, n, s.x, s.r, s.dhat, s.phat, s.qhat, s.q, s.t, s.rowfac, ss;
+            post = north ? _NoPost() : _SetRho{4}(), sa, ss,
+        )
+        _sync(backend)
+        alpha = _reduced(red2)[2]
+        omega = _reduced(red3)[3]
+        deltax, rmax, l2sq, rho_next = _reduced(red)
+        if north
+            # ims_base_residual; reduced into `red2`, whose alpha has been read.
+            @timed_section :true_residual _reduce_async!(
+                red2, backend, _bcgs_true_residual, _SUM4, n, s.r, s.dhat, s.x, s.b0, amat, csr.ia, csr.ja, s.rowfac, s.colfac;
+                post = _SetRho{1}(), sa, ss,
+            )
+            _sync(backend)
+        end
         l2norm = sqrt(l2sq)
         rcnvg = st.icnvgopt >= 2 ? l2norm : rmax
         icnvg = ims_testcnvg(st.icnvgopt, innerit, deltax, rcnvg, l2norm0, epfact, st.dvclose, st.rclose)
         rcnvg == 0 && (icnvg = 1)
         icnvg != 0 && break
         (_is_close(rho, rho0) || _is_close(alpha, alpha0) || _is_close(omega, omega0)) && break
-        if st.north > 0 && mod(iiter + 1, st.north) == 0
-            rho_next = @timed_section :true_residual _mapreduce!(
-                red, backend, _bcgs_true_residual, _SUM4, n, s.r, s.dhat, s.x, s.b0, amat, csr.ia, csr.ja,
-                s.rowfac, s.colfac,
-            )[1]
-        end
+        north && (rho_next = _reduced(red2)[1])
         rho * omega == 0 && break
         rho0 = rho
         alpha0 = alpha

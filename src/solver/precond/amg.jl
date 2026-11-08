@@ -1107,9 +1107,10 @@ function precond_apply!(z, P::AMGPreconditioner, r)
     return _cycle!(P, 1, z, P.fy, r, P.fw, P.fd, op, minv)
 end
 
-function _precond_apply_dot!(z, P::AMGPreconditioner, r, reducer)
-    _fused_fine(P) || return (precond_apply!(z, P, r); nothing)
-    return _fine_cycle1!(P, z, r, P.fine[1], P.fine[2], reducer)
+function _precond_apply_dot!(z, P::AMGPreconditioner, r, reducer, post, sa, ss)
+    _fused_fine(P) || return (precond_apply!(z, P, r); false)
+    _fine_cycle1!(P, z, r, P.fine[1], P.fine[2], (reducer, post, sa, ss))
+    return true
 end
 
 _fused_fine(P::AMGPreconditioner) = P.options.fine_degree == 1 && length(P.levels) > 1
@@ -1153,8 +1154,9 @@ end
 
 # The finest level with a degree-1 smoother, fused: residual of the pre-smoothed `c·D⁻¹·r`
 # (one SpMV), restriction, coarse cycle, `y = c·D⁻¹·r + P·xc`, post-smoothing (one SpMV,
-# with `r·z` when `reducer` is given). The same V-cycle as `_cycle!` with degree 1.
-function _fine_cycle1!(P::AMGPreconditioner, z, r, op, dinv, reducer)
+# with `r·z` when `red = (reducer, post, sa, ss)` is given, not synchronised). The same
+# V-cycle as `_cycle!` with degree 1.
+function _fine_cycle1!(P::AMGPreconditioner, z, r, op, dinv, red)
     backend = P.backend
     lev = P.levels[1]
     nxt = P.levels[2]
@@ -1165,11 +1167,13 @@ function _fine_cycle1!(P::AMGPreconditioner, z, r, op, dinv, reducer)
     _map!(backend, _restrict, nxt.n, nxt.f, lev.ria, lev.rja, lev.ra, P.fw)
     _cycle!(P, 2, nxt.x, nxt.y, nxt.f, nxt.w, nxt.d, _CsrOp(nxt.ia, nxt.ja, nxt.a), nxt.dinv)
     _map!(backend, _prolong_set, n, P.fy, r, dinv, c, lev.pia, lev.pja, lev.pa, nxt.x)
-    if isnothing(reducer)
+    if isnothing(red)
         _map!(backend, _smooth_last, n, z, P.fy, r, dinv, op, c)
         return nothing
     end
-    return _mapreduce!(reducer, backend, _smooth_last_dot, _SUM4, n, z, P.fy, r, dinv, op, c)[1]
+    reducer, post, sa, ss = red
+    _reduce_async!(reducer, backend, _smooth_last_dot, _SUM4, n, z, P.fy, r, dinv, op, c; post, sa, ss)
+    return nothing
 end
 
 """

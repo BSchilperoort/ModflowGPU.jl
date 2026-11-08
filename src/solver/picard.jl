@@ -155,6 +155,7 @@ _with_rclose(k::KrylovSettings, rclose) = _with(k; rclose = Float64(rclose))
 
 _with_settings(s::KrylovSolver, st::KrylovSettings) = KrylovSolver(
     st, s.csr, s.x, s.r, s.p, s.q, s.z, s.b0, s.dhat, s.phat, s.qhat, s.t, s.v, s.minv, s.rowfac, s.colfac, s.reducer, s.precond,
+    s.reducer2, s.reducer3, s.sa, s.ss,
 )
 
 """
@@ -210,7 +211,7 @@ function outer_iteration!(state::OuterState, ps::PicardSolver, m::GwfModel{T}, k
         k = state.krylov
         state.krylov = state.rclose == k.settings.rclose ? k : _with_settings(k, _with_rclose(st.krylov, state.rclose))
     end
-    res = @timed_section :linear_solve solve!(m.δ, state.krylov, m.sys.amat, m.res; kstp)
+    res = @timed_section :linear_solve solve!(m.δ, state.krylov, m.sys.amat, m.res; kstp, offdiag_version = m.offdiag_version)
     state.inner += res.iterations
     (hncg, hmax, _, _), lrch = @timed_section :outer_reduction _mapreduce_loc!(ps.reducer, backend, _dxmax_term, _DXMAX_OPS, n, m.δ, m.ibound, m.h)
     state.hncg, state.lrch = hncg, lrch
