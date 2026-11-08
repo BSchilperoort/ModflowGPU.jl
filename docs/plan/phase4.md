@@ -5,6 +5,19 @@ Task cards for this phase of [PLAN.md](../../PLAN.md). Read PLAN.md sections 1�
 Size: S ≈ < 1 day of agent work, M ≈ 1–3 days, L ≈ > 3 days.
 `‖` marks cards that can run in parallel with their siblings.
 
+**Phase 4 targets** (adopted 2026-11-08 from the T4.1 baseline,
+`benchmark/results/2026-11-07.md`; rocm, RX 7800 XT, tight closures):
+- `global5m`: steady state < 5 s in `:double`; daily step < 0.2 s in `:double` and
+  < 0.1 s in `:single`; steady state + 30 daily steps < 10 s.
+- `indus`: steady state < 0.35 s (mf6 serial speed), < 40 µs per inner iteration.
+- In-solver SpMV ≥ 70 % of the T0.4 triad in both precisions (≥ 85 % with SELL-C-σ
+  or the DIS stencil).
+- Assembly < 4 ms per outer iteration on `global5m`; period data < 10 ms per period.
+- AMG device-memory overhead ≤ +60 % of the model's arrays.
+Baseline for comparison: `global5m` steady 28.2 s / 9.17 s, daily step 0.618 s /
+0.230 s, 31 steps 46.7 s / 16.1 s (`:double` / `:single`); `indus` steady 1.10 s.
+Each Phase 4 card reports its effect on these numbers with `benchmark/run.jl`.
+
 **T4.1 Benchmark harness (S)**
 - Depends: T3.4.
 - Deliver: `benchmark/run.jl` running `indus`, `continental`, `global5m`,
@@ -61,3 +74,5 @@ Size: S ≈ < 1 day of agent work, M ≈ 1–3 days, L ≈ > 3 days.
   stencil for DIS), selected per grid type by benchmark.
 - Done when: SpMV reaches ≥ 70 % of the T0.4 triad bandwidth on `global5m`,
   or the reason why not is documented.
+  Also investigate why runs with the section timer enabled are 3–43 % faster than
+  untimed runs (T4.1 open issue).
