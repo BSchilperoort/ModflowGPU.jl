@@ -110,7 +110,10 @@ multiplier; what the stepping API reads and writes, see `bound_user!` and `set_b
 API write), `user_stale` (`bound_user` not yet filled from the PERIOD block in force: read
 it with `bound_user!`), `staging` (`(ncol, maxbound)` in `T`: the values copied to `bound`, registered
 with `pin_memory!`, whose result is kept in `pinned`), `nodeptr_host` / `noderec_host` (the
-node→record map on the host). `bound_values(pkg, r)` gives the Float64 values of `bound`.
+node→record map on the host), `rrec` / `rrec_for` (the reference `r[nodelist[i]]` per
+record, 0 without a cell, for heads of the packages with head-like columns, and the `r` it
+was taken from; `nothing` after the cells change). `bound_values(pkg, r)` gives the
+Float64 values of `bound`.
 """
 mutable struct BoundaryPackage{K, T <: AbstractFloat, VI <: AbstractVector{Int32}, VT <: AbstractVector{T}, MT <: AbstractMatrix{T}}
     const spec::BoundarySpec{K}
@@ -136,6 +139,8 @@ mutable struct BoundaryPackage{K, T <: AbstractFloat, VI <: AbstractVector{Int32
     const pinned::Any
     const nodeptr_host::Vector{Int32}
     const noderec_host::Vector{Int32}
+    const rrec::Vector{Float64}
+    rrec_for::Union{Nothing, Vector{Float64}}
 end
 
 # The staging buffer of `bound` on the host, and the result of `pin_memory!` (kept so the
@@ -160,6 +165,7 @@ function BoundaryPackage{K, T}(backend::Backend, spec::BoundarySpec{K}, conn::Co
         zt(nchd), zt(nchd), KernelAbstractions.ones(backend, Int32, conn.nodes + 1), zi(maxbound), 0, 0,
         zeros(Int32, maxbound), zeros(Float64, ncol, maxbound), String[], 0, false, staging, pinned,
         zeros(Int32, conn.nodes + 1), zeros(Int32, maxbound),
+        zeros(isempty(head_columns(BoundaryKind{K}())) ? 0 : maxbound), nothing,
     )
 end
 
@@ -177,7 +183,7 @@ function Adapt.adapt_structure(to, p::BoundaryPackage)
         p.spec, p.conn, p.grid, adapt(to, p.nodelist), bound, adapt(to, p.hcof), adapt(to, p.rhs),
         adapt(to, p.simvals), adapt(to, p.ratein), adapt(to, p.rateout), adapt(to, p.nodeptr), adapt(to, p.noderec),
         p.nbound, p.iblock, copy(p.nodelist_host), copy(p.bound_user), copy(p.boundname), p.bound_version, p.user_stale,
-        staging, pinned, copy(p.nodeptr_host), copy(p.noderec_host),
+        staging, pinned, copy(p.nodeptr_host), copy(p.noderec_host), copy(p.rrec), p.rrec_for,
     )
 end
 
@@ -240,16 +246,18 @@ before the offsets: column `c` is row `rows[c]` of `mats[c]` (a list PERIOD bloc
 `consts[c]` when `rows[c] == 0`. With `aux`, the MULTIPLIER (`aux[imult, i]`) is applied to
 column `mcol` (`bnd_rp`, `cond_mult`). What the `check_records` hooks see.
 """
-struct BoundSource{A <: Union{Nothing, Matrix{Float64}}} <: AbstractMatrix{Float64}
-    mats::Vector{Matrix{Float64}}
-    rows::Vector{Int}
-    consts::Vector{Float64}
+struct BoundSource{N, A <: Union{Nothing, Matrix{Float64}}} <: AbstractMatrix{Float64}
+    mats::NTuple{N, Matrix{Float64}}
+    rows::NTuple{N, Int}
+    consts::NTuple{N, Float64}
     n::Int
     aux::A
     imult::Int
     mcol::Int
 end
-Base.size(b::BoundSource) = (length(b.rows), b.n)
+BoundSource(mats::AbstractVector, rows::AbstractVector, consts::AbstractVector, n, aux, imult, mcol) =
+    BoundSource(Tuple(mats), Tuple(rows), Tuple(consts), n, aux, imult, mcol)
+Base.size(b::BoundSource{N}) where {N} = (N, b.n)
 Base.@propagate_inbounds function Base.getindex(b::BoundSource, c::Int, i::Int)
     k = b.rows[c]
     v = k == 0 ? b.consts[c] : b.mats[c][k, i]
@@ -392,13 +400,45 @@ function bound_values(pkg::BoundaryPackage{K}, r::AbstractVector{Float64}) where
     return Float64[_staged_value(b, hcols, pkg.nodelist_host, r, c, i) for c in axes(pkg.bound_user, 1), i in 1:pkg.nbound]
 end
 
-# Records i in `range`: staging[:, i] = T(multiplier and offsets of record i).
-function _stage_range!(staging::AbstractMatrix{T}, b::BoundSource, hcols, nodes, r, range) where {T}
-    ncol = size(staging, 1)
-    @inbounds for i in range, c in 1:ncol
-        staging[c, i] = T(_staged_value(b, hcols, nodes, r, c, i))
+# Records i in `range`: staging[:, i] = T(multiplier and offsets of record i), with the
+# record references `rrec` (`r[nodes[i]]`, 0 without a cell: `v − 0.0 == v`, so this is
+# `_staged_value`).
+function _stage_range!(staging::AbstractMatrix{T}, b::BoundSource{N}, hcols, rrec, range) where {T, N}
+    @inbounds for i in range
+        ref = isempty(hcols) ? 0.0 : rrec[i]
+        for c in 1:N
+            v = b[c, i]
+            c in hcols && (v -= ref)
+            staging[c, i] = T(v)
+        end
     end
     return nothing
+end
+
+# The matrix whose first `ncol·n` values are `bound` as it is, when no pass is needed:
+# `T == Float64`, no multiplier, no head-like columns and one source matrix with exactly
+# the columns of `bound` (e.g. RCH and WEL lists in `:double`); otherwise `nothing`.
+function _direct_source(::Type{T}, b::BoundSource{N}, hcols) where {T, N}
+    (T === Float64 && b.aux === nothing && isempty(hcols)) || return nothing
+    m = b.mats[1]
+    size(m, 1) == N || return nothing
+    for c in 1:N
+        (b.mats[c] === m && b.rows[c] == c) || return nothing
+    end
+    return m
+end
+
+# The record references `pkg.rrec[1:nbound]` for `r` (recomputed when the cells or `r`
+# changed).
+function _record_refs!(pkg::BoundaryPackage{K}, r::AbstractVector{Float64}) where {K}
+    isempty(head_columns(BoundaryKind{K}())) && return pkg.rrec
+    pkg.rrec_for === r && return pkg.rrec
+    for i in 1:pkg.nbound
+        nd = pkg.nodelist_host[i]
+        pkg.rrec[i] = nd > 0 ? r[nd] : 0.0
+    end
+    pkg.rrec_for = r
+    return pkg.rrec
 end
 
 # Records per task of the threaded staging pass.
@@ -413,18 +453,24 @@ function _stage_bound!(pkg::BoundaryPackage{K, T}, r::AbstractVector{Float64}) w
     n == 0 && return pkg
     # A copy from pinned memory may still be in flight: wait before overwriting the buffer.
     isnothing(pkg.pinned) || KernelAbstractions.synchronize(get_backend(pkg.bound))
-    _stage_records!(pkg.staging, _bound_source(pkg), head_columns(BoundaryKind{K}()), pkg.nodelist_host, r, n)
-    copyto!(pkg.bound, 1, pkg.staging, 1, size(pkg.staging, 1) * n)
+    b = _bound_source(pkg)
+    hcols = head_columns(BoundaryKind{K}())
+    m = _direct_source(T, b, hcols)
+    if isnothing(m)
+        _stage_records!(pkg.staging, b, hcols, _record_refs!(pkg, r), n)
+        m = pkg.staging
+    end
+    copyto!(pkg.bound, 1, m, 1, size(pkg.staging, 1) * n)
     return pkg
 end
 
-function _stage_records!(staging, b::BoundSource, hcols, nodes, r, n)
+function _stage_records!(staging, b::BoundSource, hcols, rrec, n)
     if Threads.nthreads() > 1 && n > 2STAGING_CHUNK
         Threads.@threads :static for k in 1:cld(n, STAGING_CHUNK)
-            _stage_range!(staging, b, hcols, nodes, r, ((k - 1) * STAGING_CHUNK + 1):min(k * STAGING_CHUNK, n))
+            _stage_range!(staging, b, hcols, rrec, ((k - 1) * STAGING_CHUNK + 1):min(k * STAGING_CHUNK, n))
         end
     else
-        _stage_range!(staging, b, hcols, nodes, r, 1:n)
+        _stage_range!(staging, b, hcols, rrec, 1:n)
     end
     return nothing
 end
@@ -482,7 +528,7 @@ function _apply_period!(pkg::BoundaryPackage{K, T}, kper::Integer, r::AbstractVe
             nodes[i] > 0 && ibound[nodes[i]] == 0 && (nodes[i] = highest_active(pkg.conn, nodes[i], ibound))
         end
     end
-    same || _upload_structure!(pkg)
+    same || (_upload_structure!(pkg); pkg.rrec_for = nothing)
     _stage_bound!(pkg, r)
     return same ? :values : :structure
 end
