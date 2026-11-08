@@ -41,7 +41,7 @@
 """
     AMGOptions(; theta = 0.08, smoother = :chebyshev, degree = 2, cheb_ratio = 0.3,
                max_coarse = 400, max_levels = 20, smooth = true, rebuild_factor = 2.0,
-               rebuild_min = 10, reuse = true)
+               rebuild_min = 10, reuse = true, update_tol = 0.0)
 
 Options of `AMGPreconditioner` (`precond_options` of `KrylovSettings`):
 
@@ -55,8 +55,13 @@ Options of `AMGPreconditioner` (`precond_options` of `KrylovSettings`):
 - `rebuild_factor`, `rebuild_min`: rebuild the hierarchy when a solve takes more than
   `max(rebuild_factor·n₀, n₀ + rebuild_min)` iterations, with `n₀` those of the first
   solve after the last build;
-- `reuse`: keep the aggregates and prolongators between setups (`false`: rebuild the
-  hierarchy at every `precond_setup!`, for diagnostics).
+- `reuse`: keep the aggregates between setups (`false`: rebuild the hierarchy at every
+  `precond_setup!`, for diagnostics);
+- `update_tol`: recompute the prolongators and coarse operators only when the matrix
+  changed by more than this since the last update (the larger relative 1-norm change of
+  the row sums `Σ_j a_ij`, which are the storage and boundary terms, and of `Σ_j |a_ij|`);
+  otherwise the coarse levels are kept (the finest level always uses the
+  current matrix). 0 updates at every setup.
 
 The largest eigenvalue of `D⁻¹A` on each level is its Gershgorin bound
 `max_i Σ_j |a_ij/a_ii|`, recomputed at every setup.
@@ -73,14 +78,15 @@ Base.@kwdef struct AMGOptions
     rebuild_factor::Float64 = 2.0
     rebuild_min::Int = 10
     reuse::Bool = true
-    function AMGOptions(theta, strength, smoother, degree, cheb_ratio, max_coarse, max_levels, smooth, rebuild_factor, rebuild_min, reuse)
+    update_tol::Float64 = 0.0
+    function AMGOptions(theta, strength, smoother, degree, cheb_ratio, max_coarse, max_levels, smooth, rebuild_factor, rebuild_min, reuse, update_tol)
         theta >= 0 || throw(ArgumentError("AMG theta must be >= 0"))
         strength in (:offdiag, :symmetric) || throw(ArgumentError("unknown AMG strength measure $strength (expected :offdiag or :symmetric)"))
         smoother in (:chebyshev, :jacobi) || throw(ArgumentError("unknown AMG smoother $smoother (expected :chebyshev or :jacobi)"))
         degree >= 1 || throw(ArgumentError("AMG smoother degree must be >= 1"))
         0 < cheb_ratio < 1 || throw(ArgumentError("AMG cheb_ratio must be in (0, 1)"))
         max_coarse >= 1 && max_levels >= 1 || throw(ArgumentError("AMG max_coarse and max_levels must be >= 1"))
-        return new(theta, strength, smoother, degree, cheb_ratio, max_coarse, max_levels, smooth, rebuild_factor, rebuild_min, reuse)
+        return new(theta, strength, smoother, degree, cheb_ratio, max_coarse, max_levels, smooth, rebuild_factor, rebuild_min, reuse, update_tol)
     end
 end
 
@@ -521,7 +527,7 @@ end
 
 Counters of an `AMGPreconditioner`: `builds` (host hierarchy builds) and `build_time`
 (s), `updates` (device Galerkin recomputations) and `update_time` (s, synchronised),
-`solves` (preconditioned solves), `sizes` (rows per level), `nnz` (entries
+`solves` (preconditioned solves), `skipped` (setups that kept the coarse levels), `sizes` (rows per level), `nnz` (entries
 of each level's operator) and `device_bytes` (hierarchy and work vectors on the device).
 """
 mutable struct AMGStats
@@ -530,12 +536,13 @@ mutable struct AMGStats
     updates::Int
     update_time::Float64
     solves::Int
+    skipped::Int
     sizes::Vector{Int}
     nnz::Vector{Int}
     device_bytes::Int
 end
 
-AMGStats() = AMGStats(0, 0.0, 0, 0.0, 0, Int[], Int[], 0)
+AMGStats() = AMGStats(0, 0.0, 0, 0.0, 0, 0, Int[], Int[], 0)
 
 """
     AMGPreconditioner{Ts, Tp, Ta}
@@ -560,6 +567,8 @@ mutable struct AMGPreconditioner{Ts, Tp, Ta, B <: Backend, VS <: AbstractVector{
     fy::VS
     fw::VS
     fd::VS
+    sig::VS
+    sig2::VS
     gacc::VA
     cinv::VP
     # host: coarsest pattern (dense inverse updates) and the finest CSR structure
@@ -570,6 +579,8 @@ mutable struct AMGPreconditioner{Ts, Tp, Ta, B <: Backend, VS <: AbstractVector{
     built::Bool
     rebuild::Bool
     fresh::Bool
+    skipped::Bool
+    force_update::Bool
     base_iters::Int
     const stats::AMGStats
 end
@@ -585,8 +596,8 @@ function AMGPreconditioner(backend::Backend, n::Integer, ::Type{Ts}, ::Type{Tp};
     zb = KernelAbstractions.zeros(backend, UInt8, 0)
     red = Reducer(backend, n, Ta)
     return AMGPreconditioner{Ts, Tp, Ta, typeof(backend), typeof(zs), typeof(zp), typeof(za), typeof(zi), typeof(zb), typeof(red)}(
-        opt, backend, Int(n), red, AMGLevel{typeof(zi), typeof(zp), typeof(zb)}[], Float64[], zs, similar(zs), similar(zs), za, zp, empty,
-        Int[], Int32[], nothing, false, true, false, 0, AMGStats(),
+        opt, backend, Int(n), red, AMGLevel{typeof(zi), typeof(zp), typeof(zb)}[], Float64[], zs, similar(zs), similar(zs), similar(zs), similar(zs), za, zp, empty,
+        Int[], Int32[], nothing, false, true, false, false, false, 0, AMGStats(),
     )
 end
 
@@ -657,6 +668,9 @@ function _build!(P::AMGPreconditioner{Ts, Tp, Ta}, solver, amat) where {Ts, Tp, 
     P.fy = KernelAbstractions.zeros(backend, Ts, n)
     P.fw = KernelAbstractions.zeros(backend, Ts, n)
     P.fd = KernelAbstractions.zeros(backend, Ts, n)
+    P.sig = KernelAbstractions.zeros(backend, Ts, 2n)
+    P.sig2 = KernelAbstractions.zeros(backend, Ts, 2n)
+    _matrix_change!(P, amat, csr)
     maxnnz = maximum((_nnz(h.A) for h in hl[2:end]); init = 0)
     P.gacc = Ta === Tp ? KernelAbstractions.zeros(backend, Ta, 0) : KernelAbstractions.zeros(backend, Ta, maxnnz)
     hc = last(hl).A
@@ -667,7 +681,7 @@ function _build!(P::AMGPreconditioner{Ts, Tp, Ta}, solver, amat) where {Ts, Tp, 
     st.builds += 1
     st.sizes = [h.A.nrow for h in hl]
     st.nnz = [_nnz(h.A) for h in hl]
-    st.device_bytes = sum(_bytes, P.levels) + _bytes(P.fy) * 3 + _bytes(P.gacc) + _bytes(P.cinv)
+    st.device_bytes = sum(_bytes, P.levels) + sum(_bytes, (P.fy, P.fw, P.fd, P.sig, P.sig2, P.gacc, P.cinv))
     P.built = true
     P.rebuild = false
     P.fresh = true
@@ -846,15 +860,55 @@ function _update!(P::AMGPreconditioner{Ts, Tp, Ta}, fineop) where {Ts, Tp, Ta}
     return P
 end
 
+# Row signatures of the current matrix into `sig_new` (`Σ_j |a_ij|` at `i`, the row sum
+# `Σ_j a_ij`, i.e. the storage and boundary terms, at `n + i`), and their summed absolute
+# changes from `sig_old` and sums of the old values.
+@inline function _signature_term(::Type{Ta}, i, sig_new, sig_old, amat, ia, n) where {Ta}
+    s = zero(Ta)
+    t = zero(Ta)
+    @inbounds for ii in ia[i]:(ia[i + 1] - Int32(1))
+        v = Ta(amat[ii])
+        s += abs(v)
+        t += v
+    end
+    @inbounds begin
+        sig_new[i] = s
+        sig_new[n + i] = t
+        os = Ta(sig_old[i])
+        ot = Ta(sig_old[n + i])
+    end
+    return (abs(s - os), abs(os), abs(t - ot), abs(ot))
+end
+
+# Relative change of the row signatures since the last build or update (`P.sig`); the new
+# signatures are in `P.sig2` (swapped into `P.sig` when the hierarchy is updated).
+function _matrix_change!(P::AMGPreconditioner, amat, csr)
+    d1, s1, d2, s2 = _mapreduce!(P.reducer, P.backend, _signature_term, _SUM4, P.n, P.sig2, P.sig, amat, csr.ia, P.n)
+    P.sig, P.sig2 = P.sig2, P.sig
+    rel(d, s) = s > 0 ? d / s : (d > 0 ? Inf : 0.0)
+    return max(rel(d1, s1), rel(d2, s2))
+end
+
 function precond_setup!(P::AMGPreconditioner, solver, amat)
     csr = solver.csr
     op = _FineOp(amat, csr.ia, csr.ja, solver.rowfac, solver.colfac)
     P.fine = (op, solver.minv, solver, amat)
     if !P.built || P.rebuild || !P.options.reuse
         _build!(P, solver, amat)
-    else
-        P.fresh = false
+        return P
+    end
+    P.fresh = false
+    change = _matrix_change!(P, amat, csr)
+    if P.force_update || change > P.options.update_tol
+        P.skipped = false
+        P.force_update = false
         _update!(P, op)
+    else
+        # Keep the coarse levels of the last update (the finest level always uses the
+        # current matrix); the signatures stay those of the last update.
+        P.sig, P.sig2 = P.sig2, P.sig
+        P.skipped = true
+        P.stats.skipped += 1
     end
     return P
 end
@@ -865,14 +919,15 @@ function _precond_record!(P::AMGPreconditioner, result)
     if P.fresh
         P.base_iters = result.iterations
     elseif result.iterations > max(st.rebuild_factor * P.base_iters, P.base_iters + st.rebuild_min)
-        P.rebuild = true
+        # Degraded: update the coarse levels if the last setup skipped it, else rebuild.
+        P.skipped ? (P.force_update = true) : (P.rebuild = true)
     end
     return nothing
 end
 
 function _precond_retry!(P::AMGPreconditioner)
     P.fresh && return false
-    P.rebuild = true
+    P.skipped ? (P.force_update = true) : (P.rebuild = true)
     return true
 end
 
