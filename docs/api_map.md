@@ -10,11 +10,11 @@ it. Underscore-prefixed helpers are omitted.
 
 - **backend_setup.jl**: backend registry, adapted from mGV. `select_backend` (name → KA
   backend), `register_backend!` (called by `ext/*Ext.jl`), `backend_options`,
-  `backend_name`, `known_backend_package`, `pin_memory!` (extension hook), `host_mapped_zeros`
+  `backend_name`, `known_backend_package`, `pin_memory!` (extension hook; returns a handle to keep, or `nothing`; CUDA, ROCm >= AMDGPU 2.10 since T4.6), `host_mapped_zeros`
   (extension hook, T3.1: device view of a host vector for reduction results; CPU, ROCm), `BackendEntry`, `BACKEND_REGISTRY`, `KNOWN_BACKENDS`; `_device_copy` (host array → new device array). Tests: backend.
 - **ext/*Ext.jl** (AMDGPU, CUDA, Metal, oneAPI, OpenCL): `__init__` registers the backend;
-  overrides `supports_float64` where needed; AMDGPUExt adds `host_mapped_zeros` (registered
-  host memory; AMDGPU >= 2.10 only, older versions copy). Tests: backend (GPU file with `MFGPU_TEST_BACKEND`).
+  overrides `supports_float64` where needed; AMDGPUExt adds `host_mapped_zeros` and
+  `pin_memory!` (registered host memory; AMDGPU >= 2.10 only, older versions copy). Tests: backend (GPU file with `MFGPU_TEST_BACKEND`).
 - **precision.jl**: precision presets (PLAN.md 3.7). `resolve_precision(backend, preset)`
   → `(; T, Ts, Tp)`, `PRECISION_PRESETS`, `supports_float64` (extension hook). Tests: precision, kernel.
 - **instrument.jl** (T4.1): optional timing of the hot loop. `@timed_section name expr`
@@ -140,6 +140,15 @@ it. Underscore-prefixed helpers are omitted.
   `boundary_kind`. Tests: boundaries.
   T3.3: `bound_user` (host values as given, before the multiplier) and `set_bound!` (stepping
   API writes: multiplier + offsets as period data, then copy to the device); tests: stepping.
+  T4.6 (period-data path): a block with the cells in force keeps nodes and the node→record
+  map (`_apply_period!` → `:unchanged` / `:values` / `:structure`); values are read from the
+  PERIOD block through `BoundSource` (lazy `(ncol, n)` view, multiplier applied; what
+  `check_records(kind, pkg, bound, n)` sees) and staged in one fused pass (Float64
+  multiplier and offsets with per-record references `rrec`, one cast) into the pinned
+  `staging` buffer, one `copyto!` (Float64 pass-through columns are copied directly);
+  `bound_user!` fills `bound_user` on demand; `bound_version` counts value changes;
+  `bound_values(pkg, r)` (Float64 `bound`, replaces the `bound_host` field). Tests:
+  boundaries (fast path vs full application).
 - **boundaries/chd.jl**: CHD (gwf-chd.f90; see `docs/mf6_notes.md`). `apply_chd_heads!`,
   `calc_chd_rate!`. Tests: boundaries (parity vs MF6 CBC).
 - **boundaries/wel.jl**, **rch.jl**, **ghb.jl**: WEL, RCH (list and RCHA arrays, cell
@@ -190,7 +199,7 @@ it. Underscore-prefixed helpers are omitted.
 - **gwf/model.jl**: one model on a device. `GwfModel{T}` (spec, conn, NpfSetup, CSR,
   NpfModel, LinearSystem, boundary packages, STO, ibound, offset heads `h`/`hold`, `res`,
   `δ`, `flowja`; Adapt, e.g. `adapt(backend, m)`, T3.1), `apply_period!(::GwfModel, kper)` (once per period: package period
-  data, STO, CHD ibound), `start_timestep!` (`rho`, `hold ← h`, CHD heads), `formulate!`
+  data, STO, CHD ibound, rebuilt only when a CHD package has new cells), `start_timestep!` (`rho`, `hold ← h`, CHD heads), `formulate!`
   (formulate, assemble, flux residual), `absolute_heads` (host Float64 `r + h'`). Tests:
   picard, run.
 - **solver/underrelax.jl**: `sln_underrelax`. `UnderRelaxation` (SIMPLE, COOLEY host
@@ -246,7 +255,9 @@ it. Underscore-prefixed helpers are omitted.
   `get_current_time` / `get_start_time` / `get_end_time` / `get_time_step`, `StepResult`;
   addresses `get_var_address`, `var_addresses`, `input_addresses`, `get_value_ptr` (host
   Float64 mirror, absolute; `device = true` for the engine array), `get_value`,
-  `set_value` (X, BOUND). Mirror sync rules in the file header. Tests: stepping.
+  `set_value` (X, BOUND). Mirror sync rules in the file header; BOUND and NODELIST
+  mirrors are versioned (T4.6: copied only when the engine values changed, dirty check by
+  memcmp). Tests: stepping.
 - **bmi.jl** (T3.3): BasicModelInterface methods on `Simulation` (`BMI.initialize`,
   `update`, `update_until`, time, variables, `get_value(_ptr)`, `set_value(_at_indices)`,
   grid 1 = model grid). Tests: stepping.
