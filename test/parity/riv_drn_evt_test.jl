@@ -130,7 +130,7 @@ end
                             n > 0 || continue
                             got[conn.nodeuser[n]] = get(got, conn.nodeuser[n], 0.0) + Float64(sv[i])
                             if T === Float64
-                                v = ModflowGPU.MultipliedBound(x)[:, i]   # absolute, multiplier applied
+                                v = ModflowGPU._bound_source(x)[:, i]   # absolute, multiplier applied
                                 br = _rde_branch(ModflowGPU.boundary_kind(x), v, habs[k][n])
                                 ibh[n] > 0 && (branches[br] = get(branches, br, 0) + 1)
                             end
