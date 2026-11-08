@@ -41,7 +41,7 @@
 """
     AMGOptions(; theta = 0.08, smoother = :chebyshev, degree = 2, cheb_ratio = 0.3,
                max_coarse = 400, max_levels = 20, smooth = true, rebuild_factor = 2.0,
-               rebuild_min = 10, power_iterations = 10)
+               rebuild_min = 10, reuse = true)
 
 Options of `AMGPreconditioner` (`precond_options` of `KrylovSettings`):
 
@@ -55,10 +55,15 @@ Options of `AMGPreconditioner` (`precond_options` of `KrylovSettings`):
 - `rebuild_factor`, `rebuild_min`: rebuild the hierarchy when a solve takes more than
   `max(rebuild_factor·n₀, n₀ + rebuild_min)` iterations, with `n₀` those of the first
   solve after the last build;
-- `power_iterations`: iterations of the eigenvalue estimate per level.
+- `reuse`: keep the aggregates and prolongators between setups (`false`: rebuild the
+  hierarchy at every `precond_setup!`, for diagnostics).
+
+The largest eigenvalue of `D⁻¹A` on each level is its Gershgorin bound
+`max_i Σ_j |a_ij/a_ii|`, recomputed at every setup.
 """
 Base.@kwdef struct AMGOptions
     theta::Float64 = 0.08
+    strength::Symbol = :offdiag
     smoother::Symbol = :chebyshev
     degree::Int = 2
     cheb_ratio::Float64 = 0.3
@@ -67,14 +72,15 @@ Base.@kwdef struct AMGOptions
     smooth::Bool = true
     rebuild_factor::Float64 = 2.0
     rebuild_min::Int = 10
-    power_iterations::Int = 10
-    function AMGOptions(theta, smoother, degree, cheb_ratio, max_coarse, max_levels, smooth, rebuild_factor, rebuild_min, power_iterations)
+    reuse::Bool = true
+    function AMGOptions(theta, strength, smoother, degree, cheb_ratio, max_coarse, max_levels, smooth, rebuild_factor, rebuild_min, reuse)
         theta >= 0 || throw(ArgumentError("AMG theta must be >= 0"))
+        strength in (:offdiag, :symmetric) || throw(ArgumentError("unknown AMG strength measure $strength (expected :offdiag or :symmetric)"))
         smoother in (:chebyshev, :jacobi) || throw(ArgumentError("unknown AMG smoother $smoother (expected :chebyshev or :jacobi)"))
         degree >= 1 || throw(ArgumentError("AMG smoother degree must be >= 1"))
         0 < cheb_ratio < 1 || throw(ArgumentError("AMG cheb_ratio must be in (0, 1)"))
         max_coarse >= 1 && max_levels >= 1 || throw(ArgumentError("AMG max_coarse and max_levels must be >= 1"))
-        return new(theta, smoother, degree, cheb_ratio, max_coarse, max_levels, smooth, rebuild_factor, rebuild_min, power_iterations)
+        return new(theta, strength, smoother, degree, cheb_ratio, max_coarse, max_levels, smooth, rebuild_factor, rebuild_min, reuse)
     end
 end
 
@@ -169,6 +175,7 @@ function _spgemm(A::_HostCsr, B::_HostCsr)
     return _concat_rows(A.nrow, B.ncol, parts)
 end
 
+# Aᵀ, and for each entry of Aᵀ the index of the entry of A it comes from.
 function _transpose(A::_HostCsr)
     cnt = zeros(Int, A.ncol + 1)
     @inbounds for k in A.ja
@@ -179,14 +186,16 @@ function _transpose(A::_HostCsr)
     next = ia[1:(end - 1)]
     ja = Vector{Int32}(undef, _nnz(A))
     a = Vector{Float64}(undef, _nnz(A))
+    perm = Vector{Int32}(undef, _nnz(A))
     @inbounds for i in 1:A.nrow, ii in A.ia[i]:(A.ia[i + 1] - 1)
         k = A.ja[ii]
         p = next[k]
         ja[p] = i
         a[p] = A.a[ii]
+        perm[p] = ii
         next[k] = p + 1
     end
-    return _HostCsr(A.ncol, A.nrow, ia, ja, a)
+    return _HostCsr(A.ncol, A.nrow, ia, ja, a), perm
 end
 
 # Position of the diagonal in each row (0 when absent) and its value.
@@ -204,50 +213,25 @@ function _diagonal(A::_HostCsr)
     return idx, d
 end
 
-# y = D⁻¹·A·x
-function _dinv_spmv!(y, A::_HostCsr, dinv, x)
-    Threads.@threads for i in 1:A.nrow
+# Gershgorin bound of the largest eigenvalue of D⁻¹A: max_i Σ_j |a_ij / a_ii|.
+function _lambda_max(A::_HostCsr, dinv)
+    λ = 0.0
+    @inbounds for i in 1:A.nrow
         s = 0.0
-        @inbounds for ii in A.ia[i]:(A.ia[i + 1] - 1)
-            s += A.a[ii] * x[A.ja[ii]]
-        end
-        @inbounds y[i] = dinv[i] * s
-    end
-    return y
-end
-
-# Largest eigenvalue of D⁻¹A: power iteration from a fixed pseudo-random vector, × 1.1,
-# and at most the Gershgorin bound max_i Σ_j |a_ij / a_ii|.
-function _lambda_max(A::_HostCsr, dinv, iters)
-    n = A.nrow
-    gersh = 0.0
-    for i in 1:n
-        s = 0.0
-        @inbounds for ii in A.ia[i]:(A.ia[i + 1] - 1)
+        for ii in A.ia[i]:(A.ia[i + 1] - 1)
             s += abs(A.a[ii])
         end
-        gersh = max(gersh, s * abs(dinv[i]))
+        λ = max(λ, s * abs(dinv[i]))
     end
-    iters > 0 || return gersh
-    x = [mod(0.6180339887498949 * i, 1.0) - 0.5 for i in 1:n]
-    y = similar(x)
-    λ = 0.0
-    for _ in 1:iters
-        nx = sqrt(sum(abs2, x))
-        nx == 0 && break
-        _dinv_spmv!(y, A, dinv, x)
-        λ = sqrt(sum(abs2, y)) / nx
-        x, y = y, x
-    end
-    λ = min(1.1 * λ, gersh)
-    return λ > 0 ? λ : gersh
+    return λ
 end
 
 # ---------------------------------------------------------------------------------------
 # Host setup: strength, aggregation, prolongators, Galerkin products
 
-# Strong connections (a mask over the entries of A; never the diagonal).
-function _strength(A::_HostCsr, d, θ)
+# Strong connections (a mask over the entries of A; never the diagonal): `|a_ij| ≥
+# θ·max_k |a_ik|` (`:offdiag`) or `|a_ij| ≥ θ·√|a_ii·a_jj|` (`:symmetric`).
+function _strength(A::_HostCsr, d, θ, measure::Symbol)
     n = A.nrow
     isolated = trues(n)
     for i in 1:n
@@ -259,13 +243,21 @@ function _strength(A::_HostCsr, d, θ)
         end
     end
     strong = falses(_nnz(A))
+    offdiag = measure === :offdiag
     for i in 1:n
         isolated[i] && continue
+        amax = 0.0
+        if offdiag
+            @inbounds for ii in A.ia[i]:(A.ia[i + 1] - 1)
+                (A.ja[ii] == i || isolated[A.ja[ii]]) && continue
+                amax = max(amax, abs(A.a[ii]))
+            end
+        end
         @inbounds for ii in A.ia[i]:(A.ia[i + 1] - 1)
             j = A.ja[ii]
             (j == i || isolated[j]) && continue
             v = abs(A.a[ii])
-            strong[ii] = v > 0 && v >= θ * sqrt(abs(d[i] * d[j]))
+            strong[ii] = v > 0 && v >= (offdiag ? θ * amax : θ * sqrt(abs(d[i] * d[j])))
         end
     end
     return strong
@@ -350,6 +342,7 @@ end
 
 # S = I − ω·D_F⁻¹·A_F with the filtered matrix A_F: strong entries, and the weak ones
 # lumped into the diagonal so that A_F·B = A·B; ω = 4/(3·ρ) with the Gershgorin bound ρ.
+# The device recomputes P = S·P_t in the same way (`_prolongator_row`).
 function _smoother_matrix(A::_HostCsr, d, strong, B)
     n = A.nrow
     dF = copy(d)
@@ -393,6 +386,8 @@ end
 
 # One level of the host hierarchy: the operator A, its D⁻¹ and λmax, and (except on the
 # coarsest level) P to the next level and R = Pᵀ.
+# (and the data to recompute P on the device: the strong mask over A's entries, B, the
+# aggregate and tentative value of each node, and R's entries as indices into P's).
 struct _HostLevel
     A::_HostCsr
     idiag::Vector{Int}
@@ -400,6 +395,11 @@ struct _HostLevel
     lmax::Float64
     P::Union{Nothing, _HostCsr}
     R::Union{Nothing, _HostCsr}
+    strong::BitVector
+    B::Vector{Float64}
+    agg::Vector{Int32}
+    pt::Vector{Float64}
+    rperm::Vector{Int32}
 end
 
 _inv_or_one(d) = d != 0 ? 1 / d : 1.0
@@ -409,24 +409,28 @@ function _build_hierarchy(A::_HostCsr, B::Vector{Float64}, opt::AMGOptions)
     while true
         idiag, d = _diagonal(A)
         dinv = _inv_or_one.(d)
-        lmax = _lambda_max(A, dinv, opt.power_iterations)
+        lmax = _lambda_max(A, dinv)
         coarsest = A.nrow <= opt.max_coarse || length(levels) + 1 >= opt.max_levels
         if !coarsest
-            strong = _strength(A, d, opt.theta)
+            strong = _strength(A, d, opt.theta, opt.strength)
             agg, nc = _aggregate(A, strong)
             if nc == 0 || nc >= A.nrow
                 coarsest = true
             else
                 Pt, Bc = _tentative(agg, nc, B)
                 P = opt.smooth ? _spgemm(_smoother_matrix(A, d, strong, B), Pt) : Pt
-                R = _transpose(P)
+                R, rperm = _transpose(P)
                 Ac = _spgemm(R, _spgemm(A, P))
-                push!(levels, _HostLevel(A, idiag, dinv, lmax, P, R))
+                pt = zeros(A.nrow)
+                for i in 1:A.nrow
+                    Pt.ia[i + 1] > Pt.ia[i] && (pt[i] = Pt.a[Pt.ia[i]])
+                end
+                push!(levels, _HostLevel(A, idiag, dinv, lmax, P, R, strong, B, agg, pt, rperm))
                 A, B = Ac, Bc
                 continue
             end
         end
-        push!(levels, _HostLevel(A, idiag, dinv, lmax, nothing, nothing))
+        push!(levels, _HostLevel(A, idiag, dinv, lmax, nothing, nothing, falses(0), B, Int32[], Float64[], Int32[]))
         return levels
     end
 end
@@ -478,16 +482,17 @@ end
 """
     AMGLevel
 
-One level of the device hierarchy of `AMGPreconditioner`: size `n`, `lmax` (estimated
-largest eigenvalue of `D⁻¹A`), the operator in CSR (`ia`, `ja`, `a`, diagonal positions
+One level of the device hierarchy of `AMGPreconditioner`: size `n`, the operator in CSR (`ia`, `ja`, `a`, diagonal positions
 `idiag`, `dinv`; empty on the finest level, which uses the Krylov operator), the
 prolongator `P` (`pia`, `pja`, `pa`, from the next level) and restriction `R = Pᵀ`
 (`ria`, `rja`, `ra`; empty on the coarsest level), and work vectors `x`, `y`, `f`, `w`,
-`d` (empty on the finest level).
+`d` (empty on the finest level). For the device recomputation of `P` (smoothed
+aggregation): `rperm` (entries of `R` as indices into `P`), `smask` (strong entries of
+the operator), `B` (near-null space), `agg` and `pt` (aggregate and tentative value per
+row).
 """
-struct AMGLevel{VI <: AbstractVector{Int32}, VP <: AbstractVector}
+struct AMGLevel{VI <: AbstractVector{Int32}, VP <: AbstractVector, VB <: AbstractVector{UInt8}}
     n::Int
-    lmax::Float64
     ia::VI
     ja::VI
     a::VP
@@ -499,6 +504,11 @@ struct AMGLevel{VI <: AbstractVector{Int32}, VP <: AbstractVector}
     ria::VI
     rja::VI
     ra::VP
+    rperm::VI
+    smask::VB
+    B::VP
+    agg::VI
+    pt::VP
     x::VP
     y::VP
     f::VP
@@ -540,11 +550,13 @@ updates and their times.
 
 `options` are the keywords of `AMGOptions`.
 """
-mutable struct AMGPreconditioner{Ts, Tp, Ta, B <: Backend, VS <: AbstractVector{Ts}, VP <: AbstractVector{Tp}, VA <: AbstractVector{Ta}, VI <: AbstractVector{Int32}} <: AbstractPreconditioner
+mutable struct AMGPreconditioner{Ts, Tp, Ta, B <: Backend, VS <: AbstractVector{Ts}, VP <: AbstractVector{Tp}, VA <: AbstractVector{Ta}, VI <: AbstractVector{Int32}, VB <: AbstractVector{UInt8}, R <: Reducer} <: AbstractPreconditioner
     const options::AMGOptions
     const backend::B
     const n::Int
-    levels::Vector{AMGLevel{VI, VP}}
+    const reducer::R
+    levels::Vector{AMGLevel{VI, VP, VB}}
+    lmax::Vector{Float64}
     fy::VS
     fw::VS
     fd::VS
@@ -570,8 +582,10 @@ function AMGPreconditioner(backend::Backend, n::Integer, ::Type{Ts}, ::Type{Tp};
     za = KernelAbstractions.zeros(backend, Ta, 0)
     zi = KernelAbstractions.zeros(backend, Int32, 0)
     empty = _HostCsr(0, 0, [1], Int32[], Float64[])
-    return AMGPreconditioner{Ts, Tp, Ta, typeof(backend), typeof(zs), typeof(zp), typeof(za), typeof(zi)}(
-        opt, backend, Int(n), AMGLevel{typeof(zi), typeof(zp)}[], zs, similar(zs), similar(zs), za, zp, empty,
+    zb = KernelAbstractions.zeros(backend, UInt8, 0)
+    red = Reducer(backend, n, Ta)
+    return AMGPreconditioner{Ts, Tp, Ta, typeof(backend), typeof(zs), typeof(zp), typeof(za), typeof(zi), typeof(zb), typeof(red)}(
+        opt, backend, Int(n), red, AMGLevel{typeof(zi), typeof(zp), typeof(zb)}[], Float64[], zs, similar(zs), similar(zs), za, zp, empty,
         Int[], Int32[], nothing, false, true, false, 0, AMGStats(),
     )
 end
@@ -585,7 +599,7 @@ end
 
 _device(backend, ::Type{T}, x) where {T} = _device_copy(backend, convert(Vector{T}, x))
 
-function _upload_level(backend, ::Type{Tp}, h::_HostLevel, first::Bool) where {Tp}
+function _upload_level(backend, ::Type{Tp}, h::_HostLevel, first::Bool, smooth::Bool) where {Tp}
     zi() = KernelAbstractions.zeros(backend, Int32, 0)
     zp(len = 0) = KernelAbstractions.zeros(backend, Tp, len)
     A = h.A
@@ -600,11 +614,18 @@ function _upload_level(backend, ::Type{Tp}, h::_HostLevel, first::Bool) where {T
     end
     if isnothing(h.P)
         pia, pja, pa, ria, rja, ra = zi(), zi(), zp(), zi(), zi(), zp()
+        rperm, smask, B, agg, pt = zi(), KernelAbstractions.zeros(backend, UInt8, 0), zp(), zi(), zp()
     else
         pia, pja, pa = _device(backend, Int32, h.P.ia), _device(backend, Int32, h.P.ja), _device(backend, Tp, h.P.a)
         ria, rja, ra = _device(backend, Int32, h.R.ia), _device(backend, Int32, h.R.ja), _device(backend, Tp, h.R.a)
+        if smooth
+            rperm, smask = _device(backend, Int32, h.rperm), _device(backend, UInt8, h.strong)
+            B, agg, pt = _device(backend, Tp, h.B), _device(backend, Int32, h.agg), _device(backend, Tp, h.pt)
+        else
+            rperm, smask, B, agg, pt = zi(), KernelAbstractions.zeros(backend, UInt8, 0), zp(), zi(), zp()
+        end
     end
-    return AMGLevel(n, h.lmax, ia, ja, a, idiag, dinv, pia, pja, pa, ria, rja, ra, x, y, f, w, d)
+    return AMGLevel(n, ia, ja, a, idiag, dinv, pia, pja, pa, ria, rja, ra, rperm, smask, B, agg, pt, x, y, f, w, d)
 end
 
 _bytes(x::AbstractArray) = length(x) * sizeof(eltype(x))
@@ -631,7 +652,8 @@ function _build!(P::AMGPreconditioner{Ts, Tp, Ta}, solver, amat) where {Ts, Tp, 
     end
     B = [c != 0 ? 1 / c : 1.0 for c in cf]
     hl = _build_hierarchy(_HostCsr(n, n, ia, copy(ja), a), B, P.options)
-    P.levels = [_upload_level(backend, Tp, hl[l], l == 1) for l in eachindex(hl)]
+    P.levels = [_upload_level(backend, Tp, hl[l], l == 1, P.options.smooth) for l in eachindex(hl)]
+    P.lmax = [h.lmax for h in hl]
     P.fy = KernelAbstractions.zeros(backend, Ts, n)
     P.fw = KernelAbstractions.zeros(backend, Ts, n)
     P.fd = KernelAbstractions.zeros(backend, Ts, n)
@@ -693,9 +715,13 @@ end
     end
 end
 
-@inline function _convert_entry(k, a, acc)
-    @inbounds a[k] = convert(eltype(a), acc[k])
-    return nothing
+# The Galerkin result (in Ta) into the level's operator (Tp); exempt from the kernel
+# hygiene test with Float64 accumulation, like galerkin_kernel!.
+@kernel function galerkin_store_kernel!(a, @Const(acc))
+    k = @index(Global, Linear)
+    @inbounds if k <= length(a)
+        a[k] = convert(eltype(a), acc[k])
+    end
 end
 
 @inline function _coarse_dinv(i, dinv, a, idiag)
@@ -708,8 +734,87 @@ end
     return nothing
 end
 
-# Recompute the coarse operators from the current matrix (device) and the dense
-# coarsest inverse (host).
+# Row i of the Gershgorin bound of D⁻¹A.
+@inline function _gershgorin_term(::Type{Ta}, i, op, dinv) where {Ta}
+    s = zero(Ta)
+    @inbounds for ii in op.ia[i]:(op.ia[i + 1] - Int32(1))
+        s += abs(_val(op, Ta, ii, i, op.ja[ii]))
+    end
+    return (s * abs(@inbounds Ta(dinv[i])), zero(Ta), zero(Ta), zero(Ta))
+end
+
+const _GERSH_OPS = (_MaxAbsOp(), _SumOp(), _SumOp(), _SumOp())
+
+# Diagonal and filtered diagonal of row i (weak entries lumped with B; `_smoother_matrix`).
+@inline function _filtered_diag(::Type{Ta}, i, op, smask, B) where {Ta}
+    d = zero(Ta)
+    w = zero(Ta)
+    @inbounds begin
+        bi = Ta(B[i])
+        for ii in op.ia[i]:(op.ia[i + 1] - Int32(1))
+            j = op.ja[ii]
+            if j == i
+                d += _val(op, Ta, ii, i, j)
+            elseif smask[ii] == 0x00 && bi != zero(Ta)
+                w += _val(op, Ta, ii, i, j) * Ta(B[j]) / bi
+            end
+        end
+    end
+    dF = d + w
+    (sign(dF) != sign(d) || abs(dF) < abs(d) / Ta(1000)) && (dF = d)
+    return dF
+end
+
+# Row i of the Gershgorin bound of D_F⁻¹·A_F (for ω).
+@inline function _filtered_gershgorin_term(::Type{Ta}, i, op, smask, B) where {Ta}
+    dF = _filtered_diag(Ta, i, op, smask, B)
+    dF == zero(Ta) && return _zeros4(Ta)
+    s = abs(dF)
+    @inbounds for ii in op.ia[i]:(op.ia[i + 1] - Int32(1))
+        smask[ii] != 0x00 && (s += abs(_val(op, Ta, ii, i, op.ja[ii])))
+    end
+    return (s / abs(dF), zero(Ta), zero(Ta), zero(Ta))
+end
+
+# Row i of P = (I − ω·D_F⁻¹·A_F)·P_t on P's fixed pattern, in the type of `zacc` (Tp).
+@inline function _prolongator_row(i, pa, pia, pja, op, smask, B, agg, pt, ω, zacc)
+    Ta = typeof(zacc)
+    @inbounds begin
+        dF = _filtered_diag(Ta, i, op, smask, B)
+        f = dF != zero(Ta) ? ω / dF : zero(Ta)
+        sii = dF != zero(Ta) ? one(Ta) - ω : one(Ta)
+        for k in pia[i]:(pia[i + 1] - Int32(1))
+            J = pja[k]
+            v = agg[i] == J ? sii * Ta(pt[i]) : zero(Ta)
+            for ii in op.ia[i]:(op.ia[i + 1] - Int32(1))
+                j = op.ja[ii]
+                if j != i && smask[ii] != 0x00 && agg[j] == J
+                    v -= f * _val(op, Ta, ii, i, j) * Ta(pt[j])
+                end
+            end
+            pa[k] = convert(eltype(pa), v)
+        end
+    end
+    return nothing
+end
+
+@inline function _gather_entry(t, ra, pa, rperm)
+    @inbounds ra[t] = pa[rperm[t]]
+    return nothing
+end
+
+# Smoothed prolongator and restriction of level `lev` from its current operator `op`.
+function _update_prolongator!(P::AMGPreconditioner{Ts, Tp, Ta}, lev::AMGLevel, op) where {Ts, Tp, Ta}
+    backend = P.backend
+    ρ = _mapreduce!(P.reducer, backend, _filtered_gershgorin_term, _GERSH_OPS, lev.n, op, lev.smask, lev.B)[1]
+    ω = ρ > 0 ? 4 / (3ρ) : 0.0
+    _map!(backend, _prolongator_row, lev.n, lev.pa, lev.pia, lev.pja, op, lev.smask, lev.B, lev.agg, lev.pt, Tp(ω), zero(Tp))
+    _map!(backend, _gather_entry, length(lev.ra), lev.ra, lev.pa, lev.rperm)
+    return nothing
+end
+
+# Recompute the coarse operators from the current matrix (device), their Gershgorin
+# bounds, and the dense coarsest inverse (host).
 function _update!(P::AMGPreconditioner{Ts, Tp, Ta}, fineop) where {Ts, Tp, Ta}
     t0 = time()
     backend = P.backend
@@ -718,10 +823,12 @@ function _update!(P::AMGPreconditioner{Ts, Tp, Ta}, fineop) where {Ts, Tp, Ta}
     for l in 1:(L - 1)
         lev = P.levels[l]
         nxt = P.levels[l + 1]
+        P.options.smooth && _update_prolongator!(P, lev, op)
         acc = Ta === Tp ? nxt.a : view(P.gacc, 1:length(nxt.a))
         galerkin_kernel!(backend)(acc, nxt.ia, nxt.ja, lev.ria, lev.rja, lev.ra, op, lev.pia, lev.pja, lev.pa; ndrange = nxt.n)
-        Ta === Tp || _map!(backend, _convert_entry, length(nxt.a), nxt.a, acc)
+        Ta === Tp || galerkin_store_kernel!(backend)(nxt.a, acc; ndrange = length(nxt.a))
         _map!(backend, _coarse_dinv, nxt.n, nxt.dinv, nxt.a, nxt.idiag)
+        P.lmax[l] = _mapreduce!(P.reducer, backend, _gershgorin_term, _GERSH_OPS, lev.n, op, l == 1 ? P.fine[2] : lev.dinv)[1]
         op = _CsrOp(nxt.ia, nxt.ja, nxt.a)
     end
     if L > 1
@@ -743,7 +850,7 @@ function precond_setup!(P::AMGPreconditioner, solver, amat)
     csr = solver.csr
     op = _FineOp(amat, csr.ia, csr.ja, solver.rowfac, solver.colfac)
     P.fine = (op, solver.minv, solver, amat)
-    if !P.built || P.rebuild
+    if !P.built || P.rebuild || !P.options.reuse
         _build!(P, solver, amat)
     else
         P.fresh = false
@@ -879,7 +986,7 @@ function _cycle!(P::AMGPreconditioner, l, x, y, f, w, d, op, dinv)
         _map!(backend, _dense_apply, lev.n, x, P.cinv, f, lev.n)
         return x
     end
-    coefs = _smoother_coefficients(P.options, lev.lmax)
+    coefs = _smoother_coefficients(P.options, P.lmax[l])
     # Pre-smoothing starts in `y` so that, after the 2·degree − 1 swaps of the pre- and
     # post-smoothing, the result is in `x`.
     cur, oth = _smooth!(backend, y, x, d, f, dinv, op, coefs, true)

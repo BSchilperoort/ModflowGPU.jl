@@ -10,7 +10,11 @@
 # (daily transient steps after the steady state), `timed=1` (also a timed run with the
 # section timer; `0` skips it), `ims=parity` (`synthetic_ims` kind), `log=<file>` (append
 # the Markdown table rows there), `maxsteady=<s>` (skip the transient steps of a case whose
-# steady step took longer than this, e.g. on the CPU backend).
+# steady step took longer than this, e.g. on the CPU backend), `precond=jacobi` (the
+# `preconditioner` option: `jacobi` or `amg`, T4.3), `amg=key:value,...` (`AMGOptions`,
+# e.g. `amg=theta:0.1,degree:3,smoother:jacobi`). With AMG each case also prints the
+# hierarchy (rows per level), its device bytes, and the host build and device Galerkin
+# update times (`AMGStats`).
 #
 # Per case (preset × precision) the harness does:
 #
@@ -80,7 +84,7 @@ end
 const CATEGORIES = (
     assembly = ("assembly",),
     spmv = ("spmv_dot", "true_residual"),
-    precond = ("precond_setup",),
+    precond = ("precond_setup", "precond_apply"),
     reductions = ("update_reduce", "vector_update", "outer_reduction"),
     transfers = ("period_data", "mirrors", "output"),
 )
@@ -166,24 +170,26 @@ function spmv_bench(s, backend)
     return (; t = median(ts), gbs = bytes / median(ts) / 1.0e9, bytes)
 end
 
-function run_case(preset, pre, backend, bname; nsteps, timed, ims, maxsteady)
+function run_case(preset, pre, backend, bname; nsteps, timed, ims, maxsteady, pc = (;))
     f = synthetic_fields(preset)
     spec = synthetic_simulation(preset; fields = f, output = false, ntransient = nsteps, ims = synthetic_ims(ims))
     c = synthetic_counts(f)
     GC.gc(true)
     mem_reset()
     m0 = mem_used()
-    tinit = @elapsed s = ModflowGPU.initialize(spec; backend, precision = pre, write_output = false)
+    tinit = @elapsed s = ModflowGPU.initialize(spec; backend, precision = pre, write_output = false, pc...)
     minit = mem_used() - m0
     rows = run_steps!(s, backend, nsteps; maxsteady)
     peak = mem_peak()
+    amg = ModflowGPU.amg_stats(s.solver.krylov)
+    isnothing(amg) || (amg = deepcopy(amg))
     sp = spmv_bench(s, backend)
     T, Ts = s.T, s.Ts
     s = nothing
     split = nothing
     if timed
         GC.gc(true)
-        st = ModflowGPU.initialize(spec; backend, precision = pre, write_output = false)
+        st = ModflowGPU.initialize(spec; backend, precision = pre, write_output = false, pc...)
         timer = SyncTimer(backend)
         prev = ModflowGPU.set_section_timer!(timer)
         trows = try
@@ -201,7 +207,8 @@ function run_case(preset, pre, backend, bname; nsteps, timed, ims, maxsteady)
         split = (; ttotal, cat, tot, spmv_dot_t = sd[1] / max(sd[2], 1), spmv_dot_gbs = sd[2] > 0 ? bdot * sd[2] / sd[1] / 1.0e9 : NaN, to = timer.to)
         st = nothing
     end
-    return (; preset, pre, bname, nodes = c.nodes, nja = c.nja, tinit, minit, peak, rows, sp, split)
+    bname = isempty(pc) ? bname : "$bname $(pc.preconditioner)"
+    return (; preset, pre, bname, nodes = c.nodes, nja = c.nja, tinit, minit, peak, rows, sp, split, amg)
 end
 
 function report(r; io = stdout)
@@ -220,6 +227,19 @@ function report(r; io = stdout)
         io, "| %s | %d | %s | `:%s` | %.2f | %.2f | %d | %d | %.0f | %s | %.2f | %.0f | %s | %s |%s\n",
         r.preset, r.nodes, r.bname, r.pre, r.tinit, st.time, st.outer, st.inner, us, trs, st.time + tsum,
         r.sp.gbs, dot, mem, conv ? "" : " NOT CONVERGED"
+    )
+    return nothing
+end
+
+# AMG hierarchy and setup costs (AMGStats of the untimed run).
+function report_amg(r; io = stdout)
+    a = r.amg
+    isnothing(a) && return nothing
+    outer = sum(x -> x.outer, r.rows)
+    @printf(
+        io, "| %s | `:%s` | %s | %d | %.3f | %d | %.1f | %.3f | %d |\n",
+        r.preset, r.pre, join(a.sizes, " / "), a.builds, a.build_time, a.updates,
+        1.0e3 * a.update_time / max(a.updates, 1), _gib(a.device_bytes), outer
     )
     return nothing
 end
@@ -303,9 +323,20 @@ end
 const HEADER = """
 | Preset | nodes | engine | precision | init (s) | steady (s) | outer | inner | µs/inner | daily step (s) | outer/step | inner/step | total (s) | SpMV GB/s | in-solver GB/s | peak GiB |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"""
+const AMG_HEADER = """
+| Preset | precision | rows per level | builds | build time (s) | updates | ms per update | hierarchy GiB | outer iterations |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |"""
 const SPLIT_HEADER = """
 | Preset | engine | precision | untimed (s) | timed (s) | assembly % | SpMV % | precond % | reductions + updates % | host transfers % | other % | µs per spmv_dot |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"""
+
+# `precond=amg amg=theta:0.1,degree:3` → keywords of `ModflowGPU.initialize`.
+function parse_precond(name, amg)
+    isempty(name) && isempty(amg) && return (;)
+    val(v) = something(tryparse(Int, v), tryparse(Float64, v), v in ("true", "false") ? v == "true" : Symbol(v))
+    kv = [Symbol(k) => val(v) for (k, v) in (split(x, ':') for x in split(amg, ',') if !isempty(x))]
+    return (; preconditioner = Symbol(isempty(name) ? "amg" : name), precond_options = NamedTuple(kv))
+end
 
 function main(args)
     bname = isempty(args) ? "cpu" : args[1]
@@ -316,6 +347,7 @@ function main(args)
     ims = Symbol(get(opts, "ims", "parity"))
     logf = get(opts, "log", "")
     maxsteady = parse(Float64, get(opts, "maxsteady", "Inf"))
+    pc = parse_precond(get(opts, "precond", ""), get(opts, "amg", ""))
     out = IOBuffer()
     println("# $(now()) $(join(args, " "))")
     if bname == "mf6"
@@ -335,20 +367,26 @@ function main(args)
         # Warm-up: compile every kernel in both presets on a small model.
         for pre in precisions
             spec = synthetic_simulation(:tiny; output = false, ntransient = 1, ims = synthetic_ims(ims))
-            s = ModflowGPU.initialize(spec; backend, precision = pre, write_output = false)
+            s = ModflowGPU.initialize(spec; backend, precision = pre, write_output = false, pc...)
             run_steps!(s, backend, 1)
             spmv_bench(s, backend)
             t = SyncTimer(backend)
             ModflowGPU.set_section_timer!(t)
-            s = ModflowGPU.initialize(spec; backend, precision = pre, write_output = false)
+            s = ModflowGPU.initialize(spec; backend, precision = pre, write_output = false, pc...)
             run_steps!(s, backend, 1; timer = t)
             ModflowGPU.set_section_timer!(nothing)
         end
         splits = IOBuffer()
+        amgs = IOBuffer()
         for p in presets, pre in precisions
-            r = run_case(p, pre, backend, bname; nsteps, timed, ims, maxsteady)
+            r = run_case(p, pre, backend, bname; nsteps, timed, ims, maxsteady, pc)
             report(r; io = out)
             report_split(r; io = splits)
+            report_amg(r; io = amgs)
+            if !isnothing(r.amg)
+                println(AMG_HEADER)
+                print(String(take!(copy(amgs))))
+            end
             println(HEADER)
             print(String(take!(copy(out))))
             if !isnothing(r.split)
@@ -360,6 +398,8 @@ function main(args)
             flush(stdout)
         end
         print(out, "\n", SPLIT_HEADER, "\n", String(take!(splits)))
+        a = String(take!(amgs))
+        isempty(a) || print(out, "\n", AMG_HEADER, "\n", a)
     end
     txt = String(take!(out))
     isempty(logf) || open(io -> print(io, txt), logf, "a")
