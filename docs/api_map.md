@@ -21,7 +21,7 @@ it. Underscore-prefixed helpers are omitted.
   (one `Ref` load and a branch when off; no closure), `set_section_timer!` /
   `section_timer`, hooks `section_begin` / `section_end` (methods come from the timer type,
   e.g. benchmark/run.jl's `SyncTimer`). Sections: `assembly`, `linear_solve`
-  (`precond_setup`, `spmv_dot`, `update_reduce`, `vector_update`, `true_residual`),
+  (`precond_setup`, `precond_apply`, `spmv_dot`, `update_reduce`, `vector_update`, `true_residual`),
   `outer_reduction`, `underrelax` (picard.jl, krylov.jl); `period_data`,
   `start_timestep`, `flows`, `budget`, `output`, `mirrors` (stepping.jl). Tests: stepping.
 
@@ -180,7 +180,7 @@ it. Underscore-prefixed helpers are omitted.
   (PLAN.md 3.7 rules 3–4; ImsLinearBase.f90 `ims_base_cg`, `ims_base_bcgs`,
   `ims_base_scale`, `ims_base_testcnvg`, `ims_base_epfact`). `KrylovSettings` (host; from
   an `ImsSpec`: LINEAR_ACCELERATION, INNER_*, rclose options, NUMBER_ORTHOGONALIZATIONS,
-  SCALING_METHOD; ILU0/MILU0/ILUT → Jacobi with a warning), `ims_preconditioner`
+  SCALING_METHOD, `preconditioner`; ILU0/MILU0/ILUT → `preconditioner`, Jacobi by default with a warning), `ims_preconditioner`
   (`resolve_ipc`), `ims_testcnvg`, `ims_epfact`, `KrylovSolver{Ts,Tp,Ta}` (device
   workspace), `solve!(δ, solver, amat, res; kstp)` → `KrylovResult` (converged,
   iterations, status, dvmax, rmax, l2norm0, l2norm). Device reductions: `Reducer`,
@@ -190,6 +190,21 @@ it. Underscore-prefixed helpers are omitted.
   `_mapreduce_loc!`; results land in host-mapped memory where `host_mapped_zeros` allows).
   Adapt rules on `KrylovSolver` and `Reducer` (a new one on the target). IMS mapping in
   docs/mf6_notes.md, accuracy and timing in docs/precision.md. Tests: krylov.
+  Non-Jacobi preconditioners run through `precond_apply!` between non-fused kernels
+  (`_cg_init_nf`, `_cg_update_nf`, `_bcgs_direction_nf`, `_bcgs_half_nf`; section
+  `precond_apply`); `KrylovSolver(...; colors)` passes a host colouring.
+- **solver/precond/precond.jl** (T4.2): preconditioner interface. `AbstractPreconditioner`,
+  `precond_setup!(P, solver, amat)` (per `solve!`, after scaling), `precond_apply!(z, P, r)`,
+  `JacobiPreconditioner` (wraps the solver's `minv`; fused path), `PRECONDITIONERS`,
+  `build_preconditioner`. Tests: krylov (unit/precond_test.jl).
+- **solver/precond/chebyshev.jl** (T4.2): `ChebyshevPreconditioner` (scaled operator copy in
+  `Tp`, host interval `bounds`), `CHEBYSHEV_OPTIONS` (degree, ratio, Lanczos steps,
+  safety), `lanczos_extremes`. Tests: krylov.
+- **solver/precond/multicolor.jl** (T4.2): host colouring `greedy_colors`,
+  `dis_parity_colors` (red–black), `grid_colors` (used by `PicardSolver`),
+  `is_valid_coloring`; `MulticolorPreconditioner` (`:sgs` / `:ilu0`; colour-ordered CSR copy
+  in `Tp`, per-colour kernels for the ILU0 factorisation and the sweeps), `ncolors`,
+  `MULTICOLOR_OPTIONS` (MILU relax). Tests: krylov.
 
 ## Time stepping, outer iterations, flows and budgets (T2.8)
 
@@ -296,7 +311,7 @@ it. Underscore-prefixed helpers are omitted.
 - **hardware.jl** (T0.4): hardware baseline (stream, SpMV, dot, atomics).
 - **run.jl** (T4.1): benchmark harness: indus / continental / global5m, steady state + 30
   daily steps (`synthetic_simulation(...; ntransient)`), on a backend in `:double` and
-  `:single` (wall time per step, iterations, pool peak memory, SpMV GB/s, TimerOutputs
+  `:single`, with `precond=` preconditioners (wall time per step, iterations, pool peak memory, SpMV GB/s, TimerOutputs
   time split through `SyncTimer`) or with mf6 (serial, per-step times from stdout).
   Results: benchmark/results/<date>.md.
 

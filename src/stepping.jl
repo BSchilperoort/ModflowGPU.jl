@@ -109,7 +109,8 @@ Base.show(io::IO, s::Simulation) = print(
 
 """
     initialize(simdir or spec::SimulationSpec; backend = CPU(), precision = :auto,
-               outdir = simdir, closures = nothing, write_output = true) -> Simulation
+               outdir = simdir, closures = nothing, write_output = true,
+               preconditioner = :jacobi) -> Simulation
 
 Load the simulation (one GWF model with one IMS solution), build the model, the outer
 solver and the budget accumulator on `backend` in `precision` (`resolve_precision`), and
@@ -118,14 +119,14 @@ first `prepare_time_step` the heads are the starting heads and no period data is
 """
 function initialize(
         simdir::AbstractString; backend::Backend = CPU(), precision::Symbol = :auto, outdir::AbstractString = simdir,
-        closures = nothing, write_output::Bool = true,
+        closures = nothing, write_output::Bool = true, preconditioner::Symbol = :jacobi,
     )
-    return initialize(load_simulation(simdir); backend, precision, outdir, closures, write_output)
+    return initialize(load_simulation(simdir); backend, precision, outdir, closures, write_output, preconditioner)
 end
 
 function initialize(
         sim::SimulationSpec; backend::Backend = CPU(), precision::Symbol = :auto, outdir::AbstractString = sim.simdir,
-        closures = nothing, write_output::Bool = true,
+        closures = nothing, write_output::Bool = true, preconditioner::Symbol = :jacobi,
     )
     (length(sim.models) == 1 && isempty(sim.exchanges)) ||
         throw(MF6UnsupportedError(sim.simdir, "unsupported: $(length(sim.models)) models and $(length(sim.exchanges)) exchanges (multi-model simulations arrive in T6.6)"))
@@ -134,7 +135,7 @@ function initialize(
     T, Ts, Tp = resolve_precision(backend, precision)
     steps = time_steps(sim.tdis)
     m = GwfModel(backend, T, spec, nper(sim.tdis))
-    ps = PicardSolver(m, PicardSettings(ims, T; closures); Ts, Tp)
+    ps = PicardSolver(m, PicardSettings(ims, T; closures, preconditioner); Ts, Tp)
     acc = BudgetAccumulator(m)
     out = write_output ? ModelOutput(m, sim.simdir, outdir) : nothing
     s = Simulation(sim, m, ps, acc, out, T, Ts, Tp, steps, 0, :initialized, OuterState(ps), StepResult[], ModelBudget[], Dict{String, _Mirror}())

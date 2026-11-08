@@ -20,9 +20,12 @@
 # - `ims_base_residual` for NUMBER_ORTHOGONALIZATIONS (recompute the residual every
 #   `north` iterations).
 #
-# The preconditioner is Jacobi in every case: IMS's ILU0, MILU0 and ILUT (`resolve_ipc`)
-# arrive in Phase 4 and map to Jacobi with a warning (`KrylovSettings(::ImsSpec)`).
-# REORDERING_METHOD only changes the ILU factors in MF6 and is ignored.
+# The preconditioner is Jacobi by default, fused into the update kernels (`_precond`).
+# Other preconditioners (`KrylovSettings(; preconditioner)`, src/solver/precond/) are set
+# up by `precond_setup!` and applied by `precond_apply!` between non-fused kernels. IMS's
+# ILU0, MILU0 and ILUT (`resolve_ipc`) map to Jacobi with a warning unless a preconditioner
+# is chosen (`KrylovSettings(::ImsSpec)`). REORDERING_METHOD only changes the ILU factors
+# in MF6 and is ignored.
 #
 # Precision: vectors in `Ts`, the preconditioner in `Tp`, and every dot product and norm
 # accumulated in `Ta` (Float64 when the backend has it, otherwise `Ts` with pairwise tree
@@ -322,20 +325,23 @@ end
 
 """
     KrylovSettings(; method = :cg, maxiter = 50, dvclose = 1e-3, rclose = 0.1,
-                   rclose_option = :infinity_norm, north = 0, scaling = :none)
-    KrylovSettings(ims::ImsSpec)
+                   rclose_option = :infinity_norm, north = 0, scaling = :none,
+                   preconditioner = :jacobi)
+    KrylovSettings(ims::ImsSpec; preconditioner = :jacobi)
 
 Inner solver settings (host): `method` (`:cg` or `:bicgstab`, IMS LINEAR_ACCELERATION),
 `maxiter` (INNER_MAXIMUM), `dvclose` (INNER_DVCLOSE), `rclose` (INNER_RCLOSE),
 `rclose_option` (`:infinity_norm`, `:strict`, `:l2norm`, `:relative`,
 `:l2norm_relative`: `ims_base_testcnvg` options 0–4), `north`
 (NUMBER_ORTHOGONALIZATIONS), `scaling` (`:none`, `:diagonal`, `:l2norm`;
-SCALING_METHOD). The preconditioner is always Jacobi.
+SCALING_METHOD), `preconditioner` (one of `PRECONDITIONERS`: `:jacobi`, `:chebyshev`,
+`:mc_sgs`, `:mc_ilu0`; a ModflowGPU option, not in IMS).
 
 From an `ImsSpec` (with its COMPLEXITY defaults already applied by the loader), IMS's
 preconditioner (`resolve_ipc`: ILU0, MILU0 when RELAXATION_FACTOR > 0, ILUT/MILUT when
-PRECONDITIONER_LEVELS > 0) maps to Jacobi with a logged warning, and REORDERING_METHOD is
-ignored with a logged message. See docs/mf6_notes.md (IMS linear solver mapping).
+PRECONDITIONER_LEVELS > 0) is replaced by `preconditioner`, with a logged warning for the
+default Jacobi, and REORDERING_METHOD is ignored with a logged message. See
+docs/mf6_notes.md (IMS linear solver mapping).
 """
 struct KrylovSettings
     method::Symbol
@@ -345,6 +351,7 @@ struct KrylovSettings
     icnvgopt::Int
     north::Int
     scaling::Symbol
+    preconditioner::Symbol
 end
 
 const _RCLOSE_OPTIONS = (:infinity_norm, :strict, :l2norm, :relative, :l2norm_relative)
@@ -352,7 +359,10 @@ const _RCLOSE_OPTIONS = (:infinity_norm, :strict, :l2norm, :relative, :l2norm_re
 function KrylovSettings(;
         method::Symbol = :cg, maxiter::Integer = 50, dvclose::Real = 1.0e-3, rclose::Real = 0.1,
         rclose_option::Symbol = :infinity_norm, north::Integer = 0, scaling::Symbol = :none,
+        preconditioner::Symbol = :jacobi,
     )
+    preconditioner in PRECONDITIONERS ||
+        throw(ArgumentError("unknown preconditioner $preconditioner (expected one of $(PRECONDITIONERS))"))
     method in (:cg, :bicgstab) || throw(ArgumentError("unknown linear acceleration $method (expected :cg or :bicgstab)"))
     scaling in (:none, :diagonal, :l2norm) || throw(ArgumentError("unknown scaling method $scaling"))
     icnvgopt = findfirst(==(rclose_option), _RCLOSE_OPTIONS)
@@ -362,7 +372,7 @@ function KrylovSettings(;
     # ImsLinear.f90 imslinear_ar: RCLOSE must be > 0 except for RELATIVE_RCLOSE.
     (rclose > 0 || (rclose == 0 && rclose_option === :relative)) ||
         throw(ArgumentError("INNER_RCLOSE must be > 0"))
-    return KrylovSettings(method, Int(maxiter), Float64(dvclose), Float64(rclose), icnvgopt - 1, Int(north), scaling)
+    return KrylovSettings(method, Int(maxiter), Float64(dvclose), Float64(rclose), icnvgopt - 1, Int(north), scaling, preconditioner)
 end
 
 """
@@ -373,18 +383,22 @@ MF6's preconditioner for PRECONDITIONER_LEVELS and RELAXATION_FACTOR
 """
 ims_preconditioner(levels, relax) = levels > 0 ? (relax > 0 ? :milut : :ilut) : (relax > 0 ? :milu0 : :ilu0)
 
-function KrylovSettings(ims::ImsSpec)
+function KrylovSettings(ims::ImsSpec; preconditioner::Symbol = :jacobi)
     pc = ims_preconditioner(ims.preconditioner_levels, ims.relaxation_factor)
-    @warn "IMS preconditioner $(uppercase(String(pc))) is not available until Phase 4; using Jacobi" ims.file
+    if preconditioner === :jacobi
+        @warn "IMS preconditioner $(uppercase(String(pc))) is replaced by Jacobi (the default; see the `preconditioner` option)" ims.file
+    else
+        @info "IMS preconditioner $(uppercase(String(pc))) replaced by the ModflowGPU preconditioner $preconditioner" ims.file
+    end
     ims.reordering_method === :none ||
-        @info "IMS REORDERING_METHOD $(uppercase(String(ims.reordering_method))) has no effect with the Jacobi preconditioner" ims.file
+        @info "IMS REORDERING_METHOD $(uppercase(String(ims.reordering_method))) has no effect with the $preconditioner preconditioner" ims.file
     # As in MF6 this is allowed, but L2NORM scaling makes the scaled matrix nonsymmetric.
     ims.linear_acceleration === :cg && ims.scaling_method === :l2norm &&
         @warn "IMS SCALING_METHOD L2NORM with LINEAR_ACCELERATION CG: the scaled matrix is not symmetric, CG may not converge" ims.file
     return KrylovSettings(;
         method = ims.linear_acceleration, maxiter = ims.inner_maximum, dvclose = ims.inner_dvclose,
         rclose = ims.inner_rclose, rclose_option = ims.rclose_option, north = ims.number_orthogonalizations,
-        scaling = ims.scaling_method,
+        scaling = ims.scaling_method, preconditioner,
     )
 end
 
@@ -460,13 +474,17 @@ end
 
 Workspace of the inner solver for one CSR structure: `settings::KrylovSettings`, the
 structure, Krylov vectors in `Ts`, the Jacobi preconditioner (inverse diagonal) in `Tp`,
-the row and column factors of the scaled (and for CG sign-adjusted) operator, and a
-`Reducer` accumulating in `Ta`.
+the row and column factors of the scaled (and for CG sign-adjusted) operator, a
+`Reducer` accumulating in `Ta`, and the preconditioner `precond` (an
+`AbstractPreconditioner` built from `settings.preconditioner`; for Jacobi it wraps `minv`).
 
     KrylovSolver(backend, csr::CsrStructure, settings; Ts = Float64, Tp = Ts,
-                 Ta = accumulation_type(backend, Ts))
+                 Ta = accumulation_type(backend, Ts), colors = nothing)
+
+`colors`: a host colouring for the multicolour preconditioners (`grid_colors`; greedy when
+`nothing`).
 """
-struct KrylovSolver{Ts, Tp, Ta, VS <: AbstractVector{Ts}, VP <: AbstractVector{Tp}, C <: CsrStructure, R <: Reducer{Ta}}
+struct KrylovSolver{Ts, Tp, Ta, VS <: AbstractVector{Ts}, VP <: AbstractVector{Tp}, C <: CsrStructure, R <: Reducer{Ta}, P <: AbstractPreconditioner}
     settings::KrylovSettings
     csr::C
     x::VS
@@ -484,24 +502,35 @@ struct KrylovSolver{Ts, Tp, Ta, VS <: AbstractVector{Ts}, VP <: AbstractVector{T
     rowfac::VS
     colfac::VS
     reducer::R
+    precond::P
 end
 
 function KrylovSolver(
         backend::Backend, csr::CsrStructure, settings::KrylovSettings;
-        Ts::Type = Float64, Tp::Type = Ts, Ta::Type = accumulation_type(backend, Ts),
+        Ts::Type = Float64, Tp::Type = Ts, Ta::Type = accumulation_type(backend, Ts), colors = nothing,
     )
     n = Int(csr.nodes)
     z(len) = KernelAbstractions.zeros(backend, Ts, len)
     bc = settings.method === :bicgstab ? n : 0
     cg = settings.method === :cg ? n : 0
+    minv = KernelAbstractions.zeros(backend, Tp, n)
+    precond = build_preconditioner(settings.preconditioner, backend, csr, minv; Ts, Tp, colors)
     return KrylovSolver(
         settings, csr, z(n), z(n), z(n), z(n), z(cg), z(settings.north > 0 ? n : 0),
-        z(bc), z(bc), z(bc), z(bc), z(bc), KernelAbstractions.zeros(backend, Tp, n), z(n), z(n),
-        Reducer(backend, n, Ta),
+        z(bc), z(bc), z(bc), z(bc), z(bc), minv, z(n), z(n), Reducer(backend, n, Ta), precond,
     )
 end
 
-Adapt.@adapt_structure KrylovSolver
+# Adapt: field by field, keeping a JacobiPreconditioner on the solver's (adapted) `minv`.
+function Adapt.adapt_structure(to, s::KrylovSolver)
+    a(x) = adapt(to, x)
+    minv = a(s.minv)
+    precond = s.precond isa JacobiPreconditioner ? JacobiPreconditioner(minv) : a(s.precond)
+    return KrylovSolver(
+        s.settings, a(s.csr), a(s.x), a(s.r), a(s.p), a(s.q), a(s.z), a(s.b0), a(s.dhat), a(s.phat), a(s.qhat), a(s.t),
+        a(s.v), minv, a(s.rowfac), a(s.colfac), a(s.reducer), precond,
+    )
+end
 
 KernelAbstractions.get_backend(s::KrylovSolver) = get_backend(s.x)
 
@@ -623,6 +652,40 @@ end
     return (Ta(rn) * Ta(zn), zero(Ta), zero(Ta), zero(Ta))
 end
 
+# Non-fused variants for preconditioners other than Jacobi (`precond_apply!` between them).
+@inline function _cg_init_nf(::Type{Ta}, n, x, r, p, b0, res, rowfac) where {Ta}
+    Ts = eltype(r)
+    @inbounds begin
+        rn = rowfac[n] * Ts(res[n])
+        r[n] = rn
+        x[n] = zero(Ts)
+        p[n] = zero(Ts)
+        length(b0) > 0 && (b0[n] = rn)
+    end
+    return (Ta(rn) * Ta(rn), zero(Ta), zero(Ta), zero(Ta))
+end
+
+@inline function _cg_update_nf(::Type{Ta}, n, x, r, p, q, alpha) where {Ta}
+    @inbounds begin
+        tv = alpha * p[n]
+        x[n] += tv
+        rn = r[n] - alpha * q[n]
+        r[n] = rn
+    end
+    return (Ta(tv), Ta(rn), Ta(rn) * Ta(rn), zero(Ta))
+end
+
+@inline function _true_residual_nf(n, r, x, b0, amat, ia, ja, rowfac, colfac)
+    @inbounds r[n] = b0[n] - _op_row(n, amat, ia, ja, rowfac, colfac, x)
+    return nothing
+end
+
+# z = M⁻¹·r, then r·z (one reduction).
+function _apply_dot!(s::KrylovSolver, backend, n)
+    @timed_section :precond_apply precond_apply!(s.z, s.precond, s.r)
+    return @timed_section :update_reduce _mapreduce!(s.reducer, backend, _dot_term, _SUM4, n, s.r, s.z)[1]
+end
+
 # --- BiCGSTAB (ims_base_bcgs)
 
 @inline function _bcgs_init(::Type{Ta}, n, x, r, dhat, p, v, b0, res, rowfac) where {Ta}
@@ -654,6 +717,16 @@ end
         q[n] = qn
         qhat[n] = _precond(minv, qn, n)
     end
+    return nothing
+end
+
+@inline function _bcgs_direction_nf(n, p, r, v, beta, omega0)
+    @inbounds p[n] = r[n] + beta * (p[n] - omega0 * v[n])
+    return nothing
+end
+
+@inline function _bcgs_half_nf(n, q, r, v, alpha)
+    @inbounds q[n] = r[n] - alpha * v[n]
     return nothing
 end
 
@@ -704,8 +777,8 @@ _safe_div(num, d) = num / (d + copysign(max(eps(Float64) * abs(num), floatmin(Fl
 Solve the correction system `A·δ = res` (PLAN.md section 3.7, rule 3) with a zero
 initial guess: `amat` is MF6's matrix in the CSR layout of `solver.csr` (a
 `LinearSystem`'s `amat`, any float type), `res` the flux-form residual (`flux_residual!`),
-`δ` the output. Scaling and the Jacobi preconditioner are set up from `amat` on every call
-(as `imslinear_ap` does). `kstp` (time step number) only matters for
+`δ` the output. Scaling and the preconditioner (`precond_setup!`) are set up from `amat`
+on every call (as `imslinear_ap` does). `kstp` (time step number) only matters for
 `rclose_option = :l2norm` (`ims_base_epfact`). Returns a `KrylovResult` with the
 iteration count of this call.
 """
@@ -719,7 +792,7 @@ function solve!(δ, solver::KrylovSolver{Ts}, amat, res; kstp::Integer = 1) wher
     @timed_section :precond_setup begin
         _map!(backend, _setup_row, n, solver.rowfac, solver.colfac, amat, csr.ia, cg, scaling)
         scaling == 2 && _map!(backend, _setup_l2col, n, solver.colfac, solver.rowfac, amat, csr.ia, csr.ja, csr.isym)
-        _map!(backend, _setup_jacobi, n, solver.minv, solver.rowfac, solver.colfac, amat, csr.ia)
+        precond_setup!(solver.precond, solver, amat)
     end
     result = cg ? _solve_cg!(solver, amat, kstp, res) : _solve_bcgs!(solver, amat, kstp, res)
     @timed_section :vector_update _map!(backend, _unscale, n, δ, solver.x, solver.colfac)
@@ -739,7 +812,13 @@ function _solve_cg!(s::KrylovSolver{Ts}, amat, kstp, res) where {Ts}
     red = s.reducer
     n = Int(csr.nodes)
     epfact = ims_epfact(st.icnvgopt, kstp)
-    rr, rho, _, _ = @timed_section :update_reduce _mapreduce!(red, backend, _cg_init, _SUM4, n, s.x, s.r, s.p, s.z, s.b0, res, s.rowfac, s.minv)
+    jac = s.precond isa JacobiPreconditioner
+    if jac
+        rr, rho, _, _ = @timed_section :update_reduce _mapreduce!(red, backend, _cg_init, _SUM4, n, s.x, s.r, s.p, s.z, s.b0, res, s.rowfac, s.minv)
+    else
+        rr = @timed_section :update_reduce _mapreduce!(red, backend, _cg_init_nf, _SUM4, n, s.x, s.r, s.p, s.b0, res, s.rowfac)[1]
+        rho = rr == 0 ? 0.0 : _apply_dot!(s, backend, n)
+    end
     l2norm0 = sqrt(rr)
     icnvg = 0
     itmax = st.maxiter
@@ -757,9 +836,15 @@ function _solve_cg!(s::KrylovSolver{Ts}, amat, kstp, res) where {Ts}
         @timed_section :vector_update _map!(backend, _cg_direction, n, s.p, s.z, Ts(beta))
         pq = @timed_section :spmv_dot _mapreduce!(red, backend, _apply_dot, _SUM4, n, s.q, s.p, s.p, amat, csr.ia, csr.ja, s.rowfac, s.colfac)[1]
         alpha = _safe_div(rho, pq)
-        deltax, rmax, l2sq, rho_next = @timed_section :update_reduce _mapreduce!(
-            red, backend, _cg_update, _CG_UPDATE_OPS, n, s.x, s.r, s.z, s.p, s.q, s.minv, Ts(alpha),
-        )
+        if jac
+            deltax, rmax, l2sq, rho_next = @timed_section :update_reduce _mapreduce!(
+                red, backend, _cg_update, _CG_UPDATE_OPS, n, s.x, s.r, s.z, s.p, s.q, s.minv, Ts(alpha),
+            )
+        else
+            deltax, rmax, l2sq, _ = @timed_section :update_reduce _mapreduce!(
+                red, backend, _cg_update_nf, _CG_UPDATE_OPS, n, s.x, s.r, s.p, s.q, Ts(alpha),
+            )
+        end
         l2norm = sqrt(l2sq)
         rcnvg = st.icnvgopt >= 2 ? l2norm : rmax
         icnvg = ims_testcnvg(st.icnvgopt, innerit, deltax, rcnvg, l2norm0, epfact, st.dvclose, st.rclose)
@@ -767,11 +852,16 @@ function _solve_cg!(s::KrylovSolver{Ts}, amat, kstp, res) where {Ts}
         icnvg != 0 && break
         _is_close(rho, rho0) && break
         if st.north > 0 && mod(iiter + 1, st.north) == 0
-            rho_next = @timed_section :true_residual _mapreduce!(
-                red, backend, _cg_true_residual, _SUM4, n, s.r, s.z, s.x, s.b0, amat, csr.ia, csr.ja,
-                s.rowfac, s.colfac, s.minv,
-            )[1]
+            if jac
+                rho_next = @timed_section :true_residual _mapreduce!(
+                    red, backend, _cg_true_residual, _SUM4, n, s.r, s.z, s.x, s.b0, amat, csr.ia, csr.ja,
+                    s.rowfac, s.colfac, s.minv,
+                )[1]
+            else
+                @timed_section :true_residual _map!(backend, _true_residual_nf, n, s.r, s.x, s.b0, amat, csr.ia, csr.ja, s.rowfac, s.colfac)
+            end
         end
+        jac || (rho_next = _apply_dot!(s, backend, n))
         rho == 0 && break
         rho0 = rho
         rho = rho_next
@@ -786,6 +876,7 @@ function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res) where {Ts}
     red = s.reducer
     n = Int(csr.nodes)
     epfact = ims_epfact(st.icnvgopt, kstp)
+    jac = s.precond isa JacobiPreconditioner
     rr, rho, _, _ = @timed_section :update_reduce _mapreduce!(red, backend, _bcgs_init, _SUM4, n, s.x, s.r, s.dhat, s.p, s.v, s.b0, res, s.rowfac)
     l2norm0 = sqrt(rr)
     icnvg = 0
@@ -801,10 +892,20 @@ function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res) where {Ts}
     for iiter in 1:itmax
         innerit += 1
         beta = iiter == 1 ? 0.0 : (rho / rho0) * (alpha0 / omega0)
-        @timed_section :vector_update _map!(backend, _bcgs_direction, n, s.p, s.phat, s.r, s.v, s.minv, Ts(beta), Ts(omega0))
+        if jac
+            @timed_section :vector_update _map!(backend, _bcgs_direction, n, s.p, s.phat, s.r, s.v, s.minv, Ts(beta), Ts(omega0))
+        else
+            @timed_section :vector_update _map!(backend, _bcgs_direction_nf, n, s.p, s.r, s.v, Ts(beta), Ts(omega0))
+            @timed_section :precond_apply precond_apply!(s.phat, s.precond, s.p)
+        end
         dv = @timed_section :spmv_dot _mapreduce!(red, backend, _apply_dot, _SUM4, n, s.v, s.phat, s.dhat, amat, csr.ia, csr.ja, s.rowfac, s.colfac)[1]
         alpha = _safe_div(rho, dv)
-        @timed_section :vector_update _map!(backend, _bcgs_half, n, s.q, s.qhat, s.r, s.v, s.minv, Ts(alpha))
+        if jac
+            @timed_section :vector_update _map!(backend, _bcgs_half, n, s.q, s.qhat, s.r, s.v, s.minv, Ts(alpha))
+        else
+            @timed_section :vector_update _map!(backend, _bcgs_half_nf, n, s.q, s.r, s.v, Ts(alpha))
+            @timed_section :precond_apply precond_apply!(s.qhat, s.precond, s.q)
+        end
         tq, tt, _, _ = @timed_section :spmv_dot _mapreduce!(red, backend, _bcgs_apply_t, _SUM4, n, s.t, s.qhat, s.q, amat, csr.ia, csr.ja, s.rowfac, s.colfac)
         omega = _safe_div(tq, tt)
         deltax, rmax, l2sq, rho_next = @timed_section :update_reduce _mapreduce!(

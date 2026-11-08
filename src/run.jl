@@ -43,7 +43,7 @@ Base.showerror(io::IO, e::ConvergenceError) = print(
 
 """
     ModflowGPU.run(simdir; backend = CPU(), precision = :auto, outdir = simdir,
-                   closures = nothing, write_output = true) -> RunResult
+                   closures = nothing, write_output = true, preconditioner = :jacobi) -> RunResult
 
 Run the MF6 simulation in `simdir` (one GWF model with one IMS solution; exchanges arrive
 in Phase 3) on `backend` in precision `precision` (`resolve_precision`: `:auto`,
@@ -54,22 +54,24 @@ end of each period, with PRINT BUDGET, and after a failed step), written to `out
 the names of the input (the listing file under its name-file name or `<model>.lst`).
 
 `closures` overrides IMS closures (see `PicardSettings`); in `:single` closures below
-`FLOAT32_CLOSURES` are raised. A step that does not converge throws a `ConvergenceError`
+`FLOAT32_CLOSURES` are raised. `preconditioner` selects the inner preconditioner in place
+of IMS's ILU0/MILU0/ILUT (`:jacobi`, `:chebyshev`, `:mc_sgs`, `:mc_ilu0`; see
+`KrylovSettings` and docs/mf6_notes.md). A step that does not converge throws a `ConvergenceError`
 after its output, unless the simulation has the CONTINUE option.
 """
 function run(
         simdir::AbstractString; backend::Backend = CPU(), precision::Symbol = :auto, outdir::AbstractString = simdir,
-        closures = nothing, write_output::Bool = true,
+        closures = nothing, write_output::Bool = true, preconditioner::Symbol = :jacobi,
     )
     sim = load_simulation(simdir)
-    return run(sim; backend, precision, outdir, closures, write_output)
+    return run(sim; backend, precision, outdir, closures, write_output, preconditioner)
 end
 
 function run(
         sim::SimulationSpec; backend::Backend = CPU(), precision::Symbol = :auto, outdir::AbstractString = sim.simdir,
-        closures = nothing, write_output::Bool = true,
+        closures = nothing, write_output::Bool = true, preconditioner::Symbol = :jacobi,
     )
-    s = initialize(sim; backend, precision, outdir, closures, write_output)
+    s = initialize(sim; backend, precision, outdir, closures, write_output, preconditioner)
     try
         while s.istep < length(s.steps)
             update(s) || (r = last(s.results); throw(ConvergenceError(r.step.kper, r.step.kstp, r.outer.iterations)))
@@ -90,7 +92,7 @@ function _listing_header(io::IO, m::GwfModel, ps::PicardSolver, T, Ts, Tp, backe
     println(io, " BACKEND: ", backend_name(backend), ", PRECISION: T = ", T, ", Ts = ", Ts, ", Tp = ", Tp)
     k = st.krylov
     @printf(io, " OUTER_DVCLOSE = %.4e, OUTER_MAXIMUM = %d, UNDER_RELAXATION = %s\n", st.dvclose, st.maxiter, uppercase(String(st.ims.under_relaxation)))
-    @printf(io, " LINEAR_ACCELERATION = %s (Jacobi), INNER_MAXIMUM = %d, INNER_DVCLOSE = %.4e, INNER_RCLOSE = %.4e (option %d)\n", uppercase(String(k.method)), k.maxiter, k.dvclose, k.rclose, k.icnvgopt)
+    @printf(io, " LINEAR_ACCELERATION = %s (%s), INNER_MAXIMUM = %d, INNER_DVCLOSE = %.4e, INNER_RCLOSE = %.4e (option %d)\n", uppercase(String(k.method)), k.preconditioner === :jacobi ? "Jacobi" : String(k.preconditioner), k.maxiter, k.dvclose, k.rclose, k.icnvgopt)
     return nothing
 end
 
