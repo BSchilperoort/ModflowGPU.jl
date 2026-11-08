@@ -18,6 +18,19 @@ Baseline for comparison: `global5m` steady 28.2 s / 9.17 s, daily step 0.618 s /
 0.230 s, 31 steps 46.7 s / 16.1 s (`:double` / `:single`); `indus` steady 1.10 s.
 Each Phase 4 card reports its effect on these numbers with `benchmark/run.jl`.
 
+**Status after T4.5 (2026-11-08)**, default `:auto` = `:mixed` + `:mc_ilu0`, rocm
+(benchmark/results/2026-11-08-T4.5.md). Met: `global5m` steady 2.92 s (`:double`
+3.71 s); in-solver SpMV 76–77 % of triad (`:single` 70–72 %); indus steady 0.09 s;
+period data 5.6 / 9.1 ms; AMG memory within +60 % except indus `:single` (+67 %).
+Carried over (no card yet; pick up when a later card needs the speed):
+- `global5m` daily step 0.263 s (`:double` 0.324 s, `:single` 0.120 s) vs < 0.2 / < 0.1 s:
+  ~11 ms preconditioner setup per outer iteration against ~3 inner iterations.
+- `global5m` 31 steps 10.8 s vs < 10 s.
+- indus 88 µs per inner iteration (Jacobi 57 µs) vs < 40 µs: 8 kernels per CG
+  iteration; needs single-pass reductions and the direction update fused into SpMV.
+- Assembly 5.7 ms per outer iteration vs < 4 ms: fewer bytes per entry, or the package
+  record kernels fused into the row kernel.
+
 **T4.1 Benchmark harness (S)**
 - Depends: T3.4.
 - Deliver: `benchmark/run.jl` running `indus`, `continental`, `global5m`,

@@ -416,12 +416,12 @@ marked; their merge commits on `main` hold the card reports.
   - T3.2 Builder API (done)
   - T3.3 Stepping API (done)
   - T3.4 Synthetic coupling-model generator (done)
-- **Phase 4: solver performance**: [docs/plan/phase4.md](docs/plan/phase4.md)
+- **Phase 4: solver performance**: [docs/plan/phase4.md](docs/plan/phase4.md) (complete 2026-11-08; four targets carried over, see the phase file)
   - T4.1 Benchmark harness (done)
   - T4.2 Chebyshev and multicolour smoothers (done)
   - T4.3 Algebraic multigrid preconditioner (done)
   - T4.4 `:mixed` preset and production default (done)
-  - T4.5 Kernel fusion and matrix formats
+  - T4.5 Kernel fusion and matrix formats (done)
   - T4.6 Period-data path (done)
 - **Phase 5: ModflowCoupling integration and Milestone B**: [docs/plan/phase5.md](docs/plan/phase5.md)
   - T5.1 Engine switch in ModflowCoupling
