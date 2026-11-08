@@ -8,8 +8,10 @@ using ModflowGPU: load_simulation, open_head_file, read_head, open_budget_file, 
 const RUN_MF6 = get(ENV, "MF6", joinpath(REFERENCE_DIR, "mf6.8.2_linux", "bin", "mf6"))
 
 # Inner preconditioner of the run parity tests (T4.2): MFGPU_TEST_PRECONDITIONER, default
-# Jacobi (`ModflowGPU.run(...; preconditioner)`).
-const RUN_PRECONDITIONER = Symbol(get(ENV, "MFGPU_TEST_PRECONDITIONER", "jacobi"))
+# `:auto` since T4.5, i.e. the production default (`DEFAULT_PRECONDITIONER`, `:mc_ilu0`;
+# `ModflowGPU.run(...; preconditioner)`). `MFGPU_TEST_PRECONDITIONER=jacobi` runs the T4.2
+# setting.
+const RUN_PRECONDITIONER = Symbol(get(ENV, "MFGPU_TEST_PRECONDITIONER", "auto"))
 
 # (kper, kstp) => (outer, inner) from MF6's simulation listing (PRINT_OPTION SUMMARY/ALL).
 function _mf6_iterations(mfsim_lst)

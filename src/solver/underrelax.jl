@@ -94,7 +94,7 @@ function underrelax!(ur::UnderRelaxation, h, δ, ibound, kiter::Integer, bigch::
     backend = get_backend(h)
     T = eltype(h)
     n = length(h)
-    update!(w) = (relax_update_kernel!(backend)(h, δ, ibound, T(w); ndrange = n); w)
+    update!(w) = (relax_update_kernel!(backend, _WG)(h, δ, ibound, T(w); ndrange = n); w)
     (converged || ur.method === :none) && return update!(1.0)
     if ur.method === :simple
         return update!(ur.gamma)
@@ -115,7 +115,7 @@ function underrelax!(ur::UnderRelaxation, h, δ, ibound, kiter::Integer, bigch::
         return update!(relax < 1.0 ? relax : 1.0)
     else
         amom = kiter > 4 ? ur.momentum : 0.0
-        dbd_update_kernel!(backend)(
+        dbd_update_kernel!(backend, _WG)(
             h, ur.wsave, ur.hchold, ur.deold, δ, ibound, kiter == 1, T(ur.theta), T(ur.kappa), T(ur.gamma), T(amom);
             ndrange = n,
         )

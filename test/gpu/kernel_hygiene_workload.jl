@@ -98,6 +98,13 @@ function workload(dir)
         scale = similar(m.res)
         bound = similar(m.res)
         M.flux_residual!(m.res, m.sys, m.csr, m.npf, m.h, m.ibound; scale, bound)
+        # The separate assembly kernels (the engine uses `formulate_system!` since T4.5).
+        M.reset_terms!(m.sys)
+        for pkg in m.packages
+            M.boundary_kind(pkg) === :CHD || M.add_terms!(m.sys, m.csr, pkg)
+        end
+        M.add_terms!(m.sys, m.csr, m.sto, m.hold, m.ibound)
+        M.assemble!(m.sys, m.csr, m.npf, m.h, m.ibound; symmetric = true)
     end
     # AMG (T4.3) with several levels: fused and generic finest level, CG and BiCGSTAB.
     for method in (:cg, :bicgstab), fine_degree in (0, 1)

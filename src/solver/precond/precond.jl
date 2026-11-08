@@ -75,7 +75,9 @@ function precond_apply! end
 
 # `z = M⁻¹·r`, and `r·z` (Float64 where the backend has it) when the preconditioner fuses
 # it into its last kernel (with `reducer`), else `nothing` (the solver then reduces).
-_precond_apply_dot!(z, P::AbstractPreconditioner, r, reducer) = (precond_apply!(z, P, r); nothing)
+# z = M⁻¹·r, and when the preconditioner fuses it, r·z into `reducer` (stage 1 and the
+# finalisation with `post`, `sa`, `ss`; not synchronised): returns whether it did.
+_precond_apply_dot!(z, P::AbstractPreconditioner, r, reducer, post, sa, ss) = (precond_apply!(z, P, r); false)
 
 # Called after each linear solve with its `KrylovResult` (e.g. AMG's rebuild decision).
 _precond_record!(P::AbstractPreconditioner, result) = nothing

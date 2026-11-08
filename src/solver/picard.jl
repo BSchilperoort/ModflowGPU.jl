@@ -155,6 +155,7 @@ _with_rclose(k::KrylovSettings, rclose) = _with(k; rclose = Float64(rclose))
 
 _with_settings(s::KrylovSolver, st::KrylovSettings) = KrylovSolver(
     st, s.csr, s.x, s.r, s.p, s.q, s.z, s.b0, s.dhat, s.phat, s.qhat, s.t, s.v, s.minv, s.rowfac, s.colfac, s.reducer, s.precond,
+    s.reducer2, s.reducer3, s.sa, s.ss,
 )
 
 """

@@ -89,7 +89,7 @@ function _formulate!(c::_AsmCase{T}, conn, s, kper, delt, hoff, holdoff) where {
         end
     end
     isnothing(c.sto) || add_terms!(c.sys, c.csr, c.sto, hold, c.ib)
-    return h, ibh
+    return h, ibh, hold
 end
 
 # max_n |(b' − A·h')_n − res_n| / max_n bound_n, in Float64 from the assembled system.
@@ -122,14 +122,25 @@ function _universal_residual(name, rundir, m, sim)
         c = _asm_case(T, m, conn, s, length(sim.tdis.perlen))
         res, scale, bound = (KernelAbstractions.zeros(TEST_BACKEND, T, conn.nodes) for _ in 1:3)
         worst, worst_bound, worst_cons, fails = 0.0, 0.0, 0.0, 0
+        # The fused `formulate_system!` (T4.5) against the separate kernels, bitwise, with
+        # the off-diagonals rewritten only when IBOUND changes (as `formulate!(::GwfModel)`).
+        sys2 = LinearSystem(TEST_BACKEND, T, c.csr)
+        res2, scale2 = (KernelAbstractions.zeros(TEST_BACKEND, T, conn.nodes) for _ in 1:2)
+        ibprev, fused_ok = nothing, true
         for k in 1:nstep
             st = hf.steps[k]
             delt = _step_lengths(sim.tdis, st.kper)[st.kstp]
             prev = k == 1 ? h0 : hoff[k - 1]
-            h, ibh = _formulate!(c, conn, s, Int(st.kper), delt, hoff[k], prev)
+            h, ibh, hold = _formulate!(c, conn, s, Int(st.kper), delt, hoff[k], prev)
             flux_residual!(res, c.sys, c.csr, c.npf, h, c.ib; scale, bound)
             assemble!(c.sys, c.csr, c.npf, h, c.ib; symmetric)
+            pkgs = Tuple((x.hcof, x.rhs, x.nodeptr, x.noderec) for x in c.pk if ModflowGPU.boundary_kind(x) !== :CHD && x.nbound > 0)
+            sto = !isnothing(c.sto) && c.sto.transient ? (c.sto.rho, hold) : nothing
+            ModflowGPU.formulate_system!(sys2, res2, c.csr, c.npf, h, c.ib, pkgs, sto; symmetric, offdiag = ibh != ibprev, scale = scale2)
+            ibprev = ibh
             KernelAbstractions.synchronize(TEST_BACKEND)
+            fused_ok &= Array(sys2.amat) == Array(c.sys.amat) && Array(sys2.rhs) == Array(c.sys.rhs) &&
+                Array(res2) == Array(res) && Array(scale2) == Array(scale)
             rel, roundoff = residual_stats(T, res, scale, bound)
             ok = rel < 1.0e-8 || (T === Float32 && rel <= roundoff)
             ok || (fails += 1)
@@ -149,6 +160,7 @@ function _universal_residual(name, rundir, m, sim)
             end
         end
         @test fails == 0
+        @test fused_ok
         T === Float64 && @test worst_cons < 1.0e-12
         @info "Universal residual test: $name, :$(p.preset), $(conn.nodes) nodes, $nstep step(s): max |res| / max Σ|terms| = $(round(worst; sigdigits = 3)) (rounding bound $(round(worst_bound; sigdigits = 3)))" *
             (T === Float64 ? ", assembly vs residual $(round(worst_cons; sigdigits = 3))" : "")

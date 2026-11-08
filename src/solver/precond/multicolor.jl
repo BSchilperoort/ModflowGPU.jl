@@ -20,6 +20,14 @@
 #   sign or vanishes is replaced by the unfactorised diagonal (MF6 restarts the
 #   factorisation with a larger diagonal shift DELTA instead).
 # For two colours (red–black) ILU0 only modifies the diagonal of the second colour.
+#
+# Red–black ILU0 setup (T4.5): the scaled matrix is copied with one work item per entry
+# (`CsrStructure.irow`), then `ctr` gives, for each lower entry (n, m) of a second-colour
+# row, the position of the transposed entry (m, n) in row m, so the pivot update reads one
+# value instead of searching row m (with MILU relaxation the row is still scanned). Bitwise
+# the same factors as the row-by-row setup. (Copying only the pivots of the first colour
+# when the off-diagonal entries are unchanged was tried: checking the row factors cost more
+# than the writes it saved.)
 
 """
     greedy_colors(ia, ja) -> Vector{Int32}
@@ -128,6 +136,7 @@ struct MulticolorPreconditioner{VI <: AbstractVector{Int32}, VP <: AbstractVecto
     vals::VP
     dinv::VP
     relax::Float64
+    ctr::VI
 end
 
 ncolors(P::MulticolorPreconditioner) = length(P.cptr) - 1
@@ -192,16 +201,38 @@ function MulticolorPreconditioner(
     end
     cia[n + 1] = pos
     pos == length(ja) + 1 || throw(ArgumentError("CSR rows must hold their diagonal first"))
+    rb = kind === :ilu0 && nc == 2
+    # Red–black: every coloured row is the original row (all neighbours have the other
+    # colour and keep their order), which the natural-order setup copy relies on.
+    ctr = rb ? _transpose_positions(perm, iperm, cia, cja, cup, cptr[2]) : Int32[]
     dev(x) = _device_copy(backend, x)
     return MulticolorPreconditioner(
         csr, kind === :ilu0, cptr, dev(Int32.(perm)), dev(iperm), dev(cia), dev(cja), dev(cup), dev(csrc),
         KernelAbstractions.zeros(backend, Tp, length(ja)), KernelAbstractions.zeros(backend, Tp, n), Float64(relax),
+        dev(ctr),
     )
+end
+
+# For each lower entry kk of a second-colour row i (node n, column m), the position of entry
+# (m, n) in the coloured row of m (0 elsewhere).
+function _transpose_positions(perm, iperm, cia, cja, cup, first2)
+    ctr = zeros(Int32, length(cja))
+    for i in first2:length(perm)
+        n = perm[i]
+        for kk in (cia[i] + 1):(cup[i] - 1)
+            im = iperm[cja[kk]]
+            for mm in cup[im]:(cia[im + 1] - 1)
+                cja[mm] == n && (ctr[kk] = mm)
+            end
+            ctr[kk] > 0 || throw(ArgumentError("the CSR structure is not structurally symmetric"))
+        end
+    end
+    return ctr
 end
 
 Adapt.adapt_structure(to, P::MulticolorPreconditioner) = MulticolorPreconditioner(
     adapt(to, P.csr), P.ilu, copy(P.cptr), adapt(to, P.perm), adapt(to, P.iperm), adapt(to, P.cia), adapt(to, P.cja),
-    adapt(to, P.cup), adapt(to, P.csrc), adapt(to, P.vals), adapt(to, P.dinv), P.relax,
+    adapt(to, P.cup), adapt(to, P.csrc), adapt(to, P.vals), adapt(to, P.dinv), P.relax, adapt(to, P.ctr),
 )
 
 # --- setup
@@ -272,14 +303,31 @@ end
     return nothing
 end
 
-# Red–black ILU0 of coloured row i = off + k in one pass with the copy: first-colour rows
-# are only copied (pivot = diagonal); in a second-colour row only the diagonal receives
-# fill inside the pattern (second-colour nodes are not connected), so each lower entry
-# (n, m) updates `d −= l_nm·u_mn` and drops the rest of row m (MILU: `rs`).
-@inline function _mc_rb_row(k, off, second::Bool, vals, dinv, perm, iperm, cia, cja, cup, csrc, amat, rowfac, colfac, relax)
+# Red–black ILU0, step 1: copy the scaled entries, one work item per entry `ii` of `amat`
+# (coalesced reads, and writes in two streams: with two colours the coloured row is the
+# original row, see the constructor). The diagonal of a first-colour row also gives its pivot.
+@inline function _mc_rb_copy(ii, n1, vals, dinv, iperm, cia, amat, ia, ja, irow, rowfac, colfac)
     Tp = eltype(vals)
-    _mc_copy_row(off + k, vals, dinv, perm, cia, cja, csrc, amat, rowfac, colfac, !second)
-    second || return nothing
+    Ts = eltype(rowfac)
+    @inbounds begin
+        n = irow[ii]
+        i = iperm[n]
+        t = ii - ia[n]
+        v = Tp(rowfac[n] * Ts(amat[ii]) * colfac[ja[ii]])
+        vals[cia[i] + t] = v
+        if i <= n1 && t == zero(t)
+            dinv[i] = v != zero(Tp) ? one(Tp) / v : one(Tp)
+        end
+    end
+    return nothing
+end
+
+# Step 2, second-colour row i = off + k: only the diagonal receives fill inside the pattern
+# (second-colour nodes are not connected), so each lower entry (n, m) updates
+# `d −= l_nm·u_mn` (`u_mn` at `ctr[kk]`) and drops the rest of row m (MILU, `milu`: their
+# sum `rs`, found by scanning row m).
+@inline function _mc_rb_factor(k, off, vals, dinv, perm, iperm, cia, cja, cup, ctr, relax, milu::Bool)
+    Tp = eltype(vals)
     @inbounds begin
         i = off + k
         n = perm[i]
@@ -291,12 +339,16 @@ end
             im = iperm[cja[kk]]
             l = vals[kk] * dinv[im]
             vals[kk] = l
-            for mm in cup[im]:(cia[im + 1] - Int32(1))
-                if cja[mm] == n
-                    d -= l * vals[mm]
-                else
-                    rs += l * vals[mm]
+            if milu
+                for mm in cup[im]:(cia[im + 1] - Int32(1))
+                    if cja[mm] == n
+                        d -= l * vals[mm]
+                    else
+                        rs += l * vals[mm]
+                    end
                 end
+            else
+                d -= l * vals[ctr[kk]]
             end
         end
         d -= relax * rs
@@ -317,12 +369,12 @@ function precond_setup!(P::MulticolorPreconditioner, solver, amat)
     len(c) = P.cptr[c + 1] - P.cptr[c]
     off(c) = Int32(P.cptr[c] - 1)
     if P.ilu && nc == 2
-        for c in 1:2
-            _map!(
-                backend, _mc_rb_row, len(c), off(c), c == 2, P.vals, P.dinv, P.perm, P.iperm, P.cia, P.cja, P.cup, P.csrc,
-                amat, solver.rowfac, solver.colfac, relax,
-            )
-        end
+        csr = P.csr
+        _map!(
+            backend, _mc_rb_copy, Int(csr.nja), Int32(len(1)), P.vals, P.dinv, P.iperm, P.cia, amat, csr.ia, csr.ja, csr.irow,
+            solver.rowfac, solver.colfac,
+        )
+        _map!(backend, _mc_rb_factor, len(2), off(2), P.vals, P.dinv, P.perm, P.iperm, P.cia, P.cja, P.cup, P.ctr, relax, P.relax != 0)
         return P
     end
     _map!(backend, _mc_copy_row, n, P.vals, P.dinv, P.perm, P.cia, P.cja, P.csrc, amat, solver.rowfac, solver.colfac, !P.ilu)
@@ -383,6 +435,33 @@ end
         z[n] = t * Ts(dinv[i])
     end
     return nothing
+end
+
+# The red–black kernels as stage 1 of the reduction of r·z (each returns r_n·z_n for the
+# rows it finishes: the second colour in the forward kernel, the first in the backward one).
+@inline function _mc_forward_dot(::Type{Ta}, k, off, z, src, r, vals, dinv, perm, cia, cja, cup) where {Ta}
+    _mc_forward(k, off, z, src, r, vals, dinv, perm, cia, cja, cup, true)
+    n = @inbounds perm[off + k]
+    return (@inbounds(Ta(r[n]) * Ta(z[n])), zero(Ta), zero(Ta), zero(Ta))
+end
+
+@inline function _mc_backward_ilu_dot(::Type{Ta}, k, off, z, y, vals, dinv, perm, cia, cja, cup) where {Ta}
+    _mc_backward_ilu(k, off, z, y, vals, dinv, perm, cia, cja, cup)
+    n = @inbounds perm[off + k]
+    return (@inbounds(Ta(y[n]) * Ta(z[n])), zero(Ta), zero(Ta), zero(Ta))
+end
+
+# Red–black ILU0: r·z fused into the two application kernels (T4.5; the partial sums are
+# grouped by colour, so the sum is rounded differently from a separate dot product).
+function _precond_apply_dot!(z, P::MulticolorPreconditioner, r, red, post, sa, ss)
+    (P.ilu && ncolors(P) == 2) || return (precond_apply!(z, P, r); false)
+    backend = get_backend(z)
+    len(c) = P.cptr[c + 1] - P.cptr[c]
+    off(c) = Int32(P.cptr[c] - 1)
+    g = _reduce_stage1!(red, backend, 0, _mc_forward_dot, _SUM4, len(2), off(2), z, r, r, P.vals, P.dinv, P.perm, P.cia, P.cja, P.cup)
+    g += _reduce_stage1!(red, backend, g, _mc_backward_ilu_dot, _SUM4, len(1), off(1), z, r, P.vals, P.dinv, P.perm, P.cia, P.cja, P.cup)
+    _finalize_async!(red, backend, _SUM4, g, post, sa, ss)
+    return true
 end
 
 function precond_apply!(z, P::MulticolorPreconditioner, r)

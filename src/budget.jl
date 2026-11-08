@@ -14,17 +14,18 @@
 # where the backend has it (PLAN.md section 3.7, rule 4); the cumulative volumes
 # (`rate·delt`) and the percent discrepancy on the host in Float64.
 
-@kernel function npf_flowja_kernel!(flowja, @Const(ia), @Const(ja), @Const(jas), @Const(condsat), @Const(Δr), @Const(h), @Const(ibound))
-    n = @index(Global)
+# One work item per entry (T4.5; coalesced writes): row `irow[ii]`, column `ja[ii]`.
+@kernel function npf_flowja_kernel!(flowja, @Const(ia), @Const(ja), @Const(jas), @Const(irow), @Const(condsat), @Const(Δr), @Const(h), @Const(ibound))
+    ii = @index(Global)
     T = eltype(flowja)
     @inbounds begin
-        id = ia[n]
-        flowja[id] = zero(T)
-        hn = h[n]
-        for ii in (id + Int32(1)):(ia[n + 1] - Int32(1))
+        n = irow[ii]
+        if ii == ia[n]
+            flowja[ii] = zero(T)
+        else
             m = ja[ii]
             c, dr = _connection(condsat, Δr, jas, ibound, n, m, ii)
-            flowja[ii] = c * (h[m] - hn + dr)
+            flowja[ii] = c * (h[m] - h[n] + dr)
         end
     end
 end
@@ -37,7 +38,9 @@ entry `ii` of row `n` gets `condsat·(h'_m − h'_n + Δr_nm)` (flow into `n`; z
 cell is inactive), the diagonal entries are zeroed. Antisymmetric exactly.
 """
 function npf_flowja!(flowja, csr::CsrStructure, npf::NpfModel, h, ibound)
-    npf_flowja_kernel!(get_backend(flowja))(flowja, csr.ia, csr.ja, csr.jas, npf.condsat, npf.Δr, h, ibound; ndrange = csr.nodes)
+    npf_flowja_kernel!(get_backend(flowja), _WG)(
+        flowja, csr.ia, csr.ja, csr.jas, csr.irow, npf.condsat, npf.Δr, h, ibound; ndrange = csr.nja,
+    )
     return flowja
 end
 
@@ -89,10 +92,10 @@ function calc_flows!(m::GwfModel)
         elseif pkg.nbound > 0
             formulate!(pkg, m.h, m.ibound, m.area)
             calc_simvals!(pkg, m.h, m.ibound)
-            boundary_flowja_kernel!(backend)(m.flowja, csr.ia, pkg.simvals, pkg.nodeptr, pkg.noderec; ndrange = csr.nodes)
+            boundary_flowja_kernel!(backend, _WG)(m.flowja, csr.ia, pkg.simvals, pkg.nodeptr, pkg.noderec; ndrange = csr.nodes)
         end
     end
-    diagsum_kernel!(backend)(m.flowja, csr.ia; ndrange = csr.nodes)
+    diagsum_kernel!(backend, _WG)(m.flowja, csr.ia; ndrange = csr.nodes)
     return m
 end
 

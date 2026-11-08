@@ -33,8 +33,10 @@
 Device view of the CSR structure of a `Connectivity` (PLAN.md section 3.3; MF6 layout,
 diagonal first in each row): `nodes`, `nja`, and the `Int32` vectors `ia` `(nodes + 1)`,
 `ja`, `jas`, `isym` `(nja)`, `idiag = ia[1:nodes]` (diagonal positions, for
-`add_to_system!` into a matrix) and `inode = 1:nodes` (for `add_to_system!` into a vector
-of per-node diagonal terms). Moved to a device with `Adapt`.
+`add_to_system!` into a matrix), `inode = 1:nodes` (for `add_to_system!` into a vector
+of per-node diagonal terms) and `irow` `(nja)`, the row of each entry (T4.5: kernels with
+one work item per entry, whose writes are coalesced, unlike those of a work item per row).
+Moved to a device with `Adapt`.
 """
 struct CsrStructure{VI <: AbstractVector{Int32}}
     nodes::Int32
@@ -45,9 +47,22 @@ struct CsrStructure{VI <: AbstractVector{Int32}}
     isym::VI
     idiag::VI
     inode::VI
+    irow::VI
 end
 
 Adapt.@adapt_structure CsrStructure
+
+# Without `irow`: computed from `ia` (on the host).
+function CsrStructure(nodes, nja, ia::VI, ja::VI, jas::VI, isym::VI, idiag::VI, inode::VI) where {VI}
+    iah = Array(ia)
+    irow = Vector{Int32}(undef, Int(nja))
+    for n in 1:Int(nodes), ii in iah[n]:(iah[n + 1] - 1)
+        irow[ii] = n
+    end
+    dirow = similar(ia, Int(nja))
+    copyto!(dirow, irow)
+    return CsrStructure{VI}(Int32(nodes), Int32(nja), ia, ja, jas, isym, idiag, inode, dirow)
+end
 
 """
     CsrStructure(backend, conn::Connectivity) -> CsrStructure
@@ -190,7 +205,7 @@ for a symmetric solver.
 """
 function assemble!(sys::LinearSystem, csr::CsrStructure, npf::NpfModel, h, ibound; symmetric::Bool = false)
     backend = get_backend(sys.amat)
-    assemble_kernel!(backend)(
+    assemble_kernel!(backend, _WG)(
         sys.amat, sys.rhs, csr.ia, csr.ja, csr.jas, npf.condsat, npf.Δr, sys.bdiag, sys.brhs, h, ibound, symmetric,
         eltype(sys)(1.0e-15); ndrange = csr.nodes,
     )
@@ -251,11 +266,130 @@ times `eps(T)` bounds the effect of rounding the heads to `T`.
 """
 function flux_residual!(res, sys::LinearSystem, csr::CsrStructure, npf::NpfModel, h, ibound; scale = nothing, bound = nothing)
     backend = get_backend(res)
-    flux_residual_kernel!(backend)(
+    flux_residual_kernel!(backend, _WG)(
         res, scale, bound, csr.ia, csr.ja, csr.jas, npf.condsat, npf.Δr, sys.bdiag, sys.brhs, h, ibound;
         ndrange = csr.nodes,
     )
     return res
+end
+
+# --- Fused formulation (T4.5): boundary and storage terms, assembly and residual in one pass
+#
+# One work item per row does what `reset_terms!`, `add_terms!` (every package, then
+# storage), `assemble!` and `flux_residual!` do in sequence, with the same operations in the
+# same order (bitwise the same results), so the row's connections are read once. The
+# off-diagonal entries of `amat` depend only on `condsat`, `ibound` and `symmetric`; with
+# `offdiag = false` they are not written (the caller knows they are unchanged), which halves
+# the bytes moved: the row-parallel writes of `amat` cost as much as the rest of the kernel.
+
+# bdiag/brhs of node n: the records of each package (`boundary_add_kernel!`), in package
+# order, unrolled over the tuple.
+@inline _add_package_terms(n, d, s, ::Tuple{}) = (d, s)
+@inline function _add_package_terms(n, d, s, pkgs::Tuple)
+    hcof, rhs, nodeptr, noderec = pkgs[1]
+    @inbounds for k in nodeptr[n]:(nodeptr[n + 1] - Int32(1))
+        i = noderec[k]
+        d += hcof[i]
+        s += rhs[i]
+    end
+    return _add_package_terms(n, d, s, Base.tail(pkgs))
+end
+
+# Storage (`storage_add_kernel!`): `nothing` in a steady-state period.
+@inline _add_storage_terms(n, d, s, ::Nothing, ibound) = (d, s)
+@inline function _add_storage_terms(n, d, s, sto::Tuple, ibound)
+    rho, hold = sto
+    @inbounds if ibound[n] > 0
+        r = rho[n]
+        d = d - r
+        s = s - r * hold[n]
+    end
+    return d, s
+end
+
+@kernel function formulate_kernel!(
+        amat, rhs, bdiag, brhs, res, scale, @Const(ia), @Const(ja), @Const(jas), @Const(condsat), @Const(Δr),
+        @Const(h), @Const(ibound), pkgs, sto, symmetric::Bool, offdiag::Bool, tiny,
+    )
+    n = @index(Global)
+    T = eltype(amat)
+    @inbounds begin
+        bd, br = _add_package_terms(n, zero(T), zero(T), pkgs)
+        bd, br = _add_storage_terms(n, bd, br, sto, ibound)
+        bdiag[n] = bd
+        brhs[n] = br
+        id = ia[n]
+        i2 = ia[n + 1] - Int32(1)
+        # residual (flux_residual_kernel!)
+        rs = zero(T)
+        rc = zero(T)
+        sc = zero(T)
+        if ibound[n] > 0
+            d = zero(T)
+            s = br
+            hn = h[n]
+            for ii in (id + Int32(1)):i2
+                m = ja[ii]
+                c, dr = _connection(condsat, Δr, jas, ibound, n, m, ii)
+                d -= c
+                s -= c * dr
+                q = c * (h[m] - hn + dr)
+                rs, rc = _sum_add(rs, rc, -q)
+                sc += abs(q)
+                if symmetric && ibound[m] < 0
+                    s -= c * h[m]
+                    offdiag && (amat[ii] = zero(T))
+                else
+                    offdiag && (amat[ii] = c)
+                end
+            end
+            d += bd
+            if abs(d) < tiny
+                d = -one(T)
+                s -= hn
+            end
+            amat[id] = d
+            rhs[n] = s
+            tb = bd * hn
+            rs, rc = _sum_add(rs, rc, -tb)
+            rs, rc = _sum_add(rs, rc, br)
+            sc += abs(tb) + abs(br)
+        else
+            amat[id] = one(T)
+            if offdiag
+                for ii in (id + Int32(1)):i2
+                    amat[ii] = zero(T)
+                end
+            end
+            rhs[n] = h[n]
+        end
+        res[n] = rs + rc
+        scale === nothing || (scale[n] = sc)
+    end
+end
+
+"""
+    formulate_system!(sys, res, csr, npf, h, ibound, packages, storage; symmetric = false,
+                      offdiag = true, scale = nothing) -> sys
+
+`reset_terms!`, `add_terms!` of the boundary packages and storage, `assemble!` and
+`flux_residual!` in one kernel (T4.5), with bitwise the same results. `packages`: a tuple
+of `(hcof, rhs, nodeptr, noderec)` per boundary package with records (after its
+`formulate!`), in package order; `storage`: `(rho, hold)` in a transient period, otherwise
+`nothing`. `offdiag = false` skips writing the off-diagonal entries of `sys.amat`; valid
+only when they were written by an earlier call with the same `ibound` and `symmetric` (they
+depend on nothing else).
+"""
+function formulate_system!(
+        sys::LinearSystem, res, csr::CsrStructure, npf::NpfModel, h, ibound, packages::Tuple, storage;
+        symmetric::Bool = false, offdiag::Bool = true, scale = nothing,
+    )
+    backend = get_backend(sys.amat)
+    formulate_kernel!(backend, _WG)(
+        sys.amat, sys.rhs, sys.bdiag, sys.brhs, res, scale, csr.ia, csr.ja, csr.jas, npf.condsat, npf.Δr, h, ibound,
+        packages, storage, symmetric, offdiag, eltype(sys)(1.0e-15); ndrange = csr.nodes,
+    )
+    return sys
 end
 
 @kernel function spmv_kernel!(y, @Const(amat), @Const(ia), @Const(ja), @Const(x))
@@ -277,6 +411,6 @@ end
 ImsLinearBase.f90), one work item per row, accumulated in `eltype(y)`.
 """
 function spmv!(y, amat, csr::CsrStructure, x)
-    spmv_kernel!(get_backend(y))(y, amat, csr.ia, csr.ja, x; ndrange = csr.nodes)
+    spmv_kernel!(get_backend(y), _WG)(y, amat, csr.ia, csr.ja, x; ndrange = csr.nodes)
     return y
 end
