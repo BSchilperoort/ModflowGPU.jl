@@ -466,7 +466,7 @@ end
 
 function _stage_records!(staging, b::BoundSource, hcols, rrec, n)
     if Threads.nthreads() > 1 && n > 2STAGING_CHUNK
-        Threads.@threads :static for k in 1:cld(n, STAGING_CHUNK)
+        Threads.@threads for k in 1:cld(n, STAGING_CHUNK)
             _stage_range!(staging, b, hcols, rrec, ((k - 1) * STAGING_CHUNK + 1):min(k * STAGING_CHUNK, n))
         end
     else
