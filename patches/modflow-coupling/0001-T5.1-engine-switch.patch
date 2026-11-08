@@ -1,0 +1,1087 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bart Schilperoort <b.schilperoort@esciencecenter.nl>
+Date: Sun, 8 Nov 2026 19:56:20 +0100
+Subject: [PATCH] T5.1: engine switch
+
+[solver] engine = "mf6" | "gpu" (default mf6), with backend, precision and
+preconditioner ("auto") for the GPU engine. The GPU engine builds the model of
+write_simulation in memory with ModflowGPU's builder (build_spec, no MF6 files),
+runs it through ModflowGPU's stepping API, stores RCH rates per unit area (no
+MF6 6.3 area scaling in calibrate_bmi!) and writes absolute river stages into
+the RIV BOUND mirror (converted to offsets from GWF/HREF in Float64). The tests
+run with both engines (MODFLOWCOUPLING_ENGINES), check build_spec against the
+loaded MF6 input and the head parity of the two engines.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Manifest.toml             | 330 ++++++++++++++++++++++++++++++++++++--
+ Project.toml              |   5 +
+ examples/indus/indus.toml |   4 +
+ src/ModflowCoupling.jl    |   5 +-
+ src/bmi.jl                |   2 +-
+ src/config.jl             |  24 ++-
+ src/gpu_engine.jl         | 108 +++++++++++++
+ src/model.jl              |  76 +++++----
+ test/runtests.jl          |  85 +++++++++-
+ 9 files changed, 591 insertions(+), 48 deletions(-)
+ create mode 100644 src/gpu_engine.jl
+
+diff --git a/Manifest.toml b/Manifest.toml
+index b283970..fce3508 100644
+--- a/Manifest.toml
++++ b/Manifest.toml
+@@ -2,7 +2,21 @@
+ 
+ julia_version = "1.12.6"
+ manifest_format = "2.0"
+-project_hash = "5e2e171f3de2bd8710b84bae77d72495fa23491c"
++project_hash = "f0dc44b38d96960dd459503bb467cad77fd74837"
++
++[[deps.Adapt]]
++deps = ["LinearAlgebra"]
++git-tree-sha1 = "eec8a0ad4e4b673afba213931504c360fffb8f97"
++uuid = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
++version = "4.8.0"
++
++    [deps.Adapt.extensions]
++    AdaptSparseArraysExt = "SparseArrays"
++    AdaptStaticArraysExt = "StaticArrays"
++
++    [deps.Adapt.weakdeps]
++    SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
++    StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+ 
+ [[deps.ArgTools]]
+ uuid = "0dad84c5-d112-42e6-8d28-ef12dabb789f"
+@@ -12,6 +26,16 @@ version = "1.1.2"
+ uuid = "56f22d72-fd6d-98f1-02f0-08ddc0907c33"
+ version = "1.11.0"
+ 
++[[deps.Atomix]]
++deps = ["UnsafeAtomics"]
++git-tree-sha1 = "0aa371c875e24cf773c87b2f50ab03e4545748af"
++uuid = "a9b6321e-bd34-4604-b9c9-b65b8de01458"
++version = "1.7.0"
++
++    [deps.Atomix.weakdeps]
++    CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
++    CUDACore = "bd0ed864-bdfe-4181-a5ed-ce625a5fdea2"
++
+ [[deps.Base64]]
+ uuid = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"
+ version = "1.11.0"
+@@ -33,6 +57,11 @@ git-tree-sha1 = "1b96ea4a01afe0ea4090c5c8039690672dd13f2e"
+ uuid = "6e34b625-4abd-537c-b88f-471c36dfa7a0"
+ version = "1.0.9+0"
+ 
++[[deps.CEnum]]
++git-tree-sha1 = "389ad5c84de1ae7cf0e28e381131c98ea87d54fc"
++uuid = "fa961155-64e5-5f13-b03f-caf6b980ea82"
++version = "0.5.0"
++
+ [[deps.CFTime]]
+ deps = ["Dates", "Printf"]
+ git-tree-sha1 = "fad2f199d1f1ae0c8e820ab68f81f6dbf62e60b2"
+@@ -45,6 +74,12 @@ git-tree-sha1 = "54d50f8a0a68ff4160564dfa09fc5de32465cfca"
+ uuid = "1fbeeb36-5f17-413c-809b-666fb144f157"
+ version = "0.4.4"
+ 
++[[deps.CompilerCaching]]
++deps = ["LMDB", "SHA", "Scratch"]
++git-tree-sha1 = "1de3647e392372f1a77e41ae705ceaa12473bc08"
++uuid = "9db33cc3-5358-4881-8759-fa4194144afd"
++version = "0.5.3"
++
+ [[deps.CompilerSupportLibraries_jll]]
+ deps = ["Artifacts", "Libdl"]
+ uuid = "e66e0078-7015-5450-92f7-15fbd957f2ae"
+@@ -87,22 +122,61 @@ deps = ["ArgTools", "FileWatching", "LibCURL", "NetworkOptions"]
+ uuid = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
+ version = "1.7.0"
+ 
++[[deps.ExprTools]]
++git-tree-sha1 = "d2e49e7efd29719d6f28b891b0e0e159daa9d2b4"
++uuid = "e2ba6199-217a-4e67-a87a-7c52f15ade04"
++version = "0.1.11"
++
+ [[deps.FileWatching]]
+ uuid = "7b1f6079-737a-58dc-b8bc-7a2ca5c1b5ee"
+ version = "1.11.0"
+ 
++[[deps.GPUCompiler]]
++deps = ["CompilerCaching", "ExprTools", "InteractiveUtils", "LLVM", "Libdl", "Logging", "PrecompileTools", "Preferences", "REPL", "ScopedValues", "TOML", "Tracy", "UUIDs", "tree_sitter_gcn_jll", "tree_sitter_llvm_jll", "tree_sitter_ptx_jll", "tree_sitter_spirv_jll"]
++git-tree-sha1 = "65175d8064f99fc7a27cc9b69bed573b35ee080e"
++uuid = "61eb1bfa-7361-4325-ad38-22787b887f55"
++version = "2.21.0"
++
++    [deps.GPUCompiler.extensions]
++    CthulhuExt = "Cthulhu"
++    HighlightsExt = "Highlights"
++
++    [deps.GPUCompiler.weakdeps]
++    AMDGPU_LLVM_Backend_jll = "cc5c0156-bd05-5a77-8a68-bb0aafb29019"
++    Cthulhu = "f68482b8-f384-11e8-15f7-abe071a5a75f"
++    Highlights = "eafb193a-b7ab-5a9e-9068-77385905fa72"
++    LLVMDowngrader_jll = "f52de702-fb25-5922-94ba-81dd59b07444"
++    NVPTX_LLVM_Backend_jll = "ef6e0fe3-e6ef-59c0-bde6-4989574699e0"
++    SPIRV_LLVM_Backend_jll = "4376b9bf-cff8-51b6-bb48-39421dff0d0c"
++    SPIRV_LLVM_Translator_jll = "4a5d46fc-d8cf-5151-a261-86b458210efb"
++
++[[deps.GPUToolbox]]
++git-tree-sha1 = "a380d7a5bf9be3fb1e85344c683bab446f4861c0"
++uuid = "096a3bc2-3ced-46d0-87f4-dd12716f4bfc"
++version = "3.5.1"
++
+ [[deps.HDF5_jll]]
+ deps = ["Artifacts", "CompilerSupportLibraries_jll", "JLLWrappers", "LazyArtifacts", "LibCURL_jll", "Libdl", "MPICH_jll", "MPIPreferences", "MPItrampoline_jll", "MicrosoftMPI_jll", "OpenMPI_jll", "OpenSSL_jll", "TOML", "Zlib_jll", "libaec_jll"]
+ git-tree-sha1 = "82a471768b513dc39e471540fdadc84ff80ff997"
+ uuid = "0234f1f7-429e-5d53-9886-15a909be8d59"
+ version = "1.14.3+3"
+ 
++[[deps.HashArrayMappedTries]]
++git-tree-sha1 = "2eaa69a7cab70a52b9687c8bf950a5a93ec895ae"
++uuid = "076d061b-32b6-4027-95e0-9a2c6f6d7e74"
++version = "0.2.0"
++
+ [[deps.Hwloc_jll]]
+ deps = ["Artifacts", "JLLWrappers", "Libdl", "XML2_jll", "Xorg_libpciaccess_jll"]
+ git-tree-sha1 = "c35847ca5b4997fc8418836354a56c459bcf48d8"
+ uuid = "e33a78d0-f292-5ffc-b300-72abe9b543c8"
+ version = "2.14.0+0"
+ 
++[[deps.InteractiveUtils]]
++deps = ["Markdown"]
++uuid = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
++version = "1.11.0"
++
+ [[deps.JLLWrappers]]
+ deps = ["Artifacts", "Preferences"]
+ git-tree-sha1 = "7204148362dafe5fe6a273f855b8ccbe4df8173e"
+@@ -114,17 +188,78 @@ deps = ["StyledStrings"]
+ uuid = "ac6e5ff7-fb65-4e79-a425-ec3bc9c03011"
+ version = "1.12.0"
+ 
++[[deps.KernelAbstractions]]
++deps = ["Adapt", "Atomix", "GPUCompiler", "GPUToolbox", "KernelInterface", "LLVM", "MacroTools", "PrecompileTools", "Printf", "Random", "Random123", "RandomNumbers", "SPIRVIntrinsics", "SPIRV_LLVM_Backend_jll", "SPIRV_Tools_jll", "StaticArraysCore", "UnsafeAtomics", "pocl_standalone_jll"]
++git-tree-sha1 = "0b9e978d21df1aa3ead81c89a2bdf3c6f063a39c"
++uuid = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
++version = "0.10.5"
++
++    [deps.KernelAbstractions.extensions]
++    AMDGPUExt = "AMDGPU"
++    LinearAlgebraExt = "LinearAlgebra"
++    MetalExt = "Metal"
++    SparseArraysExt = "SparseArrays"
++    StaticArraysExt = "StaticArrays"
++    oneAPIExt = "oneAPI"
++
++    [deps.KernelAbstractions.weakdeps]
++    AMDGPU = "21141c5a-9bdb-4563-92ae-f87d6854732e"
++    LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
++    Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
++    SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
++    StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
++    oneAPI = "8f75cd03-7ff8-4ecb-9b8f-daf728133b1b"
++
++[[deps.KernelInterface]]
++git-tree-sha1 = "62300ced3fd046f4694e8dbf0e2fbc2bed84f371"
++uuid = "4ee993da-d684-4d17-a7dd-4e58e78d92bf"
++version = "0.4.5"
++
++[[deps.LLVM]]
++deps = ["CEnum", "LLVMExtra_jll", "Libdl", "PrecompileTools", "Preferences", "Printf", "ScopedValues", "Unicode"]
++git-tree-sha1 = "41c2ce7ec5a14c89b93dc6a5853bf2a91d7a8583"
++uuid = "929cbde3-209d-540e-8aea-75f648917ca0"
++version = "10.4.3"
++
++    [deps.LLVM.extensions]
++    BFloat16sExt = "BFloat16s"
++
++    [deps.LLVM.weakdeps]
++    BFloat16s = "ab4f0b2a-ad5b-11e8-123f-65d77653426b"
++
++[[deps.LLVMExtra_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl", "TOML"]
++git-tree-sha1 = "39def0b4521e0ef2bf26960d8965729f496bb4ec"
++uuid = "dad2f222-ce93-54a1-a47d-0025e8a3acab"
++version = "0.0.56+0"
++
++[[deps.LLVMOpenMP_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "e5b100780d4d30d63b4618d7930d48af409c1772"
++uuid = "1d63c593-3942-5779-bab2-d838dc0a180e"
++version = "23.1.1+0"
++
++[[deps.LMDB]]
++deps = ["CEnum", "LMDB_jll"]
++git-tree-sha1 = "84e5cba87693714bfd67f589a91f24a996ff3e69"
++uuid = "11f193de-5e89-5f17-923a-7d207d56daf9"
++version = "3.0.1"
++
++[[deps.LMDB_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "196c962b4d66b978b9be1e15e4e1d53441d5f028"
++uuid = "6206cf0b-f360-5984-af49-5437264c140e"
++version = "1.0.3+0"
++
+ [[deps.LRUCache]]
+ git-tree-sha1 = "5519b95a490ff5fe629c4a7aa3b3dfc9160498b3"
+ uuid = "8ac3fa9e-de4c-5943-b1dc-09c6b5f20637"
+ version = "1.6.2"
++weakdeps = ["Serialization"]
+ 
+     [deps.LRUCache.extensions]
+     SerializationExt = ["Serialization"]
+ 
+-    [deps.LRUCache.weakdeps]
+-    Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
+-
+ [[deps.LazyArtifacts]]
+ deps = ["Artifacts", "Pkg"]
+ uuid = "4af54fe1-eca0-43a8-85a7-787d91b784e3"
+@@ -155,6 +290,12 @@ deps = ["Artifacts", "Libdl", "OpenSSL_jll"]
+ uuid = "29816b5a-b9ab-546f-933c-edad1886dfa8"
+ version = "1.11.3+1"
+ 
++[[deps.LibTracyClient_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "d4e20500d210247322901841d4eafc7a0c52642d"
++uuid = "ad6e5548-8b26-5c9f-8ef3-ef0ad883f3a5"
++version = "0.13.1+0"
++
+ [[deps.Libdl]]
+ uuid = "8f399da3-3557-5675-b5ff-fb832c97cbdb"
+ version = "1.11.0"
+@@ -198,6 +339,11 @@ git-tree-sha1 = "675df097f8eeb28998b2cfe3b25655af73d5f7df"
+ uuid = "f1f71cc9-e9ae-5b93-9b94-4fe0e1ad3748"
+ version = "5.5.6+0"
+ 
++[[deps.MacroTools]]
++git-tree-sha1 = "1e0228a030642014fe5cfe68c2c0a818f9e3f522"
++uuid = "1914dd2f-81c6-5fcd-8719-6d5c9610ff09"
++version = "0.5.16"
++
+ [[deps.Markdown]]
+ deps = ["Base64", "JuliaSyntaxHighlighting", "StyledStrings"]
+ uuid = "d6f4376e-aef5-505a-96c1-9c027394607a"
+@@ -220,11 +366,31 @@ uuid = "81230ed9-c869-5493-bf63-2c1575eaf49b"
+ version = "6.3.0+0"
+ 
+ [[deps.ModflowCoupling]]
+-deps = ["BasicModelInterface", "Dates", "ModflowInterface", "NCDatasets", "Statistics", "TOML"]
++deps = ["BasicModelInterface", "Dates", "ModflowGPU", "ModflowInterface", "NCDatasets", "Statistics", "TOML"]
+ path = "."
+ uuid = "5b8c2f1e-3d4a-4c7e-9f21-6a0e8d7b4c13"
+ version = "0.1.0"
+ 
++[[deps.ModflowGPU]]
++deps = ["Adapt", "Atomix", "BasicModelInterface", "Dates", "KernelAbstractions", "LinearAlgebra", "Printf", "SparseArrays"]
++path = "../.."
++uuid = "80579596-0efa-413b-aeef-37d798abb369"
++version = "0.1.0"
++
++    [deps.ModflowGPU.extensions]
++    AMDGPUExt = "AMDGPU"
++    CUDAExt = "CUDA"
++    MetalExt = "Metal"
++    OpenCLExt = "OpenCL"
++    oneAPIExt = "oneAPI"
++
++    [deps.ModflowGPU.weakdeps]
++    AMDGPU = "21141c5a-9bdb-4563-92ae-f87d6854732e"
++    CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
++    Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
++    OpenCL = "08131aa3-fb12-5dee-8b74-c09406e224a2"
++    oneAPI = "8f75cd03-7ff8-4ecb-9b8f-daf728133b1b"
++
+ [[deps.ModflowInterface]]
+ deps = ["BasicModelInterface", "Modflow6_jll", "Printf"]
+ git-tree-sha1 = "227c8a622542cc1c651156814476dce4f87510ee"
+@@ -261,13 +427,11 @@ version = "1.3.0"
+ git-tree-sha1 = "117432e406b5c023f665fa73dc26e79ec3630151"
+ uuid = "6fe1bfb0-de20-5000-8ca7-80f57d26f881"
+ version = "1.17.0"
++weakdeps = ["Adapt"]
+ 
+     [deps.OffsetArrays.extensions]
+     OffsetArraysAdaptExt = "Adapt"
+ 
+-    [deps.OffsetArrays.weakdeps]
+-    Adapt = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
+-
+ [[deps.OpenBLAS_jll]]
+ deps = ["Artifacts", "CompilerSupportLibraries_jll", "Libdl"]
+ uuid = "4536629a-c528-5b80-bd46-f80d51c5b363"
+@@ -293,12 +457,16 @@ version = "2.0.1"
+ deps = ["Artifacts", "Dates", "Downloads", "FileWatching", "LibGit2", "Libdl", "Logging", "Markdown", "Printf", "Random", "SHA", "TOML", "Tar", "UUIDs", "p7zip_jll"]
+ uuid = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
+ version = "1.12.1"
++weakdeps = ["REPL"]
+ 
+     [deps.Pkg.extensions]
+     REPLExt = "REPL"
+ 
+-    [deps.Pkg.weakdeps]
+-    REPL = "3fa0cd96-eef1-5676-8a61-b3b8758bbffb"
++[[deps.PrecompileTools]]
++deps = ["Preferences"]
++git-tree-sha1 = "edbeefc7a4889f528644251bdb5fc9ab5348bc2c"
++uuid = "aea7be01-6a6a-4083-8856-8a6e6704d82a"
++version = "1.3.4"
+ 
+ [[deps.Preferences]]
+ deps = ["TOML"]
+@@ -311,31 +479,115 @@ deps = ["Unicode"]
+ uuid = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+ version = "1.11.0"
+ 
++[[deps.REPL]]
++deps = ["InteractiveUtils", "JuliaSyntaxHighlighting", "Markdown", "Sockets", "StyledStrings", "Unicode"]
++uuid = "3fa0cd96-eef1-5676-8a61-b3b8758bbffb"
++version = "1.11.0"
++
+ [[deps.Random]]
+ deps = ["SHA"]
+ uuid = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+ version = "1.11.0"
+ 
++[[deps.Random123]]
++deps = ["Random", "RandomNumbers"]
++git-tree-sha1 = "dbe5fd0b334694e905cb9fda73cd8554333c46e2"
++uuid = "74087812-796a-5b5d-8853-05524746bad3"
++version = "1.7.1"
++
++[[deps.RandomNumbers]]
++deps = ["Random"]
++git-tree-sha1 = "c6ec94d2aaba1ab2ff983052cf6a606ca5985902"
++uuid = "e6cf234a-135c-5ec9-84dd-332b85af5143"
++version = "1.6.0"
++
+ [[deps.SHA]]
+ uuid = "ea8e919c-243c-51af-8825-aaa63cd721ce"
+ version = "0.7.0"
+ 
++[[deps.SLEEF_jll]]
++deps = ["Artifacts", "CompilerSupportLibraries_jll", "JLLWrappers", "LLVMOpenMP_jll", "Libdl"]
++git-tree-sha1 = "e917bfc9d0aabb490b94bce45c700781ce47c65e"
++uuid = "63e82ce6-3d80-5af4-a84c-484b71ab98bb"
++version = "3.9.0+2"
++
++[[deps.SPIRVIntrinsics]]
++deps = ["GPUToolbox", "LLVM", "UnsafeAtomics"]
++git-tree-sha1 = "2ee2b6f667d53d1f03079ce7179f7de7ef5058b7"
++uuid = "71d1d633-e7e8-4a92-83a1-de8814b09ba8"
++version = "1.6.0"
++
++    [deps.SPIRVIntrinsics.extensions]
++    SPIRVIntrinsicsSIMDExt = "SIMD"
++    SPIRVIntrinsicsSIMDSpecialFunctionsExt = ["SIMD", "SpecialFunctions"]
++    SPIRVIntrinsicsSpecialFunctionsExt = "SpecialFunctions"
++
++    [deps.SPIRVIntrinsics.weakdeps]
++    GPUCompiler = "61eb1bfa-7361-4325-ad38-22787b887f55"
++    SIMD = "fdea26ae-647d-5447-a871-4b548cad5224"
++    SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
++
++[[deps.SPIRV_LLVM_Backend_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl", "Zlib_jll"]
++git-tree-sha1 = "bbcf46bb8f27f70a2601630c03be93398ab83f7e"
++uuid = "4376b9bf-cff8-51b6-bb48-39421dff0d0c"
++version = "23.1.4+2"
++
++[[deps.SPIRV_Tools_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "783c358eff59056d7e703a644f5179270c43226a"
++uuid = "6ac6d60f-d740-5983-97d7-a4482c0689f4"
++version = "2025.4.0+0"
++
++[[deps.ScopedValues]]
++deps = ["HashArrayMappedTries", "Logging"]
++git-tree-sha1 = "67a144433c4ce877ee6d1ada69a124d6b1ecf7be"
++uuid = "7e506255-f358-4e82-b7e4-beb19740aa63"
++version = "1.6.2"
++
++[[deps.Scratch]]
++deps = ["Dates"]
++git-tree-sha1 = "9b81b8393e50b7d4e6d0a9f14e192294d3b7c109"
++uuid = "6c6a2e73-6563-6170-7368-637461726353"
++version = "1.3.0"
++
++[[deps.Serialization]]
++uuid = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
++version = "1.11.0"
++
++[[deps.Sockets]]
++uuid = "6462fe0b-24de-5631-8697-dd941f90decc"
++version = "1.11.0"
++
++[[deps.SparseArrays]]
++deps = ["Libdl", "LinearAlgebra", "Random", "Serialization", "SuiteSparse_jll"]
++uuid = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
++version = "1.12.0"
++
++[[deps.StaticArraysCore]]
++git-tree-sha1 = "6ab403037779dae8c514bad259f32a447262455a"
++uuid = "1e83bf80-4336-4d27-bf5d-d5a4f845583c"
++version = "1.4.4"
++
+ [[deps.Statistics]]
+ deps = ["LinearAlgebra"]
+ git-tree-sha1 = "e2b53ce13a53367e96601081e33d34746b571bad"
+ uuid = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+ version = "1.11.5"
++weakdeps = ["SparseArrays"]
+ 
+     [deps.Statistics.extensions]
+     SparseArraysExt = ["SparseArrays"]
+ 
+-    [deps.Statistics.weakdeps]
+-    SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+-
+ [[deps.StyledStrings]]
+ uuid = "f489334b-da3d-4c2e-b8f0-e476e12c162b"
+ version = "1.11.0"
+ 
++[[deps.SuiteSparse_jll]]
++deps = ["Artifacts", "Libdl", "libblastrampoline_jll"]
++uuid = "bea87d4a-7f5b-5778-9afe-8cc45184846c"
++version = "7.8.3+2"
++
+ [[deps.TOML]]
+ deps = ["Dates"]
+ uuid = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
+@@ -346,6 +598,18 @@ deps = ["ArgTools", "SHA"]
+ uuid = "a4e569a6-e804-4fa4-b0f3-eef7a1d5b13e"
+ version = "1.10.0"
+ 
++[[deps.Tracy]]
++deps = ["ExprTools", "LibTracyClient_jll", "Libdl"]
++git-tree-sha1 = "73e3ff50fd3990874c59fef0f35d10644a1487bc"
++uuid = "e689c965-62c8-4b79-b2c5-8359227902fd"
++version = "0.1.6"
++
++    [deps.Tracy.extensions]
++    TracyProfilerExt = "TracyProfiler_jll"
++
++    [deps.Tracy.weakdeps]
++    TracyProfiler_jll = "0c351ed6-8a68-550e-8b79-de6f926da83c"
++
+ [[deps.UUIDs]]
+ deps = ["Random", "SHA"]
+ uuid = "cf7118a7-6976-5b1a-9a39-7adc72f591a4"
+@@ -355,6 +619,16 @@ version = "1.11.0"
+ uuid = "4ec0a83e-493e-50e2-b9ac-8f72acf5a8f5"
+ version = "1.11.0"
+ 
++[[deps.UnsafeAtomics]]
++deps = ["LLVM"]
++git-tree-sha1 = "74ac5e0e702972da953ffc981094617070be582d"
++uuid = "013be700-e6cd-48c3-b4a1-df204f14c38f"
++version = "0.4.0"
++weakdeps = ["GPUCompiler"]
++
++    [deps.UnsafeAtomics.extensions]
++    UnsafeAtomicsGPUCompilerExt = "GPUCompiler"
++
+ [[deps.XML2_jll]]
+ deps = ["Artifacts", "JLLWrappers", "Libdl", "Libiconv_jll", "Zlib_jll"]
+ git-tree-sha1 = "80d3930c6347cfce7ccf96bd3bafdf079d9c0390"
+@@ -410,3 +684,33 @@ version = "1.64.0+1"
+ deps = ["Artifacts", "CompilerSupportLibraries_jll", "Libdl"]
+ uuid = "3f19e933-33d8-53b3-aaab-bd5110c3b7a0"
+ version = "17.7.0+0"
++
++[[deps.pocl_standalone_jll]]
++deps = ["Artifacts", "Hwloc_jll", "JLLWrappers", "Libdl", "SLEEF_jll", "Zstd_jll"]
++git-tree-sha1 = "1b23d4934878d1f7f66a82257eadd2b899bd2c5b"
++uuid = "54f56a70-6062-5590-a942-1226658f6c83"
++version = "7.2.3+7"
++
++[[deps.tree_sitter_gcn_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "7aea9f731552967bda93cb7cbf6925de65bc38d5"
++uuid = "8b5cbfcf-8811-596e-8e87-0e51e05ee4b2"
++version = "0.1.0+0"
++
++[[deps.tree_sitter_llvm_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "2fb7d0e3a8abf532fa922766ca130bf814df1e70"
++uuid = "44208993-ee63-5069-9443-8e43b04a9b30"
++version = "1.1.0+0"
++
++[[deps.tree_sitter_ptx_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "e6ad264eebe3e34f03bca6b5e811d80e0f4797a2"
++uuid = "71e3f6e6-c059-5e7c-a2f2-d560fdad7ce5"
++version = "0.1.0+0"
++
++[[deps.tree_sitter_spirv_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "7d8c03949bab84b23fe0500d89979e786d54a653"
++uuid = "f0e86581-c468-54df-a4de-3266e11a3c86"
++version = "0.1.0+0"
+diff --git a/Project.toml b/Project.toml
+index c7afab6..62b453b 100644
+--- a/Project.toml
++++ b/Project.toml
+@@ -5,14 +5,19 @@ version = "0.1.0"
+ [deps]
+ BasicModelInterface = "59605e27-edc0-445a-b93d-c09a3a50b330"
+ Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
++ModflowGPU = "80579596-0efa-413b-aeef-37d798abb369"
+ ModflowInterface = "a348c28d-122a-4d3f-b833-160dba4591a7"
+ NCDatasets = "85f8d34a-cbdd-5861-8df4-14fed0d494ab"
+ Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+ TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
+ 
++[sources]
++ModflowGPU = {path = "../.."}
++
+ [compat]
+ BasicModelInterface = "0.1.1"
+ Dates = "1.11.0"
++ModflowGPU = "0.1"
+ ModflowInterface = "1.0.0"
+ NCDatasets = "0.14.15"
+ Statistics = "1.11.5"
+diff --git a/examples/indus/indus.toml b/examples/indus/indus.toml
+index e8823e7..8264f56 100644
+--- a/examples/indus/indus.toml
++++ b/examples/indus/indus.toml
+@@ -30,6 +30,10 @@ save_mf6_binary = false
+ orientation = true
+ 
+ # [solver]  # defaults follow the Python reference
++# engine = "mf6"          # or "gpu": ModflowGPU.jl, built in memory (no MF6 files)
++# backend = "auto"        # gpu engine: "auto" (a loaded GPU package, else CPU), "cpu", "rocm", "cuda", ...
++# precision = "auto"      # gpu engine: "auto" (:mixed with Float64, else :single), "double", "mixed", "single"
++# preconditioner = "auto" # gpu engine: ModflowGPU's default (mc_ilu0), or "jacobi", "amg", ...
+ # outer_dvclose = 5.0
+ # inner_dvclose = 5.0
+ # inner_rclose = 10.0
+diff --git a/src/ModflowCoupling.jl b/src/ModflowCoupling.jl
+index 0800855..20540e0 100644
+--- a/src/ModflowCoupling.jl
++++ b/src/ModflowCoupling.jl
+@@ -5,7 +5,8 @@ MODFLOW 6 groundwater component for coupling with a land-surface model (mGV,
+ VIC) through BMI, driven in-memory through ModflowInterface.jl. The domain and
+ its static inputs come from the `[inputs]` table of a TOML config; the domain
+ can be a single basin or the globe. Replaces the file-based Python plugin
+-(`plugin/`); formulas follow `coupling_contract.md` of the Indus VIC–MODFLOW handoff.
++(`plugin/`). With `[solver] engine = "gpu"` the model runs on ModflowGPU.jl instead
++(built in memory, `gpu_engine.jl`). Formulas follow `coupling_contract.md` of the Indus VIC–MODFLOW handoff.
+ """
+ module ModflowCoupling
+ 
+@@ -15,6 +16,7 @@ using TOML
+ using NCDatasets
+ using ModflowInterface
+ import ModflowInterface as MF
++import ModflowGPU
+ import BasicModelInterface as BMI
+ 
+ export GroundwaterModel, Config, InputSpec, load_config, read_static_inputs, build_parameters,
+@@ -24,6 +26,7 @@ include("config.jl")
+ include("inputs.jl")
+ include("parameters.jl")
+ include("mf6_writer.jl")
++include("gpu_engine.jl")
+ include("forcing.jl")
+ include("model.jl")
+ include("output.jl")
+diff --git a/src/bmi.jl b/src/bmi.jl
+index 9d3776a..63b1d58 100644
+--- a/src/bmi.jl
++++ b/src/bmi.jl
+@@ -43,7 +43,7 @@ function BMI.finalize(m::GroundwaterModel)
+     return nothing
+ end
+ 
+-BMI.get_component_name(::GroundwaterModel) = "ModflowCoupling (MODFLOW 6)"
++BMI.get_component_name(m::GroundwaterModel) = "ModflowCoupling ($(engine_label(m)))"
+ BMI.get_input_item_count(::GroundwaterModel) = length(INPUT_VARS)
+ BMI.get_output_item_count(::GroundwaterModel) = length(OUTPUT_VARS)
+ BMI.get_input_var_names(::GroundwaterModel) = sort!(collect(keys(INPUT_VARS)))
+diff --git a/src/config.jl b/src/config.jl
+index 2f74946..dfcff36 100644
+--- a/src/config.jl
++++ b/src/config.jl
+@@ -62,8 +62,21 @@ function InputSpec(key::AbstractString, entry)
+     return InputSpec(entry["file"]; variable = get(entry, "variable", ""), lat_order = order)
+ end
+ 
+-"IMS settings; defaults are those of the Python reference (`mf_run.mfrun`)."
++"""
++IMS settings; defaults are those of the Python reference (`mf_run.mfrun`).
++
++`engine` selects the groundwater engine: `"mf6"` (default; MODFLOW 6 through libmf6 and
++ModflowInterface) or `"gpu"` (ModflowGPU.jl, built in memory). The GPU engine also reads
++`backend` (a `ModflowGPU.select_backend` name; `"auto"` picks a loaded GPU, else the CPU),
++`precision` (`"auto"`, `"double"`, `"mixed"`, `"single"`; `ModflowGPU.resolve_precision`)
++and `preconditioner` (`"auto"` = ModflowGPU's default, or `"jacobi"`, `"mc_ilu0"`, ...);
++the mf6 engine ignores them.
++"""
+ Base.@kwdef struct SolverSettings
++    engine::String = "mf6"
++    backend::String = "auto"
++    precision::String = "auto"
++    preconditioner::String = "auto"
+     outer_dvclose::Float64 = 5.0
+     inner_dvclose::Float64 = 5.0
+     inner_rclose::Float64 = 10.0
+@@ -122,6 +135,9 @@ end
+ 
+ Config(c::Config; kw...) = Config(; (f => get(kw, f, getfield(c, f)) for f in fieldnames(Config))...)
+ 
++const ENGINES = ("mf6", "gpu")
++const GPU_PRECISIONS = ("auto", "double", "mixed", "single")
++
+ const CONFIG_KEYS = ("model_name", "paths", "time", "coupling", "output", "audit", "forcing", "solver", "inputs")
+ 
+ """
+@@ -144,7 +160,7 @@ function load_config(path::AbstractString)
+     paths, time, coupling, output, forcing, audit = section.(("paths", "time", "coupling", "output", "forcing", "audit"))
+     haskey(toml, "inputs") || error("$path has no [inputs] table")
+     inputs = Dict{String,InputSpec}(k => InputSpec(k, v) for (k, v) in toml["inputs"])
+-    solver = SolverSettings(; (Symbol(k) => v for (k, v) in section("solver"))...)
++    solver = SolverSettings(; (Symbol(k) => (v isa AbstractString ? lowercase(v) : v) for (k, v) in section("solver"))...)
+ 
+     config = Config(;
+         data_dir = paths["data_dir"],
+@@ -176,6 +192,10 @@ function validate(config::Config)
+     config.period == "month" && day(config.start_date) != 1 &&
+         error("start_date must be the first day of a month, got $(config.start_date)")
+     config.end_date >= config.start_date || error("end_date is before start_date")
++    sv = config.solver
++    sv.engine in ENGINES || error("solver.engine must be one of $(join(repr.(ENGINES), ", ")), got \"$(sv.engine)\"")
++    sv.precision in GPU_PRECISIONS ||
++        error("solver.precision must be one of $(join(repr.(GPU_PRECISIONS), ", ")), got \"$(sv.precision)\"")
+     length(config.model_name) <= 16 || error("MODFLOW 6 model names are limited to 16 characters")
+     config.pumping && !config.foc && @warn "pumping without FOC: capillary rise is not returned"
+ 
+diff --git a/src/gpu_engine.jl b/src/gpu_engine.jl
+new file mode 100644
+index 0000000..25928b7
+--- /dev/null
++++ b/src/gpu_engine.jl
+@@ -0,0 +1,108 @@
++#=
++The GPU engine (`[solver] engine = "gpu"`): the same MODFLOW model as `mf6_writer.jl`,
++built in memory with ModflowGPU's builder API and run through its libmf6-like stepping
++API (`ModflowGPU.initialize`, `prepare_time_step`, ... ; `get_value_ptr` addresses as
++libmf6's). No MF6 input files are written. Differences from the mf6 engine:
++
++- RCH rates are stored per unit area (as MF6 >= 6.4); MF6 6.3's multiplication by the
++  cell area on reading does not apply, so `rch_scale` is 1 (`calibrate_bmi!`).
++- `get_value_ptr` returns host Float64 mirrors with absolute heads. ModflowGPU keeps
++  heads as offsets from `"<model>/HREF"` on the device; river stages written into the
++  RIV BOUND mirror are converted to offsets in Float64 when they are sent to the device
++  (at `prepare_solve`, as `set_value` does).
++- Several GPU models can be active at a time (no libmf6 instance).
++=#
++
++"""
++    build_spec(config, inputs, params, periods) -> ModflowGPU.SimulationSpec
++
++The model of `write_simulation` as a ModflowGPU `SimulationSpec` (builder API): the same
++packages, options, records and record order. The spec is identical to the one ModflowGPU
++loads from the files `write_simulation` writes (tested).
++"""
++function build_spec(config::Config, s::StaticInputs, p::StaticParameters, periods::Vector{Date})
++    G = ModflowGPU
++    name = config.model_name
++    base = lowercase(name)
++    sv = config.solver
++    save = config.save_mf6_binary
++
++    dis = G.build_dis(; delr = s.delr, delc = s.delc, top = p.top, botm = p.botm,
++                      idomain = cat(s.idomain, s.idomain; dims = 3), length_units = :meters, nogrb = true)
++    npf = G.build_npf(dis; icelltype = 0, k = p.k, k33 = p.k33)
++    sto = G.build_sto(dis; iconvert = 0, ss = p.ss, storagecoefficient = true,
++                      periods = [1 => (config.period == "steady" ? :steady_state : :transient)])
++    ic = G.build_ic(dis; strt = p.initial_head)
++
++    nchd = length(p.chd_cells)
++    rec(cells; layer = 1) = (; cells = cells, layer = layer)
++    chd = G.build_boundary(:CHD, dis; name = "CHD", save_flows = save,
++                           periods = [1 => (; rec(vcat(p.chd_cells, p.chd_cells); layer = vcat(fill(1, nchd), fill(2, nchd)))...,
++                                           values = vec(p.chd_head))])
++    # Placeholder rate 1.0 as in the written input (`calibrate_bmi!` checks it).
++    rch = G.build_boundary(:RCH, dis; name = "RCH", save_flows = save,
++                           periods = [1 => (; rec(p.rch_cells)..., values = ones(length(p.rch_cells)))])
++    r = p.river
++    stage0 = [river_stage(r, i, 0.0) for i in eachindex(r.cells)]
++    riv = G.build_boundary(:RIV, dis; name = "RIV", save_flows = save,
++                           periods = [1 => (; rec(r.cells)..., values = hcat(stage0, r.conductance, r.bottom))])
++    d = p.drain
++    drn = G.build_boundary(:DRN, dis; name = "DRN", save_flows = save,
++                           periods = [1 => (; rec(d.cells)..., values = hcat(d.elevation, d.conductance))])
++    boundaries = [chd, rch, riv, drn]
++    if config.foc
++        push!(boundaries, G.build_boundary(:EVT, dis; name = "EVT", fixed_cell = true, save_flows = save,
++                                           periods = [1 => (; rec(p.evt_cells)..., values = hcat(p.evt_surface, p.evt_rate, p.evt_depth))]))
++    end
++    if config.pumping
++        push!(boundaries, G.build_boundary(:WEL, dis; name = "WEL", save_flows = save,
++                                           periods = [1 => (; rec(p.wel_cells)..., values = zeros(length(p.wel_cells)))]))
++    end
++    oc = G.build_oc(; head_file = save ? "$base.hds" : "", budget_file = save ? "$base.cbc" : "",
++                    periods = [1 => (save ? ["PRINT BUDGET ALL", "SAVE HEAD ALL", "SAVE BUDGET ALL"] : ["PRINT BUDGET ALL"])])
++    model = G.build_model(name; dis, npf, ic, sto, oc, boundaries)
++    tdis = G.build_tdis(; perlen = [Float64(period_days(config, d)) for d in periods], nstp = 1, tsmult = 1.0,
++                        time_units = :days)
++    ims = G.build_ims(; complexity = :complex, print_option = :summary,
++                      outer_dvclose = sv.outer_dvclose, outer_maximum = sv.outer_maximum,
++                      under_relaxation = :simple, under_relaxation_gamma = sv.under_relaxation_gamma,
++                      inner_maximum = sv.inner_maximum, inner_dvclose = sv.inner_dvclose,
++                      inner_rclose = sv.inner_rclose, rclose_option = :strict,
++                      linear_acceleration = :bicgstab, relaxation_factor = sv.relaxation_factor)
++    return G.build_simulation(model; tdis, ims, simdir = config.work_dir)
++end
++
++"Build and initialize the ModflowGPU simulation of `m` (the GPU engine)."
++function initialize_gpu(m)
++    c = m.config
++    sv = c.solver
++    spec = build_spec(c, m.inputs, m.params, m.periods)
++    mkpath(c.work_dir)
++    return ModflowGPU.initialize(spec; backend = ModflowGPU.select_backend(sv.backend),
++                                 precision = Symbol(sv.precision), preconditioner = Symbol(sv.preconditioner),
++                                 outdir = c.work_dir, write_output = true)
++end
++
++# The stepping calls of both engines (libmf6 through ModflowInterface, or ModflowGPU).
++const GpuSimulation = ModflowGPU.Simulation
++
++engine_pointer(mf::ModflowModel, component, var; sub = "") =
++    BMI.get_value_ptr(mf, MF.get_var_address(mf, var, component; subcomponent_name = sub))
++engine_pointer(sim::GpuSimulation, component, var; sub = "") =
++    ModflowGPU.get_value_ptr(sim, join(filter(!isempty, [component, sub, var]), "/"))
++
++engine_prepare_time_step(mf::ModflowModel) = MF.prepare_time_step(mf, 0.0)
++engine_prepare_time_step(sim::GpuSimulation) = ModflowGPU.prepare_time_step(sim)
++engine_prepare_solve(mf::ModflowModel) = MF.prepare_solve(mf)
++engine_prepare_solve(sim::GpuSimulation) = ModflowGPU.prepare_solve(sim)
++engine_solve(mf::ModflowModel) = MF.solve(mf)
++engine_solve(sim::GpuSimulation) = ModflowGPU.solve(sim)
++"Whether the outer iterations stopped early without converging (ModflowGPU only)."
++engine_diverged(::ModflowModel) = false
++engine_diverged(sim::GpuSimulation) = sim.outer.diverged
++engine_finalize_solve(mf::ModflowModel) = MF.finalize_solve(mf)
++engine_finalize_solve(sim::GpuSimulation) = ModflowGPU.finalize_solve(sim)
++engine_finalize_time_step(mf::ModflowModel) = MF.finalize_time_step(mf)
++engine_finalize_time_step(sim::GpuSimulation) = ModflowGPU.finalize_time_step(sim)
++engine_finalize(mf::ModflowModel) = BMI.finalize(mf)
++engine_finalize(sim::GpuSimulation) = ModflowGPU.finalize(sim)
+diff --git a/src/model.jl b/src/model.jl
+index b69517e..086791a 100644
+--- a/src/model.jl
++++ b/src/model.jl
+@@ -1,4 +1,7 @@
+-"Views into MODFLOW 6 memory, valid between initialize and finalize."
++"""
++Views into the engine's memory (libmf6 arrays, or ModflowGPU's host mirrors), valid
++between initialize and finalize.
++"""
+ struct Mf6Pointers
+     head::Vector{Float64}                        # X, reduced nodes
+     nodeuser::Vector{Int}                        # reduced node → user node
+@@ -14,7 +17,8 @@ end
+ """
+     GroundwaterModel
+ 
+-MODFLOW 6 groundwater model of the domain given by `config.inputs`, advanced
++MODFLOW 6 groundwater model of the domain given by `config.inputs`, run by MODFLOW 6
++(`[solver] engine = "mf6"`, the default) or ModflowGPU (`engine = "gpu"`), advanced
+ one stress period (a calendar month, or a day with `period = "day"`) per
+ `BMI.update`. Set the period's land-surface fields (mGV, VIC) before calling
+ `update`; afterwards the outputs describe the end of that period and are meant
+@@ -25,7 +29,7 @@ mutable struct GroundwaterModel
+     inputs::StaticInputs
+     params::StaticParameters
+     periods::Vector{Date}
+-    mf::Union{ModflowModel,Nothing}
++    mf::Union{ModflowModel,ModflowGPU.Simulation,Nothing}   # the engine
+     ptr::Union{Mf6Pointers,Nothing}
+     # inputs for the coming stress period
+     recharge::Matrix{Float64}       # m/day
+@@ -36,7 +40,7 @@ mutable struct GroundwaterModel
+     baseflow::Matrix{Float64}       # m3/s
+     capillary::Matrix{Float64}      # mm per stress period
+     completed::Int
+-    rch_scale::Vector{Float64}      # MF6 BOUND value per unit RCH rate (1 or the DIS cell area)
++    rch_scale::Vector{Float64}      # BOUND value per unit RCH rate (1, or the DIS cell area in MF6 6.3)
+     inputs_set::Set{Symbol}         # inputs set since the last update (override `forcing_file`)
+ end
+ 
+@@ -46,18 +50,20 @@ const ACTIVE_MODEL = Ref{Any}(nothing)
+ """
+     GroundwaterModel(config)
+ 
+-Read inputs, build parameters, write the MF6 simulation and initialize libmf6.
+-Only one MODFLOW 6 instance can be active per Julia process; a model that is
+-still active is finalized first.
++Read inputs, build parameters and initialize the engine: with `engine = "mf6"`, write
++the MF6 simulation and initialize libmf6; with `engine = "gpu"`, build the ModflowGPU
++model in memory (`build_spec`). Only one MODFLOW 6 instance can be active per Julia
++process; with the mf6 engine, a model that is still active is finalized first.
+ """
+ function GroundwaterModel(config::Config)
+-    ACTIVE_MODEL[] === nothing || finalize!(ACTIVE_MODEL[])
++    gpu = config.solver.engine == "gpu"
++    gpu || ACTIVE_MODEL[] === nothing || finalize!(ACTIVE_MODEL[])
+     inputs = read_static_inputs(config)
+     params = build_parameters(inputs, config)
+     failed = [name for (name, ok) in audit_static_inputs(inputs, params, config) if !ok]
+     isempty(failed) || error("static input audit failed:\n  " * join(failed, "\n  "))
+     periods = stress_periods(config)
+-    write_simulation(config, inputs, params, periods)
++    gpu || write_simulation(config, inputs, params, periods)
+ 
+     grid = size(inputs)
+     head = fill(NaN, grid..., 2)
+@@ -70,18 +76,20 @@ function GroundwaterModel(config::Config)
+         zeros(grid), zeros(grid), zeros(grid),
+         head, fill(NaN, grid), zeros(grid), 0, Float64[], Set{Symbol}(),
+     )
+-    initialize_mf6!(model)
+-    ACTIVE_MODEL[] = model
++    initialize_engine!(model)
++    gpu || (ACTIVE_MODEL[] = model)
+     return model
+ end
+ 
+-function mf6_pointer(mf, component, var; sub = "")
+-    return BMI.get_value_ptr(mf, MF.get_var_address(mf, var, component; subcomponent_name = sub))
+-end
++mf6_pointer(mf, component, var; sub = "") = engine_pointer(mf, component, var; sub)
+ 
+-function initialize_mf6!(m::GroundwaterModel)
+-    mf = ModflowModel(m.config.work_dir)
+-    BMI.initialize(mf)
++function initialize_engine!(m::GroundwaterModel)
++    if m.config.solver.engine == "gpu"
++        mf = initialize_gpu(m)
++    else
++        mf = ModflowModel(m.config.work_dir)
++        BMI.initialize(mf)
++    end
+     m.mf = mf
+     name = m.config.model_name
+     ptr(var, sub = "") = mf6_pointer(mf, name, var; sub)
+@@ -111,6 +119,7 @@ Run after the first `prepare_time_step`, when MF6 has read PERIOD 1: check that
+ the BMI boundary arrays follow the record order of `write_simulation`, and
+ record how MF6 stored the placeholder RCH rate of 1.0 (MF6 6.3 multiplies it by
+ the cell area on reading, so a rate set through BMI must be scaled the same way).
++The GPU engine stores rates per unit area: its scale is 1.
+ """
+ function calibrate_bmi!(m::GroundwaterModel)
+     p, ptr = m.params, m.ptr
+@@ -126,8 +135,12 @@ function calibrate_bmi!(m::GroundwaterModel)
+     m.config.foc && check("EVT", p.evt_cells)
+     m.config.pumping && check("WEL", p.wel_cells)
+     m.rch_scale = ptr.rch_bound[1, :]
+-    all(x -> x == 1.0 || isapprox(x, m.inputs.delr * m.inputs.delc; rtol = 1e-12), m.rch_scale) ||
+-        error("unexpected RCH BOUND after reading period 1")
++    if m.mf isa ModflowGPU.Simulation
++        all(==(1.0), m.rch_scale) || error("unexpected RCH BOUND after reading period 1")
++    else
++        all(x -> x == 1.0 || isapprox(x, m.inputs.delr * m.inputs.delc; rtol = 1e-12), m.rch_scale) ||
++            error("unexpected RCH BOUND after reading period 1")
++    end
+     return m
+ end
+ 
+@@ -161,7 +174,11 @@ function set_abstraction!(m::GroundwaterModel, abstraction::AbstractArray)
+     return m
+ end
+ 
+-"Write the period's RCH, RIV and WEL values into MF6 memory."
++"""
++Write the period's RCH, RIV and WEL values into the engine's BOUND arrays. River stages
++are absolute heads; the GPU engine converts them to offsets from `"<model>/HREF"` in
++Float64 when the mirror is sent to the device (`prepare_solve`).
++"""
+ function apply_stresses!(m::GroundwaterModel)
+     p, ptr = m.params, m.ptr
+     for (i, c) in enumerate(p.rch_cells)
+@@ -221,24 +238,27 @@ function advance!(m::GroundwaterModel)
+     end
+     empty!(m.inputs_set)
+     mf = m.mf
+-    MF.prepare_time_step(mf, 0.0)
++    engine_prepare_time_step(mf)
+     m.completed == 0 && calibrate_bmi!(m)
+     apply_stresses!(m)
+-    MF.prepare_solve(mf)
++    engine_prepare_solve(mf)
+     converged = false
+     for _ in 1:m.ptr.mxiter
+-        converged = MF.solve(mf)
+-        converged && break
++        converged = engine_solve(mf)
++        (converged || engine_diverged(mf)) && break
+     end
+-    MF.finalize_solve(mf)
+-    MF.finalize_time_step(mf)
+-    converged || error("MODFLOW 6 did not converge for the period starting $date")
++    engine_finalize_solve(mf)
++    engine_finalize_time_step(mf)
++    converged || error("$(engine_label(m)) did not converge for the period starting $date")
+     m.completed += 1
+     collect_outputs!(m)
+     m.config.write_monthly_output && write_monthly_output(m)
+     return m
+ end
+ 
++"Name of the engine of `m` for messages."
++engine_label(m::GroundwaterModel) = m.config.solver.engine == "gpu" ? "ModflowGPU" : "MODFLOW 6"
++
+ "Raw MF6 boundary flows (m3/day) of a package, in record order."
+ package_flows(m::GroundwaterModel, package::AbstractString) =
+     copy(vec(mf6_pointer(m.mf, m.config.model_name, "SIMVALS"; sub = uppercase(package))))
+@@ -246,7 +266,7 @@ package_flows(m::GroundwaterModel, package::AbstractString) =
+ function finalize!(m::GroundwaterModel)
+     if m.mf !== nothing
+         m.ptr = nothing
+-        BMI.finalize(m.mf)
++        engine_finalize(m.mf)
+         m.mf = nothing
+     end
+     ACTIVE_MODEL[] === m && (ACTIVE_MODEL[] = nothing)
+diff --git a/test/runtests.jl b/test/runtests.jl
+index 3620b00..2dcc6c6 100644
+--- a/test/runtests.jl
++++ b/test/runtests.jl
+@@ -12,11 +12,17 @@ import BasicModelInterface as BMI
+ const INDUS_DIR = normpath(@__DIR__, "..", "examples", "indus")
+ const INDUS = load_config(joinpath(INDUS_DIR, "indus.toml"))
+ const DATA_DIR = get(ENV, "INDUS_DATA", INDUS.data_dir)
++# Engines to test (`[solver] engine`): both by default.
++const ENGINES = split(get(ENV, "MODFLOWCOUPLING_ENGINES", "mf6,gpu"), ",")
++"The engine of the configs made by `test_config`."
++const ENGINE = Ref("mf6")
+ 
+-function test_config(dir; start = Date(1979, 1, 1), stop = Date(1979, 3, 31), kwargs...)
++with_engine(sv, engine) = MC.SolverSettings(; (f => getfield(sv, f) for f in fieldnames(MC.SolverSettings))..., engine)
++
++function test_config(dir; start = Date(1979, 1, 1), stop = Date(1979, 3, 31), engine = ENGINE[], kwargs...)
+     Config(INDUS; data_dir = DATA_DIR, work_dir = joinpath(dir, "mf6"), output_dir = joinpath(dir, "output"),
+            start_date = start, end_date = stop, period = "month", initial_head_file = "",
+-           write_monthly_output = true, kwargs...)
++           write_monthly_output = true, solver = with_engine(INDUS.solver, engine), kwargs...)
+ end
+ 
+ """
+@@ -87,6 +93,11 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+         @test p.evt_rate[1] ≈ s.cprate[c] * s.cell_area[c] / (s.delr * s.delc)
+     end
+ 
++    case_heads = Dict{String,Vector{Array{Float64,3}}}()
++    for engine in ENGINES
++    ENGINE[] = engine
++    @testset "engine = $engine" begin
++    let tmp = joinpath(tmp, engine), cfg = test_config(tmp)
+     @testset "Case 1/2: continuous run, BMI exchange" begin
+         m = GroundwaterModel(cfg)
+         @test BMI.get_current_time(m) == 0.0
+@@ -121,7 +132,9 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+         @test all(<=(0), riv[3])                           # negative discharge: no river infiltration
+         @test all(isnan, heads[1][:, :, 1][s.idomain .== 0])
+         @test all(heads[3][c, l] ≈ p.chd_head[k, l] for (k, c) in enumerate(p.chd_cells), l in 1:2)
++        @test BMI.get_component_name(m) == (engine == "gpu" ? "ModflowCoupling (ModflowGPU)" : "ModflowCoupling (MODFLOW 6)")
+         BMI.finalize(m)
++        case_heads[engine] = heads
+ 
+         # BMI SIMVALS equal the MF6 budget in the listing file
+         lst = joinpath(cfg.work_dir, lowercase(cfg.model_name) * ".lst")
+@@ -180,8 +193,14 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+         land = findfirst(vec(s.landmask .& (s.idomain .> 0)))
+         @test depth[land] ≈ vec(p.top)[land] - vec(m.head[:, :, 1])[land]
+         # A new model finalizes the active one instead of clashing in libmf6
++        # (the GPU engine has no such limit)
+         m2 = GroundwaterModel(cfgf)
+-        @test m.mf === nothing
++        if engine == "mf6"
++            @test m.mf === nothing
++        else
++            @test m.mf !== nothing
++            BMI.finalize(m)
++        end
+         BMI.update(m2)
+         BMI.finalize(m2)
+     end
+@@ -204,6 +223,60 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+         shuffled = reverse(s.dem; dims = 2)
+         @test isequal(align_to_grid(shuffled, s.lon, reverse(s.lat), s), s.dem)
+     end
++    end   # let
++    end   # engine testset
++    end   # for engine
++    ENGINE[] = "mf6"
++
++    @testset "GPU engine: the model of the MF6 input files" begin
++        # build_spec gives the spec ModflowGPU loads from the files write_simulation
++        # writes (package entries in ModflowGPU's order), for every model option.
++        G = MC.ModflowGPU
++        for (k, kw) in enumerate(((;), (; pumping = true, save_mf6_binary = true), (; foc = false, period = "day", stop = Date(1979, 1, 3))))
++            c = test_config(joinpath(tmp, "spec$k"); kw...)
++            periods = MC.stress_periods(c)
++            pk = build_parameters(s, c)
++            MC.write_simulation(c, s, pk, periods)
++            built, loaded = MC.build_spec(c, s, pk, periods), G.load_simulation(c.work_dir)
++            @test G.spec_difference(built, loaded; ignore = (:simdir, :packages)) === nothing
++            byname(sim) = sort(only(sim.models).packages; by = e -> e.ftype)
++            @test G.spec_difference(byname(built), byname(loaded)) === nothing
++        end
++    end
++
++    if all(in(ENGINES), ("mf6", "gpu"))
++        @testset "engine parity" begin
++            active = cat(s.idomain .> 0, s.idomain .> 0; dims = 3)
++            maxdiff(a, b) = maximum(abs.(a .- b)[active])
++            # Production closures (OUTER_DVCLOSE 5 m): the outer iterations stop at
++            # different heads (ModflowGPU: mc_ilu0 for ILUT, no backtracking).
++            for k in eachindex(FORCING)
++                d = maxdiff(case_heads["gpu"][k], case_heads["mf6"][k])
++                @info "Case 1/2 month $k, production closures: max |h_gpu - h_mf6| = $d m"
++                @test d < INDUS.solver.outer_dvclose
++            end
++            # Tight closures: the same heads.
++            tight = MC.SolverSettings(; outer_dvclose = 1e-6, inner_dvclose = 1e-7, inner_rclose = 1e-2,
++                                      outer_maximum = 500, inner_maximum = 2000)
++            heads = Dict(map(("mf6", "gpu")) do engine
++                c = test_config(joinpath(tmp, "tight_$engine"); stop = Date(1979, 2, 28), write_monthly_output = false,
++                                solver = with_engine(tight, engine))
++                m = GroundwaterModel(c)
++                h = map(FORCING[1:2]) do frac
++                    force!(m, frac)
++                    BMI.update(m)
++                    copy(m.head)
++                end
++                BMI.finalize(m)
++                engine => h
++            end)
++            for k in 1:2
++                d = maxdiff(heads["gpu"][k], heads["mf6"][k])
++                @info "Case 1/2 month $k, tight closures: max |h_gpu - h_mf6| = $d m"
++                @test d < 1e-6
++            end
++        end
++    end
+ 
+     @testset "config" begin
+         # Relative paths resolve against the config's directory
+@@ -240,6 +313,12 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+         @test_throws r"initial_head_file or inputs.steady_head" MC.validate(nohead)
+         nofoc = Config(cfg; foc = false, inputs = filter(kv -> !startswith(kv[1], "cp"), cfg.inputs))
+         @test MC.validate(nofoc) === nofoc
++        # [solver] engine settings: mf6 by default, GPU options lowercased
++        @test INDUS.solver.engine == "mf6" && INDUS.solver.backend == "auto" && INDUS.solver.precision == "auto"
++        gpu = load_config(write_toml("gpu.toml", read(joinpath(INDUS_DIR, "indus.toml"), String) *
++                                     "\n[solver]\nengine = \"GPU\"\nprecision = \"single\"\nbackend = \"cpu\"\n"))
++        @test gpu.solver.engine == "gpu" && gpu.solver.precision == "single" && gpu.solver.backend == "cpu"
++        @test_throws r"solver.engine must be" MC.validate(Config(cfg; solver = with_engine(cfg.solver, "cuda")))
+     end
+ 
+     @testset "sub-domain from larger maps" begin
