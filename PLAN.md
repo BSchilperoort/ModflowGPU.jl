@@ -424,7 +424,7 @@ marked; their merge commits on `main` hold the card reports.
   - T4.5 Kernel fusion and matrix formats (done)
   - T4.6 Period-data path (done)
 - **Phase 5: ModflowCoupling integration and Milestone B**: [docs/plan/phase5.md](docs/plan/phase5.md)
-  - T5.1 Engine switch in ModflowCoupling
+  - T5.1 Engine switch in ModflowCoupling (done)
   - T5.2 Device-resident coupling
   - T5.3 Coupling parity on the Indus
   - T5.4 mGV + ModflowGPU on one GPU
