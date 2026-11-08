@@ -420,7 +420,7 @@ marked; their merge commits on `main` hold the card reports.
   - T4.1 Benchmark harness (done)
   - T4.2 Chebyshev and multicolour smoothers (done)
   - T4.3 Algebraic multigrid preconditioner (done)
-  - T4.4 `:mixed` preset and production default
+  - T4.4 `:mixed` preset and production default (done)
   - T4.5 Kernel fusion and matrix formats
   - T4.6 Period-data path (done)
 - **Phase 5: ModflowCoupling integration and Milestone B**: [docs/plan/phase5.md](docs/plan/phase5.md)
