@@ -1,0 +1,35 @@
+# AI Declaration (https://ai-declaration.org/), schema https://github.com/ai-declaration/schema
+schema_version: "1.0.0"
+project:
+  name: ModflowGPU.jl
+  repository: https://github.com/BSchilperoort/ModflowGPU.jl
+  version: "0.1.0"
+  license: Apache-2.0
+  content_type: software
+ai_usage:
+  used: true
+  level: extensive
+  code_proportion:
+    ai_generated_percent: 100
+  summary: >-
+    The plan (PLAN.md and docs/plan/) was written with AI assistance and is executed by
+    AI coding agents, one task card at a time. For each card, an implementer agent writes
+    the code, tests, benchmarks and documentation on its own branch, and a separate agent
+    reviews the branch. The owner directs the work, decides on scope and design questions0.
+    Correctness is checked against MODFLOW 6 itself: features are  accepted only when they
+    reproduce MF6 heads and budgets.
+  tools:
+    - name: Claude Code
+      vendor: Anthropic
+      type: agent
+      hosting: cloud_vendor
+      model: Claude Opus
+      purpose:
+        - code generation
+        - testing
+        - code review
+        - documentation
+        - benchmarking
+declaration:
+  date: "2026-11-09"
+  declared_by: Bart Schilperoort
