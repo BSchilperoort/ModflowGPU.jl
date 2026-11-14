@@ -94,7 +94,15 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
 - Done when: the section 4 coupling criteria pass (`:mixed` against the `:double`
   criteria), and the closure table and proposal are in `docs/precision.md`.
 
-**T5.4 mGV + ModflowGPU on one GPU (M)**
+**T5.4 mGV + ModflowGPU on one GPU (M) (merged 2026-11-14, one check open)**
+- Open owner decision: the Done-when check below fails for baseflow in the closed loop
+  (`:double`/`:mixed` 2.2e-6 against 1e-6 on 46 of 365 days, none before day 220; heads
+  and capillary rise pass). The review traced it to drift of two coupled runs, seeded by
+  one-ulp Float32 differences in the baseflow handed to mGV: GPU against GPU with one ulp
+  added on day 3 gives 2.6e-6. Open loop (the GPU engine driven by the inputs recorded
+  from the mf6 run, through the device exchange) passes with 1.8e-11. Proposal: for
+  multi-month runs, use the open-loop replay plus the closed loop on the first 31 days
+  and on the water-balance totals. The tolerance was not changed.
 - Depends: T5.2 and T5.0. mGV is on KA 0.10 since 2026-11-13 (PLAN.md section 8,
   decision 7); use mGV `main`. Do not patch mGV; if something in mGV blocks the card,
   stop and report.
@@ -185,6 +193,26 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
   decide how `:single` picks its preconditioner (for example `:amg` automatically for
   badly conditioned steady states) and whether the rclose floor should account for
   head rounding. `:mixed` with `:mc_ilu0` is fine.
+- From the T5.4 report:
+  - `cell_maps` in `examples/mgv_coupling/coupling.jl` runs `argmin(abs.(v .- x))` over
+    all longitudes and latitudes for every mGV cell: about 1e10 operations and tens of
+    GB allocated at global size. Replace it with `searchsorted` or index arithmetic
+    before the first global run.
+  - `gather_convert_kernel!` reads `src[map[i]]` under `@inbounds`. Check the map
+    against `length(src)` once on the host where the map is built.
+  - `mGV.finalize!` does not free mGV's device arrays (64 MiB on the Indus). mGV is not
+    patched here: account for it in the memory report, and tell the owner if it decides
+    whether both models fit.
+  - A second DRN, RIV or EVT record on one cell is an error on the device path. Check
+    the global inputs for duplicates (T5.5b uses them).
+  - T4.7: on the Indus mGV takes 1.70 ms per day and MODFLOW 1.20 ms, so T4.7 is not
+    needed there. Report the same ratio at global size (MODFLOW on `global5m` takes
+    0.265 s per day) and say whether T4.7 is needed.
+  - Coupled parity over more than a month is compared open loop until the owner decides
+    the criterion (see the T5.4 card).
+  - Smaller: `finalize!` in ModflowCoupling frees `d.sim` twice (harmless); the device
+    BOUND check does not cover all of `riv_ck`; in `:single` the river stage rounds by up
+    to 1.4e-4 m on perched rivers; CUDA's `free_memory!` is untested.
 - Check that the device memory of the spin-up simulation is released before the daily
   run starts (the `finalize` fix of T5.4), and report the peak over the whole sequence.
 - Done when: a report gives device memory of both models together and wall time
