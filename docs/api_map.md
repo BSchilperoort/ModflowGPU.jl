@@ -252,8 +252,9 @@ it. Underscore-prefixed helpers are omitted.
   warning), `PicardSolver` (KrylovSolver, UnderRelaxation, Reducer; Adapt), `solve_timestep!` →
   `OuterResult` (converged, outer and inner iterations, hncg and its node `lrch` from one
   argmax reduction, the dvclose/rclose used); `OuterState` + `outer_iteration!` (one outer
-  iteration, T3.3; `solve_timestep!` loops over it; T6.0: in Float32 with STRICT,
-  INNER_DVCLOSE >= `OuterState.dvfloor` = eps32·max|h'| of the last outer iteration).
+  iteration, T3.3; `solve_timestep!` loops over it; T5.3/T6.0: in Float32, once a
+  correction meets OUTER_DVCLOSE and only the inner test failed, `OuterState.noise_floor`
+  holds INNER_DVCLOSE >= `OuterState.dvfloor` = eps32·max|h'| for the rest of the step).
   Tests: picard, run, stepping.
 - **budget.jl**: `gwf_cq`/`gwf_bd`. `npf_flowja!` (one work item per entry, T4.5), `calc_flows!` (NPF, STO, packages with
   `bnd_cf` + `simvals`, CHD `calc_chd_rate!`, `csr_diagsum`), `BudgetTerm`, `ModelBudget`

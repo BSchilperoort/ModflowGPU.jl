@@ -395,7 +395,8 @@ both engines); adopting the proposal means a per-engine default in the patched
 ex-gwf-lgrv-gc (9×61×49, 26901 cells) and ex-gwf-lgrv-gr (25×183×147, 672525 cells):
 ICELLTYPE 0, one steady period, RIV, RCHA, K33OVERK; IMS CG, ILU0, `INNER_RCLOSE ...
 STRICT`. Both are in the assembly and run parity tests (`parity_examples`, test/input_files.jl;
-`MFGPU_TEST_LGRV_GR=0` skips -gr, which adds about 3 min to the CPU suite).
+`MFGPU_TEST_LGRV_GR=0` skips -gr, which adds about 5 min to the CPU suite with KA 0.10's
+POCL CPU backend).
 
 **Universal residual and oracle** (MF6 tight heads; CPU and ROCm alike): max |res| / max
 Σ|terms| in `:single` (rounding bound) and `:double`; libmf6 first solve, `amat` and `b'`.
@@ -411,17 +412,16 @@ pd = |percent discrepancy|; listing 0 in every case; CPU backend times):
 
 | Model, preset (preconditioner) | max \|Δh\| | CBC | pd | outer/inner (MF6 2/1001) | CPU time |
 | --- | --- | --- | --- | --- | --- |
-| gc `:single` (mc_ilu0) | 2.38e-5 | 7.1e-6 | 3.4e-4 % | 3/739 | 1.2 s |
+| gc `:single` (mc_ilu0) | 2.36e-5 | 7.1e-6 | 5.6e-4 % | 4/743 | 1.1 s |
 | gc `:mixed` (mc_ilu0) | 3.06e-7 | 8.5e-11 | 5.9e-10 % | 2/566 | 1.0 s |
 | gc `:double` (mc_ilu0) | 3.06e-7 | 8.5e-11 | 6.4e-10 % | 2/566 | 0.5 s |
-| gr `:single` (amg) | 6.67e-6 | 2.7e-6 | 6.2e-5 % | 5/133 | 15.2 s |
-| gr `:mixed` (mc_ilu0) | 2.32e-6 | 2.0e-10 | 2.6e-8 % | 5/3422 | 65.3 s |
-| gr `:double` (mc_ilu0) | 2.32e-6 | 2.0e-10 | 2.6e-8 % | 5/3421 | 68.0 s |
+| gr `:single` (amg) | 6.06e-6 | 2.5e-6 | 5.9e-4 % | 6/151 | 19.6 s |
+| gr `:mixed` (mc_ilu0) | 2.32e-6 | 2.0e-10 | 2.6e-8 % | 5/3422 | 136 s |
+| gr `:double` (mc_ilu0) | 2.32e-6 | 2.0e-10 | 2.6e-8 % | 5/3421 | 139 s |
 
 ROCm (RX 7800 XT): the same iterations and bitwise the same heads as the CPU backend in
-every row (max |Δh| = 0, also the assembled systems); run times gc 0.3 / 0.3 / 0.1 s and
-gr 2.7 / 3.0 / 2.7 s (`:single` / `:mixed` / `:double`). `:single` vs `:double` final
-heads: gc 2.38e-5 m, gr 6.66e-6 m.
+every row (max |Δh| = 0, also the assembled systems); run times gc 0.1 / 0.1 / 0.1 s and
+gr 3.2 / 2.8 / 2.7 s (`:single` / `:mixed` / `:double`).
 
 **The `:double` differences are MF6's.** Against the exact solution (a sparse Cholesky
 solve of our Float64 system, residual 1e-15), MF6's tight heads are 3.1e-7 m (gc) and
@@ -431,7 +431,29 @@ correction solve hits INNER_MAXIMUM (1000), and the remaining error is about 230
 the closure. gr therefore uses 64 % of its `:double` head tolerance; this is the reference,
 not the engine.
 
-FIXPLACEHOLDER
+**Float32 INNER_DVCLOSE after a converged correction** (src/solver/picard.jl
+`outer_iteration!`; one rule for T5.3 and T6.0). The first inner correction of a converged
+Float32 state is rounding noise of about eps32·max|h'| (the residual of rounded offset
+heads), and an inner solve cannot get its per-iteration change below a fixed INNER_DVCLOSE
+under that size. Two symptoms: on the Indus (T5.3, offsets up to 62 m) the correction
+stalled at 1.45e-6 m and the inner solves ran to INNER_MAXIMUM; on ex-gwf-lgrv-gc
+(offsets up to 49 m, `INNER_RCLOSE ... STRICT`, which accepts an inner solve only in its
+first iteration, ImsLinearBase.f90 `ims_base_testcnvg`) the correction was 2–3e-6 m and
+the run did not converge in 500 outer iterations.
+- Trigger (Float32 only): from the second outer iteration of a step, the last correction
+  met OUTER_DVCLOSE, so only the inner test kept the step from converging. It stays on for
+  the rest of the step.
+- Effect: INNER_DVCLOSE = max(INNER_DVCLOSE, eps32·max|h'| of the last outer iteration).
+  The raise never goes above that noise level, so a loose OUTER_DVCLOSE (say 1e-2) no
+  longer loosens the inner test (T5.3 raised it to OUTER_DVCLOSE; the T5.3 review's point).
+- Not from the first outer iteration on: a head-resolution INNER_DVCLOSE in every inner
+  solve stops slow CG solves early (ex-gwf-toth, offsets 1010 m: 1.4e-3 m instead of
+  6.6e-5 m; found by both cards). Float64 (`:double`, `:mixed`) is unchanged.
+- Measured with the merged rule (`:single`): Indus 4.6e-5 m monthly (20/53 iterations) and
+  1.9e-5 m daily (158/286), the T5.3 numbers; lgrv-gc 2.36e-5 m in 4/743 iterations;
+  ex-gwf-toth 6.63e-5 m, hanic 1.05e-6 m (10/1747), hanir 2.93e-7 m (4/78), the same as
+  before T6.0. Unit tests: test/unit/picard_test.jl (the T5.3 case with a loose outer
+  closure, and STRICT on lgrv-gc).
 
 **ex-gwf-lgrv-gr in `:single` needs AMG.** With the default `:mc_ilu0` the Float32 run does
 not converge in 500 outer iterations: the residual of a converged Float32 state (6.7e-8, the
@@ -444,8 +466,11 @@ per-iteration change while the error, a smooth mode, is about 5000 times larger,
 residual cannot see it (7.8e-8 against 6.7e-8 for the rounded exact heads). Neither
 INNER_MAXIMUM 10000, nor an INNER_DVCLOSE floor of 1e-7, nor NUMBER_ORTHOGONALIZATIONS 20
 (true residual every 20 iterations) gets below 5.8e-3 m. AMG in Float32 reaches 6.7e-6 m
-in 5 outer and 133 inner iterations, and `:mixed` (Float64 Krylov, Float32 MC-ILU0) is
+from the exact heads in 5 outer and 133 inner iterations (before the T5.0 merge; 6.06e-6 m
+from MF6 in 6/151 now), and `:mixed` (Float64 Krylov, Float32 MC-ILU0) is
 fine. That floor was therefore not adopted; the run parity test uses `:amg` for gr in
 `:single` (as for ex-gwf-hwell-a), and the section 4 criteria are not met with the default
 preconditioner in `:single` on this model. Open: an automatic `:amg` choice for badly
-conditioned steady states in `:single` (`preconditioner = :auto`), see T5.5a.
+conditioned steady states in `:single` (`preconditioner = :auto`), see T5.5a. The merged
+INNER_DVCLOSE rule above does not change this (it does not touch the rclose side; with
+`:mc_ilu0` the run still stops at 500 outer iterations).
