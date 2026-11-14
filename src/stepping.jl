@@ -31,7 +31,15 @@
 #
 # `get_value_ptr(sim, address; device = true)` returns the engine arrays themselves
 # (device, precision T, head-like values as offsets from "<model>/HREF", BOUND with the
-# multiplier applied); writes there bypass the conversions and the mirrors.
+# multiplier applied); writes there bypass the conversions and the mirrors. Device writes
+# into BOUND (T5.2: ModflowCoupling's device-resident coupling writes them in kernels)
+# between `prepare_time_step` and `prepare_solve` are used by the step; they are not
+# checked (`riv_ck` etc.), are replaced by new period data, and are not seen by host reads
+# of BOUND (`get_value`, mirrors), which keep the last values set on the host. A host
+# mirror of the same BOUND does not overwrite them unless it is written. A caller that
+# keeps no host mirrors (reads through `get_value` only) makes a time step move no array
+# between host and device: the mirrors are the only per-step copies of the stepping API,
+# and the output of `finalize_time_step` copies the heads only when OC saves or prints them.
 
 """
     StepResult
@@ -429,7 +437,10 @@ src/stepping.jl for when it is synchronised with the device. Writes into the mir
 
 With `device = true`: the engine array on the device (precision `T`, head-like values as
 offsets from `"<model>/HREF"`, BOUND with the multiplier applied); `X`, `XOLD`, `HREF`,
-`IBOUND`, `BOUND`, `NODELIST`, `SIMVALS` only.
+`IBOUND`, `BOUND`, `NODELIST`, `SIMVALS` only (`HREF` is the host Float64 vector of the
+references). Writes into a device BOUND between `prepare_time_step` and `prepare_solve`
+are used by the step without checks or conversions, and host reads of BOUND do not see
+them (see the header of src/stepping.jl). No host mirror is created.
 """
 function get_value_ptr(s::Simulation, address::AbstractString; device::Bool = false)
     var = _variable(s, address)
