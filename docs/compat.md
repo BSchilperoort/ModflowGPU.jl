@@ -29,6 +29,19 @@ Resolved versions (fresh resolves, 2026-11-14):
 | ModflowGPU + all five GPU packages + `pocl_jll` | 0.10.7 | 2.11.0 | CUDA 6.5.1, Metal 1.12.0, oneAPI 2.10.0, OpenCL 1.0.0 | all five extensions load; `select_backend("rocm")` and `select_backend("opencl")` (POCL device, Float64 supported) work |
 | ModflowGPU + mGV `main` (42aebaa) + AMDGPU + GPUArrays | 0.10.7 | 2.11.0 | GPUArrays 12.2.0; adding CUDA, Metal, oneAPI, OpenCL resolves to the versions above | both `select_backend("rocm")` return `ROCBackend()` |
 
+T5.4 (2026-11-14), fresh resolves on the development machine:
+
+| Environment | KA | AMDGPU | Others | Result |
+| --- | --- | --- | --- | --- |
+| Root workspace (`test/`, `benchmark/`), manifest deleted and re-resolved | 0.10.7 | 2.11.0 | GPUArrays 12.2.0, KernelInterface 0.4.6, GPUCompiler 2.22.2, Adapt 4.8.0, pocl_standalone_jll 7.2.3 | CPU and rocm suites pass (T5.4 report) |
+| Shared environment of the coupled example (`examples/mgv_coupling` of the patched ModflowCoupling, patch 0004): ModflowGPU (this repository) + ModflowCoupling + mGV `main` (42aebaa, `[sources]` url + rev) + AMDGPU | 0.10.7 | 2.11.0 | GPUArrays 12.2.0, KernelInterface 0.4.6, GPUCompiler 2.22.2, Adapt 4.8.0 (the same versions as the root workspace) | mGV and ModflowGPU run the Indus coupled on rocm in one process, exchanging device arrays |
+
+KA 0.10.5 (the Phase 4 manifest, KernelInterface 0.4.5) against 0.10.7 (KernelInterface
+0.4.6), same ModflowGPU source (`main` 2018ae7): final heads and the inner iterations of
+every step are **bitwise identical** for `test/models/coupling_rde` (steady + transient)
+and the synthetic `indus` model (steady + 5 daily steps), in `:double`, `:mixed` and
+`:single`, on the CPU backend (POCL) and on rocm (12 cases).
+
 Which AMDGPU goes with which KA (General registry, checked by resolving):
 
 | AMDGPU | Relation to KA |

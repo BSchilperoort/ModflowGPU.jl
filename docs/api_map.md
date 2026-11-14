@@ -10,11 +10,11 @@ it. Underscore-prefixed helpers are omitted.
 
 - **backend_setup.jl**: backend registry, adapted from mGV. `select_backend` (name → KA
   backend), `register_backend!` (called by `ext/*Ext.jl`), `backend_options`,
-  `backend_name`, `known_backend_package`, `_WG` (T4.5: static work-group size 256 of the element-wise kernels), `pin_memory!` (extension hook; returns a handle to keep, or `nothing`; CUDA, ROCm since T4.6), `host_mapped_zeros`
+  `backend_name`, `known_backend_package`, `_WG` (T4.5: static work-group size 256 of the element-wise kernels), `pin_memory!` (extension hook; returns a handle to keep, or `nothing`; CUDA, ROCm since T4.6), `free_memory!` (extension hook, T5.4: release a device array now; default `KernelAbstractions.unsafe_free!`, ROCm and CUDA methods), `free_device_arrays!` (T5.4: frees every device array reachable from an object; used by `finalize` and the AMG rebuild), `host_mapped_zeros`
   (extension hook, T3.1: device view of a host vector for reduction results; CPU, ROCm), `BackendEntry`, `BACKEND_REGISTRY`, `KNOWN_BACKENDS`; `_device_copy` (host array → new device array). Tests: backend.
 - **ext/*Ext.jl** (AMDGPU, CUDA, Metal, oneAPI, OpenCL): `__init__` registers the backend;
   overrides `supports_float64` where needed; AMDGPUExt adds `host_mapped_zeros` and
-  `pin_memory!` (registered host memory). Tests: backend (GPU file with `MFGPU_TEST_BACKEND`).
+  `pin_memory!` (registered host memory); AMDGPUExt and CUDAExt add `free_memory!` (T5.4). Tests: backend (GPU file with `MFGPU_TEST_BACKEND`).
 - **precision.jl**: precision presets (PLAN.md 3.7). `resolve_precision(backend, preset)`
   → `(; T, Ts, Tp)` (`:double`, `:mixed` = Float64 with Float32 `Tp` since T4.4, `:single`; `:auto` = `:mixed` with Float64, else `:single`), `PRECISION_PRESETS`, `supports_float64` (extension hook). Tests: precision, kernel.
 - **instrument.jl** (T4.1): optional timing of the hot loop. `@timed_section name expr`
@@ -184,7 +184,7 @@ it. Underscore-prefixed helpers are omitted.
   `ims_base_scale`, `ims_base_testcnvg`, `ims_base_epfact`). `KrylovSettings` (host; from
   an `ImsSpec`: LINEAR_ACCELERATION, INNER_*, rclose options, NUMBER_ORTHOGONALIZATIONS,
   SCALING_METHOD, `preconditioner`; ILU0/MILU0/ILUT → `preconditioner`, `:auto` = `:mc_ilu0` by default since T4.4; the replacement is logged once per session, at info level when ILUT/MILU come from COMPLEXITY only, T5.2), `ims_preconditioner`
-  (`resolve_ipc`), `ims_testcnvg`, `ims_epfact`, `KrylovSolver{Ts,Tp,Ta}` (device
+  (`resolve_ipc`; T5.4: once-per-session messages keyed by message, `_log_id`, not by call site), `ims_testcnvg`, `ims_epfact`, `KrylovSolver{Ts,Tp,Ta}` (device
   workspace), `solve!(δ, solver, amat, res; kstp)` → `KrylovResult` (converged,
   iterations, status, dvmax, rmax, l2norm0, l2norm). Device reductions: `Reducer`,
   `accumulation_type`, `device_dot`, `device_maxabs`, `device_argmaxabs` (T3.1; fused
@@ -229,7 +229,8 @@ it. Underscore-prefixed helpers are omitted.
   kernel-hygiene test) when the matrix changed (row signatures, `_matrix_change!`);
   Gershgorin bounds for the Chebyshev/Jacobi smoother; V-cycle `_cycle!`, fused finest
   level `_fine_cycle1!`, dense coarsest inverse; T4.5: `_amg_apply!` (function barrier
-  for the untyped `fine`), smoother coefficients cached per level (`_level_coefficients`). Tests: amg (also kernel_hygiene, run:
+  for the untyped `fine`), smoother coefficients cached per level (`_level_coefficients`);
+  T5.4: a rebuild frees the previous hierarchy (`free_device_arrays!`). Tests: amg (also kernel_hygiene, run:
   ex-gwf-hwell-a).
 
 ## Time stepping, outer iterations, flows and budgets (T2.8)
@@ -298,6 +299,11 @@ it. Underscore-prefixed helpers are omitted.
   `initialize`, `prepare_time_step`, `prepare_solve`, `solve` (one outer iteration),
   `finalize_solve`, `finalize_time_step`, `do_time_step`, `update`, `finalize`,
   `get_current_time` / `get_start_time` / `get_end_time` / `get_time_step`, `StepResult`;
+  T5.4: `finalize(sim; free = true)` frees the device arrays (stage `:freed`; `run` uses
+  `free = false`), `device_bound!` (the device BOUND write window between
+  `prepare_time_step` and `prepare_solve`, enforced; `prepare_solve` checks the written
+  records on the device: finite, RIV stage ≥ bottom and conductance ≥ 0,
+  `device_bound_check_kernel!`);
   addresses `get_var_address`, `var_addresses`, `input_addresses`, `get_value_ptr` (host
   Float64 mirror, absolute; `device = true` for the engine array), `get_value`,
   `set_value` (X, BOUND). Mirror sync rules in the file header; BOUND and NODELIST

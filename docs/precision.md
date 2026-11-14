@@ -369,7 +369,14 @@ MF6 1e-9 m; both are far below any coupling tolerance. `:single` at 5 and
 inner solves of `:single` end at the Float32 floors (INNER_RCLOSE ≥ 19 m³/d), probably
 the cause (not investigated further).
 
-### Proposal: production closures of the GPU engine (adopted 2026-11-14, PLAN.md section 8, decision 9; the default changes in T5.4)
+### Proposal: production closures of the GPU engine (adopted 2026-11-14, PLAN.md section 8, decision 9; the GPU engine default since T5.4)
+
+**Adopted.** Since T5.4 (ModflowCoupling patch 0004) `outer_dvclose` and `inner_dvclose`
+default per engine in the patched `config.jl`: 0.01 m for the GPU engine, 5 m for the mf6
+engine (`DEFAULT_DVCLOSE`, `dvclose(settings, :outer)`; a value in the config applies to
+both engines), with the note in `examples/indus/indus.toml` that MF6 at 5 stops up to
+1.9 m from its converged heads on monthly periods. The cost on the 1-year coupled run is
+in the T5.4 section below. The proposal as written for T5.3:
 
 1. **Use `outer_dvclose = inner_dvclose = 0.01` m for the GPU engine** (keep
    INNER_RCLOSE 10, the other settings unchanged). Measured on the Indus it is within
@@ -386,9 +393,8 @@ the cause (not investigated further).
    tight daily steps take 0.39 s, `:mixed` MC-ILU0); if 0.01 is within 10 % of 5 there
    as well, a tighter value (1e-3) is an option.
 
-The ModflowCoupling default is not changed by this card (`SolverSettings` keeps 5 for
-both engines); adopting the proposal means a per-engine default in the patched
-`config.jl` (a later patch).
+(T5.3 left the ModflowCoupling default at 5 for both engines; T5.4 made the per-engine
+default above.)
 
 ## Confined lgrv examples (T6.0)
 
