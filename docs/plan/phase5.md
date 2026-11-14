@@ -117,9 +117,13 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
   - ModflowGPU is a hard dependency of the patched ModflowCoupling. Decide here whether
     it becomes a weak dependency (extension), so the mf6 engine installs without it.
 - From the T5.3 report:
-  - Recheck the closure proposal (`outer_dvclose = inner_dvclose = 0.01` for the GPU
-    engine, `docs/precision.md`) on the 1-year run and report its cost; T5.5a repeats
-    this at global size.
+  - The owner adopted the closure proposal on 2026-11-14 (PLAN.md section 8,
+    decision 9). Make `outer_dvclose = inner_dvclose = 0.01` the default of the GPU
+    engine in the patched `config.jl` (the mf6 engine keeps 5, with a note in
+    `indus.toml` that it stops up to 1.9 m from the converged heads on monthly
+    periods), and update the proposal section of `docs/precision.md` to say it is
+    adopted. Report its cost against 5 on the 1-year run; T5.5a repeats this at global
+    size.
   - At closures 5 and 0.5, `:single` stops 3e-3 m from its tight heads on monthly
     periods, where `:mixed` stops 8.2e-6 m away. The Float32 INNER_RCLOSE floor is the
     likely cause; check it if `:single` is used for the coupled run.
@@ -151,6 +155,17 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
   (`examples/mgv_coupling/coupling.jl` errors when they differ); check that, and check
   how the DEM's latitude coverage compares with the parameter grid. Record the
   command, the mGV-input-data commit and the output path in the card report.
+- Report the wall time per daily step at `outer_dvclose = inner_dvclose` = 5, 0.01 (the
+  GPU engine default, PLAN.md section 8, decision 9) and 1e-3 on `global5m`, so the
+  owner can revisit the value at global size.
+- From the T6.0 report: `ex-gwf-lgrv-gr` in `:single` does not converge with the
+  default `:mc_ilu0` (500 outer iterations) and passes only with `:amg`. Under STRICT
+  the Float32 INNER_RCLOSE floor (`eps32·max Σ|terms|`) is below the residual of the
+  rounded exact heads, and a floor that converges leaves the heads 6.1e-3 m off,
+  because Float32 CG with MC-ILU0 is too slow there. For the steady-state spin-up,
+  decide how `:single` picks its preconditioner (for example `:amg` automatically for
+  badly conditioned steady states) and whether the rclose floor should account for
+  head rounding. `:mixed` with `:mc_ilu0` is fine.
 - Check that the device memory of the spin-up simulation is released before the daily
   run starts (the `finalize` fix of T5.4), and report the peak over the whole sequence.
 - Done when: a report gives device memory of both models together and wall time

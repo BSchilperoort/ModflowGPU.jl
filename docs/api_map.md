@@ -252,7 +252,9 @@ it. Underscore-prefixed helpers are omitted.
   warning), `PicardSolver` (KrylovSolver, UnderRelaxation, Reducer; Adapt), `solve_timestep!` →
   `OuterResult` (converged, outer and inner iterations, hncg and its node `lrch` from one
   argmax reduction, the dvclose/rclose used); `OuterState` + `outer_iteration!` (one outer
-  iteration, T3.3; `solve_timestep!` loops over it).
+  iteration, T3.3; `solve_timestep!` loops over it; T5.3/T6.0: in Float32, once a
+  correction meets OUTER_DVCLOSE and only the inner test failed, `OuterState.noise_floor`
+  holds INNER_DVCLOSE >= `OuterState.dvfloor` = eps32·max|h'| for the rest of the step).
   Tests: picard, run, stepping.
 - **budget.jl**: `gwf_cq`/`gwf_bd`. `npf_flowja!` (one work item per entry, T4.5), `calc_flows!` (NPF, STO, packages with
   `bnd_cf` + `simvals`, CHD `calc_chd_rate!`, `csr_diagsum`), `BudgetTerm`, `ModelBudget`
@@ -310,13 +312,15 @@ it. Underscore-prefixed helpers are omitted.
 
 - **testutils.jl**: `for_each_precision`, `write_input`, `input_error_of`.
 - **input_files.jl**: `REFERENCE_DIR`, `in_scope_examples`, `simulation_input_files`,
-  `model_package_files`.
+  `model_package_files`; `parity_examples` (T6.0: Tier 0–2 plus `EXTRA_PARITY_EXAMPLES`,
+  ex-gwf-lgrv-gc/-gr; `MFGPU_TEST_LGRV_GR=0` drops -gr), used by the assembly and run
+  parity tests.
 - **libmf6_oracle.jl**: libmf6 subprocess oracle. `LIBMF6_ENV`, `libmf6_available`,
   `run_libmf6_script` (validation/libmf6_connectivity.jl, libmf6_first_solve.jl), `libmf6_connectivity`, `write_dis_simulation` (synthetic DIS sims).
 - **grids.jl**: `_synthetic_coupling_dis`, `_synthetic_passthrough_dis`, `_rel_close`.
 - **run_parity.jl** (T3.4, moved from parity/run_test.jl): `_run_parity(name, rundir)`
   (ModflowGPU vs MF6 output in `rundir`: heads, CBC, listing tables, both presets, GPU vs
-  CPU; returns the numbers per preset), `_mf6_iterations`, `_head_difference`,
+  CPU; returns the numbers per preset; `single_preconditioner` for `:single`, T6.0), `_mf6_iterations`, `_head_difference`,
   `_budget_difference`, `_listing_difference`, `RUN_MF6`. Used by groups run, synthetic.
 - **residual.jl**: `to_test_device`, `flux_residual` (device `flux_residual!` → (rel, rounding
   bound)), `residual_stats`, `host_flux_residual` (the T2.3 host loop, validates the kernel).

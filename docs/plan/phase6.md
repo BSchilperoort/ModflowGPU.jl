@@ -9,7 +9,7 @@ All cards need Phase 3. Dependencies inside the phase are on each card; they fol
 `requires` field of each example in `validation/examples.toml` (checked 2026-11-11).
 T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
 
-**T6.0 Parity on the confined lgrv examples (S) ‖**
+**T6.0 Parity on the confined lgrv examples (S) ‖ (done 2026-11-14)**
 - Depends: T4.5 (no Phase 6 card).
 - `ex-gwf-lgrv-gc` and `ex-gwf-lgrv-gr` have `requires = []`: ICELLTYPE 0 everywhere,
   RIV, RCHA, K33OVERK, and `-gr` is 25×183×147. The strict loader accepts them, but no

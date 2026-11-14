@@ -27,6 +27,31 @@ function in_scope_examples(; tiers = 0:7)
 end
 
 """
+Examples outside Tiers 0–2 that the Milestone A engine runs and the parity tests include
+(T6.0): the confined Tier 3 size tests (ICELLTYPE 0, RIV, RCHA, K33OVERK, `requires = []`).
+"""
+const EXTRA_PARITY_EXAMPLES = ("ex-gwf-lgrv-gc", "ex-gwf-lgrv-gr")
+
+"""
+    parity_examples() -> Vector{Pair{String, String}}
+
+`name => simulation directory` of the examples of the assembly and run parity tests:
+the Tier 0–2 examples and `EXTRA_PARITY_EXAMPLES`, sorted by name. `MFGPU_TEST_LGRV_GR=0`
+leaves out `ex-gwf-lgrv-gr` (672525 cells).
+"""
+function parity_examples()
+    gr = get(ENV, "MFGPU_TEST_LGRV_GR", "1") != "0"
+    gr || @info "Skipping ex-gwf-lgrv-gr in the parity tests (MFGPU_TEST_LGRV_GR=0)"
+    out = in_scope_examples(; tiers = 0:2)
+    for (name, dir) in in_scope_examples(; tiers = 3:3)
+        name in EXTRA_PARITY_EXAMPLES || continue
+        name == "ex-gwf-lgrv-gr" && !gr && continue
+        push!(out, name => dir)
+    end
+    return sort!(out)
+end
+
+"""
     simulation_input_files(simdir) -> Vector{ModflowGPU.InputFile}
 
 Read every block-structured input file of the simulation in `simdir`: `mfsim.nam`, the
