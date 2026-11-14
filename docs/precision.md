@@ -560,7 +560,25 @@ from the exact heads in 5 outer and 133 inner iterations (before the T5.0 merge;
 from MF6 in 6/151 now), and `:mixed` (Float64 Krylov, Float32 MC-ILU0) is
 fine. That floor was therefore not adopted; the run parity test uses `:amg` for gr in
 `:single` (as for ex-gwf-hwell-a), and the section 4 criteria are not met with the default
-preconditioner in `:single` on this model. Open: an automatic `:amg` choice for badly
-conditioned steady states in `:single` (`preconditioner = :auto`), see T5.5a. The merged
+preconditioner in `:single` on this model. An automatic `:amg` choice for badly
+conditioned steady states in `:single` was decided against in T5.5a (section below). The merged
 INNER_DVCLOSE rule above does not change this (it does not touch the rclose side; with
 `:mc_ilu0` the run still stops at 500 outer iterations).
+
+## Global size: closures, the `:single` spin-up and the rclose floor (T5.5a)
+
+Synthetic `global5m` (6.59 M nodes) through ModflowCoupling's GPU engine, coupled daily
+with mGV's real global model for 1979 on rocm (`benchmark/results/2026-11-14-T5.5a.md`):
+
+- **Closures** (decision 9): 5 and 0.01 cost the same here (2 outer / 3 inner iterations
+  per day, MODFLOW 91.6 ms per day in `:mixed`); 1e-3 takes 128.8 ms (+41 %) for heads
+  1.3e-5 m from those at 0.01. 0.01 stays the default; recheck on the real global model
+  (T5.5b).
+- **`:single` spin-up preconditioner.** Decision: `:auto` stays MC-ILU0, also for steady
+  states in `:single`. On `global5m` the Float32 spin-up with MC-ILU0 takes 16.1 s
+  (21 / 325) and ends 1.5e-5 m from `:double`; with AMG 41.5 s (16 / 87) and 9.4e-4 m.
+  The lgrv-gr failure (above) shows as non-convergence, not as a wrong answer: run such a
+  spin-up with `preconditioner = :amg`, or in `:mixed` (`:auto` where Float64 exists).
+- **Rclose floor.** Not changed: a floor from the head-rounding bound made lgrv-gr
+  "converge" 6.1e-3 m from the exact heads (above), turning a visible failure into a
+  silent error.
