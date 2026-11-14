@@ -26,7 +26,12 @@ Float32 by `PicardSettings`:
 - `outer_dvclose`, `inner_dvclose`: fixed floors (m);
 - `dvclose_head_factor`: OUTER_DVCLOSE is also at least this factor times
   `eps(Float32)·max_n |h'_n|`, the resolution of the offset heads (checked every outer
-  iteration; e.g. 1.2e-4 m on ex-gwf-toth, whose offsets reach 1010 m);
+  iteration; e.g. 1.2e-4 m on ex-gwf-toth, whose offsets reach 1010 m). When an outer
+  correction is already within OUTER_DVCLOSE but its inner solve did not converge, the
+  next inner solves of the step use INNER_DVCLOSE >= OUTER_DVCLOSE: the correction is
+  then rounding noise (~0.25 `eps32·max|h'|`, e.g. 1.5e-6 m on the Indus with offsets
+  of 62 m), the inner solve stalls at it above a fixed 1e-6 m and never reports
+  convergence, and the outer iterations would run to OUTER_MAXIMUM (T5.3);
 - `inner_rclose_factor`: an absolute INNER_RCLOSE is at least this factor times
   `eps(Float32)·max_n Σ_m |terms|` of the first outer iteration of a step, the rounding
   level of the flux-form residual (rule 2).
@@ -210,6 +215,11 @@ function outer_iteration!(state::OuterState, ps::PicardSolver, m::GwfModel{T}, k
         state.rclose = max(st.krylov.rclose, rc)
         k = state.krylov
         state.krylov = state.rclose == k.settings.rclose ? k : _with_settings(k, _with_rclose(st.krylov, state.rclose))
+    end
+    if st.dvclose_head_factor > 0 && it > 1 && abs(state.hncg) <= state.dvclose && state.dvclose > state.krylov.settings.dvclose
+        # Float32: the last correction met OUTER_DVCLOSE and only the inner test failed
+        # (FLOAT32_CLOSURES): raise INNER_DVCLOSE to OUTER_DVCLOSE for the rest of the step.
+        state.krylov = _with_settings(state.krylov, _with(state.krylov.settings; dvclose = state.dvclose))
     end
     res = @timed_section :linear_solve solve!(m.δ, state.krylov, m.sys.amat, m.res; kstp)
     state.inner += res.iterations
