@@ -230,10 +230,12 @@ end
     end
 end
 
-# T5.3: in Float32, once a correction meets OUTER_DVCLOSE and only the inner test failed,
-# INNER_DVCLOSE is raised to OUTER_DVCLOSE for the rest of the step. With one inner
-# iteration the corrections stall near the fixed 1e-6 m inner floor: before the rule this
-# step took 99 outer iterations in Float32 (46 with it). Float64 keeps its inner settings.
+# T5.3/T6.0: once a correction meets OUTER_DVCLOSE and only the inner test failed, Float32
+# raises INNER_DVCLOSE to the head resolution eps32·max|h'|, never to a loose OUTER_DVCLOSE
+# (here 1e-3); Float64 is unchanged. With one inner iteration the step does not converge
+# within the 70 outer iterations here (heads up to 6.4 m, so eps32·max|h'| < 1e-6 and the
+# floor stays 1e-6: 99 outer iterations in Float32, 83 in Float64). T5.3's raise to
+# OUTER_DVCLOSE converged in 46 by accepting inner changes up to 1e-3 m; this test fails on it.
 @testset "Float32: INNER_DVCLOSE raised when only the inner test blocks convergence" begin
     sim = load_simulation(joinpath(@__DIR__, "..", "models", "coupling_rde"))
     spec = only(sim.models)
@@ -249,10 +251,44 @@ end
             ModflowGPU.outer_iteration!(s, ps, m, 1) && break
         end
         if p.T === Float32
-            @test s.converged && s.kiter < 70 && abs(s.hncg) <= 1.0e-3
-            @test s.krylov.settings.dvclose == s.dvclose
+            hmax = maximum(abs, Float64.(Array(m.h)))
+            @test s.noise_floor
+            @test 1.0e-6 <= s.krylov.settings.dvclose <= max(1.0e-6, 2 * eps(Float32) * hmax) < 1.0e-3
         else
+            @test !s.noise_floor
             @test s.krylov.settings.dvclose == 1.0e-6 && s.krylov.settings == ps.krylov.settings
+        end
+    end
+end
+
+# T6.0: the same rule under STRICT (inner convergence only in the first inner iteration) on
+# ex-gwf-lgrv-gc, offsets up to 49 m: Float32 converged in no outer iteration before.
+@testset "Float32: STRICT converges at the head resolution (ex-gwf-lgrv-gc)" begin
+    rundir = joinpath(REFERENCE_DIR, "runs", "ex-gwf-lgrv-gc", "tight")
+    if !isdir(rundir)
+        @info "Skipping the STRICT INNER_DVCLOSE test: $rundir not found"
+    else
+        sim = load_simulation(rundir)
+        spec = only(sim.models)
+        ims = only(only(sim.solution_groups).solutions)
+        for_each_precision() do p
+            m = GwfModel(TEST_BACKEND, p.T, spec, 1)
+            ps = PicardSolver(m, PicardSettings(ims, p.T))
+            @test ps.settings.krylov.icnvgopt == 1
+            ModflowGPU.apply_period!(m, 1)
+            start_timestep!(m, 1.0)
+            s = ModflowGPU.OuterState(ps)
+            for _ in 1:20
+                ModflowGPU.outer_iteration!(s, ps, m, 1) && break
+            end
+            @test s.converged && s.kiter <= 5
+            if p.T === Float32
+                hmax = maximum(abs, Float64.(Array(m.h)))
+                @test s.noise_floor
+                @test 1.0e-6 < s.krylov.settings.dvclose <= 2 * eps(Float32) * hmax
+            else
+                @test !s.noise_floor && s.krylov.settings.dvclose == ps.krylov.settings.dvclose
+            end
         end
     end
 end

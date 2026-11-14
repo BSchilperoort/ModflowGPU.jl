@@ -1,6 +1,7 @@
 # Assembly and matrix oracle (T2.6), PLAN.md section 4:
 #
 # 1. Universal residual test. On every Tier 0–2 example that loads with `strict = true`
+#    and the confined Tier 3 examples ex-gwf-lgrv-gc and -gr (T6.0, `parity_examples`)
 #    (MF6 6.8.2 tight-closure runs in reference/runs/<example>/tight; the others are
 #    skipped with the reason) and on the synthetic models test/models/fhb_const and
 #    test/models/coupling_rde (run with mf6 at test time), for every saved time step: MF6's
@@ -232,7 +233,7 @@ end
 
 # The models of parts 1 and 2: (name, directory with MF6 heads, input directory for libmf6).
 function _assembly_models(f)
-    for (name, _) in in_scope_examples(; tiers = 0:2)
+    for (name, _) in parity_examples()
         rundir = joinpath(REFERENCE_DIR, "runs", name, "tight")
         if !isdir(rundir)
             @info "Skipping $name in the assembly test: $rundir not found"
