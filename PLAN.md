@@ -589,6 +589,14 @@ T5.5b. Done up to T5.1; mGV is on KA 0.10 and the global inputs are available.
    blocked on the global inputs. The owner arranges them when the work reaches
    that card; nothing before it needs them. *Update 2026-11-14:* the inputs
    are available (decision 1), so T5.5b is no longer blocked.
+9. **Production closures of the GPU engine (2026-11-14):**
+   `outer_dvclose = inner_dvclose = 0.01` m for the GPU engine (T5.3 proposal,
+   `docs/precision.md`: on the Indus within 1.5e-4 m of the tight heads on
+   daily steps, against 0.15 m at 5, for 20–40 % more time per period on
+   rocm). The mf6 engine keeps 5, with a note in `indus.toml`. T5.4 makes it
+   the per-engine default in the patched `config.jl`; T5.4 and T5.5a report
+   the cost on the 1-year run and at global size, and the value is revisited
+   if that cost is far from the Indus one.
 
 Still open:
 
@@ -603,7 +611,3 @@ Still open:
 - **Longitude wrap (T7.1):** it waits for all of T6.6, but `ex-gwf-spbc` needs
   only a self-exchange of one model. A periodic connection in the DIS
   connectivity would take T7.1 off the Milestone C path.
-- **Production closures for the GPU engine:** T5.3 delivered the numbers and a
-  proposal (`docs/precision.md`): `outer_dvclose = inner_dvclose = 0.01` for the
-  GPU engine, for 20–40 % more time per period on rocm. The owner decides;
-  T5.4 and T5.5a recheck the cost at global size.

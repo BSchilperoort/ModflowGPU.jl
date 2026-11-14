@@ -368,7 +368,7 @@ MF6 1e-9 m; both are far below any coupling tolerance. `:single` at 5 and
 inner solves of `:single` end at the Float32 floors (INNER_RCLOSE ≥ 19 m³/d), probably
 the cause (not investigated further).
 
-### Proposal: production closures of the GPU engine (owner decides, PLAN.md section 8)
+### Proposal: production closures of the GPU engine (adopted 2026-11-14, PLAN.md section 8, decision 9; the default changes in T5.4)
 
 1. **Use `outer_dvclose = inner_dvclose = 0.01` m for the GPU engine** (keep
    INNER_RCLOSE 10, the other settings unchanged). Measured on the Indus it is within
