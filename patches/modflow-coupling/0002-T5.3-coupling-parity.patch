@@ -1,0 +1,265 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bart Schilperoort <b.schilperoort@esciencecenter.nl>
+Date: Sat, 14 Nov 2026 11:58:03 +0100
+Subject: [PATCH] T5.3: coupling parity
+
+test/coupling_parity.jl: the GPU engine (single, mixed, double) against the mf6 engine
+on 3 monthly and 31 daily periods, tight closures (ModflowGPU PLAN.md section 4 coupling
+criteria) and production closures (logged); closure table with
+MODFLOWCOUPLING_CLOSURE_TABLE=1. AMDGPU as a test dependency, MODFLOWCOUPLING_BACKEND
+selects the GPU engine's backend; test groups (Pkg.test(test_args = ["parity"]) or
+MODFLOWCOUPLING_TESTS).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Project.toml            |   4 +-
+ README.md               |   2 +
+ test/coupling_parity.jl | 161 ++++++++++++++++++++++++++++++++++++++++
+ test/runtests.jl        |  19 ++++-
+ 4 files changed, 183 insertions(+), 3 deletions(-)
+ create mode 100644 test/coupling_parity.jl
+
+diff --git a/Project.toml b/Project.toml
+index 62b453b..53b085e 100644
+--- a/Project.toml
++++ b/Project.toml
+@@ -15,6 +15,7 @@ TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
+ ModflowGPU = {path = "../.."}
+ 
+ [compat]
++AMDGPU = "2.11"
+ BasicModelInterface = "0.1.1"
+ Dates = "1.11.0"
+ ModflowGPU = "0.1"
+@@ -24,7 +25,8 @@ Statistics = "1.11.5"
+ TOML = "1.0.3"
+ 
+ [extras]
++AMDGPU = "21141c5a-9bdb-4563-92ae-f87d6854732e"
+ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+ 
+ [targets]
+-test = ["Test"]
++test = ["Test", "AMDGPU"]
+diff --git a/README.md b/README.md
+index 973ac28..923afd6 100644
+--- a/README.md
++++ b/README.md
+@@ -23,6 +23,8 @@ Examples:
+ 
+ ```bash
+ julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'   # needs the Indus data, see examples/indus
++MODFLOWCOUPLING_BACKEND=rocm julia --project=. -e 'using Pkg; Pkg.test()'  # GPU engine tests on an AMD GPU
++julia --project=. -e 'using Pkg; Pkg.test(test_args = ["parity"])'  # only the engine parity tests (test/coupling_parity.jl)
+ julia --project=. examples/indus/make_synthetic_forcing.jl        # writes examples/indus/vic_synthetic_monthly.nc (not committed)
+ julia --project=. scripts/run_offline.jl examples/indus/synthetic.toml
+ ```
+diff --git a/test/coupling_parity.jl b/test/coupling_parity.jl
+new file mode 100644
+index 0000000..9cef2a6
+--- /dev/null
++++ b/test/coupling_parity.jl
+@@ -0,0 +1,161 @@
++#=
++Coupling parity on the Indus (ModflowGPU T5.3; ModflowGPU PLAN.md section 4, row
++"Coupling"): the GPU engine against the mf6 engine, both with tight solver settings,
++over 1979-01 to 1979-03 in monthly periods and 1979-01-01 to 1979-01-31 in daily
++periods, with the GPU engine in each precision (`MODFLOWCOUPLING_PRECISIONS`, default
++single, mixed, double) on the backend `MODFLOWCOUPLING_BACKEND` (runtests.jl).
++
++Pass criteria (tight closures, every period):
++- `:double` and `:mixed`: heads < 1e-4 m; `baseflow_to_routing` and `capillary_rise`
++  < 1e-6 relative to their domain maximum (max over land cells of |mf6 value| in the
++  period).
++- `:single`: heads < 1e-3 m; baseflow and capillary rise < 1e-4 × domain maximum.
++
++The differences at the production settings of indus.toml (`outer_dvclose = 5`) are
++logged, not tested (the engines stop at different points, see the closure table).
++
++`MODFLOWCOUPLING_CLOSURE_TABLE=1` also runs the closure study: for each engine and
++`outer_dvclose` = 5, 0.5 and 0.01 (`inner_dvclose` equal to it, the other settings of
++indus.toml), the distance to the engine's own tight heads (max over the periods) and the
++median wall time of a period (`BMI.update`), monthly and daily, after a warm-up run. It prints a Markdown table.
++
++Run alone: `Pkg.test(test_args = ["parity"])` or `MODFLOWCOUPLING_TESTS=parity`.
++=#
++
++const PARITY_PRECISIONS = split(get(ENV, "MODFLOWCOUPLING_PRECISIONS", "single,mixed,double"), ",")
++
++"""
++Tight closures of PLAN.md section 4 for both engines, except INNER_RCLOSE (absolute,
++m3/day, `rclose_option = :strict`): MF6 does not converge on the Indus with 1e-10 (its
++residual does not get below the rounding level of the large RIV and DRN terms), and
++1e-8 is the tightest power of ten measured to converge. The GPU engine raises the
++closures to its Float32 floors in `:single` (ModflowGPU `FLOAT32_CLOSURES`).
++"""
++const TIGHT = MC.SolverSettings(; outer_dvclose = 1e-9, inner_dvclose = 1e-10, inner_rclose = 1e-8,
++                                outer_maximum = 500, inner_maximum = 2000)
++
++"Discharge fraction of period `k`: the monthly forcing, repeated over the days."
++period_fraction(k) = FORCING[mod1(k, length(FORCING))]
++
++"Outputs of one run, one entry per period."
++struct ParityRun
++    heads::Vector{Array{Float64,3}}
++    baseflow::Vector{Matrix{Float64}}
++    capillary::Vector{Matrix{Float64}}
++    seconds::Vector{Float64}          # wall time of each BMI.update
++    iterations::Vector{Tuple{Int,Int}} # (outer, inner) per period, GPU engine only
++end
++
++"""
++    parity_run(dir, period, solver) -> ParityRun
++
++Run the Indus model with `period = "month"` (1979-01 to 1979-03) or `"day"` (1979-01-01
++to 1979-01-31) and solver settings `solver` (engine, precision, closures), forced as in
++runtests.jl (`force!`).
++"""
++function parity_run(dir, period, solver)
++    stop = period == "day" ? Date(1979, 1, 31) : Date(1979, 3, 31)
++    cfg = test_config(dir; period, stop, write_monthly_output = false, solver)
++    m = GroundwaterModel(cfg)
++    r = ParityRun([], [], [], [], [])
++    try
++        for k in eachindex(m.periods)
++            force!(m, period_fraction(k))
++            push!(r.seconds, @elapsed BMI.update(m))
++            push!(r.heads, copy(m.head))
++            push!(r.baseflow, copy(m.baseflow))
++            push!(r.capillary, copy(m.capillary))
++            if m.mf isa MC.ModflowGPU.Simulation
++                o = m.mf.results[end].outer
++                push!(r.iterations, (o.iterations, o.inner))
++            end
++        end
++    finally
++        BMI.finalize(m)   # also after an error, so libmf6 is free for the next run
++    end
++    return r
++end
++
++"Max |a - b| over the active cells of both layers, over all periods."
++head_difference(a::ParityRun, b::ParityRun, active) =
++    maximum(maximum(abs.(x .- y)[active]) for (x, y) in zip(a.heads, b.heads))
++
++"Max over the periods of max |a - b| / max |b| over the land cells (b is the reference)."
++function relative_difference(a, b, land)
++    maximum(zip(a, b)) do (x, y)
++        scale = maximum(abs, y[land])
++        d = maximum(abs.(x .- y)[land])
++        scale > 0 ? d / scale : d
++    end
++end
++
++"`(heads, baseflow, capillary)` differences of `a` against the reference `b`."
++parity_differences(a, b, active, land) =
++    (head_difference(a, b, active), relative_difference(a.baseflow, b.baseflow, land),
++     relative_difference(a.capillary, b.capillary, land))
++
++"Section 4 coupling tolerances: (heads in m, baseflow and capillary rise relative to the domain maximum)."
++coupling_tolerance(precision) = precision == "single" ? (1e-3, 1e-4) : (1e-4, 1e-6)
++
++fmt(x) = string(round(x; sigdigits = 2))
++
++@testset "Coupling parity (T5.3, backend $BACKEND)" begin
++    tmp = mktempdir()
++    s = read_static_inputs(test_config(tmp))
++    active = cat(s.idomain .> 0, s.idomain .> 0; dims = 3)
++    land = s.landmask
++    for period in ("month", "day")
++        @testset "period = $period" begin
++            dir(name) = joinpath(tmp, "$(period)_$name")
++            tight_mf6 = parity_run(dir("tight_mf6"), period, with_engine(TIGHT, "mf6"))
++            prod_mf6 = parity_run(dir("prod_mf6"), period, with_engine(INDUS.solver, "mf6"))
++            @info "mf6, $period: production heads within $(fmt(head_difference(prod_mf6, tight_mf6, active))) m of the tight heads"
++            for precision in PARITY_PRECISIONS
++                @testset "gpu $precision" begin
++                    tight = parity_run(dir("tight_gpu_$precision"), period, with_engine(TIGHT, "gpu"; precision))
++                    dh, dbf, dcap = parity_differences(tight, tight_mf6, active, land)
++                    outer, inner = sum(first, tight.iterations), sum(last, tight.iterations)
++                    @info "gpu $precision vs mf6, $period, tight closures: max |Δh| = $(fmt(dh)) m, " *
++                          "baseflow $(fmt(dbf)), capillary rise $(fmt(dcap)) (× domain max); " *
++                          "$outer outer / $inner inner iterations over $(length(tight.heads)) periods"
++                    htol, ftol = coupling_tolerance(precision)
++                    @test dh < htol
++                    @test dbf < ftol
++                    @test dcap < ftol
++
++                    prod = parity_run(dir("prod_gpu_$precision"), period, with_engine(INDUS.solver, "gpu"; precision))
++                    ph, pbf, pcap = parity_differences(prod, prod_mf6, active, land)
++                    @info "gpu $precision vs mf6, $period, production closures: max |Δh| = $(fmt(ph)) m, " *
++                          "baseflow $(fmt(pbf)), capillary rise $(fmt(pcap)) (× domain max); " *
++                          "gpu production heads within $(fmt(head_difference(prod, tight, active))) m of its tight heads"
++                end
++            end
++        end
++    end
++
++    if get(ENV, "MODFLOWCOUPLING_CLOSURE_TABLE", "0") == "1"
++        rows = String[]
++        engines = [("mf6", "")]
++        append!(engines, [("gpu", p) for p in PARITY_PRECISIONS])
++        for (engine, precision) in engines
++            label = engine == "mf6" ? "mf6" : "gpu $precision ($BACKEND)"
++            kw = engine == "gpu" ? (; precision) : (;)
++            cells = String[]
++            for period in ("month", "day")
++                dir(name) = joinpath(tmp, "closure_$(engine)$(precision)_$(period)_$name")
++                parity_run(dir("warmup"), period, with_engine(INDUS.solver, engine; kw...))   # compile
++                tight = parity_run(dir("tight"), period, with_engine(TIGHT, engine; kw...))
++                push!(cells, "$(fmt(median(tight.seconds))) s")
++                for dvclose in (5.0, 0.5, 0.01)
++                    r = parity_run(dir("dv$dvclose"), period,
++                                   with_engine(INDUS.solver, engine; outer_dvclose = dvclose, inner_dvclose = dvclose, kw...))
++                    push!(cells, "$(fmt(head_difference(r, tight, active))) m, $(fmt(median(r.seconds))) s")
++                end
++            end
++            push!(rows, "| $label | " * join(cells, " | ") * " |")
++        end
++        header = "| engine | monthly tight | monthly 5 | monthly 0.5 | monthly 0.01 | daily tight | daily 5 | daily 0.5 | daily 0.01 |\n" *
++                 "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"
++        println("\nClosure table (distance to the tight heads, median wall time per period):\n", header, "\n", join(rows, "\n"))
++    end
++end
+diff --git a/test/runtests.jl b/test/runtests.jl
+index 0b19ec2..4db8b1d 100644
+--- a/test/runtests.jl
++++ b/test/runtests.jl
+@@ -16,8 +16,21 @@ const DATA_DIR = get(ENV, "INDUS_DATA", INDUS.data_dir)
+ const ENGINES = split(get(ENV, "MODFLOWCOUPLING_ENGINES", "mf6,gpu"), ",")
+ "The engine of the configs made by `test_config`."
+ const ENGINE = Ref("mf6")
++# Backend of the GPU engine (`[solver] backend`): "auto" (the CPU backend unless a GPU
++# package is loaded), "cpu", or "rocm" (loads AMDGPU, a test dependency; the GPU must
++# work). Device arrays are tested without scalar indexing.
++const BACKEND = lowercase(get(ENV, "MODFLOWCOUPLING_BACKEND", "auto"))
++if BACKEND == "rocm"
++    using AMDGPU
++    AMDGPU.allowscalar(false)
++end
++# Test groups: "indus" (the model tests, both engines), "parity" (test/coupling_parity.jl).
++# Select with Pkg.test(test_args = ["parity"]) or MODFLOWCOUPLING_TESTS=parity.
++const TEST_GROUPS = isempty(ARGS) ? split(get(ENV, "MODFLOWCOUPLING_TESTS", "indus,parity"), ",") : ARGS
+ 
+-with_engine(sv, engine) = MC.SolverSettings(; (f => getfield(sv, f) for f in fieldnames(MC.SolverSettings))..., engine)
++"`sv` with `engine` and the other fields in `kw` replaced; the GPU backend is `BACKEND`."
++with_engine(sv, engine; kw...) =
++    MC.SolverSettings(; (f => getfield(sv, f) for f in fieldnames(MC.SolverSettings))..., engine, backend = BACKEND, kw...)
+ 
+ function test_config(dir; start = Date(1979, 1, 1), stop = Date(1979, 3, 31), engine = ENGINE[], kwargs...)
+     Config(INDUS; data_dir = DATA_DIR, work_dir = joinpath(dir, "mf6"), output_dir = joinpath(dir, "output"),
+@@ -63,7 +76,7 @@ end
+ 
+ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+ 
+-@testset "ModflowCoupling: Indus example" begin
++"indus" in TEST_GROUPS && @testset "ModflowCoupling: Indus example" begin
+     tmp = mktempdir()
+     cfg = test_config(tmp)
+     s = read_static_inputs(cfg)
+@@ -348,3 +361,5 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+         @test w.delr ≈ s.delr && w.delc ≈ s.delc
+     end
+ end
++
++"parity" in TEST_GROUPS && include("coupling_parity.jl")
