@@ -11,7 +11,7 @@
     @test ModflowGPU.select_backend(TEST_BACKEND) === TEST_BACKEND
     @test_throws "Unknown backend 'foo'" ModflowGPU.select_backend("foo")
     @test ModflowGPU.backend_options() == ["auto", "cpu", "cuda", "rocm", "metal", "oneapi", "opencl"]
-    @test ModflowGPU.backend_name(CPU()) in ("CPU", "POCLBackend")  # KA 0.9, KA 0.10
+    @test ModflowGPU.backend_name(CPU()) == "POCLBackend"  # `CPU` is POCL since KA 0.10
 
     # Fake registrations to test the dispatch on registered backends. Restore the registry
     # afterwards, so a real GPU backend registered by an extension stays available.

@@ -17,22 +17,17 @@ permissions:
 
 jobs:
   test:
-    name: Julia ${{ matrix.version }}, KA ${{ matrix.ka }} (CPU)
+    name: Julia ${{ matrix.version }} (CPU)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         version: ['1.12', '1']
-        # KA 0.10 (CPU backend is POCL) and KA 0.9 (native Julia CPU backend; the version
-        # mGV allows, so the Milestone B environment uses it)
-        ka: ['0.10', '0.9']
     steps:
       - uses: actions/checkout@v4
       - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.version }}
       - uses: julia-actions/cache@v3
-      - name: Restrict KernelAbstractions to ${{ matrix.ka }}
-        run: julia --project=test -e 'using Pkg; Pkg.compat("KernelAbstractions", "${{ matrix.ka }}"); Pkg.resolve()'
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1

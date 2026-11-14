@@ -110,7 +110,7 @@ end
 Page-lock host memory to speed up device transfers. Returns `nothing` when nothing was
 done (the default, unless a backend extension adds a method for its backend), otherwise a
 handle the caller keeps for as long as the memory should stay pinned (CUDA: the array;
-ROCm: a registered `ROCArray` wrapper, AMDGPU >= 2.10). Copies from pinned memory may run
+ROCm: a registered `ROCArray` wrapper). Copies from pinned memory may run
 asynchronously: synchronize before overwriting it.
 """
 pin_memory!(::Backend, arr) = nothing
