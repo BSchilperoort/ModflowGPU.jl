@@ -126,7 +126,7 @@ closures already looser are kept):
 | Closure | Float32 floor | Why |
 | --- | --- | --- |
 | OUTER_DVCLOSE | `max(1e-6 m, eps32 · max_n \|h'_n\|)` (checked every outer iteration) | A Float32 offset head resolves `eps32·\|h'\|`; the correction of a converged state is noise of ~0.25 `eps32·max\|h'\|` (toth: `\|δ\|` stalls at 3.05e-5 m with offsets up to 1010 m, so a fixed 1e-5 never converges) |
-| INNER_DVCLOSE | 1e-6 m; raised to OUTER_DVCLOSE for the rest of the step once a correction meets OUTER_DVCLOSE but its inner solve did not converge (T5.3, below) | below the outer floor is wasted work |
+| INNER_DVCLOSE | 1e-6 m; at least `eps32 · max_n \|h'_n\|` for the rest of the step once a correction meets OUTER_DVCLOSE but its inner solve did not converge (T5.3, T6.0, below) | the first inner correction of a converged Float32 state is rounding noise of that size |
 | INNER_RCLOSE (absolute options) | `≥ eps32 · max_n Σ_m \|terms\|` of the first outer iteration of the step (×√n for the L2 options) | the rounding level of the flux-form residual (rule 2); T2.7: an absolute rclose below ~`eps32·‖A‖·‖δ‖` is unreachable |
 
 Measured: the factor on the rclose floor sets the `:single` budget discrepancy (hanic: 10
@@ -395,8 +395,8 @@ both engines); adopting the proposal means a per-engine default in the patched
 ex-gwf-lgrv-gc (9×61×49, 26901 cells) and ex-gwf-lgrv-gr (25×183×147, 672525 cells):
 ICELLTYPE 0, one steady period, RIV, RCHA, K33OVERK; IMS CG, ILU0, `INNER_RCLOSE ...
 STRICT`. Both are in the assembly and run parity tests (`parity_examples`, test/input_files.jl;
-`MFGPU_TEST_LGRV_GR=0` skips -gr, which adds about 5 min to the CPU suite with KA 0.10's
-POCL CPU backend).
+`MFGPU_TEST_LGRV_GR=0` skips -gr, which adds about 2.5 min to the CPU suite; never in CI, which
+has no `reference/`).
 
 **Universal residual and oracle** (MF6 tight heads; CPU and ROCm alike): max |res| / max
 Σ|terms| in `:single` (rounding bound) and `:double`; libmf6 first solve, `amat` and `b'`.
@@ -416,8 +416,8 @@ pd = |percent discrepancy|; listing 0 in every case; CPU backend times):
 | gc `:mixed` (mc_ilu0) | 3.06e-7 | 8.5e-11 | 5.9e-10 % | 2/566 | 1.0 s |
 | gc `:double` (mc_ilu0) | 3.06e-7 | 8.5e-11 | 6.4e-10 % | 2/566 | 0.5 s |
 | gr `:single` (amg) | 6.06e-6 | 2.5e-6 | 5.9e-4 % | 6/151 | 19.6 s |
-| gr `:mixed` (mc_ilu0) | 2.32e-6 | 2.0e-10 | 2.6e-8 % | 5/3422 | 136 s |
-| gr `:double` (mc_ilu0) | 2.32e-6 | 2.0e-10 | 2.6e-8 % | 5/3421 | 139 s |
+| gr `:mixed` (mc_ilu0) | 2.32e-6 | 2.0e-10 | 2.6e-8 % | 5/3422 | 64 s |
+| gr `:double` (mc_ilu0) | 2.32e-6 | 2.0e-10 | 2.6e-8 % | 5/3421 | 68 s |
 
 ROCm (RX 7800 XT): the same iterations and bitwise the same heads as the CPU backend in
 every row (max |Δh| = 0, also the assembled systems); run times gc 0.1 / 0.1 / 0.1 s and

@@ -230,13 +230,12 @@ end
     end
 end
 
-# T5.3: in Float32, once a correction meets OUTER_DVCLOSE and only the inner test failed,
-# INNER_DVCLOSE is raised to OUTER_DVCLOSE for the rest of the step. With one inner
-# iteration the corrections stall near the fixed 1e-6 m inner floor: before the rule this
-# step took 99 outer iterations in Float32 (46 with it). Float64 keeps its inner settings.
 # T5.3/T6.0: once a correction meets OUTER_DVCLOSE and only the inner test failed, Float32
 # raises INNER_DVCLOSE to the head resolution eps32·max|h'|, never to a loose OUTER_DVCLOSE
-# (here 1e-3); Float64 is unchanged.
+# (here 1e-3); Float64 is unchanged. With one inner iteration the step does not converge
+# within the 70 outer iterations here (heads up to 6.4 m, so eps32·max|h'| < 1e-6 and the
+# floor stays 1e-6: 99 outer iterations in Float32, 83 in Float64). T5.3's raise to
+# OUTER_DVCLOSE converged in 46 by accepting inner changes up to 1e-3 m; this test fails on it.
 @testset "Float32: INNER_DVCLOSE raised when only the inner test blocks convergence" begin
     sim = load_simulation(joinpath(@__DIR__, "..", "models", "coupling_rde"))
     spec = only(sim.models)
