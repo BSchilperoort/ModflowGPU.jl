@@ -234,15 +234,25 @@ _tight(T, method; kw...) = KrylovSettings(;
         # ILUT of COMPLEXITY COMPLEX with RELAXATION_FACTOR 0 given (ModflowCoupling): a message.
         ims = ImsSpec(; complexity = :complex, preconditioner_levels = 5, relaxation_factor = 0.0, given = ["COMPLEXITY", "RELAXATION_FACTOR"])
         @test_logs (:info, r"ILUT is replaced by mc_ilu0") KrylovSettings(ims)
-        # Logged once per session (maxlog = 1), also the backtracking warning (T5.2).
+        # Logged once per session (maxlog = 1), also the backtracking warning (T5.2), but
+        # per message (T5.4): another preconditioner, or the replacement of another model's
+        # preconditioner by an explicit one, is still logged once.
         logger = Test.TestLogger(; respect_maxlog = true)
         Base.CoreLogging.with_logger(logger) do
             for _ in 1:3
                 KrylovSettings(ImsSpec(; preconditioner_levels = 5, given = ["PRECONDITIONER_LEVELS"]))
                 PicardSettings(ImsSpec(; backtracking_number = 5), Float64)
             end
+            for _ in 1:2
+                KrylovSettings(ImsSpec(; relaxation_factor = 0.97, given = ["RELAXATION_FACTOR"]))
+                KrylovSettings(ImsSpec(; preconditioner_levels = 5, given = ["PRECONDITIONER_LEVELS"]); preconditioner = :amg)
+                KrylovSettings(ImsSpec(; preconditioner_levels = 5, given = ["PRECONDITIONER_LEVELS"]); preconditioner = :jacobi)
+            end
         end
         @test count(r -> occursin("ILUT is replaced", r.message), logger.logs) == 1
+        @test count(r -> occursin("MILU0 is replaced", r.message), logger.logs) == 1
+        @test count(r -> occursin("ModflowGPU preconditioner amg", r.message), logger.logs) == 1
+        @test count(r -> occursin("ModflowGPU preconditioner jacobi", r.message), logger.logs) == 1
         @test count(r -> occursin("backtracking is not implemented", r.message), logger.logs) == 1
         ims = ImsSpec(; rclose_option = :l2norm_relative, scaling_method = :diagonal, reordering_method = :rcm)
         st = @test_logs (:info,) (:info, r"REORDERING_METHOD RCM") KrylovSettings(ims)

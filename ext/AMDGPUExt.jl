@@ -15,6 +15,10 @@ end
 # and the array alive; copies from the array then use DMA without a staging copy).
 ModflowGPU.pin_memory!(::ROCBackend, arr::Array) = unsafe_wrap(AMDGPU.ROCArray, arr)
 
+# Return the buffer to the stream-ordered pool now (`finalize`; wrapped host memory is
+# unregistered).
+ModflowGPU.free_memory!(::ROCBackend, arr::AMDGPU.ROCArray) = (AMDGPU.unsafe_free!(arr); nothing)
+
 function __init__()
     return ModflowGPU.register_backend!("rocm", "AMDGPU", AMDGPU.functional, ROCBackend)
 end

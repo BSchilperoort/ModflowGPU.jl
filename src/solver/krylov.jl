@@ -451,6 +451,11 @@ function _precond_from_complexity(ims::ImsSpec)
     return true
 end
 
+# Log id of a once-per-session message (`maxlog = 1`): the message itself. With the
+# default id (the call site) `maxlog` counted per call site, so a message for another
+# preconditioner of a later model in the same process was suppressed (T5.4).
+_log_id(msg::AbstractString) = Symbol(msg)
+
 function KrylovSettings(ims::ImsSpec; preconditioner::Symbol = :auto, precond_options::NamedTuple = (;))
     pc = ims_preconditioner(ims.preconditioner_levels, ims.relaxation_factor)
     if preconditioner === :auto
@@ -458,14 +463,16 @@ function KrylovSettings(ims::ImsSpec; preconditioner::Symbol = :auto, precond_op
         msg = "IMS preconditioner $(uppercase(String(pc))) is replaced by $preconditioner (multicolour ILU0 in red–black order, the default; see the `preconditioner` option)"
         # ILU0 maps to ILU0 in another ordering; MILU0 / ILUT / MILUT lose their options:
         # a warning when those were given explicitly, a message when they come from the
-        # COMPLEXITY defaults only (e.g. ILUT of COMPLEXITY COMPLEX). Logged once per session.
+        # COMPLEXITY defaults only (e.g. ILUT of COMPLEXITY COMPLEX). Logged once per session
+        # and message (`_log_id`).
         if pc === :ilu0 || _precond_from_complexity(ims)
-            @info msg ims.file maxlog = 1
+            @info msg ims.file maxlog = 1 _id = _log_id("info: " * msg)
         else
-            @warn msg ims.file maxlog = 1
+            @warn msg ims.file maxlog = 1 _id = _log_id("warn: " * msg)
         end
     else
-        @info "IMS preconditioner $(uppercase(String(pc))) replaced by the ModflowGPU preconditioner $preconditioner" ims.file maxlog = 1
+        msg = "IMS preconditioner $(uppercase(String(pc))) replaced by the ModflowGPU preconditioner $preconditioner"
+        @info msg ims.file maxlog = 1 _id = _log_id(msg)
     end
     ims.reordering_method === :none ||
         @info "IMS REORDERING_METHOD $(uppercase(String(ims.reordering_method))) has no effect with the $preconditioner preconditioner" ims.file

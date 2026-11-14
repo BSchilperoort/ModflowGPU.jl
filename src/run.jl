@@ -84,7 +84,7 @@ function run(
             update(s) || (r = last(s.results); throw(ConvergenceError(r.step.kper, r.step.kstp, r.outer.iterations)))
         end
     finally
-        finalize(s)
+        finalize(s; free = false)   # the model is returned (RunResult)
     end
     out = s.output
     paths = isnothing(out) ? ("", "", "") : (out.head_path, out.budget_path, out.listing_path)

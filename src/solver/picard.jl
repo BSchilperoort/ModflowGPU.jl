@@ -72,8 +72,10 @@ function PicardSettings(
         precond_options::NamedTuple = (;),
     ) where {T <: AbstractFloat}
     get_c(k, default) = (isnothing(closures) || !haskey(closures, k)) ? default : getfield(closures, k)
-    ims.backtracking_number > 0 &&
-        @warn "IMS BACKTRACKING_NUMBER = $(ims.backtracking_number) (COMPLEXITY $(uppercase(String(ims.complexity))) or given): backtracking is not implemented until T6.2; outer iterations may differ from MF6" ims.file maxlog = 1
+    if ims.backtracking_number > 0
+        msg = "IMS BACKTRACKING_NUMBER = $(ims.backtracking_number) (COMPLEXITY $(uppercase(String(ims.complexity))) or given): backtracking is not implemented until T6.2; outer iterations may differ from MF6"
+        @warn msg ims.file maxlog = 1 _id = _log_id(msg)
+    end
     ims.under_relaxation in (:none, :simple, :cooley, :dbd) || throw(ArgumentError("unknown IMS UNDER_RELAXATION $(ims.under_relaxation)"))
     dvclose = Float64(get_c(:outer_dvclose, ims.outer_dvclose))
     maxiter = Int(get_c(:outer_maximum, ims.outer_maximum))
