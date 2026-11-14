@@ -22,7 +22,7 @@ Each Phase 4 card reports its effect on these numbers with `benchmark/run.jl`.
 (benchmark/results/2026-11-08-T4.5.md). Met: `global5m` steady 2.92 s (`:double`
 3.71 s); in-solver SpMV 76–77 % of triad (`:single` 70–72 %); indus steady 0.09 s;
 period data 5.6 / 9.1 ms; AMG memory within +60 % except indus `:single` (+67 %).
-Carried over (no card yet; pick up when a later card needs the speed):
+Carried over to card T4.7 (at the end of this file):
 - `global5m` daily step 0.263 s (`:double` 0.324 s, `:single` 0.120 s) vs < 0.2 / < 0.1 s:
   ~11 ms preconditioner setup per outer iteration against ~3 inner iterations.
 - `global5m` 31 steps 10.8 s vs < 10 s.
@@ -111,3 +111,32 @@ Carried over (no card yet; pick up when a later card needs the speed):
   or the reason why not is documented.
   Also investigate why runs with the section timer enabled are 3–43 % faster than
   untimed runs (T4.1 open issue).
+
+**T4.7 Carried-over Phase 4 targets (M), scheduled after T5.4**
+- Depends: T4.5, T5.0 (measure on KA 0.10 only). Start it when the T5.4 timings show
+  that ModflowGPU, not mGV, limits the coupled daily step. If mGV dominates, close this
+  card by recording the four targets as dropped in the status block above.
+- Deliver, each against its target in the status block:
+  1. Daily step (`global5m` < 0.2 s in `:double`, < 0.1 s in `:single`; 31 steps
+     < 10 s): remove the ~11 ms preconditioner setup per outer iteration, which now
+     stands against ~3 inner iterations. Candidate: keep the MC-ILU0 factors while only
+     the diagonal changes a little, and refactor when the inner iteration count grows.
+  2. Latency (indus < 40 µs per inner iteration; now 8 kernels per CG iteration):
+     single-pass reductions and the direction update fused into the SpMV. From the
+     T3.1 report: fewer than 2 (CG) or 3 (BiCGSTAB) host synchronisations per iteration
+     needs the Krylov scalars on the device with one host check per iteration. That
+     changes where the scalars are rounded, so re-run the parity groups.
+  3. Assembly (< 4 ms per outer iteration on `global5m`; now 5.7 ms): fewer bytes per
+     entry, or the package record kernels fused into the row kernel.
+  4. Small items from earlier reports, to do while in this code:
+     - T4.4: no per-solve preconditioner switch. On the CPU backend, AMG for the steady
+       state would save 3.4 of 17.2 s on `continental`.
+     - T4.3: `AMGPreconditioner.fine::Any` and the per-cycle host allocation of the
+       smoother coefficients; with DIAGONAL scaling the near-null space is fixed at
+       build time; indus `:single` AMG memory is +67 % (target +60 %).
+     - T4.6: `:single` period data at 9.1 ms has little margin (single-thread Float32
+       cast of RCH, ~4 ms); mirrors compare the whole array per push (~1–2 ms for RIV
+       on `global5m`; gone where T5.2 writes device arrays).
+     - T4.1: `report_mf6` throws a BoundsError if mf6 fails before any `Solving` line.
+- Done when: `benchmark/run.jl` shows each target met, or the reason why not is
+  documented in the status block; the parity groups pass on CPU and rocm in all presets.

@@ -17,9 +17,9 @@ rounding the offset heads to `T`. CPU and ROCm (RX 7800 XT) give bitwise identic
 
 | Model | nodes, steps | `:double` | `:single` | `:single` rounding bound |
 | --- | --- | --- | --- | --- |
-| ex-gwf-toth | 1 | 5.6e-9 | 4.9e-5 | 4.9e-5 | 3.4e-13 / 3.2e-7 | 1.3e-7 | 2.5e-5 % | 3/1247, 3/1435, 2/254 |
-| ex-gwf-hanic | 1 | 1.5e-9 | 5.1e-7 | 4.6e-7 | 9.4e-10 / 4.0e-7 | 0 | 1.0e-3 % | 3/199, 3/146, 2/39 |
-| ex-gwf-hanir | 1 | 1.4e-9 | 5.0e-7 | 5.3e-7 | 9.0e-10 / 4.9e-7 | 0 | 1.2e-3 % | 4/222, 3/151, 2/39 |
+| ex-gwf-toth | 20000, 1 | 5.7e-13 | 4.6e-5 | 1.3e-4 |
+| ex-gwf-hanic | 2601, 1 | 3.4e-11 | 2.1e-7 | 1.2e-6 |
+| ex-gwf-hanir | 2601, 1 | 3.4e-11 | 2.1e-7 | 1.2e-6 |
 | ex-gwf-hwell-a | 153164, 60 | 1.6e-12 | 8.0e-5 | 4.8e-4 |
 | fhb_const (synthetic) | 30, 20 | 2.5e-12 | 7.2e-7 | 3.7e-6 |
 | coupling_rde (synthetic) | 337, 10 | 8.0e-13 | 2.7e-7 | 8.1e-7 |

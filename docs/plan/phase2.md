@@ -93,7 +93,7 @@ the same code on the GPU.
   2. `amat`/`b'` vs libmf6 after the first `solve` where the address exists.
   3. A cancellation test: a column of cells at 5000 m with 1 cm head
      differences, where the `:single` flux-form residual must match the
-     `:double` one within 1e-4 relative. Show in the PR that `b − A·h` in
+     `:double` one within 1e-4 relative. Show in the card report that `b − A·h` in
      Float32 fails this test.
 - Done when: all three pass in `:single` and `:double` on all loadable Tier 0–2
   examples and the synthetic coupling model.

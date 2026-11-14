@@ -9,7 +9,9 @@ Size: S ≈ < 1 day of agent work, M ≈ 1–3 days, L ≈ > 3 days.
 column `ncol` with a periodic connection, using the T6.6 self-exchange.
 Validate against mf6 with an equivalent `GWF6-GWF6` self-exchange. Also remove
 ModflowCoupling's limitation "a domain that crosses the edge of the input maps
-cannot be cut".
+cannot be cut". Open question for the owner (PLAN.md section 8): `ex-gwf-spbc` needs
+only a self-exchange of one model, so the wrap could be a periodic connection in the
+DIS connectivity and would then not wait for T6.6.
 
 **T7.2 Spherical geometry (M).** Row-dependent cell width and area (true
 geometry instead of RCH/EVT area-factor scaling). This deviates from MF6 DIS;
@@ -24,7 +26,10 @@ daily step. This is the first Milestone D result and needs no extra hardware.
 
 **T7.4 30″ design note (S).** Depends: T7.3. Before building multi-GPU, write
 `docs/design_30s.md`. It covers: memory per active node measured in T7.3, scaled
-to global 30″; minimum GPU count and memory per GPU; partitioning (latitude
+to global 30″ (starting point from T3.4, `docs/scaling.md`: 189 GiB in `:single` and
+300 GiB in `:double` for the model arrays alone, without the preconditioner); the index
+type (3.9 G CSR entries exceed `Int32`, so one global model needs `Int64` row pointers,
+while partitions may stay within `Int32`); minimum GPU count and memory per GPU; partitioning (latitude
 bands vs land-balanced blocks, given that ~70 % of the grid is ocean);
 communication volume per iteration; and whether the coupling with mGV can be
 partitioned the same way. End with a go/no-go recommendation for T7.5 and the

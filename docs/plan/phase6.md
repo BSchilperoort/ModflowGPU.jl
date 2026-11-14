@@ -1,11 +1,33 @@
-# Phase 6: generic MF6 GWF (Milestone C); cards are independent once Phase 3 is done
+# Phase 6: generic MF6 GWF (Milestone C)
 
 Task cards for this phase of [PLAN.md](../../PLAN.md). Read PLAN.md sections 1–4 and 6 for the goals, conventions, architecture and validation rules these cards refer to.
 
 Size: S ≈ < 1 day of agent work, M ≈ 1–3 days, L ≈ > 3 days.
 `‖` marks cards that can run in parallel with their siblings.
 
+All cards need Phase 3. Dependencies inside the phase are on each card; they follow the
+`requires` field of each example in `validation/examples.toml` (checked 2026-11-11).
+T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
+
+**T6.0 Parity on the confined lgrv examples (S) ‖**
+- Depends: T4.5 (no Phase 6 card).
+- `ex-gwf-lgrv-gc` and `ex-gwf-lgrv-gr` have `requires = []`: ICELLTYPE 0 everywhere,
+  RIV, RCHA, K33OVERK, and `-gr` is 25×183×147. The strict loader accepts them, but no
+  parity test runs them. They are the only real MF6 decks with RIV and RCHA at size
+  that the Milestone A engine supports (PLAN.md section 4.1).
+- Deliver: both examples in the universal residual test (`test/parity/assembly_test.jl`)
+  and in the run parity test (`test/parity/run_test.jl`) against
+  `reference/runs/<example>/tight/`, in `:single`, `:mixed` and `:double`, with the
+  default preconditioner, on CPU and rocm. If `-gr` is too slow for the default CPU
+  suite, make it opt-out like hwell-a (`MFGPU_TEST_HWELL`). Add the measured numbers to
+  `docs/precision.md` and both examples to "Validated models" in
+  `docs/support_matrix.md`.
+- Done when: the section 4 heads and budget criteria pass in all three presets on CPU
+  and rocm. A failure is fixed in this card if it is a bug in a supported feature, and
+  otherwise reported with the missing feature named.
+
 **T6.1 Convertible cells and rewetting (L) ‖**
+- Depends: no Phase 6 card.
 - Read: `gwf-npf.f90` (`sat`, `THICKSTRT`, `VARIABLECV [DEWATERED]`,
   `PERCHED`, `wd` rewetting: `WETFCT`, `IWETIT`, `IHDWET`), `gwf-sto.f90` (Sy,
   convertible storage).
@@ -20,9 +42,23 @@ Size: S ≈ < 1 day of agent work, M ≈ 1–3 days, L ≈ > 3 days.
 - From the T2.4 review: RIV/DRN check negative conductance after the multiplier; MF6
   checks raw cond and the multiplier separately. Port the cell-bottom `*_ck` checks for
   convertible cells, and move EVT to the highest active cell when IBOUND changes.
-- Done when: Tier 3 examples pass parity.
+- From the T4.5 review: the off-diagonals are rewritten only when `m.offdiag` says so
+  (`src/gwf/model.jl`). Head-dependent conductance must set `m.offdiag = nothing` every
+  outer iteration, or pass `offdiag = true`.
+- From the T4.6 report: the period-data fast path keeps moved RCH/EVT nodes when a
+  block applied with an `ibound` is followed by the same cells without one. The model
+  path always passes `ibound = nothing` today; this becomes reachable once IBOUND
+  changes.
+- Done when: the Tier 3 examples pass parity. `ex-gwf-advtidal` also needs T6.3: it is
+  owned by whichever of T6.1 and T6.3 merges last, and the first of the two leaves it
+  out.
 
-**T6.2 Newton–Raphson (L) ‖**
+**T6.2 Newton–Raphson (L)**
+- Depends: T6.1 for the Newton part: all eight Tier 4 examples require `convertible`
+  cells, and the Newton terms are the derivatives of the saturation functions that T6.1
+  adds. The backtracking part depends on no Phase 6 card: deliver it first on its own
+  branch as **T6.2a** (S, ‖). It removes the "backtracking is not applied" warning for
+  `COMPLEXITY MODERATE`/`COMPLEX` models, among them the coupling model.
 - Read: `gwf-npf.f90` (`npf_fn`), `gwf-sto.f90` (`sto_fn`), boundary `*_fn`,
   `SmoothingFunctions.f90`, `NumericalSolution.f90` (Newton under-relaxation,
   backtracking, `UNDER_RELAXATION DBD`).
@@ -30,15 +66,20 @@ Size: S ≈ < 1 day of agent work, M ≈ 1–3 days, L ≈ > 3 days.
   nonsymmetric matrix), backtracking (also for non-Newton models with
   `COMPLEXITY MODERATE`/`COMPLEX`, deferred from T2.8), and `NEWTON
   UNDER_RELAXATION`.
-- Done when: Tier 4 examples pass parity.
+- Done when: T6.2a: the coupling_rde COMPLEX run backtracks where MF6 does (MF6: in 3
+  of 125 outer iterations, `docs/precision.md`), the warning is gone, and the run
+  parity tests still pass. T6.2: the Tier 4 examples pass parity.
 
 **T6.3 Time series and time-array series (M) ‖**
+- Depends: no Phase 6 card.
 - Read: `src/Utilities/TimeSeries/*.f90`.
 - Deliver: TS6 files (`STEPWISE`, `LINEAR`, `LINEAREND`, `SFAC`) and TAS6,
   evaluated per time step on the host and copied to device `bound` arrays.
-- Done when: fhb and advtidal pass parity.
+- Done when: fhb passes parity (replacing the `fhb_const` stand-in of Tier 2), and
+  advtidal too if T6.1 is merged (see T6.1).
 
 **T6.4 DISV and DISU (M) ‖**
+- Depends: no Phase 6 card.
 - Read: `Disv.f90`, `Disu.f90`, `Connections.f90` (`disvconnections`,
   `disuconnections`, `anglex`).
 - Deliver: connectivity for vertex and unstructured grids, `anglex` for the K
@@ -46,20 +87,28 @@ Size: S ≈ < 1 day of agent work, M ≈ 1–3 days, L ≈ > 3 days.
 - Done when: Tier 5 examples pass parity.
 
 **T6.5 XT3D (L)**
-- Depends: T6.4.
+- Depends: T6.4 for the DISV examples only (`ex-gwf-u1disv-x`, `ex-gwf-disvmesh`).
+  `ex-gwf-hanix` and `ex-gwf-whirl` are DIS models and need no other Phase 6 card, so
+  the card can start on DIS before T6.4 is merged.
 - Read: `src/Model/ModelUtilities/Xt3dInterface.f90`, `Xt3dAlgorithm.f90`.
 - Deliver: the extended connection stencil (CSR with neighbours of neighbours,
   `XT3D` and `RHS` options), formulated per cell in a kernel.
 - Done when: Tier 6 examples pass parity.
 
 **T6.6 Multi-model solutions and GWF–GWF exchanges (L)**
+- Depends: T6.5 for `ex-gwf-u1gwfgwf-s2`, `-s3` and `-s4` (XT3D in NPF or on the
+  exchange). `-s1`, `ex-gwf-lgrv-lgr` and `ex-gwf-spbc` need no other Phase 6 card: all
+  Tier 7 models are DIS, so T6.4 is not a dependency.
 - Read: `src/Exchange/exg-gwfgwf.f90`, `src/Solution/NumericalSolution.f90`
   (global matrix across models), `GwfGwfConnection.f90` (interface model).
 - Deliver: several GWF models in one solution, exchanges with `CDIST`, `ANGLDEGX`,
   `IHC`, `XT3D` on the exchange, and a self-exchange (spbc).
 - Done when: Tier 7 examples pass parity. This is the base for T7.1.
 
-**T6.7 OBS for GWF heads and flows (S) ‖**
+**T6.7 OBS for GWF heads and flows (S)**
+- Depends: T6.3 for fhb; T6.1 and T6.3 for advtidal; T6.1 and T6.4 for rad-disu
+  (DISU with convertible storage). The OBS code itself can be written and unit-tested
+  on the Milestone A models before those cards.
 - Deliver: `HEAD`, `DRAWDOWN`, `FLOW-JA-FACE` and package observations, written
   as CSV like MF6.
 - Done when: observation files of advtidal, fhb and rad-disu match within

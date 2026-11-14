@@ -15,7 +15,7 @@ ai_usage:
     The plan (PLAN.md and docs/plan/) was written with AI assistance and is executed by
     AI coding agents, one task card at a time. For each card, an implementer agent writes
     the code, tests, benchmarks and documentation on its own branch, and a separate agent
-    reviews the branch. The owner directs the work, decides on scope and design questions0.
+    reviews the branch. The owner directs the work, decides on scope and design questions.
     Correctness is checked against MODFLOW 6 itself: features are  accepted only when they
     reproduce MF6 heads and budgets.
   tools:

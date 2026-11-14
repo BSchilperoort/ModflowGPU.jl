@@ -30,8 +30,9 @@ julia --project=@runic -m Runic --inplace .                   # format (or `runi
 julia --project=benchmark benchmark/hardware.jl rocm          # hardware baseline (T0.4), also `cpu`
 ```
 
-CI also runs the CPU tests on KernelAbstractions 0.9 (the version mGV allows; its CPU
-backend is native Julia, while KA 0.10's is POCL). The local equivalent temporarily adds a
+Until T5.0 is merged, CI also runs the CPU tests on KernelAbstractions 0.9 (its CPU
+backend is native Julia, while KA 0.10's is POCL). mGV has moved to KA 0.10, so T5.0 drops
+KA 0.9. The local equivalent temporarily adds a
 compat entry to `test/Project.toml`. `Pkg.resolve` does not downgrade an existing
 manifest, so delete the shared root `Manifest.toml` (not committed) first, and again after
 reverting the compat entry so the next resolve returns to KA 0.10:
@@ -67,17 +68,20 @@ above works without extra setup. CI (`.github/workflows/`) runs only the CPU tes
 - **Host vs device:** input parsing, connectivity, graph colouring and AMG setup run on the
   host. Everything done once per outer iteration (assembly, boundary formulation, SpMV,
   preconditioner, convergence checks, budgets) runs in KA kernels.
-- **Compat:** `KernelAbstractions = "0.9.41, 0.10"`. Code must work on both: mGV only
-  allows KA 0.9 (with AMDGPU 2.8), and Milestone B loads both in one environment. See
-  `docs/compat.md` (e.g. `CPU()` is `POCLBackend` in KA 0.10).
+- **Compat:** `KernelAbstractions = "0.9.41, 0.10"` until T5.0 makes KA 0.10 the minimum
+  (PLAN.md decision 7). mGV (a package with GPU weak dependencies since 2026-11-13)
+  requires KA 0.10.7 and AMDGPU 2.11, and Milestone B loads both in one environment. Do
+  not add new KA 0.9 workarounds. See `docs/compat.md` (e.g. `CPU()` is `POCLBackend` in
+  KA 0.10).
 
 ## Float32 and Float64 (PLAN.md section 3.7)
 
 - Both precisions are first-class. Engine structs are parametric in `T` (state, assembly),
   `Ts` (Krylov), `Tp` (preconditioner) and `Ti` (indices, default `Int32`).
-- `resolve_precision(backend, preset)` maps `:double`, `:single`, `:auto` to `(; T, Ts, Tp)`
-  (`:mixed` arrives with T4.4). `:auto` is `:double` if `supports_float64(backend)`, else
-  `:single`; `:double` on a backend without Float64 is an error.
+- `resolve_precision(backend, preset)` maps `:double`, `:mixed`, `:single`, `:auto` to
+  `(; T, Ts, Tp)`. `:mixed` is Float64 state and Krylov with a Float32 preconditioner.
+  `:auto` is `:mixed` if `supports_float64(backend)`, else `:single`; `:double` or
+  `:mixed` on a backend without Float64 is an error.
 - Every unit and parity test runs in `:single` and `:double` via the test helper
   `for_each_precision(f)` (`test/testutils.jl`). **A card is not done if it passes only in
   Float64.**
@@ -98,7 +102,10 @@ above works without extra setup. CI (`.github/workflows/`) runs only the CPU tes
   `:single`.
 - Indus static inputs: `INDUS_DATA=/home/bart/data/modflow/data`. Tests that need them skip
   with a message when `INDUS_DATA` is unset. Never copy the data into this repository.
-  Global inputs are not available; use the synthetic models (T3.4).
+  Tests use the synthetic models (T3.4) at global size. Real global inputs (for T5.5a/b only):
+  MODFLOW in `/home/bart/data/modflow/global_data`, mGV parameters in
+  `/home/bart/data/mGV/vic_global_5min_params_lossless.nc`, mGV forcing in
+  `/media/bart/Data/Work/SWIFT/WFDE5_v3.1_5arcmin.zarr`. Never copy them either.
 - Parity tests that need `reference/` skip with a message when it is missing.
 
 ## ModflowCoupling changes: patch files only

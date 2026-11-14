@@ -32,7 +32,10 @@ accepted only when it reproduces MF6 heads and budgets on MF6 input files
 
 **Out of scope** (document it; do not build): SFR, LAK, MAW, UZF, MVR, CSUB,
 BUY, VSC, API package, GWT, GWE, PRT, and PETSc parallel runs. These are
-sequential or very branchy, and the coupling does not need them.
+sequential or very branchy, and the coupling does not need them. A few GWF
+features are not yet placed in or out of scope (HFB, GNC, TVK/TVS, ATS and some
+output options); they are listed under "Still open" in section 8 and are
+rejected at load time until decided (`docs/support_matrix.md`).
 
 ### 1.1 What the coupling model needs (from `ModflowCoupling/src/mf6_writer.jl`)
 
@@ -56,8 +59,9 @@ CG-compatible boundaries the matrix is symmetric, so preconditioned CG applies.
 ### 1.2 Sizes and the hardware
 
 - Development GPU: **AMD Radeon RX 7800 XT**, gfx1101, 16 GB, wavefront 32;
-  ROCm 7.2.2 in `/opt/rocm`; Julia 1.12.6 (juliaup); AMDGPU.jl 2.10.0 with
-  KernelAbstractions 0.10.3 works (checked 2026-11-06).
+  ROCm 7.2.2 in `/opt/rocm`; Julia 1.12.6 (juliaup); AMDGPU.jl 2.11.0 with
+  KernelAbstractions 0.10.5 (the versions of the Phase 4 benchmarks). KA 0.10
+  is the minimum from T5.0 on (section 8, decision 7; `docs/compat.md`).
 - **Float32 and Float64 are both supported from the start** (section 3.7).
   Float32 is required on backends without Float64 (Metal, Intel Arc via
   oneAPI, some OpenCL devices). On every backend it halves memory and cuts
@@ -67,13 +71,18 @@ CG-compatible boundaries the matrix is symmetric, so preconditioned CG applies.
   atomics are not guaranteed on this card, so the design avoids atomics
   (section 3.4).
 - Global 5′ grid: 4320 × 2160 × 2 ≈ 18.7 M cells, of which roughly a third
-  are land. That gives ~5–7 M active nodes with about 6 non-zeros per row. CSR in
-  Float64 + Int32 plus ~15 Krylov/AMG work vectors is about 2–3 GB, which fits
-  in 16 GB next to mGV. Measure this; mGV's own global footprint is unknown.
-- Global 30″ (43200 × 21600 × 2 ≈ 1.9 G cells, ~0.5–0.7 G active nodes) needs
-  roughly 50–80 GB and does not fit one 16 GB GPU. It needs multi-GPU
-  (Phase 7). A regional 30″ model does fit: the Indus at 30″ is 2040 × 1800 × 2
-  ≈ 7.3 M cells, about the size of global 5′.
+  are land. That gives ~5–7 M active nodes with about 6 non-zeros per row.
+  Measured on the synthetic `global5m` (6.6 M nodes): the model arrays take
+  1.9 GiB in `:single` and 3.0 GiB in `:double` (`docs/scaling.md`), and the
+  peak with the default preconditioner is about 2.5 GiB (`:single`) to 4 GiB
+  (`:double`) (`benchmark/results/`). That fits in 16 GB next to mGV, whose own
+  global footprint is still unknown (T5.5a).
+- Global 30″ (43200 × 21600 × 2 ≈ 1.9 G cells, ~0.65 G active nodes) needs
+  about 190 GiB in `:single` and 300 GiB in `:double` for the model arrays
+  alone (`docs/scaling.md`, scaled from `global5m`). That is 12 to 19 cards of
+  16 GB, so it needs multi-GPU (Phase 7). Its 3.9 G CSR entries also exceed
+  `Int32` indices. A regional 30″ model does fit on one card: the Indus at 30″
+  is 2040 × 1800 × 2 ≈ 7.3 M cells, about the size of global 5′.
 
 ---
 
@@ -93,7 +102,9 @@ CG-compatible boundaries the matrix is symmetric, so preconditioned CG applies.
   `MetalExt.jl`, `oneAPIExt.jl` and `OpenCLExt.jl` each call
   `register_backend!` in `__init__`. Copy `mGV/src/backend_setup.jl` and adapt
   it, keeping the same names (`select_backend`, `register_backend!`,
-  `backend_options`).
+  `backend_options`). mGV is now a package with the same layout: GPU packages
+  as weak dependencies, one `ext/*Ext.jl` per backend, BMI in `src/bmi/`, on
+  KA 0.10 (mGV `main` of 2026-11-13).
 - **Precision:** Float32 and Float64 are both first-class from the first
   kernel on (section 3.7). Engine structs are parametric in `T` (state and
   assembly), `Ts` (Krylov), `Tp` (preconditioner) and `Ti` (indices, default
@@ -112,15 +123,28 @@ CG-compatible boundaries the matrix is symmetric, so preconditioned CG applies.
   machine** (RX 7800 XT), never in CI: `MFGPU_TEST_BACKEND=rocm julia
   --project=test test/runtests.jl`. Their results must match the CPU backend
   within 1e-10 relative for `:double`, and within 1e-4 m in heads for `:single`
-  (reductions run in a different order). Every PR that touches kernels, solver or assembly
-  pastes the local GPU test summary into its description. Parity tests that need
+  (reductions run in a different order). Every card that touches kernels, solver or assembly
+  includes the local GPU test summary in its card report. Parity tests that need
   `reference/` skip with a message when it is missing.
+- **Compat:** `KernelAbstractions = "0.10"` from T5.0 on (section 8,
+  decision 7). Until T5.0 is merged the code and CI still cover KA 0.9.41 as
+  well; do not add new KA 0.9 workarounds.
 - **Data:** Indus static inputs are in `/home/bart/data/modflow/data`. Tests
   find them through `INDUS_DATA=/home/bart/data/modflow/data` and skip with a
-  message when it is unset. Never copy the data into this repository. Global
-  inputs are not available yet; use the synthetic models of T3.4 instead.
-- **Git:** one branch and one PR per card, titled `T<id>: <name>`. Do not
-  commit anything under `reference/` (it is gitignored).
+  message when it is unset. Never copy the data into this repository.
+  MODFLOW global 5′ inputs (`*_oc.nc`, same fields as the Indus files) are in
+  `/home/bart/data/modflow/global_data`. mGV global inputs: parameters
+  `/home/bart/data/mGV/vic_global_5min_params_lossless.nc`, forcing
+  `/media/bart/Data/Work/SWIFT/WFDE5_v3.1_5arcmin.zarr`; T5.5a generates the
+  global mGV routing parameters with
+  [mGV-input-data](https://github.com/SWIFT-WUR/mGV-input-data). Only T5.5a/T5.5b use
+  them; tests keep using the synthetic models of T3.4.
+- **Git:** one local branch per card, `T<id>-<short-name>`, branched from
+  `main`. No GitHub PRs and no pushed card branches. After an independent
+  review the branch is merged into `main` with `git merge --no-ff`, with the
+  card report as the merge commit message, and `main` is pushed to `origin`.
+  An agent does not merge its own branch or push (section 8, decision 6). Do
+  not commit anything under `reference/` (it is gitignored).
 - **ModflowCoupling changes are stored as patch files in this repository**
   (`patches/modflow-coupling/`), never pushed to SWIFT-WUR/Modflow-coupling and
   never made in `/home/bart/data/modflow/ModflowCoupling` (the owner's checkout).
@@ -139,10 +163,12 @@ CG-compatible boundaries the matrix is symmetric, so preconditioned CG applies.
      `[sources]` entry (`ModflowGPU = {path = "../.."}`), added by the first patch.
   `patches/modflow-coupling/README.md` lists each patch, its card, and the base
   commit. If the base must move to a newer upstream commit, rebase all patches
-  and update the README in one PR.
-- **Report:** finish each card with a short note in the PR: what was ported
-  (Fortran routines), test results with numbers, deviations from MF6, open
-  issues.
+  and update the README in one card.
+- **Report:** finish each card with a card report (it becomes the merge commit
+  message): what was ported (Fortran routines), test results with numbers
+  (including the GPU test summary), deviations from MF6, open issues. Open
+  issues that a later card must pick up are also written into that card in
+  `docs/plan/` ("From the T<id> review: …") when the branch is merged.
 
 ---
 
@@ -153,25 +179,30 @@ CG-compatible boundaries the matrix is symmetric, so preconditioned CG applies.
 ```
 mf-gpu/
 ├── Project.toml            # ModflowGPU; [weakdeps] AMDGPU, CUDA, Metal, oneAPI, OpenCL
-├── src/
+├── src/                    # file-by-file map with test groups: docs/api_map.md
 │   ├── ModflowGPU.jl
 │   ├── backend_setup.jl    # from mGV
-│   ├── input/              # MF6 file reader (host only): tokenizer, blocks, arrays, lists, dfn, simulation
+│   ├── precision.jl        # presets, resolve_precision, supports_float64
+│   ├── input/              # MF6 file reader (host only): tokenizer, blocks, arrays, lists, options, dfn/, simulation, supported
 │   ├── spec/               # host-side model description: plain structs, no device arrays
-│   ├── discretization/     # dis.jl, disv.jl, disu.jl → Connectivity
-│   ├── gwf/                # npf.jl, sto.jl, ic.jl
+│   ├── discretization/     # dis.jl, connectivity.jl (disv.jl, disu.jl: T6.4)
+│   ├── gwf/                # model.jl, npf.jl, sto.jl, ic.jl, offsets.jl
 │   ├── boundaries/         # framework.jl, chd, wel, rch, ghb, riv, drn, evt
-│   ├── solver/             # csr.jl, spmv.jl, krylov.jl, precond/, picard.jl, underrelax.jl, scaling.jl
+│   ├── solver/             # csr.jl, krylov.jl, picard.jl, underrelax.jl, precond/ (chebyshev, multicolor, amg)
 │   ├── budget.jl
-│   ├── output/             # hds.jl, cbc.jl, listing.jl (writers and readers)
+│   ├── output/             # hds.jl, cbc.jl, grb.jl, listing.jl, oc.jl (writers and readers)
 │   ├── builder.jl          # in-memory model construction (no files)
+│   ├── mf6_writer.jl       # MF6 input files from a spec (small models, parity runs)
+│   ├── run.jl              # ModflowGPU.run
+│   ├── timing.jl           # TDIS on the host
+│   ├── instrument.jl       # optional section timers for the benchmarks
 │   ├── stepping.jl         # libmf6-like API: prepare_time_step, solve, …, get_value_ptr
 │   └── bmi.jl              # BasicModelInterface
 ├── ext/                    # backend extensions
-├── test/                   # Project.toml (workspace), unit/, parity/, gpu/
-├── validation/             # fetch_reference.sh, run_reference.jl, compare.jl, examples.toml
-├── benchmark/              # synthetic.jl, run.jl, results/*.md
-├── docs/                   # design notes, MF6 deviations, support matrix
+├── test/                   # Project.toml (workspace), unit/, parity/, gpu/, models/
+├── validation/             # fetch_reference.sh, run_reference.jl, examples.toml, libmf6 probes
+├── benchmark/              # hardware.jl, synthetic.jl, run.jl, results/*.md
+├── docs/                   # plan/ (task cards), api_map, precision, scaling, compat, MF6 notes, support matrix
 ├── patches/modflow-coupling/  # git format-patch series for ModflowCoupling + README
 ├── scripts/                # apply_coupling_patches.sh and other helpers
 └── reference/              # gitignored: mf6 binaries, example inputs, MF6 source,
@@ -213,8 +244,11 @@ builder path is required, not optional.
 - With reference offsets (section 3.7) the matrix `A` is the same as MF6's.
   Only the right-hand side changes, to `b' = b − A·r`, which tests compute in
   Float64 when comparing with libmf6.
-- A structured-grid matrix-free stencil or SELL-C-σ format is a **later
-  optimisation** (T4.5), adopted only if a benchmark shows it is worth it.
+- CSR is the only matrix format. T4.5 measured the alternatives and adopted
+  neither (`benchmark/results/2026-11-08-T4.5.md`): SELL-C-σ makes the SpMV
+  4–8 % faster but needs a second copy of the matrix that is refreshed every
+  outer iteration, and a matrix-free stencil needs the full grid, which moves
+  more bytes than CSR over the reduced nodes.
 
 ### 3.4 Boundary packages without atomics
 
@@ -239,28 +273,39 @@ offsets from the cell's reference (section 3.7), not absolute elevations.
    `RELATIVE_RCLOSE` variants). Read `ImsLinearBase.f90` for the exact tests.
    Hand-written, not Krylov.jl, so the stopping rules match MF6 and kernels can be fused.
    Krylov.jl may be used as a test oracle.
-3. **Preconditioners:** first Jacobi (T2.7). Then Chebyshev polynomial,
-   multicolour symmetric Gauss–Seidel / ILU0, and smoothed-aggregation AMG
-   (T4.2–T4.4). AMG setup runs on the host, and the hierarchy is copied to the
-   device as CSR. For confined models the off-diagonals are constant, so the
-   hierarchy is reused across outer iterations and time steps.
+3. **Preconditioners:** Jacobi (T2.7), Chebyshev polynomial, multicolour
+   symmetric Gauss–Seidel and ILU0 (T4.2), and smoothed-aggregation AMG (T4.3),
+   selected with the `preconditioner` keyword. The default is multicolour ILU0
+   (`:mc_ilu0`, T4.4): it is the fastest over a steady state plus daily steps
+   on every benchmark model, and AMG wins only some steady states. AMG setup
+   runs on the host, and the hierarchy is copied to the device as CSR. For
+   confined models the off-diagonals are constant, so the hierarchy is reused
+   across outer iterations and time steps.
 4. **Precision:** all of the above in `:single` and `:double` from the start
-   (section 3.7). T4.4 adds the `:mixed` preset and picks the production
-   default from measurements.
+   (section 3.7). T4.4 added the `:mixed` preset and made it the production
+   default on backends with Float64.
 
 ### 3.6 Public APIs
 
-- `ModflowGPU.run(simdir; backend = "auto")`: run an MF6 simulation directory and
-  write `.hds`/`.cbc`/`.lst`, like `mf6`.
-- `ModflowGPU.Simulation(spec; backend)`: build a model from a spec in memory.
+- `ModflowGPU.run(simdir; backend = CPU(), precision = :auto, preconditioner = :auto)`:
+  run an MF6 simulation directory and write `.hds`/`.cbc`/`.lst`, like `mf6`.
+  `backend` is a KA backend, for example `select_backend("rocm")`.
+- `ModflowGPU.initialize(simdir or spec; backend, precision, preconditioner)`:
+  build a `Simulation` from files or from a spec in memory.
 - **Stepping API (libmf6-like):** `initialize`, `prepare_time_step`,
   `prepare_solve`, `solve`, `finalize_solve`, `finalize_time_step`,
   `get_value_ptr(sim, "GWF/X")`, `"GWF/RIV/BOUND"`, `"GWF/DRN/SIMVALS"`, … Use the
   same addresses as libmf6, so ModflowCoupling's `advance!` can switch engines
-  with few changes. `get_value_ptr` returns device arrays in the engine's
-  precision; head-like arrays (`X`, head columns of `BOUND`) are offsets, and
-  the reference is exposed as `"GWF/HREF"`. `get_value`/`set_value` copy to and
-  from the host and convert between offsets and absolute Float64 values.
+  with few changes. As implemented in T3.3:
+  - `get_value_ptr(sim, address)` returns a **host mirror** in Float64 with
+    absolute heads, synchronised with the device at the call boundaries (see
+    the header of `src/stepping.jl`). This is what libmf6 callers expect.
+  - `get_value_ptr(sim, address; device = true)` returns the engine array on
+    the device in precision `T`. Head-like arrays (`X`, head columns of
+    `BOUND`) are offsets, and the reference is exposed as `"GWF/HREF"`. Writes
+    there bypass the conversions. T5.2 uses this form.
+  - `get_value`/`set_value` copy to and from the host and convert between
+    offsets and absolute Float64 values.
 - `BasicModelInterface` methods for general use, always in absolute values.
 
 ### 3.7 Precision: Float32 and Float64 from the start
@@ -317,11 +362,18 @@ and make Float32 accurate.
    LLVM IR contains `double`. This is how Metal and oneAPI compatibility is
    checked on this machine, which has neither.
 
-**Closures in Float32.** Float32 runs cannot reach `1e-9` closures. T2.8 sets
-the tightest closures `:single` reliably reaches on Tier 0–2. A starting
-guess: `OUTER_DVCLOSE 1e-5`, `INNER_RCLOSE 1e-6` relative. The result goes in
-`docs/precision.md`, and the parity runs use it as the single-precision "tight"
-setting.
+**Closures in Float32.** Float32 runs cannot reach `1e-9` closures. T2.8 set
+floors that `:single` applies to any tighter closure (`FLOAT32_CLOSURES`,
+`docs/precision.md`), and the parity runs use them as the single-precision
+"tight" setting:
+
+- `OUTER_DVCLOSE ≥ max(1e-6 m, eps32 · max |h'|)`, checked every outer
+  iteration. A fixed floor does not work: on toth the correction stalls at
+  3e-5 m because the offsets reach 1010 m.
+- `INNER_DVCLOSE ≥ 1e-6 m`.
+- Absolute `INNER_RCLOSE ≥ eps32 · max_n Σ|terms|` of the first outer iteration
+  of the step (× √n for the L2 options), the rounding level of the flux-form
+  residual.
 
 ---
 
@@ -331,7 +383,7 @@ setting.
 | --- | --- | --- |
 | Parsing | All in-scope example decks parse; arrays/lists equal a flopy-free independent read where available | exact |
 | Connectivity | `ia`, `ja`, `ihc`, `cl1`, `cl2`, `hwva` vs libmf6 memory (`<model>/DIS/...`, `<model>/CON/...` addresses) | exact / 1e-14 rel |
-| **Assembly, universal** | Plug MF6's converged heads (from a *tight-closure* reference run) into our assembly; residual `‖b − A·h_mf6‖∞ / max_row Σ|terms|` | < 1e-8 |
+| **Assembly, universal** | Plug MF6's converged heads (from a *tight-closure* reference run) into our assembly; residual `‖b − A·h_mf6‖∞ / max_row Σ|terms|` | `:double`: < 1e-8; `:single`: at most the bound from rounding the offset heads to Float32 (`docs/precision.md`) |
 | Assembly, oracle | `amat` and `b'` (section 3.3) vs libmf6 `SLN_1/AMAT`, `SLN_1/RHS` after the first `solve` call (if exposed; see T0.2) | `:double` < 1e-12 rel; `:single` < 1e-6 rel |
 | Heads | Our run vs MF6 run, both with tight closures | `:double`: max abs diff < 1e-6 m (or 1e-7 × head range); `:single`: < 1e-3 m |
 | Budgets | Per-package in/out rates per stress period vs MF6 listing/CBC | `:double`: < 1e-6 rel, or 1e-6 × total in; `:single`: < 1e-4 × total in, and percent discrepancy < 0.01 % |
@@ -339,9 +391,12 @@ setting.
 | Backends | rocm vs CPU backend, same model | `:double` < 1e-10 rel; `:single` heads < 1e-4 m |
 | Coupling | ModflowCoupling Indus tests with `engine = "gpu"` vs `"mf6"` (tight closures) | `:double`: heads < 1e-4 m; baseflow, capillary rise < 1e-6 rel. `:single`: heads < 1e-3 m; baseflow, capillary rise < 1e-4 × domain maximum |
 
-The `:single` thresholds are proposals. T2.8 checks them on Tier 0–2 and the
-synthetic models, and T5.3 on the Indus. A card may tighten them, or loosen them
-with a written reason in `docs/precision.md`.
+`:mixed` (the production default, T4.4) has Float64 state and Krylov vectors
+and must meet the `:double` criteria in every row.
+
+T2.8 confirmed the `:single` thresholds on Tier 0–2 and the synthetic models
+(`docs/precision.md`); T5.3 checks them on the Indus. A card may tighten them,
+or loosen them with a written reason in `docs/precision.md`.
 
 **Tight-closure reference runs.** Production IMS settings (`outer_dvclose =
 5 m` in ModflowCoupling) leave answers that depend on the solver path. All parity
@@ -351,6 +406,12 @@ closures of section 3.7 instead. `validation/run_reference.jl` writes
 these runs to `reference/runs/<example>/tight/` and keeps the unpatched run in
 `.../raw/`. Also report how far apart the engines are at production settings,
 but do not use that for pass/fail.
+
+T5.1 measured that gap on the Indus (monthly periods): at `outer_dvclose = 5`
+MF6 stops up to 1.9 m from its own tight-closure heads, while the GPU engine
+ends within 1e-5 m of them. The engines therefore differ visibly at production
+settings, and the difference is MF6's early stop, not a difference in the
+equations. T5.3 turns this into a closure recommendation for the owner.
 
 **MF6 versions.** Use mf6 **6.8.2** (`mf6.8.2_linux.zip`, which includes
 `libmf6.so`) for the examples, which flopy 3.10 generated for MF6 ≥ 6.7. Use
@@ -371,8 +432,8 @@ than on the tier alone).
 | --- | --- | --- |
 | 0 | Confined, steady, CHD/WEL, anisotropy | `ex-gwf-toth` (DIS 200×1×100, CHD), `ex-gwf-hanic`, `ex-gwf-hanir` (K22/ANGLE1, CHD, WEL) |
 | 1 | Coupling package set | **synthetic coupling models** (T3.4) at several sizes; Indus via ModflowCoupling's writer (needs data) |
-| 2 | Time series, transient | `ex-gwf-fhb` (TS on CHD/WEL, STO) |
-| 3 | Convertible / standard formulation / rewetting | `ex-gwf-twri01` (VARIABLECV DEWATERED PERCHED, DRN, RCHA), `ex-gwf-advtidal` (convertible layer 1, VARIABLECV DEWATERED PERCHED; GHB, WEL, RIV, 3× RCH, EVT NSEG 3, TS, steady→transient; also needs T6.3), `ex-gwf-bcf2ss-p01a` (REWET, RIV, CG), `ex-gwf-bump-p01b`, `ex-gwf-nwt-p02b` (14 lay, REWET); size tests that are confined (ICELLTYPE 0) despite their tier: `ex-gwf-lgrv-gc`, `ex-gwf-lgrv-gr` (25×183×147, RIV, RCH) |
+| 2 | Time series, transient | `ex-gwf-fhb` (TS on CHD/WEL, STO; needs T6.3, until then the test copy `fhb_const` with constants stands in) |
+| 3 | Convertible / standard formulation / rewetting | `ex-gwf-twri01` (VARIABLECV DEWATERED PERCHED, DRN, RCHA), `ex-gwf-advtidal` (convertible layer 1, VARIABLECV DEWATERED PERCHED; GHB, WEL, RIV, 3× RCH, EVT NSEG 3, TS, steady→transient; also needs T6.3), `ex-gwf-bcf2ss-p01a` (REWET, RIV, CG), `ex-gwf-bump-p01b`, `ex-gwf-nwt-p02b` (14 lay, REWET); size tests that are confined (ICELLTYPE 0) despite their tier and run on the Milestone A engine: `ex-gwf-lgrv-gc`, `ex-gwf-lgrv-gr` (25×183×147, RIV, RCH); their parity test is T6.0 |
 | 4 | Newton | `ex-gwf-bcf2ss-p02a`, `ex-gwf-bump-p01a/c`, `ex-gwf-nwt-p02a`, `ex-gwf-nwt-p03a/b`, `ex-gwf-zaidel`, `ex-gwf-capture` |
 | 5 | DISV / DISU | `ex-gwf-u1disv`, `ex-gwf-curve-90`, `ex-gwf-curvilin`, `ex-gwf-rad-disu` (DISU, STO, WEL, OBS) |
 | 6 | XT3D | `ex-gwf-hanix`, `ex-gwf-u1disv-x`, `ex-gwf-whirl`, `ex-gwf-disvmesh` (DISV + XT3D, GHB, RCH) |
@@ -416,23 +477,26 @@ marked; their merge commits on `main` hold the card reports.
   - T3.2 Builder API (done)
   - T3.3 Stepping API (done)
   - T3.4 Synthetic coupling-model generator (done)
-- **Phase 4: solver performance**: [docs/plan/phase4.md](docs/plan/phase4.md) (complete 2026-11-08; four targets carried over, see the phase file)
+- **Phase 4: solver performance**: [docs/plan/phase4.md](docs/plan/phase4.md) (T4.1–T4.6 complete 2026-11-08; the four missed targets are card T4.7)
   - T4.1 Benchmark harness (done)
   - T4.2 Chebyshev and multicolour smoothers (done)
   - T4.3 Algebraic multigrid preconditioner (done)
   - T4.4 `:mixed` preset and production default (done)
   - T4.5 Kernel fusion and matrix formats (done)
   - T4.6 Period-data path (done)
+  - T4.7 Carried-over Phase 4 targets (scheduled after T5.4)
 - **Phase 5: ModflowCoupling integration and Milestone B**: [docs/plan/phase5.md](docs/plan/phase5.md)
+  - T5.0 KernelAbstractions 0.10 as the minimum
   - T5.1 Engine switch in ModflowCoupling (done)
   - T5.2 Device-resident coupling
   - T5.3 Coupling parity on the Indus
-  - T5.4 mGV + ModflowGPU on one GPU
+  - T5.4 mGV + ModflowGPU on one GPU (mGV is on KA 0.10 since 2026-11-13; needs T5.0)
   - T5.5a Global-size dress rehearsal
-  - T5.5b Global 5′ run with real data
-- **Phase 6: generic MF6 GWF (Milestone C); cards are independent once Phase 3 is done**: [docs/plan/phase6.md](docs/plan/phase6.md)
+  - T5.5b Global 5′ run with real data (global inputs available since 2026-11-14)
+- **Phase 6: generic MF6 GWF (Milestone C); dependencies between the cards are in the phase file and section 6**: [docs/plan/phase6.md](docs/plan/phase6.md)
+  - T6.0 Parity on the confined lgrv examples
   - T6.1 Convertible cells and rewetting
-  - T6.2 Newton–Raphson
+  - T6.2 Newton–Raphson (backtracking part first, as T6.2a)
   - T6.3 Time series and time-array series
   - T6.4 DISV and DISU
   - T6.5 XT3D
@@ -456,17 +520,24 @@ T0.2 ─┼─ T0.3 ────────────────────
       └─ T1.1 → T1.2 → T1.3 → T1.4 → T2.1 ─┬─ T2.2 ─────────┐
                                             └─ T2.3 ─┬ T2.4 ─┤
                                                      └ T2.5 ─┴→ T2.6 → T2.7 → T2.8 → T3.1
-T3.1 ─┬─ T3.2 → T3.4 → T4.1 ─┬─ T4.2 ─┐
-      │                      └─ T4.3 ─┴→ T4.4, T4.5
-      ├─ T3.3 → T5.1 ─┬─ T5.2 → T5.4 → T5.5a (also needs T4.3) → T5.5b (needs global data)
-      │               └─ T5.3
-      └─ T6.1 ‖ T6.2 ‖ T6.3 ‖ T6.4 → T6.5 ; T6.4 → T6.6 → T7.1 ; T6.7
+T3.1 ─┬─ T3.2 → T3.4 → T4.1 ─┬─ T4.2 ─┬→ T4.4 → T4.5 → T4.7 (scheduled after T5.4)
+      │                      ├─ T4.3 ─┘
+      │                      └─ T4.6
+      ├─ T3.2 + T3.3 → T5.1 ─┬─ T5.2 → T5.4 → T5.5a → T5.5b
+      │                      └─ T5.3
+      │   T5.0 → T5.4 (mGV on KA 0.10: done)
+      └─ Phase 6, no dependency inside the phase: T6.0, T6.1, T6.2a (backtracking),
+         T6.3, T6.4, and the DIS parts of T6.5 (hanix, whirl) and T6.6 (s1, lgrv-lgr, spbc)
+           T6.1 → T6.2 (Newton)
+           T6.4 → T6.5 (DISV examples) ; T6.5 → T6.6 (s2–s4) ; T6.6 → T7.1
+           T6.1 + T6.3 → advtidal (owned by whichever of the two merges last)
+           T6.1 + T6.3 + T6.4 → T6.7
 T4.3 + T4.4 → T7.3 → T7.4 → T7.5
 ```
 
 Critical path to Milestone B: T0.1 → T1.1–T1.4 → T2.1 → T2.3 → T2.4/5 → T2.6 →
-T2.7 → T2.8 → T3.1 → T3.3 → T5.1 → T5.2 → T5.4, with T4.3 needed for the global
-steady state.
+T2.7 → T2.8 → T3.1 → T3.2/T3.3 → T5.1 → T5.2 → T5.4 (with T5.0) → T5.5a →
+T5.5b. Done up to T5.1; mGV is on KA 0.10 and the global inputs are available.
 
 ---
 
@@ -474,27 +545,32 @@ steady state.
 
 | Risk | Mitigation |
 | --- | --- |
-| Jacobi-preconditioned CG takes too many iterations on the global steady state (strong K contrasts, ~6 M nodes) | AMG (T4.3) early on the critical path for T5.5a/b; daily transient steps are well conditioned because of the storage term |
-| KA/AMDGPU versions differ between mGV and ModflowGPU | Resolve in T0.1; keep compat ranges wide; test one shared environment in T5.4 |
+| The preconditioner takes too many iterations on the real global steady state (strong K contrasts, ~6 M nodes) | Solved on synthetic data: MC-ILU0 (T4.2, default) converges the `global5m` steady state in 2.9 s. The synthetic steady state is better conditioned than real data will be (T3.4), so T5.5b re-checks it, with AMG (T4.3) as the fallback |
+| KA/AMDGPU versions differ between mGV and ModflowGPU | KA 0.10 is the minimum for both (decision 7). mGV requires KA 0.10.7 and AMDGPU 2.11 (2026-11-13); T5.0 does the same here. T5.4 tests the shared environment and re-runs the benchmark in it |
 | Matrix layout in newer libmf6 hides `AMAT` from BMI | Universal residual test (section 4) needs only MF6 heads |
 | MF6 6.3 (JLL) vs 6.8.2 behaviour differences | Parity examples use 6.8.2; ModflowCoupling parity uses tight settings and reports per-version differences |
-| Loose production closures make engines disagree | Pass/fail only with tight closures; report production differences separately |
+| Loose production closures make engines disagree | Pass/fail only with tight closures; report production differences separately. Measured in T5.1: up to 1.9 m on the Indus, from MF6 stopping early (section 4). T5.3 proposes production closures for the GPU engine |
 | Float64 atomics slow/unsupported on RDNA3 | Gather-based assembly (section 3.4); no atomics in hot paths |
 | `:single` is not accurate enough for badly conditioned steady states | Offsets, flux-form residual and correction solves (section 3.7); `:mixed` preset (T4.4); measured per model in `docs/precision.md` |
 | Float64 sneaks into kernels and breaks Metal/oneAPI, unnoticed because those backends cannot be tested here | IR hygiene test on rocm (T3.1); `T(…)` literals by convention |
 | A new package uses absolute elevations, which breaks the offset form | Rule 1 of section 3.7 requires each package card to check this; parity tests in `:single` catch it |
-| GPU and mGV together exceed 16 GB at global scale | Measure in T3.4/T5.5a; `:single` / `:mixed` presets (section 3.7, T4.4); multi-GPU (T7.5) |
-| Global input data not available | Synthetic `global5m` (T3.4) stands in through T5.5a; only T5.5b waits for the data |
-| GPU regressions go unnoticed because CI has no GPU | GPU test summary required in every kernel/solver PR (section 2); run the full GPU suite before each milestone gate |
-| ModflowCoupling patches stop applying after upstream changes | Patches are pinned to base `8dd8c01`; rebasing is an explicit PR (section 2) |
+| GPU and mGV together exceed 16 GB at global scale | ModflowGPU alone peaks at 2.5–4 GiB on `global5m` (section 1.2); mGV's share is measured in T5.5a. Device memory of a finalized simulation is freed only by the GC until T5.4 fixes it. `:single` / `:mixed` presets (section 3.7, T4.4); multi-GPU (T7.5) |
+| Global inputs differ from what the coupling expects (field names, `_nogl`/`_v2` variants, mGV forcing variables) | The data is available since 2026-11-14 (decision 1). T5.5a checks the inputs early (read and grid checks only), so T5.5b does not discover mismatches at the end |
+| GPU regressions go unnoticed because CI has no GPU | GPU test summary required in the card report of every kernel/solver card (section 2); run the full GPU suite before each milestone gate |
+| ModflowCoupling patches stop applying after upstream changes | Patches are pinned to base `8dd8c01`; rebasing is its own card (section 2) |
+| An open issue from a card report is forgotten because it lives only in a merge commit message | Open issues are copied into the card that must pick them up when the branch is merged (section 2, Report) |
 
 ---
 
-## 8. Decisions (project owner, 2026-11-06)
+## 8. Decisions (project owner, 2026-11-06 unless dated otherwise)
 
 1. **Data:** Indus inputs are in `/home/bart/data/modflow/data`
    (`INDUS_DATA`). Global inputs are not available yet: synthetic models stand
-   in (T5.5a), and T5.5b waits for the data.
+   in (T5.5a), and T5.5b waits for the data. *Update 2026-11-14:* the global
+   inputs are available: MODFLOW in `/home/bart/data/modflow/global_data`, mGV
+   parameters in `/home/bart/data/mGV/vic_global_5min_params_lossless.nc` and
+   forcing in `/media/bart/Data/Work/SWIFT/WFDE5_v3.1_5arcmin.zarr` (section 2,
+   Data).
 2. **ModflowCoupling changes:** stored as a patch series in
    `patches/modflow-coupling/` in this repository (section 2). No fork, no
    upstream PRs, and no edits to the owner's checkout.
@@ -502,6 +578,31 @@ steady state.
 4. **30″:** in scope as a stretch goal (Milestone D): regional 30″ on one GPU
    first (T7.3), then a design note (T7.4) before any multi-GPU work (T7.5).
 5. **GPU tests:** only on this machine. CI runs CPU tests and formatting only.
+6. **Git workflow (2026-11-07):** local card branches, an independent review,
+   then a local `git merge --no-ff` into `main` with the card report as the
+   merge message, and a push of `main` to `origin`. No GitHub PRs (section 2).
+7. **KernelAbstractions 0.10 is the minimum (2026-11-11).** ModflowGPU drops
+   KA 0.9 in T5.0. The owner updates mGV to KA 0.10; T5.4 waits for that.
+   *Update 2026-11-14:* done. mGV `main` (2026-11-13) is a package with GPU
+   weak dependencies and `ext/*Ext.jl` (like ModflowGPU), BMI in `src/bmi/`,
+   and compat `KernelAbstractions = "0.10.7"`, `AMDGPU = "2.11"`.
+8. **Milestone B includes the real global run (2026-11-11).** T5.5b stays
+   blocked on the global inputs. The owner arranges them when the work reaches
+   that card; nothing before it needs them. *Update 2026-11-14:* the inputs
+   are available (decision 1), so T5.5b is no longer blocked.
 
-Still open: where 30″ inputs would come from (synthetic models cover T7.3
-until then), and which multi-GPU hardware T7.5 could run on.
+Still open:
+
+- **30″:** where the inputs would come from (synthetic models cover T7.3 until
+  then), and which multi-GPU hardware T7.5 could run on (about 190–300 GiB of
+  device memory, section 1.2).
+- **Scope of Milestone C:** HFB, GNC, TVK/TVS, ATS, and the output options
+  `BUDGETCSV`, `CSV_OUTER_OUTPUT`/`CSV_INNER_OUTPUT` (with the IMS convergence
+  tables, open since T3.1) and `SAVE_SPECIFIC_DISCHARGE` (accepted, but
+  DATA-SPDIS is not written; open since T2.8) have no card and are not listed
+  as out of scope. None of the in-scope examples needs HFB.
+- **Longitude wrap (T7.1):** it waits for all of T6.6, but `ex-gwf-spbc` needs
+  only a self-exchange of one model. A periodic connection in the DIS
+  connectivity would take T7.1 off the Milestone C path.
+- **Production closures for the GPU engine:** T5.3 delivers the numbers and a
+  proposal (section 4).
