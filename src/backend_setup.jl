@@ -38,7 +38,7 @@ end
 """
     backend_name(backend)
 
-Name of the backend type, e.g. `"CPU"` or `"ROCBackend"`.
+Name of the backend type, e.g. `"POCLBackend"` (KA's `CPU()`) or `"ROCBackend"`.
 """
 backend_name(backend::Backend) = string(nameof(typeof(backend)))
 
