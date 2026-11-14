@@ -150,13 +150,16 @@ _budget_rates(b) = [(t.name, t.package, t.rate_in, t.rate_out, t.cum_in, t.cum_o
                 end
             )
             ModflowGPU.finalize(s)
+            # T5.4: written through `device_bound!` (the enforced contract: checked at
+            # prepare_solve), the same arrays.
             s = initialize(STEPPING_MODEL; kw...)
             out = _drive_like_coupling(
                 s, function (ptr, step)
                     step.kper == 2 && step.kstp == 1 || return
                     @test eltype(dev(s, "RIV")) === p.T
-                    copyto!(dev(s, "RIV"), captured["RIV"])
-                    copyto!(dev(s, "RCHA"), captured["RCHA"])
+                    @test ModflowGPU.device_bound!(s, "RDE/RIV/BOUND") === dev(s, "RIV")
+                    copyto!(ModflowGPU.device_bound!(s, "RDE/RIV/BOUND"), captured["RIV"])
+                    copyto!(ModflowGPU.device_bound!(s, "RDE/RCHA/BOUND"), captured["RCHA"])
                 end
             )
             @test last(out).head == ref2.heads
@@ -185,6 +188,30 @@ _budget_rates(b) = [(t.name, t.package, t.rate_in, t.rate_out, t.cum_in, t.cum_o
             @test_logs (:warn, r"discarded") match_mode = :any finalize_solve(s)
             ModflowGPU.finalize(s)
 
+            # T5.4: device BOUND writes only between prepare_time_step and prepare_solve,
+            # checked at prepare_solve (riv_ck on the device: stage >= bottom, finite).
+            s = initialize(STEPPING_MODEL; kw...)
+            @test_throws ArgumentError ModflowGPU.device_bound!(s, "RDE/RIV/BOUND")
+            prepare_time_step(s)
+            @test_throws ArgumentError ModflowGPU.device_bound!(s, "RDE/RIV/SIMVALS")
+            riv = ModflowGPU.device_bound!(s, "RDE/RIV/BOUND")
+            good = Array(riv)
+            bad = copy(good)
+            bad[1, 2] = bad[3, 2] - p.T(1)   # stage below the river bottom
+            copyto!(riv, bad)
+            @test_throws r"RIV.*record 2 written on the device: RIVER STAGE IS LESS THAN RIVER BOTTOM" prepare_solve(s)
+            bad = copy(good)
+            bad[2, 5] = p.T(NaN)
+            copyto!(riv, bad)
+            @test_throws r"record 5 written on the device: non-finite" prepare_solve(s)
+            copyto!(riv, good)
+            prepare_solve(s)   # the check passes; the window is closed
+            @test_throws ArgumentError ModflowGPU.device_bound!(s, "RDE/RIV/BOUND")
+            finalize_solve(s)
+            ModflowGPU.finalize(s)
+            @test_throws ArgumentError get_value(s, "RDE/X")
+            @test_throws ArgumentError get_value_ptr(s, "RDE/X"; device = true)
+
             # BMI: time, grid, variables, update until the end.
             b = BMI.initialize(Simulation, joinpath(STEPPING_MODEL, "mfsim.nam"); kw...)
             @test BMI.get_time_units(b) == "days"
@@ -203,6 +230,39 @@ _budget_rates(b) = [(t.name, t.package, t.rate_in, t.rate_out, t.cum_in, t.cum_o
             BMI.get_value_at_indices(b, "RDE/X", v, [1, 5])
             @test v == ref.heads[[1, 5]]
             BMI.finalize(b)
+        end
+    end
+end
+
+# T5.4: `finalize` frees the device arrays of the model, solver and budget accumulator, so
+# the pool usage of a GPU backend returns to its level before `initialize` (ROCm:
+# `AMDGPU.used_memory`, the stream-ordered pool, measured without a GC in between). On
+# the CPU backend nothing is freed (host arrays).
+@testset "finalize frees device memory" begin
+    pool_used() = TEST_BACKEND_NAME == "rocm" ? (AMDGPU.synchronize(); AMDGPU.used_memory()) : nothing
+    for_each_precision(; presets = SOLVER_TEST_PRESETS) do p
+        kw = (; backend = TEST_BACKEND, precision = p.preset, write_output = false)
+        for preconditioner in (:mc_ilu0, :amg)
+            GC.gc(true)
+            before = pool_used()
+            s = initialize(STEPPING_MODEL; kw..., preconditioner)
+            for _ in 1:3
+                ModflowGPU.update(s)
+            end
+            during = pool_used()
+            nfreed = ModflowGPU.free_device_arrays!(nothing)   # nothing to free
+            @test nfreed == 0
+            ModflowGPU.finalize(s)
+            after = pool_used()
+            @test s.stage === :freed
+            if TEST_BACKEND isa CPU
+                @test ModflowGPU.free_device_arrays!(s.model) == 0
+            else
+                @info "device pool (bytes) for $(p.preset), $preconditioner" before during after
+                @test during > before
+                @test after == before
+            end
+            ModflowGPU.finalize(s)   # a second call does nothing
         end
     end
 end

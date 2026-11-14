@@ -706,6 +706,10 @@ function _build!(P::AMGPreconditioner{Ts, Tp, Ta}, solver, amat) where {Ts, Tp, 
     end
     B = [c != 0 ? 1 / c : 1.0 for c in cf]
     hl = _build_hierarchy(_HostCsr(n, n, ia, ja, a), B, P.options)
+    # The previous hierarchy and work vectors go back to the pool now (T5.4), not when the
+    # garbage collector runs. Each level owns its arrays (`_upload_level`).
+    KernelAbstractions.synchronize(backend)
+    free_device_arrays!((P.levels, P.fy, P.fw, P.fd, P.sig, P.sig2, P.gacc, P.cinv))
     P.levels = [_upload_level(backend, Tp, hl[l], l == 1, P.options.smooth) for l in eachindex(hl)]
     P.lmax = [h.lmax for h in hl]
     P.fy = KernelAbstractions.zeros(backend, Ts, n)

@@ -32,11 +32,13 @@
 # `get_value_ptr(sim, address; device = true)` returns the engine arrays themselves
 # (device, precision T, head-like values as offsets from "<model>/HREF", BOUND with the
 # multiplier applied); writes there bypass the conversions and the mirrors. Device writes
-# into BOUND (T5.2: ModflowCoupling's device-resident coupling writes them in kernels)
-# between `prepare_time_step` and `prepare_solve` are used by the step; they are not
-# checked (`riv_ck` etc.), are replaced by new period data, and are not seen by host reads
-# of BOUND (`get_value`, mirrors), which keep the last values set on the host. A host
-# mirror of the same BOUND does not overwrite them unless it is written. A caller that
+# into BOUND (T5.2: ModflowCoupling's device-resident coupling writes them in kernels) go
+# through `device_bound!` (T5.4), which opens the array for writing between
+# `prepare_time_step` and `prepare_solve` only; `prepare_solve` checks the written records
+# on the device (finite values, `riv_ck`). They are replaced by new period data, and are
+# not seen by host reads of BOUND (`get_value`, mirrors), which keep the last values set on
+# the host. A host mirror of the same BOUND does not overwrite them unless it is written.
+# `finalize` frees the device arrays (T5.4: two models on one GPU). A caller that
 # keeps no host mirrors (reads through `get_value` only) makes a time step move no array
 # between host and device: the mirrors are the only per-step copies of the stepping API,
 # and the output of `finalize_time_step` copies the heads only when OC saves or prints them.
@@ -109,6 +111,10 @@ mutable struct Simulation{M <: GwfModel, P <: PicardSolver, A <: BudgetAccumulat
     const results::Vector{StepResult}
     const budgets::Vector{ModelBudget}
     const mirrors::Dict{String, _Mirror}
+    # T5.4: packages whose device BOUND was opened for writing in this step
+    # (`device_bound!`), checked at `prepare_solve`; the check's result buffer (lazy).
+    const device_writes::Vector{Int}
+    check::Any
 end
 
 Base.show(io::IO, s::Simulation) = print(
@@ -148,7 +154,10 @@ function initialize(
     ps = PicardSolver(m, PicardSettings(ims, T; closures, preconditioner, precond_options); Ts, Tp)
     acc = BudgetAccumulator(m)
     out = write_output ? ModelOutput(m, sim.simdir, outdir) : nothing
-    s = Simulation(sim, m, ps, acc, out, T, Ts, Tp, steps, 0, :initialized, OuterState(ps), StepResult[], ModelBudget[], Dict{String, _Mirror}())
+    s = Simulation(
+        sim, m, ps, acc, out, T, Ts, Tp, steps, 0, :initialized, OuterState(ps), StepResult[], ModelBudget[],
+        Dict{String, _Mirror}(), Int[], nothing,
+    )
     isnothing(out) || _listing_header(out.listing, m, ps, T, Ts, Tp, backend)
     return s
 end
@@ -190,6 +199,7 @@ first.
 function prepare_solve(s::Simulation, isol::Integer = 1)
     _check_solution(isol)
     _check_stage(s, :prepare_solve, :prepared_time_step)
+    _check_device_writes!(s)
     _push_mirrors!(s)
     @timed_section :start_timestep start_timestep!(s.model, s.steps[s.istep].delt)
     s.outer = OuterState(s.solver)
@@ -279,15 +289,121 @@ function update(s::Simulation)
 end
 
 """
-    finalize(sim::Simulation) -> sim
+    finalize(sim::Simulation; free = true) -> sim
 
-Close the output files. The model stays readable (`get_value`), but cannot be stepped.
+Close the output files and, with `free` (the default), release the device memory of the
+model, the solver and the budget accumulator now (`free_device_arrays!`, through the
+backend hook `free_memory!`) rather than when the garbage collector runs: with two models
+on one GPU (T5.4) the memory must be back in the pool before the other model allocates.
+Afterwards the simulation cannot be stepped or read (`get_value`, `get_value_ptr` throw);
+device arrays obtained before (`get_value_ptr(...; device = true)`) must not be used, while
+host mirrors keep their last values. With `free = false` the model stays readable
+(`ModflowGPU.run` returns it) and its memory is released by the garbage collector.
 """
-function finalize(s::Simulation)
+function finalize(s::Simulation; free::Bool = true)
+    s.stage === :freed && return s
     isnothing(s.output) || close(s.output)
     s.stage = :finalized
+    if free
+        backend = get_backend(s.model.h)
+        backend isa CPU || KernelAbstractions.synchronize(backend)
+        free_device_arrays!((s.model, s.solver, s.acc, s.check, s.outer))
+        s.stage = :freed
+    end
     return s
 end
+
+"""
+    device_bound!(sim, address) -> device BOUND array
+
+Open the device BOUND array at `address` (`"<model>/<package>/BOUND"`) for writing in the
+current time step: the enforced form of the device write contract (T5.2, T5.4). Allowed
+only between `prepare_time_step` and `prepare_solve` (otherwise an `ArgumentError`).
+Returns the engine array, as `get_value_ptr(sim, address; device = true)`: precision `T`,
+`(ncol, maxbound)`, head-like columns as offsets from the reference of the record's cell
+(`rrec`), multiplier applied. `prepare_solve` then checks the first `NBOUND` records of
+every opened BOUND on the device (one kernel and one host-mapped flag per package): all
+values finite, and for RIV stage ≥ bottom and conductance ≥ 0 (`riv_ck`); a violation
+throws an `MF6InputError` naming the first bad record. The written values are used by the
+step, are replaced by new period data, and are not seen by host reads of BOUND
+(`get_value`, mirrors), which keep the values last set on the host. Writes into a device
+BOUND that was not opened this way are not checked (the stepping API cannot see them).
+"""
+function device_bound!(s::Simulation, address::AbstractString)
+    _check_readable(s)
+    parts = split(uppercase(address), '/')
+    (length(parts) == 3 && parts[3] == "BOUND") ||
+        throw(ArgumentError("device_bound!: \"$address\" is not a BOUND address (<model>/<package>/BOUND)"))
+    s.stage === :prepared_time_step ||
+        throw(ArgumentError("device_bound!: device BOUND writes are allowed only between prepare_time_step and prepare_solve (called after $(s.stage))"))
+    arr = _variable(s, address).device(s)
+    ip = _find_package(s.model, parts[2])
+    ip in s.device_writes || push!(s.device_writes, ip)
+    return arr
+end
+
+# Whether record `i` of a device BOUND is acceptable (the device form of `check_records`
+# for what ModflowCoupling writes; offsets compare as the absolute values do, since a
+# record's head-like columns share one reference).
+@inline function _finite_record(bound, i)
+    ok = true
+    for c in axes(bound, 1)
+        ok &= isfinite(bound[c, i])
+    end
+    return ok
+end
+@inline _device_record_ok(::BoundaryKind, bound, i) = _finite_record(bound, i)
+@inline _device_record_ok(::BoundaryKind{:RIV}, bound, i) =
+    _finite_record(bound, i) && bound[1, i] >= bound[3, i] && bound[2, i] >= zero(eltype(bound))
+
+@kernel function device_bound_check_kernel!(flag, @Const(bound), kind)
+    i = @index(Global)
+    @inbounds _device_record_ok(kind, bound, i) || (flag[1] = Int32(1))
+end
+
+# The flag of the device BOUND check: a host-mapped Int32 where the backend allows it
+# (no copy to read it), else a device array.
+function _check_flag(s::Simulation)
+    isnothing(s.check) || return s.check
+    backend = get_backend(s.model.h)
+    mapped = host_mapped_zeros(backend, Int32, 1)
+    s.check = isnothing(mapped) ? (KernelAbstractions.zeros(backend, Int32, 1), nothing) : mapped
+    return s.check
+end
+
+# `prepare_solve`: check the device BOUND arrays opened with `device_bound!` in this step.
+function _check_device_writes!(s::Simulation)
+    isempty(s.device_writes) && return nothing
+    backend = get_backend(s.model.h)
+    flag, host = _check_flag(s)
+    for ip in s.device_writes
+        pkg = s.model.packages[ip]
+        pkg.nbound > 0 || continue
+        isnothing(host) ? fill!(flag, Int32(0)) : (host[1] = Int32(0))
+        device_bound_check_kernel!(backend, _WG)(flag, pkg.bound, BoundaryKind{boundary_kind(pkg)}(); ndrange = pkg.nbound)
+        KernelAbstractions.synchronize(backend)
+        bad = isnothing(host) ? Array(flag)[1] : host[1]
+        bad == 0 || _device_bound_error(pkg)
+    end
+    empty!(s.device_writes)
+    return nothing
+end
+
+# Error path: find the first bad record on the host and name it.
+function _device_bound_error(pkg::BoundaryPackage{K}) where {K}
+    bound = Array(pkg.bound)
+    for i in 1:pkg.nbound
+        _device_record_ok(BoundaryKind{K}(), bound, i) && continue
+        rec = Float64.(bound[:, i])
+        reason = !all(isfinite, rec) ? "non-finite value" :
+            rec[1] < rec[3] ? "RIVER STAGE IS LESS THAN RIVER BOTTOM" : "CONDUCTANCE IS LESS THAN ZERO"
+        throw(MF6InputError(pkg.spec.file, 0, "$(pkg.spec.name): BOUND record $i written on the device: $reason (values as offsets: $(join(rec, ", ")))"))
+    end
+    return nothing
+end
+
+_check_readable(s::Simulation) = s.stage === :freed &&
+    throw(ArgumentError("the simulation was finalized and its device memory freed (finalize(sim; free = false) keeps it readable)"))
 
 _check_solution(isol) = isol == 1 || throw(ArgumentError("solution $isol: the simulation has one solution (SLN_1)"))
 
@@ -438,11 +554,13 @@ src/stepping.jl for when it is synchronised with the device. Writes into the mir
 With `device = true`: the engine array on the device (precision `T`, head-like values as
 offsets from `"<model>/HREF"`, BOUND with the multiplier applied); `X`, `XOLD`, `HREF`,
 `IBOUND`, `BOUND`, `NODELIST`, `SIMVALS` only (`HREF` is the host Float64 vector of the
-references). Writes into a device BOUND between `prepare_time_step` and `prepare_solve`
-are used by the step without checks or conversions, and host reads of BOUND do not see
-them (see the header of src/stepping.jl). No host mirror is created.
+references). Write a device BOUND through `device_bound!` (between `prepare_time_step`
+and `prepare_solve`, checked at `prepare_solve`); host reads of BOUND do not see device
+writes (see the header of src/stepping.jl). No host mirror is created. After
+`finalize` (which frees the device memory) the returned arrays must not be used.
 """
 function get_value_ptr(s::Simulation, address::AbstractString; device::Bool = false)
+    _check_readable(s)
     var = _variable(s, address)
     if device
         isnothing(var.device) && throw(ArgumentError("get_value_ptr: \"$address\" has no device array (use device = false)"))
@@ -460,7 +578,7 @@ end
 A copy of the current value at `address` on the host (as `get_value_ptr`, but read from the
 engine now).
 """
-get_value(s::Simulation, address::AbstractString) = _variable(s, address).get(s)
+get_value(s::Simulation, address::AbstractString) = (_check_readable(s); _variable(s, address).get(s))
 get_value(s::Simulation, address::AbstractString, dest::AbstractArray) = copyto!(dest, get_value(s, address))
 
 """
@@ -472,6 +590,7 @@ now (`set_bound!`: the conversion of period data). A host mirror of the address 
 updated as well.
 """
 function set_value(s::Simulation, address::AbstractString, values::AbstractArray)
+    _check_readable(s)
     var = _variable(s, address)
     isnothing(var.set) && throw(ArgumentError("set_value: \"$address\" is read-only"))
     cur = var.get(s)

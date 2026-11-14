@@ -116,6 +116,68 @@ asynchronously: synchronize before overwriting it.
 pin_memory!(::Backend, arr) = nothing
 
 """
+    free_memory!(backend, arr)
+
+Release the device memory of the device array `arr` now, instead of when the garbage
+collector finalises it (T5.4: two models on one GPU, `finalize`). `arr` must not be used
+afterwards. The default calls `KernelAbstractions.unsafe_free!`, which GPU packages
+implement for their arrays (a no-op for host arrays); extensions add a method where the
+backend needs something else. Memory shared with other arrays (`reshape`, `unsafe_wrap`
+of the same buffer) is released when the last of them is freed.
+"""
+free_memory!(::Backend, arr::AbstractArray) = (KernelAbstractions.unsafe_free!(arr); nothing)
+
+"""
+    free_device_arrays!(x) -> Int
+
+Free (`free_memory!`) every device array reachable from `x` through struct fields, array
+elements and dictionary entries (host arrays of bits types are skipped, wrappers such as
+views are followed to their parent). Returns the number of arrays freed. Nothing reachable
+from `x` may use those arrays afterwards. Used by `finalize`.
+"""
+function free_device_arrays!(x)
+    seen = IdDict{Any, Nothing}()
+    return _free_walk!(x, seen)
+end
+
+_free_skip(x) = isbits(x) || x isa Union{Module, Type, Function, IO, AbstractString, Symbol, Task, Core.MethodInstance}
+
+function _free_walk!(x, seen::IdDict{Any, Nothing})
+    _free_skip(x) && return 0
+    haskey(seen, x) && return 0
+    seen[x] = nothing
+    if x isa Array
+        isbitstype(eltype(x)) && return 0
+        n = 0
+        for i in eachindex(x)
+            isassigned(x, i) && (n += _free_walk!(x[i], seen))
+        end
+        return n
+    elseif x isa AbstractArray && parent(x) === x
+        backend = try
+            get_backend(x)
+        catch
+            nothing
+        end
+        if !isnothing(backend) && !(backend isa CPU)
+            free_memory!(backend, x)
+            return 1
+        end
+    elseif x isa AbstractDict
+        n = 0
+        for (k, v) in x
+            n += _free_walk!(k, seen) + _free_walk!(v, seen)
+        end
+        return n
+    end
+    n = 0
+    for f in 1:nfields(x)
+        isdefined(x, f) && (n += _free_walk!(getfield(x, f), seen))
+    end
+    return n
+end
+
+"""
     host_mapped_zeros(backend, T, n) -> (device, host) or nothing
 
 A zeroed host vector `host` of `n` values of type `T` and a device array `device` that

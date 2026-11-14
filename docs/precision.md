@@ -369,7 +369,14 @@ MF6 1e-9 m; both are far below any coupling tolerance. `:single` at 5 and
 inner solves of `:single` end at the Float32 floors (INNER_RCLOSE ≥ 19 m³/d), probably
 the cause (not investigated further).
 
-### Proposal: production closures of the GPU engine (adopted 2026-11-14, PLAN.md section 8, decision 9; the default changes in T5.4)
+### Proposal: production closures of the GPU engine (adopted 2026-11-14, PLAN.md section 8, decision 9; the GPU engine default since T5.4)
+
+**Adopted.** Since T5.4 (ModflowCoupling patch 0004) `outer_dvclose` and `inner_dvclose`
+default per engine in the patched `config.jl`: 0.01 m for the GPU engine, 5 m for the mf6
+engine (`DEFAULT_DVCLOSE`, `dvclose(settings, :outer)`; a value in the config applies to
+both engines), with the note in `examples/indus/indus.toml` that MF6 at 5 stops up to
+1.9 m from its converged heads on monthly periods. The cost on the 1-year coupled run is
+in the T5.4 section below. The proposal as written for T5.3:
 
 1. **Use `outer_dvclose = inner_dvclose = 0.01` m for the GPU engine** (keep
    INNER_RCLOSE 10, the other settings unchanged). Measured on the Indus it is within
@@ -386,9 +393,92 @@ the cause (not investigated further).
    tight daily steps take 0.39 s, `:mixed` MC-ILU0); if 0.01 is within 10 % of 5 there
    as well, a tighter value (1e-3) is an option.
 
-The ModflowCoupling default is not changed by this card (`SolverSettings` keeps 5 for
-both engines); adopting the proposal means a per-engine default in the patched
-`config.jl` (a later patch).
+(T5.3 left the ModflowCoupling default at 5 for both engines; T5.4 made the per-engine
+default above.)
+
+## mGV and ModflowGPU on one GPU: the 1-year coupled Indus run (T5.4)
+
+mGV `main` (42aebaa) and MODFLOW (ModflowCoupling patch 0004, `examples/mgv_coupling`) in
+one process, daily exchange, 1979-01-01 to 1979-12-31 (365 days), Indus 180 × 204 × 2
+from `steady_head_mgv_coupled.nc`, mGV's Indus inputs (GFDL-ESM4 1979, routing on,
+`external_groundwater_routing = true`). mGV on rocm in every run; the GPU engine on rocm
+with the device exchange (`set_value_device!` / `get_value_device!`, feedback applied to
+mGV's state in kernels), the mf6 engine (libmf6 6.3.0 on the CPU) with the host exchange.
+The device and host exchanges give bitwise equal heads, baseflow and capillary rise
+(10 days, `:single` and `:double`). Tight closures as T5.3 (1e-9 / 1e-10 / INNER_RCLOSE
+1e-8, STRICT).
+
+**Coupled parity** (closed loop: each engine drives its own mGV), against the mf6 engine
+at tight closures, max over the 365 days:
+
+| GPU engine | max \|Δh\| | baseflow | capillary rise | outer / inner it. | T5.3 tolerance (heads; fluxes) |
+| --- | --- | --- | --- | --- | --- |
+| `:double` | 3.1e-7 m | **2.2e-6** | 1.2e-12 | 2274 / 4781 | 1e-4 m; 1e-6 |
+| `:mixed` | 3.1e-7 m | **2.2e-6** | 1.2e-12 | 2274 / 4781 | 1e-4 m; 1e-6 |
+| `:single` | 8.4e-6 m | 5.1e-6 | 5.2e-7 | 1545 / 2725 | 1e-3 m; 1e-4 |
+
+The baseflow of `:double`/`:mixed` exceeds 1e-6 on 46 of 365 days (median 9e-12, first
+31 days ≤ 7.9e-12 as in T5.3). The worst cell (day 301) differs by 6.2e-5 m³/s of 10.28
+m³/s with |Δh| = 2.4e-7 m there: the coupled trajectories drift apart slowly through mGV's
+state (channel storage, discharge, river stage). **Open loop** (the GPU engine driven by
+the daily recharge and discharge the mf6 engine received in its coupled run, same
+365 days; the mf6 engine replayed this way reproduces its run bitwise) the engines agree
+to `:double`/`:mixed` 3.7e-10 m, baseflow 1.8e-11, capillary 1.2e-12 and `:single` 8.4e-6 m,
+5.1e-6, 6.7e-7: every T5.3 tolerance holds with margins of 2.7e5 / 5.7e4 (`:double`) and
+120 / 20 (`:single`). The closed-loop baseflow criterion is not met for `:double`/`:mixed`
+because of that drift, not because of an engine difference.
+
+**Closures and timings** (median wall time per coupled day from day 3, synchronised:
+total, mGV part (feedback kernels + `BMI.update`), MODFLOW part (exchange + `BMI.update`);
+the year total excludes day 1, which compiles; distance = max |Δh| to the same engine's
+tight run over the year):
+
+| engine | closure | distance to own tight | vs mf6 tight: \|Δh\|, baseflow | ms/day: total, mGV, MODFLOW | days 2–365 (s) | outer / inner it. |
+| --- | --- | --- | --- | --- | --- | --- |
+| mf6 | tight | – | – | 55.7, 3.3, 52.0 | 21.9 | – |
+| mf6 | 5 (default) | 0.5 m | 0.5 m, 0.45 | 14.6, 3.2, 11.4 | 5.7 | – |
+| gpu `:mixed` | tight | – | 3.1e-7 m, 2.2e-6 | 4.66, 1.70, 2.97 | 1.74 | 2274 / 4781 |
+| gpu `:mixed` | 0.01 (default) | 3.6e-5 m | 3.6e-5 m, 8.3e-5 | 2.91, 1.70, 1.20 | 1.09 | 814 / 1263 |
+| gpu `:mixed` | 5 | 0.5 m | 0.5 m, 0.45 | 2.51, 1.69, 0.82 | 1.29 | 365 / 365 |
+| gpu `:single` | tight | – | 8.4e-6 m, 5.1e-6 | 3.55, 1.68, 1.85 | 1.32 | 1545 / 2725 |
+| gpu `:single` | 0.01 (default) | 3.6e-5 m | 3.6e-5 m, 8.3e-5 | 2.86, 1.70, 1.15 | 1.08 | 814 / 1263 |
+| gpu `:single` | 5 | 0.5 m | 0.5 m, 0.45 | 2.49, 1.70, 0.79 | 0.97 | 365 / 365 |
+| gpu `:double` | tight | – | 3.1e-7 m, 2.2e-6 | 4.72, 1.67, 3.05 | 1.75 | 2274 / 4781 |
+| gpu `:double` | 0.01 (default) | 3.6e-5 m | 3.6e-5 m, 8.3e-5 | 2.92, 1.68, 1.22 | 1.17 | 814 / 1263 |
+| gpu `:double` | 5 | 0.5 m | 0.5 m, 0.45 | 2.52, 1.69, 0.83 | 0.93 | 365 / 365 |
+
+**Cost of 0.01 against 5** (decision 9): the MODFLOW part takes 1.46× (`:mixed`
+1.20 vs 0.82 ms, `:single` 1.45×, `:double` 1.47×), the whole coupled day 1.16× (2.91 vs
+2.51 ms, mGV unchanged), for heads 3.6e-5 m instead of 0.5 m from the tight ones (2.2 outer
+iterations per day instead of 1). Year totals (sums of the per-day times) are within the
+run-to-run noise of a 1-second sum (1.09 vs 1.29 s `:mixed`, 1.17 vs 0.93 s `:double`), so
+the medians are the numbers to use. At 0.01 every precision gives the same heads to the
+printed digits (same iteration counts): the Float32 INNER_RCLOSE floor that made `:single`
+stop 3e-3 m from its tight heads at 5 and 0.5 on monthly periods (T5.3) does not show at
+0.01 on these daily steps, and the default precision of the coupled run is `:mixed`
+(`:auto` on rocm), so it was not investigated further.
+
+**Device memory** (`AMDGPU.used_memory`, the stream-ordered pool): mGV 63.9 MiB, MODFLOW
+`:mixed` 22.8 MiB (`:single` 15.7, `:double` 23.7), both 86.7 MiB at start and 88.0 MiB at
+the end of the year; after `BMI.finalize` of MODFLOW the pool is back to mGV's level plus
+1.3 MiB (the example's own device maps and volume accumulators, still referenced).
+`mGV.finalize!` does not free mGV's arrays (mGV closes its writer only).
+
+**Float32 river stages.** In `:single` a RIV stage is stored as an offset from the
+reference of its cell (the starting head). On the Indus 294 of 15165 RIV records have
+|bottom_bankfull − r| > 1000 m (28 above 2000 m; max 2374 m at cell (136, 150): river
+bottom 5689 m, head 3315 m): perched mountain rivers, where the leakage depends only on
+stage' − rbot', both rounded to eps32/2 · 2374 m = 1.4e-4 m. Not fixed: a smaller
+rounding needs a second per-record reference in the RIV formulation (or references at
+the river level, which would move the rounding to the heads of those cells); the effect
+is within the `:single` tolerances above.
+
+**Transfers per daily step** (rocprofv3 7.16 HIP trace, `:single`, 3 profiled days after
+35): two `hipMemcpyWithStream` host → device for the BMI inputs (`set_value`, 47–57 µs
+each), and the third is the device-to-device `hold ← h` copy of `start_timestep!`
+(2 µs of host time, no host transfer). With the device exchange the two uploads are
+gone. The storage `rho` is copied host → device only when the step length changes
+(monthly periods); see the T5.4 benchmark file for its cost at global size.
 
 ## Confined lgrv examples (T6.0)
 
