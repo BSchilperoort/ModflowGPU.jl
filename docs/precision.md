@@ -308,7 +308,10 @@ pd = |percent discrepancy|; listing 0 in every case; CPU backend times):
 | gr `:mixed` (mc_ilu0) | 2.32e-6 | 2.0e-10 | 2.6e-8 % | 5/3422 | 65.3 s |
 | gr `:double` (mc_ilu0) | 2.32e-6 | 2.0e-10 | 2.6e-8 % | 5/3421 | 68.0 s |
 
-ROCMPLACEHOLDER
+ROCm (RX 7800 XT): the same iterations and bitwise the same heads as the CPU backend in
+every row (max |Δh| = 0, also the assembled systems); run times gc 0.3 / 0.3 / 0.1 s and
+gr 2.7 / 3.0 / 2.7 s (`:single` / `:mixed` / `:double`). `:single` vs `:double` final
+heads: gc 2.38e-5 m, gr 6.66e-6 m.
 
 **The `:double` differences are MF6's.** Against the exact solution (a sparse Cholesky
 solve of our Float64 system, residual 1e-15), MF6's tight heads are 3.1e-7 m (gc) and
