@@ -1,0 +1,2276 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bart Schilperoort <b.schilperoort@gmail.com>
+Date: Sat, 14 Nov 2026 17:44:25 +0100
+Subject: [PATCH] T5.4: mGV and ModflowGPU on one GPU
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ examples/indus/indus.toml           |    5 +
+ examples/mgv_coupling/Manifest.toml | 1326 +++++++++++++++++++++++++++
+ examples/mgv_coupling/Project.toml  |   12 +
+ src/ModflowCoupling.jl              |    3 +-
+ src/bmi.jl                          |   52 +-
+ src/config.jl                       |   26 +-
+ src/device_coupling.jl              |  212 ++++-
+ src/gpu_engine.jl                   |    4 +-
+ src/mf6_writer.jl                   |    4 +-
+ src/model.jl                        |   84 +-
+ src/output.jl                       |   12 +-
+ test/runtests.jl                    |  141 ++-
+ 12 files changed, 1806 insertions(+), 75 deletions(-)
+ create mode 100644 examples/mgv_coupling/Manifest.toml
+
+diff --git a/examples/indus/indus.toml b/examples/indus/indus.toml
+index eadfd51..f3b0645 100644
+--- a/examples/indus/indus.toml
++++ b/examples/indus/indus.toml
+@@ -35,6 +35,11 @@ orientation = true
+ # precision = "auto"      # gpu engine: "auto" (:mixed with Float64, else :single), "double", "mixed", "single"
+ # preconditioner = "auto" # gpu engine: ModflowGPU's default (mc_ilu0), or "jacobi", "amg", ...
+ # coupling = "auto"       # gpu engine: "device" (stresses and outputs in kernels on the device; the default) or "host"
++# outer_dvclose and inner_dvclose (m) default per engine:
++# - mf6: 5.0 (the Python reference). MF6 then stops up to 1.9 m from its converged heads
++#   on monthly periods (ModflowGPU T5.3 closure study); set 0.01 for converged heads.
++# - gpu: 0.01 (ModflowGPU decision 9, T5.3/T5.4): within 1.5e-4 m of the tight heads on
++#   daily steps, for 20-40 % more time per period than at 5.
+ # outer_dvclose = 5.0
+ # inner_dvclose = 5.0
+ # inner_rclose = 10.0
+diff --git a/examples/mgv_coupling/Manifest.toml b/examples/mgv_coupling/Manifest.toml
+new file mode 100644
+index 0000000..824a4d2
+--- /dev/null
++++ b/examples/mgv_coupling/Manifest.toml
+@@ -0,0 +1,1326 @@
++# This file is machine-generated - editing it directly is not advised
++
++julia_version = "1.12.6"
++manifest_format = "2.0"
++project_hash = "d713a42a7977fbd4a04fe0ed9fd5ebf838328024"
++
++[[deps.AMDGPU]]
++deps = ["AMDGPU_LLVM_Backend_jll", "AbstractFFTs", "Adapt", "Atomix", "BFloat16s", "CEnum", "GPUArrays", "GPUCompiler", "GPUToolbox", "KernelAbstractions", "KernelInterface", "LLVM", "LLVMDowngrader_jll", "Libdl", "LinearAlgebra", "PrecompileTools", "Preferences", "PrettyTables", "Printf", "Random", "Random123", "RandomNumbers", "Scratch", "SparseArrays", "Statistics", "UnsafeAtomics"]
++git-tree-sha1 = "339be76666103bf8a2c7b2dd638a80336e9b1fda"
++uuid = "21141c5a-9bdb-4563-92ae-f87d6854732e"
++version = "2.11.0"
++
++    [deps.AMDGPU.extensions]
++    AMDGPUChainRulesCoreExt = "ChainRulesCore"
++    AMDGPUEnzymeCoreExt = "EnzymeCore"
++    AMDGPUSparseMatricesCSRExt = "SparseMatricesCSR"
++    AMDGPUSpecialFunctionsExt = "SpecialFunctions"
++
++    [deps.AMDGPU.weakdeps]
++    ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
++    EnzymeCore = "f151be2c-9106-41f4-ab19-57ee4f262869"
++    SparseMatricesCSR = "a0a7dd2c-ebf4-11e9-1f05-cf50bc540ca1"
++    SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
++
++[[deps.AMDGPU_LLVM_Backend_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl", "Zlib_jll"]
++git-tree-sha1 = "b93538105521d4f4432495c16f4d88b8e071dd23"
++uuid = "cc5c0156-bd05-5a77-8a68-bb0aafb29019"
++version = "23.1.3+1"
++
++[[deps.AbstractFFTs]]
++deps = ["LinearAlgebra"]
++git-tree-sha1 = "d92ad398961a3ed262d8bf04a1a2b8340f915fef"
++uuid = "621f4979-c628-5d54-868e-fcf4e3e8185c"
++version = "1.5.0"
++
++    [deps.AbstractFFTs.extensions]
++    AbstractFFTsChainRulesCoreExt = "ChainRulesCore"
++    AbstractFFTsTestExt = "Test"
++
++    [deps.AbstractFFTs.weakdeps]
++    ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
++    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
++
++[[deps.AcceleratedKernels]]
++deps = ["Adapt", "ArgCheck", "Atomix", "GPUArraysCore", "KernelAbstractions", "PrecompileTools"]
++git-tree-sha1 = "2aa85cbb80ee258e8d3932f6377fe5406f6c7768"
++uuid = "6a4ca0a5-0e36-4168-a932-d9be78d558f1"
++version = "0.5.13"
++
++    [deps.AcceleratedKernels.extensions]
++    AMDGPUExt = "AMDGPU"
++    CUDACoreExt = "CUDACore"
++    MetalExt = "Metal"
++    OpenCLExt = "OpenCL"
++    oneAPIExt = "oneAPI"
++
++    [deps.AcceleratedKernels.weakdeps]
++    AMDGPU = "21141c5a-9bdb-4563-92ae-f87d6854732e"
++    CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
++    CUDACore = "bd0ed864-bdfe-4181-a5ed-ce625a5fdea2"
++    Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
++    OpenCL = "08131aa3-fb12-5dee-8b74-c09406e224a2"
++    oneAPI = "8f75cd03-7ff8-4ecb-9b8f-daf728133b1b"
++
++[[deps.Accessors]]
++deps = ["CompositionsBase", "ConstructionBase", "Dates", "InverseFunctions", "MacroTools"]
++git-tree-sha1 = "8c0bc12397dabf5d2dfc4b5763ec463854cc44d3"
++uuid = "7d9f7c33-5ae7-4f3b-8dc6-eff91059b697"
++version = "0.1.46"
++
++    [deps.Accessors.extensions]
++    AxisKeysExt = "AxisKeys"
++    IntervalSetsExt = "IntervalSets"
++    LinearAlgebraExt = "LinearAlgebra"
++    StaticArraysExt = "StaticArrays"
++    StructArraysExt = "StructArrays"
++    TestExt = "Test"
++    UnitfulExt = "Unitful"
++
++    [deps.Accessors.weakdeps]
++    AxisKeys = "94b1ba4f-4ee9-5380-92f1-94cde586c3c5"
++    IntervalSets = "8197267c-284f-5f27-9208-e0e47529a953"
++    LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
++    StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
++    StructArrays = "09ab397b-f2b6-538f-b94a-2f83cf4a842a"
++    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
++    Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
++
++[[deps.Adapt]]
++deps = ["LinearAlgebra"]
++git-tree-sha1 = "eec8a0ad4e4b673afba213931504c360fffb8f97"
++uuid = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
++version = "4.8.0"
++weakdeps = ["SparseArrays", "StaticArrays"]
++
++    [deps.Adapt.extensions]
++    AdaptSparseArraysExt = "SparseArrays"
++    AdaptStaticArraysExt = "StaticArrays"
++
++[[deps.ArgCheck]]
++git-tree-sha1 = "f9e9a66c9b7be1ad7372bbd9b062d9230c30c5ce"
++uuid = "dce04be8-c92d-5529-be00-80e4d2c0e197"
++version = "2.5.0"
++
++[[deps.ArgTools]]
++uuid = "0dad84c5-d112-42e6-8d28-ef12dabb789f"
++version = "1.1.2"
++
++[[deps.Artifacts]]
++uuid = "56f22d72-fd6d-98f1-02f0-08ddc0907c33"
++version = "1.11.0"
++
++[[deps.Atomix]]
++deps = ["UnsafeAtomics"]
++git-tree-sha1 = "0aa371c875e24cf773c87b2f50ab03e4545748af"
++uuid = "a9b6321e-bd34-4604-b9c9-b65b8de01458"
++version = "1.7.0"
++
++    [deps.Atomix.weakdeps]
++    CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
++    CUDACore = "bd0ed864-bdfe-4181-a5ed-ce625a5fdea2"
++
++[[deps.BFloat16s]]
++deps = ["LinearAlgebra", "Printf", "Random"]
++git-tree-sha1 = "59ba860cf4d7e2fe58f35c8d08cfe765b6c33655"
++uuid = "ab4f0b2a-ad5b-11e8-123f-65d77653426b"
++version = "0.6.5"
++
++[[deps.BangBang]]
++deps = ["Accessors", "ConstructionBase", "InitialValues", "LinearAlgebra"]
++git-tree-sha1 = "cceb62468025be98d42a5dc581b163c20896b040"
++uuid = "198e06fe-97b7-11e9-32a5-e1d131e6ad66"
++version = "0.4.9"
++
++    [deps.BangBang.extensions]
++    BangBangChainRulesCoreExt = "ChainRulesCore"
++    BangBangDataFramesExt = "DataFrames"
++    BangBangStaticArraysExt = "StaticArrays"
++    BangBangStructArraysExt = "StructArrays"
++    BangBangTablesExt = "Tables"
++    BangBangTypedTablesExt = "TypedTables"
++
++    [deps.BangBang.weakdeps]
++    ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
++    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
++    StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
++    StructArrays = "09ab397b-f2b6-538f-b94a-2f83cf4a842a"
++    Tables = "bd369af6-aec1-5ad0-b16a-f7cc5008161c"
++    TypedTables = "9d95f2ec-7b3d-5a63-8d20-e2491e220bb9"
++
++[[deps.Base64]]
++uuid = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"
++version = "1.11.0"
++
++[[deps.BasicModelInterface]]
++git-tree-sha1 = "ca36dc6dc9bbeea3dbbe3901837496ece85276e5"
++uuid = "59605e27-edc0-445a-b93d-c09a3a50b330"
++version = "0.1.1"
++
++[[deps.Blosc]]
++deps = ["Blosc_jll"]
++git-tree-sha1 = "310b77648d38c223d947ff3f50f511d08690b8d5"
++uuid = "a74b3585-a348-5f62-a45c-50e91977d574"
++version = "0.7.3"
++
++[[deps.Blosc_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl", "Lz4_jll", "Zlib_jll", "Zstd_jll"]
++git-tree-sha1 = "37b6026a10d828f720288059f3471e675a06bb13"
++uuid = "0b7ba130-8d10-5ba8-a3d6-c5182647fed9"
++version = "1.21.8+0"
++
++[[deps.Bzip2_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "1b96ea4a01afe0ea4090c5c8039690672dd13f2e"
++uuid = "6e34b625-4abd-537c-b88f-471c36dfa7a0"
++version = "1.0.9+0"
++
++[[deps.CEnum]]
++git-tree-sha1 = "389ad5c84de1ae7cf0e28e381131c98ea87d54fc"
++uuid = "fa961155-64e5-5f13-b03f-caf6b980ea82"
++version = "0.5.0"
++
++[[deps.CFTime]]
++deps = ["Dates", "Printf"]
++git-tree-sha1 = "fad2f199d1f1ae0c8e820ab68f81f6dbf62e60b2"
++uuid = "179af706-886a-5703-950a-314cd64e0468"
++version = "0.2.10"
++
++[[deps.CRC32c]]
++uuid = "8bf52ea8-c179-5cab-976a-9e18b702a9bc"
++version = "1.11.0"
++
++[[deps.ChunkCodecCore]]
++git-tree-sha1 = "3496e2b359c27793d12bec54ec94be7983a6ceb2"
++uuid = "0b6fb165-00bc-4d37-ab8b-79f91016dbe1"
++version = "1.0.2"
++
++[[deps.ChunkCodecLibZlib]]
++deps = ["ChunkCodecCore", "Zlib_jll"]
++git-tree-sha1 = "d4101e848e8d3f585d61d244c2fe0c80a70e6b3b"
++uuid = "4c0bbee4-addc-4d73-81a0-b6caacae83c8"
++version = "1.1.0"
++
++[[deps.ChunkCodecLibZstd]]
++deps = ["ChunkCodecCore", "Zstd_jll"]
++git-tree-sha1 = "34d9873079e4cb3d0c62926a225136824677073f"
++uuid = "55437552-ac27-4d47-9aa3-63184e8fd398"
++version = "1.0.0"
++
++[[deps.ChunkSplitters]]
++git-tree-sha1 = "1c52c8e2673edc030191177ff1aee42d25149acb"
++uuid = "ae650224-84b6-46f8-82ea-d812ca08434e"
++version = "3.2.0"
++
++[[deps.CodecInflate64]]
++deps = ["TranscodingStreams"]
++git-tree-sha1 = "d981a6e8656b1e363a2731716f46851a2257deb7"
++uuid = "6309b1aa-fc58-479c-8956-599a07234577"
++version = "0.1.3"
++
++[[deps.CodecZlib]]
++deps = ["TranscodingStreams", "Zlib_jll"]
++git-tree-sha1 = "970758a3d591a2a5c2a907c53f2e2f8c1b1d3537"
++uuid = "944b1d66-785c-5afd-91f1-9de20f533193"
++version = "0.7.9"
++
++[[deps.CommonDataModel]]
++deps = ["CFTime", "DataStructures", "Dates", "DiskArrays", "Preferences", "Printf", "Statistics"]
++git-tree-sha1 = "54d50f8a0a68ff4160564dfa09fc5de32465cfca"
++uuid = "1fbeeb36-5f17-413c-809b-666fb144f157"
++version = "0.4.4"
++
++[[deps.CompilerCaching]]
++deps = ["LMDB", "SHA", "Scratch"]
++git-tree-sha1 = "1de3647e392372f1a77e41ae705ceaa12473bc08"
++uuid = "9db33cc3-5358-4881-8759-fa4194144afd"
++version = "0.5.3"
++
++[[deps.CompilerSupportLibraries_jll]]
++deps = ["Artifacts", "Libdl"]
++uuid = "e66e0078-7015-5450-92f7-15fbd957f2ae"
++version = "1.3.0+1"
++
++[[deps.CompositionsBase]]
++git-tree-sha1 = "802bb88cd69dfd1509f6670416bd4434015693ad"
++uuid = "a33af91c-f02d-484b-be07-31d278c5ca2b"
++version = "0.1.2"
++weakdeps = ["InverseFunctions"]
++
++    [deps.CompositionsBase.extensions]
++    CompositionsBaseInverseFunctionsExt = "InverseFunctions"
++
++[[deps.Configurations]]
++deps = ["ExproniconLite", "OrderedCollections", "TOML"]
++git-tree-sha1 = "e3a3332c391837afa3422f2c0bda36e0cd73d771"
++uuid = "5218b696-f38b-4ac9-8b61-a12ec717816d"
++version = "0.17.8"
++
++[[deps.ConstructionBase]]
++git-tree-sha1 = "b1bc10667320dd5367aff450a992c951ea38fbbc"
++uuid = "187b0558-2788-49d3-abe0-74a17ed4e7c9"
++version = "1.6.1"
++
++    [deps.ConstructionBase.extensions]
++    ConstructionBaseIntervalSetsExt = "IntervalSets"
++    ConstructionBaseLinearAlgebraExt = "LinearAlgebra"
++    ConstructionBaseStaticArraysExt = "StaticArrays"
++
++    [deps.ConstructionBase.weakdeps]
++    IntervalSets = "8197267c-284f-5f27-9208-e0e47529a953"
++    LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
++    StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
++
++[[deps.Crayons]]
++git-tree-sha1 = "54b76cbb40d9a0f5368c880725b2f141da77c94f"
++uuid = "a8cc5b0e-0ffa-5ad4-8c14-923d3ee1735f"
++version = "4.2.0"
++
++[[deps.DataAPI]]
++git-tree-sha1 = "abe83f3a2f1b857aac70ef8b269080af17764bbe"
++uuid = "9a962f9c-6df0-11e9-0e5d-c546b8b5ee8a"
++version = "1.16.0"
++
++[[deps.DataStructures]]
++deps = ["OrderedCollections"]
++git-tree-sha1 = "b0bc6d2cad1fed8b7fd59a1551a991cb3d2809e6"
++uuid = "864edb3b-99cc-5e75-8d2d-829cb0a9cfe8"
++version = "0.19.6"
++
++[[deps.DataValueInterfaces]]
++git-tree-sha1 = "bfc1187b79289637fa0ef6d4436ebdfe6905cbd6"
++uuid = "e2d170a0-9d28-54be-80f0-106bbe20a464"
++version = "1.0.0"
++
++[[deps.DateTimes64]]
++deps = ["Dates"]
++git-tree-sha1 = "1db3d38eecf7c197f5839d2afd6aedb15a8753b3"
++uuid = "b342263e-b350-472a-b1a9-8dfd21b51589"
++version = "1.0.1"
++
++[[deps.Dates]]
++deps = ["Printf"]
++uuid = "ade2ca70-3891-5945-98fb-dc099432e06a"
++version = "1.11.0"
++
++[[deps.DiskArrays]]
++deps = ["ConstructionBase", "LRUCache", "Mmap", "OffsetArrays"]
++git-tree-sha1 = "49bd7d5b2c773a078b076f0d491c9c30b4715586"
++uuid = "3c3547ce-8d99-4f5e-a174-61eb10b00ae3"
++version = "0.4.25"
++
++[[deps.Downloads]]
++deps = ["ArgTools", "FileWatching", "LibCURL", "NetworkOptions"]
++uuid = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
++version = "1.7.0"
++
++[[deps.EnumX]]
++git-tree-sha1 = "c49898e8438c828577f04b92fc9368c388ac783c"
++uuid = "4e289a0a-7415-4d19-859d-a7e5c4648b56"
++version = "1.0.7"
++
++[[deps.ExprTools]]
++git-tree-sha1 = "d2e49e7efd29719d6f28b891b0e0e159daa9d2b4"
++uuid = "e2ba6199-217a-4e67-a87a-7c52f15ade04"
++version = "0.1.11"
++
++[[deps.ExproniconLite]]
++git-tree-sha1 = "250aa1562e840b38c72b44a9ebef0f39f6b6e950"
++uuid = "55351af7-c7e9-48d6-89ff-24e801d99491"
++version = "0.10.16"
++
++[[deps.FileWatching]]
++uuid = "7b1f6079-737a-58dc-b8bc-7a2ca5c1b5ee"
++version = "1.11.0"
++
++[[deps.GPUArrays]]
++deps = ["AcceleratedKernels", "Adapt", "GPUArraysCore", "KernelAbstractions", "LLVM", "LinearAlgebra", "Printf", "Random", "Reexport", "ScopedValues", "Serialization", "SparseArrays", "Statistics"]
++git-tree-sha1 = "1cd2703c11e873a60d0182b6806217a26d71d252"
++uuid = "0c68f7d7-f131-5f86-a1c3-88cf8149b2d7"
++version = "12.2.0"
++
++    [deps.GPUArrays.extensions]
++    JLD2Ext = "JLD2"
++
++    [deps.GPUArrays.weakdeps]
++    JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
++
++[[deps.GPUArraysCore]]
++deps = ["Adapt"]
++git-tree-sha1 = "f60436514e6d73f8ee069ae4ee0ff038fe96b69d"
++uuid = "46192b85-c4d5-4398-a991-12ede77f4527"
++version = "0.2.2"
++
++[[deps.GPUCompiler]]
++deps = ["CompilerCaching", "ExprTools", "InteractiveUtils", "LLVM", "Libdl", "Logging", "PrecompileTools", "Preferences", "REPL", "ScopedValues", "TOML", "Tracy", "UUIDs", "tree_sitter_gcn_jll", "tree_sitter_llvm_jll", "tree_sitter_ptx_jll", "tree_sitter_spirv_jll"]
++git-tree-sha1 = "2a66558ca5eddcdaa1a25ffb307c9e12f5df8028"
++uuid = "61eb1bfa-7361-4325-ad38-22787b887f55"
++version = "2.22.2"
++
++    [deps.GPUCompiler.extensions]
++    CthulhuExt = "Cthulhu"
++    HighlightsExt = "Highlights"
++
++    [deps.GPUCompiler.weakdeps]
++    AMDGPU_LLVM_Backend_jll = "cc5c0156-bd05-5a77-8a68-bb0aafb29019"
++    Cthulhu = "f68482b8-f384-11e8-15f7-abe071a5a75f"
++    Highlights = "eafb193a-b7ab-5a9e-9068-77385905fa72"
++    LLVMDowngrader_jll = "f52de702-fb25-5922-94ba-81dd59b07444"
++    NVPTX_LLVM_Backend_jll = "ef6e0fe3-e6ef-59c0-bde6-4989574699e0"
++    SPIRV_LLVM_Backend_jll = "4376b9bf-cff8-51b6-bb48-39421dff0d0c"
++    SPIRV_LLVM_Translator_jll = "4a5d46fc-d8cf-5151-a261-86b458210efb"
++
++[[deps.GPUToolbox]]
++git-tree-sha1 = "5d825bab8a72d96e350e47e30616cf6a4b02fb49"
++uuid = "096a3bc2-3ced-46d0-87f4-dd12716f4bfc"
++version = "3.6.0"
++
++[[deps.Glob]]
++git-tree-sha1 = "246c628cec062230b7d183aab88841fa94fcabe9"
++uuid = "c27321d9-0574-5035-807b-f59d2c89b15c"
++version = "1.5.0"
++
++[[deps.HDF5_jll]]
++deps = ["Artifacts", "CompilerSupportLibraries_jll", "JLLWrappers", "LibCURL_jll", "Libdl", "MPIABI_jll", "MPICH_jll", "MPIPreferences", "MPItrampoline_jll", "MicrosoftMPI_jll", "OpenMPI_jll", "OpenSSL_jll", "TOML", "Zlib_jll", "aws_c_s3_jll", "dlfcn_win32_jll", "libaec_jll", "mpif_jll"]
++git-tree-sha1 = "d791a1c4c3c8f383b248a799be31105d00310204"
++uuid = "0234f1f7-429e-5d53-9886-15a909be8d59"
++version = "2.2.4+0"
++
++[[deps.HTTP]]
++deps = ["Base64", "CodecZlib", "Dates", "EnumX", "Logging", "PrecompileTools", "Random", "Reseau", "SHA", "TranscodingStreams", "URIs", "UUIDs", "Zlib_jll"]
++git-tree-sha1 = "48d59dc5887b523cc3c6d388f3ce79e51b67cc48"
++uuid = "cd3eb016-35fb-5094-929b-558a96fad6f3"
++version = "2.16.0"
++
++[[deps.HashArrayMappedTries]]
++git-tree-sha1 = "2eaa69a7cab70a52b9687c8bf950a5a93ec895ae"
++uuid = "076d061b-32b6-4027-95e0-9a2c6f6d7e74"
++version = "0.2.0"
++
++[[deps.Hwloc_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl", "XML2_jll", "Xorg_libpciaccess_jll"]
++git-tree-sha1 = "b60662344c62a67fa474dc50b7b06e38b23b39fa"
++uuid = "e33a78d0-f292-5ffc-b300-72abe9b543c8"
++version = "2.14.0+2"
++
++[[deps.InitialValues]]
++git-tree-sha1 = "4da0f88e9a39111c2fa3add390ab15f3a44f3ca3"
++uuid = "22cec73e-a1b8-11e9-2c92-598750a2cf9c"
++version = "0.3.1"
++
++[[deps.InputBuffers]]
++git-tree-sha1 = "e5392ea00942566b631e991dd896942189937b2f"
++uuid = "0c81fc1b-5583-44fc-8770-48be1e1cca08"
++version = "1.1.1"
++
++[[deps.InteractiveUtils]]
++deps = ["Markdown"]
++uuid = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
++version = "1.11.0"
++
++[[deps.InverseFunctions]]
++git-tree-sha1 = "5cc6ad3e2bfc75a11eed92632ee341d37f4a4536"
++uuid = "3587e190-3f89-42d0-90ee-14403ec27112"
++version = "0.1.18"
++
++    [deps.InverseFunctions.extensions]
++    InverseFunctionsDatesExt = "Dates"
++    InverseFunctionsTestExt = "Test"
++
++    [deps.InverseFunctions.weakdeps]
++    Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
++    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
++
++[[deps.IteratorInterfaceExtensions]]
++git-tree-sha1 = "a3f24677c21f5bbe9d2a714f95dcd58337fb2856"
++uuid = "82899510-4779-5014-852e-03e436cf321d"
++version = "1.0.0"
++
++[[deps.JLLWrappers]]
++deps = ["Artifacts", "Preferences"]
++git-tree-sha1 = "7204148362dafe5fe6a273f855b8ccbe4df8173e"
++uuid = "692b3bcd-3c85-4b1f-b108-f13ce0eb3210"
++version = "1.8.0"
++
++[[deps.JSON]]
++deps = ["Dates", "Logging", "Parsers", "PrecompileTools", "StructUtils", "UUIDs", "Unicode"]
++git-tree-sha1 = "06d90f699285d055e34f0b014636a75a17ff2252"
++uuid = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
++version = "1.13.4"
++
++    [deps.JSON.extensions]
++    JSONArrowExt = ["ArrowTypes"]
++    JSONSerializationExt = ["Serialization"]
++
++    [deps.JSON.weakdeps]
++    ArrowTypes = "31f734f8-188a-4ce0-8406-c8a06bd891cd"
++    Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
++
++[[deps.JuliaC]]
++deps = ["LIEF_Patchelf_jll", "LazyArtifacts", "Libdl", "Mmap", "ObjectFile", "PackageCompiler", "Pkg", "Preferences", "RelocatableFolders", "SHA", "StructIO", "TOML"]
++git-tree-sha1 = "49a147f54e5f9ad46104834de93648dd9ef012f0"
++uuid = "acedd4c2-ced6-4a15-accc-2607eb759ba2"
++version = "0.3.12"
++
++[[deps.JuliaSyntaxHighlighting]]
++deps = ["StyledStrings"]
++uuid = "ac6e5ff7-fb65-4e79-a425-ec3bc9c03011"
++version = "1.12.0"
++
++[[deps.KernelAbstractions]]
++deps = ["Adapt", "Atomix", "GPUCompiler", "GPUToolbox", "KernelInterface", "LLVM", "MacroTools", "PrecompileTools", "Printf", "Random", "Random123", "RandomNumbers", "SPIRVIntrinsics", "SPIRV_LLVM_Backend_jll", "SPIRV_Tools_jll", "StaticArraysCore", "ThreadTeams", "UnsafeAtomics", "pocl_standalone_jll"]
++git-tree-sha1 = "08b081d7d69e3cc989babee2c74c1d16c0f6baa1"
++uuid = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
++version = "0.10.7"
++
++    [deps.KernelAbstractions.extensions]
++    AMDGPUExt = "AMDGPU"
++    LinearAlgebraExt = "LinearAlgebra"
++    MetalExt = "Metal"
++    SparseArraysExt = "SparseArrays"
++    StaticArraysExt = "StaticArrays"
++    oneAPIExt = "oneAPI"
++
++    [deps.KernelAbstractions.weakdeps]
++    AMDGPU = "21141c5a-9bdb-4563-92ae-f87d6854732e"
++    LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
++    Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
++    SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
++    StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
++    oneAPI = "8f75cd03-7ff8-4ecb-9b8f-daf728133b1b"
++
++[[deps.KernelInterface]]
++git-tree-sha1 = "626abe5ae4c64c2e5600078962d67bbfab983ce3"
++uuid = "4ee993da-d684-4d17-a7dd-4e58e78d92bf"
++version = "0.4.6"
++
++[[deps.LIEF_Patchelf_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "dcc5301d81b1e7f1c9768aa2658fcd7ca36ff231"
++uuid = "d7f80cea-2d23-50ed-9ab7-0409554cddf2"
++version = "1.0.0+1"
++
++[[deps.LLVM]]
++deps = ["CEnum", "LLVMExtra_jll", "Libdl", "PrecompileTools", "Preferences", "Printf", "ScopedValues", "Unicode"]
++git-tree-sha1 = "41c2ce7ec5a14c89b93dc6a5853bf2a91d7a8583"
++uuid = "929cbde3-209d-540e-8aea-75f648917ca0"
++version = "10.4.3"
++weakdeps = ["BFloat16s"]
++
++    [deps.LLVM.extensions]
++    BFloat16sExt = "BFloat16s"
++
++[[deps.LLVMDowngrader_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl", "Zlib_jll", "Zstd_jll"]
++git-tree-sha1 = "2db47bc5100d848d977608dbf58fb7ceea1ffa4f"
++uuid = "f52de702-fb25-5922-94ba-81dd59b07444"
++version = "0.12.2+0"
++
++[[deps.LLVMExtra_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl", "TOML"]
++git-tree-sha1 = "39def0b4521e0ef2bf26960d8965729f496bb4ec"
++uuid = "dad2f222-ce93-54a1-a47d-0025e8a3acab"
++version = "0.0.56+0"
++
++[[deps.LLVMOpenMP_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "e5b100780d4d30d63b4618d7930d48af409c1772"
++uuid = "1d63c593-3942-5779-bab2-d838dc0a180e"
++version = "23.1.1+0"
++
++[[deps.LMDB]]
++deps = ["CEnum", "LMDB_jll"]
++git-tree-sha1 = "84e5cba87693714bfd67f589a91f24a996ff3e69"
++uuid = "11f193de-5e89-5f17-923a-7d207d56daf9"
++version = "3.0.1"
++
++[[deps.LMDB_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "196c962b4d66b978b9be1e15e4e1d53441d5f028"
++uuid = "6206cf0b-f360-5984-af49-5437264c140e"
++version = "1.0.3+0"
++
++[[deps.LRUCache]]
++git-tree-sha1 = "5519b95a490ff5fe629c4a7aa3b3dfc9160498b3"
++uuid = "8ac3fa9e-de4c-5943-b1dc-09c6b5f20637"
++version = "1.6.2"
++weakdeps = ["Serialization"]
++
++    [deps.LRUCache.extensions]
++    SerializationExt = ["Serialization"]
++
++[[deps.LaTeXStrings]]
++git-tree-sha1 = "f88f3ccef05a6a72a0cf0ed417c8fd68530f4ab2"
++uuid = "b964fa9f-0449-5b57-a5c2-d3ea65f4040f"
++version = "1.4.1"
++
++[[deps.LazyArtifacts]]
++deps = ["Artifacts", "Pkg"]
++uuid = "4af54fe1-eca0-43a8-85a7-787d91b784e3"
++version = "1.11.0"
++
++[[deps.LibCURL]]
++deps = ["LibCURL_jll", "MozillaCACerts_jll"]
++uuid = "b27032c2-a3e7-50c8-80cd-2d36dbcbfd21"
++version = "0.6.4"
++
++[[deps.LibCURL_jll]]
++deps = ["Artifacts", "LibSSH2_jll", "Libdl", "OpenSSL_jll", "Zlib_jll", "nghttp2_jll"]
++uuid = "deac9b47-8bc7-5906-a0fe-35ac56dc84c0"
++version = "8.15.0+0"
++
++[[deps.LibGit2]]
++deps = ["LibGit2_jll", "NetworkOptions", "Printf", "SHA"]
++uuid = "76f85450-5226-5b5a-8eaa-529ad045b433"
++version = "1.11.0"
++
++[[deps.LibGit2_jll]]
++deps = ["Artifacts", "LibSSH2_jll", "Libdl", "OpenSSL_jll"]
++uuid = "e37daf67-58a4-590a-8e99-b0245dd2ffc5"
++version = "1.9.0+0"
++
++[[deps.LibSSH2_jll]]
++deps = ["Artifacts", "Libdl", "OpenSSL_jll"]
++uuid = "29816b5a-b9ab-546f-933c-edad1886dfa8"
++version = "1.11.3+1"
++
++[[deps.LibTracyClient_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "d4e20500d210247322901841d4eafc7a0c52642d"
++uuid = "ad6e5548-8b26-5c9f-8ef3-ef0ad883f3a5"
++version = "0.13.1+0"
++
++[[deps.Libdl]]
++uuid = "8f399da3-3557-5675-b5ff-fb832c97cbdb"
++version = "1.11.0"
++
++[[deps.Libiconv_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "be484f5c92fad0bd8acfef35fe017900b0b73809"
++uuid = "94ce4f54-9a6c-5748-9c1c-f9c7231a4531"
++version = "1.18.0+0"
++
++[[deps.LinearAlgebra]]
++deps = ["Libdl", "OpenBLAS_jll", "libblastrampoline_jll"]
++uuid = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
++version = "1.12.0"
++
++[[deps.Logging]]
++uuid = "56ddb016-857b-54e1-b83d-db4d58db5568"
++version = "1.11.0"
++
++[[deps.Lz4_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "7dc3b0621d7942324cc3ed3272b4a491fd5cffa7"
++uuid = "5ced341a-0733-55b8-9ab6-a4889d929147"
++version = "1.11.1+0"
++
++[[deps.MPIABI_jll]]
++deps = ["Artifacts", "Hwloc_jll", "JLLWrappers", "LazyArtifacts", "Libdl", "MPIPreferences", "TOML"]
++git-tree-sha1 = "42e2cada9f35500b4d227106ce2b60e85d9f15bc"
++uuid = "b5ada748-db0f-5fc0-8972-9331c762740c"
++version = "1.0.1+0"
++
++[[deps.MPICH_jll]]
++deps = ["Artifacts", "CompilerSupportLibraries_jll", "Hwloc_jll", "JLLWrappers", "Libdl", "MPIPreferences", "TOML"]
++git-tree-sha1 = "08cb47f95a2f1b795e43a9e4f9783e68ecdc1ca6"
++uuid = "7cb0a576-ebde-5e09-9194-50597f1243b4"
++version = "5.0.3+0"
++
++[[deps.MPIPreferences]]
++deps = ["Libdl", "Preferences"]
++git-tree-sha1 = "8e98d5d80b87403c311fd51e8455d4546ba7a5f8"
++uuid = "3da0fdf6-3ccc-4f1b-acd9-58baa6c99267"
++version = "0.1.12"
++
++[[deps.MPItrampoline_jll]]
++deps = ["Artifacts", "CompilerSupportLibraries_jll", "JLLWrappers", "LazyArtifacts", "Libdl", "MPIPreferences", "TOML"]
++git-tree-sha1 = "09a99227205419c00e734f413ee98c18bc1b02e4"
++uuid = "f1f71cc9-e9ae-5b93-9b94-4fe0e1ad3748"
++version = "5.5.7+0"
++
++[[deps.MacroTools]]
++git-tree-sha1 = "1e0228a030642014fe5cfe68c2c0a818f9e3f522"
++uuid = "1914dd2f-81c6-5fcd-8719-6d5c9610ff09"
++version = "0.5.16"
++
++[[deps.Markdown]]
++deps = ["Base64", "JuliaSyntaxHighlighting", "StyledStrings"]
++uuid = "d6f4376e-aef5-505a-96c1-9c027394607a"
++version = "1.11.0"
++
++[[deps.MicrosoftMPI_jll]]
++deps = ["Artifacts", "JLLWrappers", "LazyArtifacts", "Libdl", "MPIPreferences", "TOML"]
++git-tree-sha1 = "3350d35d0ebcf7ccee0c66290b8e95d82419ef6f"
++uuid = "9237b28f-5490-5468-be7b-bb81f5f5e6cf"
++version = "10.1.5+0"
++
++[[deps.Mmap]]
++uuid = "a63ad114-7e13-5084-954f-fe012c677804"
++version = "1.11.0"
++
++[[deps.Modflow6_jll]]
++deps = ["Artifacts", "CompilerSupportLibraries_jll", "JLLWrappers", "Libdl", "Pkg"]
++git-tree-sha1 = "c77204b3ac867f72b68192c7580c5b7224fc3fd9"
++uuid = "81230ed9-c869-5493-bf63-2c1575eaf49b"
++version = "6.3.0+0"
++
++[[deps.ModflowCoupling]]
++deps = ["BasicModelInterface", "Dates", "KernelAbstractions", "ModflowGPU", "ModflowInterface", "NCDatasets", "Statistics", "TOML"]
++path = "../.."
++uuid = "5b8c2f1e-3d4a-4c7e-9f21-6a0e8d7b4c13"
++version = "0.1.0"
++
++[[deps.ModflowGPU]]
++deps = ["Adapt", "Atomix", "BasicModelInterface", "Dates", "KernelAbstractions", "LinearAlgebra", "Printf", "SparseArrays"]
++path = "../../../.."
++uuid = "80579596-0efa-413b-aeef-37d798abb369"
++version = "0.1.0"
++
++    [deps.ModflowGPU.extensions]
++    AMDGPUExt = "AMDGPU"
++    CUDAExt = "CUDA"
++    MetalExt = "Metal"
++    OpenCLExt = "OpenCL"
++    oneAPIExt = "oneAPI"
++
++    [deps.ModflowGPU.weakdeps]
++    AMDGPU = "21141c5a-9bdb-4563-92ae-f87d6854732e"
++    CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
++    Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
++    OpenCL = "08131aa3-fb12-5dee-8b74-c09406e224a2"
++    oneAPI = "8f75cd03-7ff8-4ecb-9b8f-daf728133b1b"
++
++[[deps.ModflowInterface]]
++deps = ["BasicModelInterface", "Modflow6_jll", "Printf"]
++git-tree-sha1 = "227c8a622542cc1c651156814476dce4f87510ee"
++uuid = "a348c28d-122a-4d3f-b833-160dba4591a7"
++version = "1.0.0"
++
++[[deps.MozillaCACerts_jll]]
++uuid = "14a3606d-f60d-562e-9121-12d972cd8159"
++version = "2025.11.4"
++
++[[deps.NCDatasets]]
++deps = ["CFTime", "CommonDataModel", "DataStructures", "Dates", "DiskArrays", "NetCDF_jll", "NetworkOptions", "Printf"]
++git-tree-sha1 = "5eb7747d10437f5acb2675c1f865ffa0353f3f9c"
++uuid = "85f8d34a-cbdd-5861-8df4-14fed0d494ab"
++version = "0.14.15"
++
++    [deps.NCDatasets.extensions]
++    NCDatasetsMPIExt = "MPI"
++
++    [deps.NCDatasets.weakdeps]
++    MPI = "da04e1cc-30fd-572f-bb4f-1f8673147195"
++
++[[deps.NetCDF]]
++deps = ["DiskArrays", "NetCDF_jll"]
++git-tree-sha1 = "853b381b2164bbe980b94e8411324a6b3b811dd6"
++uuid = "30363a11-5582-574a-97bb-aa9a979735b9"
++version = "0.12.2"
++
++[[deps.NetCDF_jll]]
++deps = ["Artifacts", "Blosc_jll", "Bzip2_jll", "HDF5_jll", "JLLWrappers", "LibCURL_jll", "Libdl", "MPIABI_jll", "MPICH_jll", "MPIPreferences", "MPItrampoline_jll", "MicrosoftMPI_jll", "OpenMPI_jll", "TOML", "XML2_jll", "Zlib_jll", "Zstd_jll", "libaec_jll", "libzip_jll"]
++git-tree-sha1 = "62410b2b2ce08416a435f550c404a42a2e7e2b4b"
++uuid = "7243133f-43d8-5620-bbf4-c2c921802cf3"
++version = "401.1000.102+1"
++
++[[deps.NetworkOptions]]
++uuid = "ca575930-c2e3-43a9-ace4-1e988b2c1908"
++version = "1.3.0"
++
++[[deps.ObjectFile]]
++deps = ["Reexport", "StructIO"]
++git-tree-sha1 = "23c4d109603f7a7bfe888c1f63c5ab7be6183d0b"
++uuid = "d8793406-e978-5875-9003-1fc021f44a92"
++version = "0.5.1"
++
++[[deps.OffsetArrays]]
++git-tree-sha1 = "750d0f2b5aac238d50dfee5f7a44fae3175a3305"
++uuid = "6fe1bfb0-de20-5000-8ca7-80f57d26f881"
++version = "1.18.0"
++weakdeps = ["Adapt"]
++
++    [deps.OffsetArrays.extensions]
++    OffsetArraysAdaptExt = "Adapt"
++
++[[deps.OhMyThreads]]
++deps = ["BangBang", "ChunkSplitters", "ScopedValues", "StableTasks", "TaskLocalValues"]
++git-tree-sha1 = "a73a90d87e3f941f5084d34d56934c2fb59dd9b1"
++uuid = "67456a42-1dca-4109-a031-0a68de7e3ad5"
++version = "0.8.9"
++weakdeps = ["Markdown", "ProgressMeter"]
++
++    [deps.OhMyThreads.extensions]
++    MarkdownExt = "Markdown"
++    ProgressMeterExt = "ProgressMeter"
++
++[[deps.OpenBLAS_jll]]
++deps = ["Artifacts", "CompilerSupportLibraries_jll", "Libdl"]
++uuid = "4536629a-c528-5b80-bd46-f80d51c5b363"
++version = "0.3.29+0"
++
++[[deps.OpenMPI_jll]]
++deps = ["Artifacts", "CompilerSupportLibraries_jll", "Hwloc_jll", "JLLWrappers", "LazyArtifacts", "Libdl", "MPIPreferences", "TOML", "Zlib_jll"]
++git-tree-sha1 = "0dba69ef957d790d41484ca7c20212c5ac806738"
++uuid = "fe0851c0-eecd-5654-98d4-656369965a5c"
++version = "5.0.14+0"
++
++[[deps.OpenSSL_jll]]
++deps = ["Artifacts", "Libdl"]
++uuid = "458c3c95-2e84-50aa-8efc-19380b2a3a95"
++version = "3.5.4+0"
++
++[[deps.OrderedCollections]]
++git-tree-sha1 = "94ba93778373a53bfd5a0caaf7d809c445292ff4"
++uuid = "bac558e1-5e72-5ebc-8fee-abe8a469f55d"
++version = "1.8.2"
++
++[[deps.PackageCompiler]]
++deps = ["Artifacts", "FileWatching", "Glob", "LazyArtifacts", "Libdl", "Pkg", "Printf", "RelocatableFolders", "SHA", "Scratch", "TOML", "UUIDs", "p7zip_jll"]
++git-tree-sha1 = "2ae7775a207e94fd829174c2bb1d319670c37589"
++uuid = "9b87118b-4619-50d2-8e1e-99f35a4d4d9d"
++version = "2.4.5"
++
++[[deps.Parameters]]
++deps = ["OrderedCollections", "UnPack"]
++git-tree-sha1 = "0ed04c372da78ff5b98e35e3bd4f4ca9931299cc"
++uuid = "d96e819e-fc66-5662-9728-84c9c7592b0a"
++version = "0.13.1"
++
++[[deps.Parsers]]
++deps = ["Dates", "PrecompileTools"]
++git-tree-sha1 = "e5ae52d1f4f19a9591d615cb0f1ef8d415b40933"
++uuid = "69de0a69-1ddd-5017-9359-2bf0b02dc9f0"
++version = "3.0.6"
++
++[[deps.Pkg]]
++deps = ["Artifacts", "Dates", "Downloads", "FileWatching", "LibGit2", "Libdl", "Logging", "Markdown", "Printf", "Random", "SHA", "TOML", "Tar", "UUIDs", "p7zip_jll"]
++uuid = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
++version = "1.12.1"
++weakdeps = ["REPL"]
++
++    [deps.Pkg.extensions]
++    REPLExt = "REPL"
++
++[[deps.PrecompileTools]]
++deps = ["Preferences"]
++git-tree-sha1 = "1e697ad6f68af89cd3651bbe9b4a7b5d800adf5a"
++uuid = "aea7be01-6a6a-4083-8856-8a6e6704d82a"
++version = "1.4.0"
++
++[[deps.Preferences]]
++deps = ["TOML"]
++git-tree-sha1 = "aef1987d90dcc2e2cbd919ad10b2d25bcce4f418"
++uuid = "21216c6a-2e73-6563-6e65-726566657250"
++version = "1.6.1"
++
++[[deps.PrettyTables]]
++deps = ["Crayons", "LaTeXStrings", "Markdown", "PrecompileTools", "Printf", "REPL", "Reexport", "StringManipulation", "StyledStrings", "Tables"]
++git-tree-sha1 = "eeac4c9337f876c3c32b8da732141953567f57c9"
++uuid = "08abe8d2-0d0c-5749-adfa-8a2ac140af0d"
++version = "3.5.1"
++
++    [deps.PrettyTables.extensions]
++    PrettyTablesExcelExt = "XLSX"
++    PrettyTablesTypstryExt = "Typstry"
++    PrettyTablesWriteDocxExt = "WriteDocx"
++
++    [deps.PrettyTables.weakdeps]
++    Typstry = "f0ed7684-a786-439e-b1e3-3b82803b501e"
++    WriteDocx = "d049ceea-54ee-41d7-a26f-ba29db3b6599"
++    XLSX = "fdbf4ff8-1666-58a4-91e7-1b58723a45e0"
++
++[[deps.Printf]]
++deps = ["Unicode"]
++uuid = "de0858da-6303-5e67-8744-51eddeeeb8d7"
++version = "1.11.0"
++
++[[deps.ProgressMeter]]
++deps = ["Printf"]
++git-tree-sha1 = "ce5ba3edfdeba107a721748d53b5f5887f415853"
++uuid = "92933f4c-e287-5a05-a399-4b506db050ca"
++version = "1.13.0"
++
++    [deps.ProgressMeter.extensions]
++    ProgressMeterDistributedExt = "Distributed"
++    ProgressMeterIJuliaExt = "IJulia"
++
++    [deps.ProgressMeter.weakdeps]
++    Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
++    IJulia = "7073ff75-c697-5162-941a-fcdaad2a7d2a"
++
++[[deps.REPL]]
++deps = ["InteractiveUtils", "JuliaSyntaxHighlighting", "Markdown", "Sockets", "StyledStrings", "Unicode"]
++uuid = "3fa0cd96-eef1-5676-8a61-b3b8758bbffb"
++version = "1.11.0"
++
++[[deps.Random]]
++deps = ["SHA"]
++uuid = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
++version = "1.11.0"
++
++[[deps.Random123]]
++deps = ["Random", "RandomNumbers"]
++git-tree-sha1 = "dbe5fd0b334694e905cb9fda73cd8554333c46e2"
++uuid = "74087812-796a-5b5d-8853-05524746bad3"
++version = "1.7.1"
++
++[[deps.RandomNumbers]]
++deps = ["Random"]
++git-tree-sha1 = "c6ec94d2aaba1ab2ff983052cf6a606ca5985902"
++uuid = "e6cf234a-135c-5ec9-84dd-332b85af5143"
++version = "1.6.0"
++
++[[deps.Reexport]]
++git-tree-sha1 = "45e428421666073eab6f2da5c9d310d99bb12f9b"
++uuid = "189a3867-3050-52da-a836-e630ba90ab69"
++version = "1.2.2"
++
++[[deps.RelocatableFolders]]
++deps = ["SHA", "Scratch"]
++git-tree-sha1 = "ffdaf70d81cf6ff22c2b6e733c900c3321cab864"
++uuid = "05181044-ff0b-4ac5-8273-598c1e38db00"
++version = "1.0.1"
++
++[[deps.Reseau]]
++deps = ["NetworkOptions", "OpenSSL_jll", "PrecompileTools", "Random", "SHA"]
++git-tree-sha1 = "1c73ca688c4bae68dac5cfc13427c70e285f0a79"
++uuid = "802f3686-a58f-41ce-bb0c-3c43c75bba36"
++version = "1.7.0"
++
++[[deps.SHA]]
++uuid = "ea8e919c-243c-51af-8825-aaa63cd721ce"
++version = "0.7.0"
++
++[[deps.SLEEF_jll]]
++deps = ["Artifacts", "CompilerSupportLibraries_jll", "JLLWrappers", "LLVMOpenMP_jll", "Libdl"]
++git-tree-sha1 = "e917bfc9d0aabb490b94bce45c700781ce47c65e"
++uuid = "63e82ce6-3d80-5af4-a84c-484b71ab98bb"
++version = "3.9.0+2"
++
++[[deps.SPIRVIntrinsics]]
++deps = ["GPUToolbox", "LLVM", "UnsafeAtomics"]
++git-tree-sha1 = "2ee2b6f667d53d1f03079ce7179f7de7ef5058b7"
++uuid = "71d1d633-e7e8-4a92-83a1-de8814b09ba8"
++version = "1.6.0"
++
++    [deps.SPIRVIntrinsics.extensions]
++    SPIRVIntrinsicsSIMDExt = "SIMD"
++    SPIRVIntrinsicsSIMDSpecialFunctionsExt = ["SIMD", "SpecialFunctions"]
++    SPIRVIntrinsicsSpecialFunctionsExt = "SpecialFunctions"
++
++    [deps.SPIRVIntrinsics.weakdeps]
++    GPUCompiler = "61eb1bfa-7361-4325-ad38-22787b887f55"
++    SIMD = "fdea26ae-647d-5447-a871-4b548cad5224"
++    SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
++
++[[deps.SPIRV_LLVM_Backend_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl", "Zlib_jll"]
++git-tree-sha1 = "b277c67df09ba43963be35adc4acf6b6262a9066"
++uuid = "4376b9bf-cff8-51b6-bb48-39421dff0d0c"
++version = "23.1.4+5"
++
++[[deps.SPIRV_Tools_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "783c358eff59056d7e703a644f5179270c43226a"
++uuid = "6ac6d60f-d740-5983-97d7-a4482c0689f4"
++version = "2025.4.0+0"
++
++[[deps.ScopedValues]]
++deps = ["HashArrayMappedTries", "Logging"]
++git-tree-sha1 = "67a144433c4ce877ee6d1ada69a124d6b1ecf7be"
++uuid = "7e506255-f358-4e82-b7e4-beb19740aa63"
++version = "1.6.2"
++
++[[deps.Scratch]]
++deps = ["Dates"]
++git-tree-sha1 = "9b81b8393e50b7d4e6d0a9f14e192294d3b7c109"
++uuid = "6c6a2e73-6563-6170-7368-637461726353"
++version = "1.3.0"
++
++[[deps.Serialization]]
++uuid = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
++version = "1.11.0"
++
++[[deps.Sockets]]
++uuid = "6462fe0b-24de-5631-8697-dd941f90decc"
++version = "1.11.0"
++
++[[deps.SparseArrays]]
++deps = ["Libdl", "LinearAlgebra", "Random", "Serialization", "SuiteSparse_jll"]
++uuid = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
++version = "1.12.0"
++
++[[deps.StableTasks]]
++git-tree-sha1 = "c4f6610f85cb965bee5bfafa64cbeeda55a4e0b2"
++uuid = "91464d47-22a1-43fe-8b7f-2d57ee82463f"
++version = "0.1.7"
++
++[[deps.StaticArrays]]
++deps = ["LinearAlgebra", "PrecompileTools", "Random", "StaticArraysCore"]
++git-tree-sha1 = "c8bf24c3f713c724e7bceaf9d0bb6729dbd3c8cc"
++uuid = "90137ffa-7385-5640-81b9-e52037218182"
++version = "1.9.25"
++
++    [deps.StaticArrays.extensions]
++    StaticArraysChainRulesCoreExt = "ChainRulesCore"
++    StaticArraysStatisticsExt = "Statistics"
++
++    [deps.StaticArrays.weakdeps]
++    ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
++    Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
++
++[[deps.StaticArraysCore]]
++git-tree-sha1 = "bf7e2d0d9ed9ac2a652fd598c0f784910cc759f2"
++uuid = "1e83bf80-4336-4d27-bf5d-d5a4f845583c"
++version = "1.4.5"
++
++[[deps.Statistics]]
++deps = ["LinearAlgebra"]
++git-tree-sha1 = "e2b53ce13a53367e96601081e33d34746b571bad"
++uuid = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
++version = "1.11.5"
++weakdeps = ["SparseArrays"]
++
++    [deps.Statistics.extensions]
++    SparseArraysExt = ["SparseArrays"]
++
++[[deps.StringManipulation]]
++deps = ["PrecompileTools", "StyledStrings"]
++git-tree-sha1 = "9e3a02d73a8f0a9be04e677dbef758aab40f8bea"
++uuid = "892a3eda-7b42-436c-8928-eab12a02cf0e"
++version = "0.6.1"
++
++[[deps.StructIO]]
++git-tree-sha1 = "c581be48ae1cbf83e899b14c07a807e1787512cc"
++uuid = "53d494c1-5632-5724-8f4c-31dff12d585f"
++version = "0.3.1"
++
++[[deps.StructUtils]]
++deps = ["Dates", "UUIDs"]
++git-tree-sha1 = "d9cfc07e1d1a8985aa9d03870d642b5d7ab2cf33"
++uuid = "ec057cc2-7a8d-4b58-b3b3-92acb9f63b42"
++version = "2.12.1"
++
++    [deps.StructUtils.extensions]
++    StructUtilsDBInterfaceExt = ["DBInterface", "Tables"]
++    StructUtilsDataFramesExt = ["DataFrames"]
++    StructUtilsLazilyInitializedFieldsExt = ["LazilyInitializedFields"]
++    StructUtilsMeasurementsExt = ["Measurements"]
++    StructUtilsStaticArraysCoreExt = ["StaticArraysCore"]
++    StructUtilsTablesExt = ["Tables"]
++
++    [deps.StructUtils.weakdeps]
++    DBInterface = "a10d1c49-ce27-4219-8d33-6db1a4562965"
++    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
++    LazilyInitializedFields = "0e77f7df-68c5-4e49-93ce-4cd80f5598bf"
++    Measurements = "eff96d63-e80a-5855-80a2-b1b0885c5ab7"
++    StaticArraysCore = "1e83bf80-4336-4d27-bf5d-d5a4f845583c"
++    Tables = "bd369af6-aec1-5ad0-b16a-f7cc5008161c"
++
++[[deps.StyledStrings]]
++uuid = "f489334b-da3d-4c2e-b8f0-e476e12c162b"
++version = "1.11.0"
++
++[[deps.SuiteSparse_jll]]
++deps = ["Artifacts", "Libdl", "libblastrampoline_jll"]
++uuid = "bea87d4a-7f5b-5778-9afe-8cc45184846c"
++version = "7.8.3+2"
++
++[[deps.TOML]]
++deps = ["Dates"]
++uuid = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
++version = "1.0.3"
++
++[[deps.TableTraits]]
++deps = ["IteratorInterfaceExtensions"]
++git-tree-sha1 = "c06b2f539df1c6efa794486abfb6ed2022561a39"
++uuid = "3783bdb8-4a98-5b6b-af9a-565f29a5fe9c"
++version = "1.0.1"
++
++[[deps.Tables]]
++deps = ["DataAPI", "DataValueInterfaces", "IteratorInterfaceExtensions", "OrderedCollections", "TableTraits"]
++git-tree-sha1 = "a94d9bdda1b7bed0046cea645639ab3f62196fac"
++uuid = "bd369af6-aec1-5ad0-b16a-f7cc5008161c"
++version = "1.14.0"
++
++[[deps.Tar]]
++deps = ["ArgTools", "SHA"]
++uuid = "a4e569a6-e804-4fa4-b0f3-eef7a1d5b13e"
++version = "1.10.0"
++
++[[deps.TaskLocalValues]]
++git-tree-sha1 = "67e469338d9ce74fc578f7db1736a74d93a49eb8"
++uuid = "ed4db957-447d-4319-bfb6-7fa9ae7ecf34"
++version = "0.1.3"
++
++[[deps.ThreadTeams]]
++deps = ["ChunkSplitters", "OhMyThreads", "ScopedValues"]
++git-tree-sha1 = "15736830cfa2bc55b27769222cefb371800d4f25"
++uuid = "100744f9-5cbb-42a9-938e-f15a20f71997"
++version = "1.4.0"
++
++    [deps.ThreadTeams.extensions]
++    ThreadTeamsEnzymeCoreExt = "EnzymeCore"
++
++    [deps.ThreadTeams.weakdeps]
++    EnzymeCore = "f151be2c-9106-41f4-ab19-57ee4f262869"
++
++[[deps.TimerOutputs]]
++deps = ["ExprTools", "PrettyTables", "Printf", "Tables"]
++git-tree-sha1 = "30350f9ca2e26d58ed7abab3461494d42e0c223e"
++uuid = "a759f4b9-e2f1-59dc-863e-4aeb61b1ea8f"
++version = "1.2.3"
++
++    [deps.TimerOutputs.extensions]
++    FlameGraphsExt = "FlameGraphs"
++
++    [deps.TimerOutputs.weakdeps]
++    FlameGraphs = "08572546-2f56-4bcf-ba4e-bab62c3a3f89"
++
++[[deps.Tracy]]
++deps = ["ExprTools", "LibTracyClient_jll", "Libdl"]
++git-tree-sha1 = "73e3ff50fd3990874c59fef0f35d10644a1487bc"
++uuid = "e689c965-62c8-4b79-b2c5-8359227902fd"
++version = "0.1.6"
++
++    [deps.Tracy.extensions]
++    TracyProfilerExt = "TracyProfiler_jll"
++
++    [deps.Tracy.weakdeps]
++    TracyProfiler_jll = "0c351ed6-8a68-550e-8b79-de6f926da83c"
++
++[[deps.TranscodingStreams]]
++git-tree-sha1 = "0c45878dcfdcfa8480052b6ab162cdd138781742"
++uuid = "3bb67fe8-82b1-5028-8e26-92a6c54297fa"
++version = "0.11.3"
++
++[[deps.URIs]]
++deps = ["Serialization"]
++git-tree-sha1 = "eb3b85ca904a1d1647b15acc091b113b8874b648"
++uuid = "5c2747f8-b7ea-4ff2-ba2e-563bfd36b1d4"
++version = "1.7.3"
++
++[[deps.UUIDs]]
++deps = ["Random", "SHA"]
++uuid = "cf7118a7-6976-5b1a-9a39-7adc72f591a4"
++version = "1.11.0"
++
++[[deps.UnPack]]
++git-tree-sha1 = "387c1f73762231e86e0c9c5443ce3b4a0a9a0c2b"
++uuid = "3a884ed6-31ef-47d7-9d2a-63182c4928ed"
++version = "1.0.2"
++
++[[deps.Unicode]]
++uuid = "4ec0a83e-493e-50e2-b9ac-8f72acf5a8f5"
++version = "1.11.0"
++
++[[deps.UnsafeAtomics]]
++deps = ["LLVM"]
++git-tree-sha1 = "74ac5e0e702972da953ffc981094617070be582d"
++uuid = "013be700-e6cd-48c3-b4a1-df204f14c38f"
++version = "0.4.0"
++weakdeps = ["GPUCompiler"]
++
++    [deps.UnsafeAtomics.extensions]
++    UnsafeAtomicsGPUCompilerExt = "GPUCompiler"
++
++[[deps.XML2_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl", "Libiconv_jll", "Zlib_jll"]
++git-tree-sha1 = "80d3930c6347cfce7ccf96bd3bafdf079d9c0390"
++uuid = "02c8fc9c-b97f-50b9-bbe4-9be30ff0a78a"
++version = "2.13.9+0"
++
++[[deps.XZ_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "e52eca002a11c30a858185efdfb15311e1c7a6bf"
++uuid = "ffd25f8a-64ca-5728-b0f7-c24cf3aae800"
++version = "5.8.4+0"
++
++[[deps.Xorg_libpciaccess_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl", "Zlib_jll"]
++git-tree-sha1 = "58972370b81423fc546c56a60ed1a009450177c3"
++uuid = "a65dc6b1-eb27-53a1-bb3e-dea574b5389e"
++version = "0.19.0+0"
++
++[[deps.Zarr]]
++deps = ["Blosc", "CRC32c", "ChunkCodecCore", "ChunkCodecLibZlib", "ChunkCodecLibZstd", "DataStructures", "DateTimes64", "Dates", "DiskArrays", "HTTP", "JSON", "OffsetArrays", "OrderedCollections", "Pkg", "URIs", "Unicode", "ZipArchives"]
++git-tree-sha1 = "d448244b07ecfc658d8153c4d50ffd5961c6d4a6"
++uuid = "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"
++version = "0.10.2"
++
++    [deps.Zarr.extensions]
++    ZarrAWSS3Ext = "AWSS3"
++
++    [deps.Zarr.weakdeps]
++    AWSS3 = "1c724243-ef5b-51ab-93f4-b0a88ac62a95"
++
++[[deps.ZipArchives]]
++deps = ["ArgCheck", "CodecInflate64", "CodecZlib", "InputBuffers", "PrecompileTools", "TranscodingStreams", "Zlib_jll"]
++git-tree-sha1 = "3e6acd912522133953125645b263934ae2ac745e"
++uuid = "49080126-0e18-4c2a-b176-c102e4b3760c"
++version = "2.6.1"
++
++[[deps.Zlib_jll]]
++deps = ["Libdl"]
++uuid = "83775a58-1f1d-513f-b197-d71354ab007a"
++version = "1.3.1+2"
++
++[[deps.Zstd_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "446b23e73536f84e8037f5dce465e92275f6a308"
++uuid = "3161d3a3-bdf6-5164-811a-617609db77b4"
++version = "1.5.7+1"
++
++[[deps.aws_c_auth_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl", "aws_c_cal_jll", "aws_c_http_jll", "aws_c_sdkutils_jll"]
++git-tree-sha1 = "7945f94b714d20b55aee2510b511afee0ee17ad2"
++uuid = "2b3700d1-4306-52e2-a478-c162f0c514be"
++version = "1.0.1+0"
++
++[[deps.aws_c_cal_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl", "aws_c_common_jll"]
++git-tree-sha1 = "60a8d3fafed6f7ed8b3114793885a03330aa8e51"
++uuid = "70f11efc-bab2-57f1-b0f3-22aad4e67c4b"
++version = "1.0.0+0"
++
++[[deps.aws_c_common_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "f5ce8191ad02a5a4127d37ab5f474aee5cf91ad4"
++uuid = "73048d1d-b8c4-5092-a58d-866c5e8d1e50"
++version = "1.0.3+1"
++
++[[deps.aws_c_compression_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl", "aws_c_common_jll"]
++git-tree-sha1 = "6efd591b9fae7919266d3b342a18a6e6280850f9"
++uuid = "73a04cd5-f3d7-5bac-9290-e8adb709f224"
++version = "1.0.0+1"
++
++[[deps.aws_c_http_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl", "aws_c_compression_jll", "aws_c_io_jll"]
++git-tree-sha1 = "e4108b4a2201cb9987ddd36714fdcfd572d6bb24"
++uuid = "3254fc65-9028-534d-aa9d-d76d128babc6"
++version = "1.0.0+0"
++
++[[deps.aws_c_io_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl", "aws_c_cal_jll", "aws_c_common_jll", "s2n_tls_jll"]
++git-tree-sha1 = "b816756403a8db80e32fc23a4a1aae240d2168ca"
++uuid = "13c41daa-f319-5298-b5eb-5754e0170d52"
++version = "1.0.0+0"
++
++[[deps.aws_c_s3_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl", "aws_c_auth_jll", "aws_c_common_jll", "aws_c_http_jll", "aws_checksums_jll", "s2n_tls_jll"]
++git-tree-sha1 = "1ebf5d4fa9c5248c3c1066124ef41d06de05a03a"
++uuid = "bd1f34fb-993f-5903-a121-aaf302eed6d4"
++version = "1.3.1+0"
++
++[[deps.aws_c_sdkutils_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl", "aws_c_common_jll"]
++git-tree-sha1 = "0162699e5aa99420f04a9606a9d7b38a872a81ee"
++uuid = "1282aa60-004d-510b-9f52-12498d409daa"
++version = "1.0.0+0"
++
++[[deps.aws_checksums_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl", "aws_c_common_jll"]
++git-tree-sha1 = "ee1f5427815c98355b0b0454b5fe79806ffdf935"
++uuid = "b2a88e68-78e7-5e94-8c20-c02986ec140e"
++version = "1.0.1+1"
++
++[[deps.dlfcn_win32_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "e141d67ffe550eadfb5af1bdbdaf138031e4805f"
++uuid = "c4b69c83-5512-53e3-94e6-de98773c479f"
++version = "1.4.2+0"
++
++[[deps.libaec_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "31e4c16405815484827f75a38fb7eb17432e72e3"
++uuid = "477f73a3-ac25-53e9-8cc3-50b2fa2566f0"
++version = "1.1.8+0"
++
++[[deps.libblastrampoline_jll]]
++deps = ["Artifacts", "Libdl"]
++uuid = "8e850b90-86db-534c-a0d3-1478176c7d93"
++version = "5.15.0+0"
++
++[[deps.libzip_jll]]
++deps = ["Artifacts", "Bzip2_jll", "JLLWrappers", "Libdl", "OpenSSL_jll", "XZ_jll", "Zlib_jll", "Zstd_jll"]
++git-tree-sha1 = "c4b294e893e8ebbb8788b68b1d56737c0f01557b"
++uuid = "337d8026-41b4-5cde-a456-74a10e5b31d1"
++version = "1.12.1+0"
++
++[[deps.mGV]]
++deps = ["Accessors", "Adapt", "BasicModelInterface", "Configurations", "Dates", "JuliaC", "KernelAbstractions", "LinearAlgebra", "MacroTools", "NCDatasets", "NetCDF", "OffsetArrays", "OrderedCollections", "PackageCompiler", "Parameters", "Printf", "ProgressMeter", "StaticArrays", "Statistics", "TOML", "TimerOutputs", "Zarr"]
++git-tree-sha1 = "9ae55e1287448279ee56943e630e7b5c5775f24b"
++repo-rev = "42aebaadd4a4c1fac69fba79d05c9ede19065685"
++repo-url = "https://github.com/SWIFT-WUR/mGV.git"
++uuid = "b1af0ff3-f930-4051-bc19-f789759b7f7a"
++version = "0.0.0"
++
++    [deps.mGV.extensions]
++    AMDGPUExt = "AMDGPU"
++    CUDAExt = "CUDA"
++    MetalExt = "Metal"
++    OpenCLExt = "OpenCL"
++    oneAPIExt = "oneAPI"
++
++    [deps.mGV.weakdeps]
++    AMDGPU = "21141c5a-9bdb-4563-92ae-f87d6854732e"
++    CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
++    Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
++    OpenCL = "08131aa3-fb12-5dee-8b74-c09406e224a2"
++    oneAPI = "8f75cd03-7ff8-4ecb-9b8f-daf728133b1b"
++
++[[deps.mpif_jll]]
++deps = ["Artifacts", "CompilerSupportLibraries_jll", "JLLWrappers", "Libdl", "MPIABI_jll", "MPICH_jll", "MPIPreferences", "MPItrampoline_jll", "MicrosoftMPI_jll", "OpenMPI_jll", "TOML"]
++git-tree-sha1 = "52e322f7a6d418576cdeb043dd2a7f7ad9a8abd0"
++uuid = "9aeb927a-4695-514f-a259-621a69f20ec0"
++version = "1.0.1+0"
++
++[[deps.nghttp2_jll]]
++deps = ["Artifacts", "Libdl"]
++uuid = "8e850ede-7688-5339-a07c-302acd2aaf8d"
++version = "1.64.0+1"
++
++[[deps.p7zip_jll]]
++deps = ["Artifacts", "CompilerSupportLibraries_jll", "Libdl"]
++uuid = "3f19e933-33d8-53b3-aaab-bd5110c3b7a0"
++version = "17.7.0+0"
++
++[[deps.pocl_standalone_jll]]
++deps = ["Artifacts", "Hwloc_jll", "JLLWrappers", "Libdl", "SLEEF_jll", "Zstd_jll"]
++git-tree-sha1 = "305f3b390a68ab4297626cbe7eeaea88869e2cc0"
++uuid = "54f56a70-6062-5590-a942-1226658f6c83"
++version = "7.2.3+8"
++
++[[deps.s2n_tls_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "6f9611b1b99beb089154f19a4031579f3a818cbd"
++uuid = "cddc5d3d-934d-5d3a-9747-62fc12ea3f48"
++version = "1.7.12+0"
++
++[[deps.tree_sitter_gcn_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "7aea9f731552967bda93cb7cbf6925de65bc38d5"
++uuid = "8b5cbfcf-8811-596e-8e87-0e51e05ee4b2"
++version = "0.1.0+0"
++
++[[deps.tree_sitter_llvm_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "2fb7d0e3a8abf532fa922766ca130bf814df1e70"
++uuid = "44208993-ee63-5069-9443-8e43b04a9b30"
++version = "1.1.0+0"
++
++[[deps.tree_sitter_ptx_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "e6ad264eebe3e34f03bca6b5e811d80e0f4797a2"
++uuid = "71e3f6e6-c059-5e7c-a2f2-d560fdad7ce5"
++version = "0.1.0+0"
++
++[[deps.tree_sitter_spirv_jll]]
++deps = ["Artifacts", "JLLWrappers", "Libdl"]
++git-tree-sha1 = "7d8c03949bab84b23fe0500d89979e786d54a653"
++uuid = "f0e86581-c468-54df-a4de-3266e11a3c86"
++version = "0.1.0+0"
+diff --git a/examples/mgv_coupling/Project.toml b/examples/mgv_coupling/Project.toml
+index a0d2df2..1f826e0 100644
+--- a/examples/mgv_coupling/Project.toml
++++ b/examples/mgv_coupling/Project.toml
+@@ -1,8 +1,20 @@
+ [deps]
++AMDGPU = "21141c5a-9bdb-4563-92ae-f87d6854732e"
+ BasicModelInterface = "59605e27-edc0-445a-b93d-c09a3a50b330"
+ Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
++KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+ ModflowCoupling = "5b8c2f1e-3d4a-4c7e-9f21-6a0e8d7b4c13"
++ModflowGPU = "80579596-0efa-413b-aeef-37d798abb369"
+ NCDatasets = "85f8d34a-cbdd-5861-8df4-14fed0d494ab"
+ Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+ Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+ mGV = "b1af0ff3-f930-4051-bc19-f789759b7f7a"
++
++[sources]
++ModflowCoupling = {path = "../.."}
++ModflowGPU = {path = "../../../.."}
++mGV = {url = "https://github.com/SWIFT-WUR/mGV.git", rev = "42aebaadd4a4c1fac69fba79d05c9ede19065685"}
++
++[compat]
++AMDGPU = "2.11"
++KernelAbstractions = "0.10.7"
+diff --git a/src/ModflowCoupling.jl b/src/ModflowCoupling.jl
+index 8c6c3a6..95ebd4b 100644
+--- a/src/ModflowCoupling.jl
++++ b/src/ModflowCoupling.jl
+@@ -22,7 +22,8 @@ import KernelAbstractions
+ using KernelAbstractions: @kernel, @index, @Const
+ 
+ export GroundwaterModel, Config, InputSpec, load_config, read_static_inputs, build_parameters,
+-       audit_static_inputs, align_to_grid, current_date, package_flows, write_head, head_reference
++       audit_static_inputs, align_to_grid, current_date, package_flows, write_head, head_reference,
++       set_value_device!, get_value_device!
+ 
+ include("config.jl")
+ include("inputs.jl")
+diff --git a/src/bmi.jl b/src/bmi.jl
+index 01d0f54..c4b60a1 100644
+--- a/src/bmi.jl
++++ b/src/bmi.jl
+@@ -70,28 +70,43 @@ BMI.get_time_units(m::GroundwaterModel) = "days since $(m.periods[1])"
+ "Length of the next stress period (days)."
+ BMI.get_time_step(m::GroundwaterModel) = Float64(period_days(m.config, current_date(m)))
+ 
++# The host field behind variable `name` (`nothing` for a derived variable).
++function var_field(name::String)
++    name == "groundwater_recharge" && return :recharge
++    name == "river_discharge" && return :discharge
++    name == "groundwater_abstraction" && return :abstraction
++    startswith(name, "groundwater_head") && return :head
++    name == "baseflow_to_routing" && return :baseflow
++    name == "capillary_rise" && return :capillary
++    return nothing
++end
++
++# The host array of variable `name`, current with the device (not exposed: `get_value`
++# copies it; `get_value_ptr` exposes it).
+ function var_array(m::GroundwaterModel, name::String)
+-    name == "groundwater_recharge" && return m.recharge
+-    name == "river_discharge" && return m.discharge
+-    name == "groundwater_abstraction" && return m.abstraction
+-    name == "groundwater_head" && return m.head
+-    name == "groundwater_head_layer_1" && return view(m.head, :, :, 1)
+-    name == "groundwater_head_layer_2" && return view(m.head, :, :, 2)
++    f(x) = host_field(m, x)
++    name == "groundwater_recharge" && return f(:recharge)
++    name == "river_discharge" && return f(:discharge)
++    name == "groundwater_abstraction" && return f(:abstraction)
++    name == "groundwater_head" && return f(:head)
++    name == "groundwater_head_layer_1" && return view(f(:head), :, :, 1)
++    name == "groundwater_head_layer_2" && return view(f(:head), :, :, 2)
+     # Depth of the layer-1 head below land surface (derived; a copy, not a pointer). On the
+     # host from the Float64 heads; the device-resident coupling also computes it on the
+     # device as top' − h' (`get_value_ptr(m, "groundwater_depth"; device = true)`).
+-    name == "groundwater_depth" && return ifelse.(m.inputs.landmask, m.params.top .- m.head[:, :, 1], NaN)
+-    name == "baseflow_to_routing" && return m.baseflow
+-    name == "capillary_rise" && return m.capillary
++    name == "groundwater_depth" && return ifelse.(m.inputs.landmask, m.params.top .- f(:head)[:, :, 1], NaN)
++    name == "baseflow_to_routing" && return f(:baseflow)
++    name == "capillary_rise" && return f(:capillary)
+     error("unknown variable $name")
+ end
+ 
+ """
+     BMI.get_value_ptr(m::GroundwaterModel, name; device = false)
+ 
+-The host array of variable `name` (Float64, flattened). With the device-resident
+-coupling, an output's host array is refreshed from the device by this call (and by
+-`get_value`), not by `update`: call it again after each update.
++The host array of variable `name` (Float64, flattened; `groundwater_depth` is a copy).
++With the device-resident coupling the array stays valid across updates (T5.4): from the
++first call on, an output's array is refreshed after every update, and writes into an
++input's array are sent to the device at the next update (as `set_value` does).
+ 
+ With `device = true` (device-resident coupling only): the device array that the coupling
+ kernels use, in the engine precision `T` (`m.mf.T`), flattened per 2D cell (both layers
+@@ -102,9 +117,14 @@ The inputs are the values last set on the host. Read only: writes are overwritte
+ next update (inputs: by the next `set_value`).
+ """
+ function BMI.get_value_ptr(m::GroundwaterModel, name::String; device::Bool = false)
+-    device || return vec(var_array(m, name))
++    if !device
++        a = vec(var_array(m, name))
++        f = var_field(name)
++        f === nothing || getfield(m, :dev) === nothing || expose!(m, f)
++        return a
++    end
+     device_coupling(m) || error("get_value_ptr(...; device = true) needs the GPU engine with coupling = \"device\"")
+-    d, n = m.dev, length(m.recharge)
++    d, n = m.dev, length(getfield(m, :recharge))
+     name == "groundwater_recharge" && return d.recharge
+     name == "river_discharge" && return d.discharge
+     name == "groundwater_abstraction" && return d.abstraction
+@@ -130,7 +150,7 @@ BMI.get_value_at_indices(m::GroundwaterModel, name::String, dest, inds) =
+     copyto!(dest, vec(var_array(m, name))[inds])
+ 
+ function BMI.set_value(m::GroundwaterModel, name::String, value)
+-    length(value) == length(m.recharge) || error("$name needs $(length(m.recharge)) values, got $(length(value))")
++    length(value) == length(getfield(m, :recharge)) || error("$name needs $(length(getfield(m, :recharge))) values, got $(length(value))")
+     name == "groundwater_recharge" ? set_recharge!(m, value) :
+     name == "river_discharge" ? set_discharge!(m, value) :
+     name == "groundwater_abstraction" ? set_abstraction!(m, value) :
+@@ -145,7 +165,7 @@ function BMI.set_value_at_indices(m::GroundwaterModel, name::String, inds, value
+ end
+ 
+ BMI.get_grid_rank(::GroundwaterModel, grid::Int) = grid == 0 ? 2 : 3
+-BMI.get_grid_size(m::GroundwaterModel, grid::Int) = length(m.recharge) * (grid == 0 ? 1 : 2)
++BMI.get_grid_size(m::GroundwaterModel, grid::Int) = length(getfield(m, :recharge)) * (grid == 0 ? 1 : 2)
+ BMI.get_grid_type(::GroundwaterModel, ::Int) = "uniform_rectilinear"
+ 
+ function BMI.get_grid_shape(m::GroundwaterModel, grid::Int)
+diff --git a/src/config.jl b/src/config.jl
+index 500cc5c..e93097b 100644
+--- a/src/config.jl
++++ b/src/config.jl
+@@ -74,6 +74,13 @@ and `coupling`: `"device"` computes the stresses and outputs in kernels on the e
+ device arrays (`device_coupling.jl`), `"host"` through ModflowGPU's host mirrors as the
+ mf6 engine does with libmf6's arrays; `"auto"` is `"device"` for the GPU engine. The mf6
+ engine ignores them (`coupling` must be `"auto"` or `"host"` there).
++
++`outer_dvclose` and `inner_dvclose` (m) default per engine (`nothing` = the engine's
++default, `dvclose(settings, :outer)`): 5 for the mf6 engine (the Python reference) and
++0.01 for the GPU engine (ModflowGPU PLAN.md section 8, decision 9: on the Indus its heads
++stop within 1.5e-4 m of the tight heads on daily steps, against 0.15 m at 5, for 20–40 %
++more time per period; MF6 at 5 stops up to 1.9 m from its converged heads on monthly
++periods). A value in the config applies to both engines.
+ """
+ Base.@kwdef struct SolverSettings
+     engine::String = "mf6"
+@@ -81,8 +88,8 @@ Base.@kwdef struct SolverSettings
+     precision::String = "auto"
+     preconditioner::String = "auto"
+     coupling::String = "auto"
+-    outer_dvclose::Float64 = 5.0
+-    inner_dvclose::Float64 = 5.0
++    outer_dvclose::Union{Nothing,Float64} = nothing
++    inner_dvclose::Union{Nothing,Float64} = nothing
+     inner_rclose::Float64 = 10.0
+     outer_maximum::Int = 200
+     inner_maximum::Int = 500
+@@ -139,6 +146,21 @@ end
+ 
+ Config(c::Config; kw...) = Config(; (f => get(kw, f, getfield(c, f)) for f in fieldnames(Config))...)
+ 
++"Default `outer_dvclose` and `inner_dvclose` (m) of each engine (`SolverSettings`)."
++const DEFAULT_DVCLOSE = Dict("mf6" => 5.0, "gpu" => 0.01)
++
++"""
++    dvclose(settings::SolverSettings, which) -> Float64
++
++`outer_dvclose` (`which = :outer`) or `inner_dvclose` (`:inner`) of `settings`: the value
++given, or the default of its engine (`DEFAULT_DVCLOSE`).
++"""
++function dvclose(sv::SolverSettings, which::Symbol)
++    v = which === :outer ? sv.outer_dvclose : which === :inner ? sv.inner_dvclose :
++        throw(ArgumentError("which must be :outer or :inner"))
++    return something(v, DEFAULT_DVCLOSE[sv.engine])
++end
++
+ const ENGINES = ("mf6", "gpu")
+ const GPU_PRECISIONS = ("auto", "double", "mixed", "single")
+ const COUPLINGS = ("auto", "device", "host")
+diff --git a/src/device_coupling.jl b/src/device_coupling.jl
+index 870939a..8d17d7b 100644
+--- a/src/device_coupling.jl
++++ b/src/device_coupling.jl
+@@ -24,6 +24,23 @@ heads. Absolute heads exist on the host only (`r + h'` in Float64).
+ 
+ The host path (`coupling = "host"`) writes the stresses into ModflowGPU's host mirrors
+ (`get_value_ptr` without `device`), as the mf6 engine does with libmf6's arrays.
++
++T5.4 (mGV and ModflowGPU on one GPU):
++
++- `set_value_device!` and `get_value_device!` exchange device arrays with another model
++  on the same device (mGV): a gather through a cell map and the conversion to the
++  engine precision in one kernel (Float32 mGV ↔ Float64 engine in `:mixed`/`:double`;
++  a plain gather in `:single`). Without the device coupling they go through the host.
++- The engine's device BOUND arrays are written through `ModflowGPU.device_bound!` (the
++  enforced write window between `prepare_time_step` and `prepare_solve`, with device
++  checks of the written records at `prepare_solve`).
++- Host arrays handed out stay valid: an output read on the host once (`m.head`,
++  `BMI.get_value_ptr`) is refreshed after every update from then on, and an input
++  array read on the host (`m.recharge`, `get_value_ptr`) is compared with what the device
++  holds before every update and uploaded when it was written (`expose!`, `sync_inputs!`).
++- A cell with more than one record of a package is an error (the outputs are per cell).
++- `finalize!` frees the device arrays of the coupling and the engine
++  (`ModflowGPU.finalize` → `free_device_arrays!`).
+ =#
+ 
+ """
+@@ -39,6 +56,8 @@ absolute heads, and staging buffers in `T`.
+ """
+ struct DeviceCoupling{T, V <: AbstractVector{T}, VI <: AbstractVector{Int32}, VB <: AbstractVector{Bool}, M <: AbstractMatrix{T}}
+     mxiter::Int
++    sim::ModflowGPU.Simulation
++    bound_addresses::Vector{String}  # BOUND addresses written by apply_stresses_device! (RCH, RIV[, WEL])
+     # engine arrays (ModflowGPU.get_value_ptr(...; device = true))
+     h::V
+     rch_bound::M
+@@ -81,6 +100,7 @@ struct DeviceCoupling{T, V <: AbstractVector{T}, VI <: AbstractVector{Int32}, VB
+     staging::Vector{T}          # (ncell) input upload buffer
+     head_host::Vector{T}        # (2·ncell) output download buffers
+     field_host::Vector{T}       # (ncell)
++    shadow::Dict{Symbol,Vector{Float64}}   # exposed host inputs as last synchronised with the device
+ end
+ 
+ "Copy host array `x` to a new device array on `backend`."
+@@ -124,7 +144,7 @@ function DeviceCoupling(m, sim::ModflowGPU.Simulation)
+     href = [n > 0 ? href_node[n] : NaN for n in head_node]
+     r_cell(c) = href[lin[c]]   # reference of the layer-1 node of 2D cell c
+ 
+-    rec_map(cells) = (map = zeros(Int32, ncell); for (i, c) in enumerate(cells); map[lin[c]] = i; end; map)
++    rec_map(cells, pkg) = record_map(cells, lin, ncell, pkg)
+     cell_index(cells) = Int32[lin[c] for c in cells]
+     r = p.river
+     rr = r_cell.(r.cells)
+@@ -133,8 +153,9 @@ function DeviceCoupling(m, sim::ModflowGPU.Simulation)
+ 
+     evt = m.config.foc ? dptr("SIMVALS", "EVT") : similar(h, 0)
+     wel = m.config.pumping ? dptr("BOUND", "WEL") : similar(h, 1, 0)
++    bounds = [join([name, pkg, "BOUND"], "/") for pkg in (m.config.pumping ? ("RCH", "RIV", "WEL") : ("RCH", "RIV"))]
+     return DeviceCoupling(
+-        Int(only(G.get_value(sim, "SLN_1/MXITER"))),
++        Int(only(G.get_value(sim, "SLN_1/MXITER"))), sim, bounds,
+         h, dptr("BOUND", "RCH"), dptr("BOUND", "RIV"), wel,
+         dptr("SIMVALS", "RIV"), dptr("SIMVALS", "DRN"), evt,
+         dev(zeros(T, ncell)), dev(zeros(T, ncell)), dev(zeros(T, ncell)),
+@@ -142,14 +163,32 @@ function DeviceCoupling(m, sim::ModflowGPU.Simulation)
+         dev(cell_index(r.cells)), dev(Vector{Bool}(r.is_river)), dev(T.(r.width .* sqrt.(r.slope))),
+         dev(T.(r.bottom_bankfull .- rr)), dev(T.(r.head_ini .- rr)), dev(T.(r.bottom .- rr)),
+         dev(cell_index(m.config.pumping ? p.wel_cells : CartesianIndex{2}[])),
+-        dev(head_node), dev(rec_map(r.cells)), dev(rec_map(p.drain.cells)),
+-        dev(rec_map(m.config.foc ? p.evt_cells : CartesianIndex{2}[])),
++        dev(head_node), dev(rec_map(r.cells, "RIV")), dev(rec_map(p.drain.cells, "DRN")),
++        dev(rec_map(m.config.foc ? p.evt_cells : CartesianIndex{2}[], "EVT")),
+         dev(Vector{Bool}(vec(s.landmask))), dev(T.(vec(s.cell_area))), dev(T.(top_offset)),
+         dev(fill(T(NaN), 2ncell)), dev(fill(T(NaN), ncell)), dev(fill(T(NaN), ncell)), dev(zeros(T, ncell)),
+-        href, zeros(T, ncell), zeros(T, 2ncell), zeros(T, ncell),
++        href, zeros(T, ncell), zeros(T, 2ncell), zeros(T, ncell), Dict{Symbol,Vector{Float64}}(),
+     )
+ end
+ 
++"""
++    record_map(cells, lin, ncell, package) -> Vector{Int32}
++
++The record of each 2D cell (`ncell` cells, linear indices `lin`; 0 without a record).
++The device outputs are per cell, so a cell with more than one record of `package` is an
++error (the host path adds them up; `build_parameters` makes one record per cell).
++"""
++function record_map(cells, lin, ncell::Integer, package::AbstractString)
++    map = zeros(Int32, ncell)
++    for (i, c) in enumerate(cells)
++        j = lin[c]
++        map[j] == 0 || error("$package has more than one record on cell $(Tuple(c)) (records $(map[j]) and $i): " *
++                             "the device-resident coupling needs one record per cell (use coupling = \"host\")")
++        map[j] = i
++    end
++    return map
++end
++
+ "Copy the host input field `x` (Float64, finite) into the device array `d` (through the staging buffer)."
+ function upload_input!(d::DeviceCoupling, dest, x::AbstractArray)
+     d.staging .= vec(x)
+@@ -206,6 +245,10 @@ WEL rates of the input fields into the engine's device BOUND arrays.
+ """
+ function apply_stresses_device!(d::DeviceCoupling{T}) where {T}
+     backend = KernelAbstractions.get_backend(d.h)
++    # Open the write window of each BOUND (the engine checks the records at prepare_solve).
++    for (a, arr) in zip(d.bound_addresses, (d.rch_bound, d.riv_bound, d.wel_bound))
++        ModflowGPU.device_bound!(d.sim, a) === arr || error("the engine BOUND array of $a changed")
++    end
+     n = length(d.rch_cell)
+     n > 0 && recharge_bound_kernel!(backend)(d.rch_bound, d.recharge, d.rch_cell, d.rch_factor; ndrange = n)
+     n = length(d.riv_cell)
+@@ -279,8 +322,9 @@ end
+ """
+     sync_output!(m, field)
+ 
+-Refresh the host copy of output `field` (`:head`, `:baseflow` or `:capillary`)
+-from the device, if it changed since it was last copied (the device-resident coupling).
++Refresh the host copy of `field` from the device, if it changed since it was last copied
++(the device-resident coupling): an output (`:head`, `:baseflow`, `:capillary`) after an
++update, or an input (`:recharge`, `:discharge`) set on the device (`set_value_device!`).
+ Heads become absolute (`href + h'`, Float64).
+ """
+ function sync_output!(m, field::Symbol)
+@@ -293,7 +337,161 @@ function sync_output!(m, field::Symbol)
+     else
+         copyto!(d.field_host, getfield(d, field))
+         getfield(m, field) .= reshape(d.field_host, size(getfield(m, field)))
++        haskey(d.shadow, field) && copyto!(d.shadow[field], vec(getfield(m, field)))
+     end
+     delete!(stale, field)
+     return nothing
+ end
++
++"""
++    expose!(m, field)
++
++`field` of `m` was handed out on the host (`m.field`, `BMI.get_value_ptr`). From now on an
++output is refreshed after every update (`collect_outputs!`), and an input is compared with
++the values the device holds before every update (`sync_inputs!`), so a host array kept
++across updates neither goes stale nor loses writes. Costs one copy per update and exposed
++output, and one host comparison per update and exposed input (nothing for fields that
++are never read on the host, as in the device exchange with mGV).
++"""
++function expose!(m, field::Symbol)
++    exposed = getfield(m, :exposed)
++    field in exposed && return nothing
++    push!(exposed, field)
++    d = getfield(m, :dev)
++    if field in DEVICE_INPUTS && d !== nothing
++        sync_output!(m, field)
++        d.shadow[field] = copy(vec(getfield(m, field)))
++    end
++    return nothing
++end
++
++"""
++    sync_inputs!(m)
++
++Before an update (device-resident coupling): upload each exposed input whose host array
++was written since it was last synchronised with the device (a direct write into
++`m.recharge`, or into the array of `BMI.get_value_ptr`), through the setter of
++`BMI.set_value` (non-finite values become 0; abstraction is checked).
++"""
++function sync_inputs!(m)
++    d = getfield(m, :dev)
++    d === nothing && return nothing
++    setters = (recharge = set_recharge!, discharge = set_discharge!, abstraction = set_abstraction!)
++    for (field, shadow) in d.shadow
++        field in getfield(m, :host_stale) && continue   # set on the device since: the device is current
++        host = vec(getfield(m, field))
++        isequal(host, shadow) && continue
++        getfield(setters, field)(m, copy(host))
++        delete!(getfield(m, :inputs_set), field)        # not a BMI set (the forcing file still applies)
++    end
++    return nothing
++end
++
++# ------------------------------------------------------------------------------------
++# Device exchange with another model on the same device (mGV, T5.4)
++# ------------------------------------------------------------------------------------
++
++# dst[i] = src[map[i]] / divisor (in the precision of src), 0 where map[i] == 0 or the
++# value is not finite, converted to the precision of dst (Float32 ↔ Float64 in :mixed and
++# :double; a plain gather in :single).
++@kernel function gather_convert_kernel!(dst, @Const(src), @Const(map), divisor)
++    i = @index(Global)
++    @inbounds begin
++        k = map[i]
++        v = k > 0 ? src[k] : zero(eltype(src))
++        dst[i] = isfinite(v) ? convert(eltype(dst), v / divisor) : zero(eltype(dst))
++    end
++end
++
++# Without a map (the grids hold the same cells in the same order): the conversion only.
++@kernel function convert_kernel!(dst, @Const(src), divisor)
++    i = @index(Global)
++    @inbounds begin
++        v = src[i]
++        dst[i] = isfinite(v) ? convert(eltype(dst), v / divisor) : zero(eltype(dst))
++    end
++end
++
++"`dst[i] = src[map[i]] / divisor` converted (see `set_value_device!`); `map = nothing`: no gather."
++function gather_convert!(dst, src, map, divisor)
++    backend = KernelAbstractions.get_backend(dst)
++    n = length(dst)
++    n == 0 && return dst
++    if map === nothing
++        length(src) == n || error("the source has $(length(src)) values, the destination $n (no cell map)")
++        convert_kernel!(backend)(dst, src, eltype(src)(divisor); ndrange = n)
++    else
++        length(map) == n || error("the cell map has $(length(map)) entries, the destination $n")
++        gather_convert_kernel!(backend)(dst, src, map, eltype(src)(divisor); ndrange = n)
++    end
++    return dst
++end
++
++const DEVICE_SETTABLE = Dict("groundwater_recharge" => :recharge, "river_discharge" => :discharge)
++
++"""
++    set_value_device!(m, name, src; map = nothing, divisor = 1)
++
++Set input `name` (`"groundwater_recharge"` or `"river_discharge"`) from the device vector
++`src` of another model on the same device (mGV), without a host copy: per MODFLOW cell
++`i` (flattened as `BMI.set_value` takes them) the value `src[map[i]] / divisor`,
++computed in the precision of `src` and converted to the engine precision in the same
++kernel; 0 where `map[i] == 0` or the value is not finite. `map` (a device `Int32` vector,
++one entry per MODFLOW cell) is `nothing` when `src` already holds the MODFLOW cells in
++order (then only the conversion runs). `divisor` converts units (1000 for mm/day →
++m/day). Values set this way take precedence over a `forcing_file`, as `BMI.set_value`;
++the host array of the input is refreshed from the device only when it is read.
++
++Without the device-resident coupling (mf6 engine, or `coupling = "host"`) `src` and `map`
++are copied to the host and the values set through `BMI.set_value`, with the same result.
++"""
++function set_value_device!(m, name::AbstractString, src::AbstractVector; map = nothing, divisor::Real = 1)
++    field = get(DEVICE_SETTABLE, name, nothing)
++    field === nothing && error("set_value_device!: $name cannot be set on the device " *
++                               "(inputs: $(join(sort(collect(keys(DEVICE_SETTABLE))), ", ")))")
++    if !device_coupling(m)
++        h = Array(src)
++        mh = map === nothing ? nothing : Array(map)
++        div = eltype(h)(divisor)
++        vals = [let v = mh === nothing ? h[i] : (mh[i] > 0 ? h[mh[i]] : zero(eltype(h)))
++                    isfinite(v) ? Float64(v / div) : 0.0
++                end for i in 1:length(getfield(m, field))]
++        BMI.set_value(m, name, vals)
++        return m
++    end
++    d = getfield(m, :dev)
++    gather_convert!(getfield(d, field), src, map, divisor)
++    push!(getfield(m, :host_stale), field)
++    push!(getfield(m, :inputs_set), field)
++    return m
++end
++
++const DEVICE_GETTABLE = Dict("baseflow_to_routing" => :baseflow, "capillary_rise" => :capillary, "groundwater_depth" => :depth)
++
++"""
++    get_value_device!(dest, m, name; map = nothing) -> dest
++
++Write output `name` (`"baseflow_to_routing"`, `"capillary_rise"`, `"groundwater_depth"`)
++into the device vector `dest` of another model on the same device (mGV): per destination
++cell `k` the value of MODFLOW cell `map[k]`, converted to the element type of `dest`; 0
++where `map[k] == 0` or the value is not finite (NaN off land). `map` is `nothing` when
++`dest` holds the MODFLOW cells in order. Heads are not offered (they are offsets on the
++device, see `head_reference`). Without the device-resident coupling the values come
++from the host arrays.
++"""
++function get_value_device!(dest::AbstractVector, m, name::AbstractString; map = nothing)
++    field = get(DEVICE_GETTABLE, name, nothing)
++    field === nothing && error("get_value_device!: $name is not offered on the device " *
++                               "(outputs: $(join(sort(collect(keys(DEVICE_GETTABLE))), ", ")))")
++    if !device_coupling(m)
++        h = vec(var_array(m, name))
++        mh = map === nothing ? nothing : Array(map)
++        vals = [let v = mh === nothing ? h[k] : (mh[k] > 0 ? h[mh[k]] : 0.0)
++                    isfinite(v) ? convert(eltype(dest), v) : zero(eltype(dest))
++                end for k in 1:length(dest)]
++        copyto!(dest, vals)
++        return dest
++    end
++    gather_convert!(dest, getfield(getfield(m, :dev), field), map, 1)
++    return dest
++end
+diff --git a/src/gpu_engine.jl b/src/gpu_engine.jl
+index 360a886..f706677 100644
+--- a/src/gpu_engine.jl
++++ b/src/gpu_engine.jl
+@@ -67,9 +67,9 @@ function build_spec(config::Config, s::StaticInputs, p::StaticParameters, period
+     tdis = G.build_tdis(; perlen = [Float64(period_days(config, d)) for d in periods], nstp = 1, tsmult = 1.0,
+                         time_units = :days)
+     ims = G.build_ims(; complexity = :complex, print_option = :summary,
+-                      outer_dvclose = sv.outer_dvclose, outer_maximum = sv.outer_maximum,
++                      outer_dvclose = dvclose(sv, :outer), outer_maximum = sv.outer_maximum,
+                       under_relaxation = :simple, under_relaxation_gamma = sv.under_relaxation_gamma,
+-                      inner_maximum = sv.inner_maximum, inner_dvclose = sv.inner_dvclose,
++                      inner_maximum = sv.inner_maximum, inner_dvclose = dvclose(sv, :inner),
+                       inner_rclose = sv.inner_rclose, rclose_option = :strict,
+                       linear_acceleration = :bicgstab, relaxation_factor = sv.relaxation_factor)
+     return G.build_simulation(model; tdis, ims, simdir = config.work_dir)
+diff --git a/src/mf6_writer.jl b/src/mf6_writer.jl
+index 35ada18..bfda617 100644
+--- a/src/mf6_writer.jl
++++ b/src/mf6_writer.jl
+@@ -91,14 +91,14 @@ function write_simulation(config::Config, s::StaticInputs, p::StaticParameters,
+             println(io, "  COMPLEXITY COMPLEX")
+         end
+         write_block(io, "NONLINEAR") do
+-            println(io, "  OUTER_DVCLOSE ", fmt(sv.outer_dvclose))
++            println(io, "  OUTER_DVCLOSE ", fmt(dvclose(sv, :outer)))
+             println(io, "  OUTER_MAXIMUM ", sv.outer_maximum)
+             println(io, "  UNDER_RELAXATION SIMPLE")
+             println(io, "  UNDER_RELAXATION_GAMMA ", fmt(sv.under_relaxation_gamma))
+         end
+         write_block(io, "LINEAR") do
+             println(io, "  INNER_MAXIMUM ", sv.inner_maximum)
+-            println(io, "  INNER_DVCLOSE ", fmt(sv.inner_dvclose))
++            println(io, "  INNER_DVCLOSE ", fmt(dvclose(sv, :inner)))
+             println(io, "  INNER_RCLOSE ", fmt(sv.inner_rclose), " STRICT")
+             println(io, "  LINEAR_ACCELERATION BICGSTAB")
+             println(io, "  RELAXATION_FACTOR ", fmt(sv.relaxation_factor))
+diff --git a/src/model.jl b/src/model.jl
+index ae71d5e..e2a24b1 100644
+--- a/src/model.jl
++++ b/src/model.jl
+@@ -46,7 +46,8 @@ mutable struct GroundwaterModel
+     head::Array{Float64,3}          # m
+     baseflow::Matrix{Float64}       # m3/s
+     capillary::Matrix{Float64}      # mm per stress period
+-    host_stale::Set{Symbol}         # outputs whose host copy lags the device (device-resident coupling)
++    host_stale::Set{Symbol}         # fields whose host copy lags the device (device-resident coupling)
++    exposed::Set{Symbol}            # fields handed out on the host (kept current, `expose!`)
+     completed::Int
+     rch_scale::Vector{Float64}      # BOUND value per unit RCH rate (1, or the DIS cell area in MF6 6.3)
+     inputs_set::Set{Symbol}         # inputs set since the last update (override `forcing_file`)
+@@ -82,7 +83,7 @@ function GroundwaterModel(config::Config)
+     model = GroundwaterModel(
+         config, inputs, params, periods, nothing, nothing, nothing,
+         zeros(grid), zeros(grid), zeros(grid),
+-        head, fill(NaN, grid), zeros(grid), Set{Symbol}(), 0, Float64[], Set{Symbol}(),
++        head, fill(NaN, grid), zeros(grid), Set{Symbol}(), Set{Symbol}(), 0, Float64[], Set{Symbol}(),
+     )
+     initialize_engine!(model)
+     gpu || (ACTIVE_MODEL[] = model)
+@@ -91,11 +92,27 @@ end
+ 
+ mf6_pointer(mf, component, var; sub = "") = engine_pointer(mf, component, var; sub)
+ 
+-# Output fields refreshed from the device on access (device-resident coupling).
++# Output fields refreshed from the device on access (device-resident coupling), and the
++# input fields (refreshed when set on the device, `set_value_device!`).
+ const DEVICE_OUTPUTS = (:head, :baseflow, :capillary)
++const DEVICE_INPUTS = (:recharge, :discharge, :abstraction)
+ 
++"""
++The host array of field `f` (an output or input of the device-resident coupling), current
++with the device, without exposing it (`expose!`): for copies made right away.
++"""
++function host_field(m::GroundwaterModel, f::Symbol)
++    getfield(m, :dev) === nothing || sync_output!(m, f)
++    return getfield(m, f)
++end
++
++# Reading an output or input field (`m.head`, `m.recharge`) hands out the host array: it
++# is kept current from then on (`expose!`; device-resident coupling).
+ function Base.getproperty(m::GroundwaterModel, f::Symbol)
+-    f in DEVICE_OUTPUTS && sync_output!(m, f)
++    if (f in DEVICE_OUTPUTS || f in DEVICE_INPUTS) && getfield(m, :dev) !== nothing
++        sync_output!(m, f)
++        expose!(m, f)
++    end
+     return getfield(m, f)
+ end
+ 
+@@ -117,9 +134,9 @@ function initialize_engine!(m::GroundwaterModel)
+     if device_coupling(m.config)
+         # No host mirrors: the engine arrays are used on the device.
+         d = m.dev = DeviceCoupling(m, mf)
+-        upload_input!(d, d.recharge, m.recharge)
+-        upload_input!(d, d.discharge, m.discharge)
+-        upload_input!(d, d.abstraction, m.abstraction)
++        upload_input!(d, d.recharge, getfield(m, :recharge))
++        upload_input!(d, d.discharge, getfield(m, :discharge))
++        upload_input!(d, d.abstraction, getfield(m, :abstraction))
+         collect_outputs_device!(d, 0)   # heads and depth of the starting heads
+         fill!(d.baseflow, NaN)          # as the host path before the first update
+         fill!(d.capillary, 0)
+@@ -184,33 +201,44 @@ end
+ current_date(m::GroundwaterModel) =
+     m.completed < length(m.periods) ? m.periods[m.completed + 1] : m.periods[end] + period_step(m.config)
+ 
+-function set_recharge!(m::GroundwaterModel, recharge::AbstractArray)
+-    m.recharge .= reshape(recharge, size(m.recharge))
+-    replace!(x -> isfinite(x) ? x : 0.0, m.recharge)
+-    device_coupling(m) && upload_input!(m.dev, m.dev.recharge, m.recharge)
+-    push!(m.inputs_set, :recharge)
++# The host input `field` was set: send it to the device (device-resident coupling) and
++# record it as synchronised (the host array is current, `expose!`).
++function input_set!(m::GroundwaterModel, field::Symbol)
++    d = getfield(m, :dev)
++    if d !== nothing
++        x = getfield(m, field)
++        upload_input!(d, getfield(d, field), x)
++        delete!(getfield(m, :host_stale), field)
++        haskey(d.shadow, field) && copyto!(d.shadow[field], vec(x))
++    end
++    push!(getfield(m, :inputs_set), field)
+     return m
+ end
+ 
++function set_recharge!(m::GroundwaterModel, recharge::AbstractArray)
++    x = getfield(m, :recharge)
++    x .= reshape(recharge, size(x))
++    replace!(v -> isfinite(v) ? v : 0.0, x)
++    return input_set!(m, :recharge)
++end
++
+ function set_discharge!(m::GroundwaterModel, discharge::AbstractArray)
+-    m.discharge .= reshape(discharge, size(m.discharge))
+-    replace!(x -> isfinite(x) ? x : 0.0, m.discharge)
+-    device_coupling(m) && upload_input!(m.dev, m.dev.discharge, m.discharge)
+-    push!(m.inputs_set, :discharge)
+-    return m
++    x = getfield(m, :discharge)
++    x .= reshape(discharge, size(x))
++    replace!(v -> isfinite(v) ? v : 0.0, x)
++    return input_set!(m, :discharge)
+ end
+ 
+ function set_abstraction!(m::GroundwaterModel, abstraction::AbstractArray)
+-    a = reshape(abstraction, size(m.abstraction))
++    x = getfield(m, :abstraction)
++    a = reshape(abstraction, size(x))
+     all(isfinite, a) || error("groundwater abstraction contains non-finite values")
+     all(>=(0), a) || error("groundwater abstraction must be a non-negative extraction rate")
+     any((a .> 0) .& (m.inputs.idomain .!= 1)) &&
+         error("positive groundwater abstraction is only allowed on idomain == 1 cells")
+     any(a .> 0) && !m.config.pumping && error("abstraction given but pumping is disabled")
+-    m.abstraction .= a
+-    device_coupling(m) && upload_input!(m.dev, m.dev.abstraction, m.abstraction)
+-    push!(m.inputs_set, :abstraction)
+-    return m
++    x .= a
++    return input_set!(m, :abstraction)
+ end
+ 
+ """
+@@ -246,6 +274,9 @@ function collect_outputs!(m::GroundwaterModel)
+     if device_coupling(m)
+         collect_outputs_device!(m.dev, period_days(m.config, m.periods[m.completed]))
+         union!(getfield(m, :host_stale), DEVICE_OUTPUTS)
++        for f in DEVICE_OUTPUTS   # host arrays handed out are kept current
++            f in getfield(m, :exposed) && sync_output!(m, f)
++        end
+         return m
+     end
+     p, ptr, s = m.params, m.ptr, m.inputs
+@@ -282,6 +313,7 @@ end
+ function advance!(m::GroundwaterModel)
+     m.completed < length(m.periods) || error("simulation already reached $(m.config.end_date)")
+     date = m.periods[m.completed + 1]
++    sync_inputs!(m)   # host input arrays written directly since the last update
+     if !isempty(m.config.forcing_file)
+         recharge, discharge = read_forcing(m.config, m.inputs, date)
+         :recharge in m.inputs_set || set_recharge!(m, recharge)
+@@ -316,12 +348,14 @@ package_flows(m::GroundwaterModel, package::AbstractString) =
+ 
+ function finalize!(m::GroundwaterModel)
+     if m.mf !== nothing
+-        for f in DEVICE_OUTPUTS   # keep the last outputs readable on the host
+-            sync_output!(m, f)
++        d = getfield(m, :dev)
++        for f in (DEVICE_OUTPUTS..., DEVICE_INPUTS...)   # keep the last values readable on the host
++            d === nothing || sync_output!(m, f)
+         end
+         m.ptr = nothing
+         m.dev = nothing
+-        engine_finalize(m.mf)
++        engine_finalize(m.mf)   # ModflowGPU: frees the engine's device arrays
++        d === nothing || ModflowGPU.free_device_arrays!(d)   # and those of the coupling
+         m.mf = nothing
+     end
+     ACTIVE_MODEL[] === m && (ACTIVE_MODEL[] = nothing)
+diff --git a/src/output.jl b/src/output.jl
+index a3649c9..256b5fb 100644
+--- a/src/output.jl
++++ b/src/output.jl
+@@ -19,11 +19,11 @@ function write_monthly_output(m::GroundwaterModel)
+     try
+         n = length(ds["time"]) + 1
+         ds["time"][n] = Dates.value(start - m.periods[1])
+-        ds["groundwater_head"][:, :, :, n] = m.head
+-        ds["baseflow_to_routing"][:, :, n] = m.baseflow
+-        ds["capillary_rise"][:, :, n] = m.capillary
+-        ds["groundwater_recharge"][:, :, n] = m.recharge
+-        ds["river_discharge"][:, :, n] = m.discharge
++        ds["groundwater_head"][:, :, :, n] = host_field(m, :head)
++        ds["baseflow_to_routing"][:, :, n] = host_field(m, :baseflow)
++        ds["capillary_rise"][:, :, n] = host_field(m, :capillary)
++        ds["groundwater_recharge"][:, :, n] = host_field(m, :recharge)
++        ds["river_discharge"][:, :, n] = host_field(m, :discharge)
+     finally
+         close(ds)
+     end
+@@ -47,7 +47,7 @@ function write_head(m::GroundwaterModel, path::AbstractString;
+         defVar(ds, "lon", s.lon, ("lon",); attrib = ["units" => "degrees_east"])
+         defVar(ds, "lat", s.lat, ("lat",); attrib = ["units" => "degrees_north"])
+         defVar(ds, "layer", [0, 1], ("layer",))
+-        defVar(ds, "gwl", m.head, ("lon", "lat", "layer");
++        defVar(ds, "gwl", host_field(m, :head), ("lon", "lat", "layer");
+                attrib = ["units" => "m", "long_name" => long_name], fillvalue = NaN)
+     end
+     return path
+diff --git a/test/runtests.jl b/test/runtests.jl
+index 3dabfa4..5a7503a 100644
+--- a/test/runtests.jl
++++ b/test/runtests.jl
+@@ -263,18 +263,23 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+         G = MC.ModflowGPU
+         land = s.landmask
+         active = cat(s.idomain .> 0, s.idomain .> 0; dims = 3)
+-        for precision in ("single", "double")
++        # Per-record pumping (WEL, T5.4): a different rate on every idomain == 1 cell and day.
++        pumping_rate(k) = vec(ifelse.(s.idomain .== 1, 50.0 * k .* (1 .+ mod.(reshape(1:length(s.idomain), size(s.idomain)), 7)), 0.0))
++        for precision in ("single", "double"), variant in (:default, :nofoc_pumping)
+             single = precision == "single"
+-            function run_days(coupling; check = m -> nothing)
+-                c = test_config(joinpath(tmp, "device_$(precision)_$coupling"); period = "day", stop = Date(1979, 1, 3),
+-                                write_monthly_output = false, solver = with_engine(INDUS.solver, "gpu"; precision, coupling))
++            kw = variant === :default ? (;) :
++                 (; foc = false, pumping = true, inputs = filter(kv -> !startswith(kv[1], "cp"), cfg.inputs))
++            function run_days(coupling; check = (m, k) -> nothing)
++                c = test_config(joinpath(tmp, "device_$(precision)_$(variant)_$coupling"); period = "day", stop = Date(1979, 1, 3),
++                                write_monthly_output = false, solver = with_engine(INDUS.solver, "gpu"; precision, coupling), kw...)
+                 m = GroundwaterModel(c)
+                 out = map(1:3) do k
+                     force!(m, FORCING[k])
++                    variant === :nofoc_pumping && BMI.set_value(m, "groundwater_abstraction", pumping_rate(k))
+                     BMI.update(m)
+-                    check(m)
++                    check(m, k)
+                     (copy(m.head), copy(m.baseflow), copy(m.capillary),
+-                     reshape(BMI.get_value(m, "groundwater_depth", zeros(length(m.recharge))), size(land)))
++                     reshape(BMI.get_value(m, "groundwater_depth", zeros(length(land))), size(land)))
+                 end
+                 BMI.finalize(m)
+                 return out
+@@ -284,11 +289,14 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+                         stop = Date(1979, 1, 1), write_monthly_output = false, solver = with_engine(INDUS.solver, "gpu"; coupling = "host")))
+                 try BMI.get_value_ptr(m, "groundwater_head"; device = true) finally BMI.finalize(m) end
+             end
+-            device = run_days("device"; check = function (m)
+-                # No host mirror in the engine, and the update copied no output to the host:
+-                # the host fields are refreshed when they are read (below, by `copy(m.head)`).
++            device = run_days("device"; check = function (m, k)
++                # No host mirror in the engine, and the first update copied no output to the
++                # host: the host fields are refreshed when they are read (below, by
++                # `copy(m.head)`). Once read they are handed out, and later updates keep
++                # them current (T5.4).
+                 @test isempty(m.mf.mirrors)
+-                @test getfield(m, :host_stale) == Set(MC.DEVICE_OUTPUTS)
++                @test getfield(m, :host_stale) == (k == 1 ? Set(MC.DEVICE_OUTPUTS) : Set{Symbol}())
++                @test getfield(m, :exposed) == (k == 1 ? Set{Symbol}() : Set([:head, :baseflow, :capillary]))
+                 T = m.mf.T
+                 dh = BMI.get_value_ptr(m, "groundwater_head"; device = true)
+                 @test eltype(dh) === T && length(dh) == 2length(land)
+@@ -314,7 +322,7 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+                 lin = LinearIndices(land)
+                 rref = [href[lin[c]] for c in r.cells]
+                 stage = Float64.(bound[1, 1:length(r.cells)]) .+ rref
+-                expected = [MC.river_stage(r, i, m.discharge[c]) for (i, c) in enumerate(r.cells)]
++                expected = [MC.river_stage(r, i, MC.host_field(m, :discharge)[c]) for (i, c) in enumerate(r.cells)]
+                 if single   # the offsets of bottom_bankfull and of the stage, and the depth, in Float32
+                     scale = max.(1, abs.(expected .- rref), replace(abs.(r.bottom_bankfull .- rref), NaN => 0.0))
+                     @test all(abs.(stage .- expected) .<= 4eps(Float32) .* scale)
+@@ -322,13 +330,22 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+                     @test maximum(abs.(stage .- expected)) < 1e-9
+                 end
+                 rch = Array(G.get_value_ptr(m.mf, "INDUS/RCH/BOUND"; device = true))[1, :]
+-                @test rch ≈ T[max(0, m.recharge[c] * p.area_factor[c]) for c in p.rch_cells]
++                rech = MC.host_field(m, :recharge)
++                @test rch ≈ T[max(0, rech[c] * p.area_factor[c]) for c in p.rch_cells]
++                if variant === :nofoc_pumping   # WEL per record, EVT absent
++                    wel = Array(G.get_value_ptr(m.mf, "INDUS/WEL/BOUND"; device = true))[1, :]
++                    lin = LinearIndices(land)
++                    @test wel == T[-pumping_rate(k)[lin[c]] for c in m.params.wel_cells]
++                    @test length(unique(wel)) > 2
++                    @test all(iszero, m.capillary)
++                    @test !("INDUS/EVT/SIMVALS" in G.var_addresses(m.mf))
++                end
+             end)
+             for k in 1:3
+                 (hh, hb, hc, hd), (dh, db, dc, dd) = host[k], device[k]
+                 @test isequal(isnan.(hh), isnan.(dh)) && isequal(isnan.(hb), isnan.(db))
+                 @test maximum(abs.(hh .- dh)[active]) < (single ? 1e-4 : 1e-9)
+-                rel(a, b) = maximum(abs.(a .- b)[land]) / maximum(abs.(b[land]))
++                rel(a, b) = (sc = maximum(abs.(b[land])); d = maximum(abs.(a .- b)[land]); sc > 0 ? d / sc : d)
+                 @test rel(db, hb) < (single ? 1e-5 : 1e-12)
+                 @test rel(dc, hc) < (single ? 1e-5 : 1e-12)
+                 @test maximum(abs.(dd .- hd)[land .& (s.idomain .> 0)]) < (single ? 1e-4 : 1e-9)
+@@ -336,6 +353,91 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+         end
+         @test_throws r"needs engine = \"gpu\"" MC.validate(Config(cfg; solver = with_engine(cfg.solver, "mf6"; coupling = "device")))
+         @test_throws r"solver.coupling must be" MC.validate(Config(cfg; solver = with_engine(cfg.solver, "gpu"; coupling = "gpu")))
++        # One record per cell (T5.4): a second record on a cell is an error, not dropped.
++        lin = LinearIndices(s.idomain)
++        cells = p.drain.cells[1:3]
++        @test MC.record_map(cells, lin, length(lin), "DRN")[lin[cells[2]]] == 2
++        @test_throws r"DRN has more than one record on cell" MC.record_map([cells; cells[2]], lin, length(lin), "DRN")
++    end
++
++    "gpu" in ENGINES && @testset "GPU engine: device exchange and host arrays (T5.4)" begin
++        G = MC.ModflowGPU
++        land = s.landmask
++        n = length(land)
++        active = cat(s.idomain .> 0, s.idomain .> 0; dims = 3)
++        new_model(name, precision; coupling = "device") =
++            GroundwaterModel(test_config(joinpath(tmp, "exchange_$(name)_$precision"); period = "day", stop = Date(1979, 1, 4),
++                                         write_monthly_output = false, solver = with_engine(INDUS.solver, "gpu"; precision, coupling)))
++        # A source grid of another model (mGV): the MODFLOW cells in another order, with
++        # some MODFLOW cells not covered (map 0) and non-finite source values, in Float32.
++        perm = sortperm(mod.(1:n, 97) .* n .+ (1:n))
++        vic_to_mf = Int32.(invperm(perm))           # MODFLOW cell i ← source cell vic_to_mf[i]
++        vic_to_mf[1:11:end] .= 0
++        mf_to_vic = Int32.(perm)                    # source cell k ← MODFLOW cell mf_to_vic[k]
++        mf_to_vic[5:13:end] .= 0
++        runoff(k) = Float32.(ifelse.(vec(land)[perm], 0.4f0 + 0.1f0 * k, NaN32))      # mm/day on the source grid
++        qsrc(k) = Float32.(vec(0.3 .* s.qbank)[perm] .* (1 + 0.05k))                    # m3/s
++        host_regrid(src, map) = Float32[(j > 0 && isfinite(src[j])) ? src[j] : 0.0f0 for j in map]   # the example's regrid
++        for precision in ("single", "mixed", "double")
++            ref = new_model("host", precision)    # the host path of the example: regrid, Float64, set_value
++            dev = new_model("device", precision)  # device arrays: set_value_device!, get_value_device!
++            via_host = new_model("hostcoupling", precision; coupling = "host")   # set_value_device! falls back to the host
++            backend = MC.KernelAbstractions.get_backend(dev.dev.h)
++            todev(x) = (d = MC.KernelAbstractions.allocate(backend, eltype(x), size(x)); copyto!(d, x); d)
++            dmap, dmap_back = todev(vic_to_mf), todev(mf_to_vic)
++            bf_dev = MC.KernelAbstractions.zeros(backend, Float32, n)
++            cap_dev = MC.KernelAbstractions.zeros(backend, Float32, n)
++            # identity: no map, conversion only (non-finite values become 0)
++            q32 = Float32.(vec(0.3 .* s.qbank))
++            for m in (dev, via_host)
++                set_value_device!(m, "river_discharge", todev(q32))
++                @test vec(MC.host_field(m, :discharge)) == [isfinite(x) ? Float64(x) : 0.0 for x in q32]
++            end
++            for k in 1:3
++                BMI.set_value(ref, "river_discharge", Float64.(host_regrid(qsrc(k), vic_to_mf)))
++                BMI.set_value(ref, "groundwater_recharge", Float64.(host_regrid(runoff(k), vic_to_mf) ./ 1000))
++                for m in (dev, via_host)
++                    set_value_device!(m, "river_discharge", todev(qsrc(k)); map = dmap)
++                    set_value_device!(m, "groundwater_recharge", todev(runoff(k)); map = dmap, divisor = 1000)
++                end
++                @test :recharge in getfield(dev, :host_stale)   # set on the device, the host copy lags
++                @test isequal(vec(MC.host_field(dev, :recharge)), vec(MC.host_field(ref, :recharge)))
++                @test isequal(vec(MC.host_field(dev, :discharge)), vec(MC.host_field(ref, :discharge)))
++                foreach(BMI.update, (ref, dev, via_host))
++                @test isequal(MC.host_field(dev, :head), MC.host_field(ref, :head))   # bitwise
++                @test maximum(abs.(MC.host_field(via_host, :head) .- MC.host_field(ref, :head))[active]) < (precision == "single" ? 1e-4 : 1e-9)
++                get_value_device!(bf_dev, dev, "baseflow_to_routing"; map = dmap_back)
++                get_value_device!(cap_dev, dev, "capillary_rise"; map = dmap_back)
++                @test Array(bf_dev) == host_regrid(BMI.get_value_ptr(ref, "baseflow_to_routing"), mf_to_vic)
++                @test Array(cap_dev) == host_regrid(BMI.get_value_ptr(ref, "capillary_rise"), mf_to_vic)
++                bf_host = zeros(Float32, n)
++                get_value_device!(bf_host, via_host, "baseflow_to_routing"; map = mf_to_vic)
++                @test maximum(abs.(bf_host .- Array(bf_dev))) <= 1e-4 * maximum(abs, Array(bf_dev))
++            end
++            @test_throws r"cannot be set on the device" set_value_device!(dev, "groundwater_abstraction", bf_dev)
++            @test_throws r"not offered on the device" get_value_device!(bf_dev, dev, "groundwater_head")
++            foreach(BMI.finalize, (ref, dev, via_host))
++        end
++
++        # Host arrays kept across updates (T5.4): an output pointer is refreshed by every
++        # update; writes into an input pointer or straight into m.recharge are used.
++        for precision in ("single", "double")
++            a, b = new_model("ptr_a", precision), new_model("ptr_b", precision)
++            bf = BMI.get_value_ptr(a, "baseflow_to_routing")
++            head = a.head
++            rech = BMI.get_value_ptr(a, "groundwater_recharge")
++            for k in 1:3
++                force!(a, FORCING[k]); force!(b, FORCING[k])
++                rech .= vec(ifelse.(land, 1.0e-4 * k, 0.0))                      # through the pointer
++                BMI.set_value(b, "groundwater_recharge", vec(ifelse.(land, 1.0e-4 * k, 0.0)))
++                k == 3 && (a.discharge .*= 2; BMI.set_value(b, "river_discharge", 2 .* vec(MC.host_field(b, :discharge))))
++                BMI.update(a); BMI.update(b)
++                @test isequal(head, MC.host_field(b, :head))                    # kept current, bitwise as b
++                @test isequal(bf, vec(BMI.get_value(b, "baseflow_to_routing", zeros(n))))
++                @test isequal(vec(BMI.get_value(a, "groundwater_recharge", zeros(n))), rech)
++            end
++            foreach(BMI.finalize, (a, b))
++        end
+     end
+ 
+     if all(in(ENGINES), ("mf6", "gpu"))
+@@ -371,7 +473,7 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+                 emf6 = maxdiff(case_heads["mf6"][k], heads["mf6"][k])
+                 egpu = maxdiff(case_heads["gpu"][k], heads["mf6"][k])
+                 @info "Case 1/2 month $k, production closures: max |h_gpu - h_mf6| = $d m (distance to the tight heads: mf6 $emf6 m, gpu $egpu m)"
+-                @test d < INDUS.solver.outer_dvclose
++                @test d < MC.dvclose(with_engine(INDUS.solver, "mf6"), :outer)
+                 @test egpu < 1e-2   # so d <= emf6 + 1e-2
+             end
+         end
+@@ -417,6 +519,17 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+         gpu = load_config(write_toml("gpu.toml", read(joinpath(INDUS_DIR, "indus.toml"), String) *
+                                      "\n[solver]\nengine = \"GPU\"\nprecision = \"single\"\nbackend = \"cpu\"\n"))
+         @test gpu.solver.engine == "gpu" && gpu.solver.precision == "single" && gpu.solver.backend == "cpu"
++        # dvclose defaults per engine (ModflowGPU decision 9): 5 for mf6, 0.01 for gpu;
++        # a value given applies to both
++        @test isnothing(INDUS.solver.outer_dvclose) && isnothing(INDUS.solver.inner_dvclose)
++        @test MC.dvclose(INDUS.solver, :outer) == MC.dvclose(INDUS.solver, :inner) == 5.0
++        @test MC.dvclose(gpu.solver, :outer) == MC.dvclose(gpu.solver, :inner) == 0.01
++        given = load_config(write_toml("dv.toml", read(joinpath(INDUS_DIR, "indus.toml"), String) *
++                                       "\n[solver]\nengine = \"gpu\"\nouter_dvclose = 5\n"))
++        @test MC.dvclose(given.solver, :outer) == 5.0 && MC.dvclose(given.solver, :inner) == 0.01
++        spec = MC.build_spec(Config(cfg; solver = with_engine(cfg.solver, "gpu")), s, MC.build_parameters(s, cfg), [cfg.start_date])
++        @test spec.solution_groups[1].solutions[1].outer_dvclose == 0.01
++        @test spec.solution_groups[1].solutions[1].inner_dvclose == 0.01
+         @test_throws r"solver.engine must be" MC.validate(Config(cfg; solver = with_engine(cfg.solver, "cuda")))
+     end
+ 
