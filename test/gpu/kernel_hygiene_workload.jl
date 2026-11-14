@@ -80,6 +80,14 @@ function workload(dir)
     # The whole run path, with output.
     r = M.run(rundir; backend = BACKEND, precision = :single, outdir = joinpath(dir, "out"))
     r.T === T || error("expected a Float32 run")
+    # Device BOUND writes (T5.4): the check kernel of every package kind at prepare_solve.
+    s = M.initialize(rundir; backend = BACKEND, precision = :single, write_output = false)
+    M.prepare_time_step(s)
+    for p in s.model.packages
+        M.device_bound!(s, "$(s.model.spec.name)/$(p.spec.name)/BOUND")
+    end
+    M.prepare_solve(s)
+    M.finalize(s)
     sim = M.load_simulation(rundir)
     # (AMG separately below, with a small coarsest level.)
     for v in IMS_VARIANTS, preconditioner in filter(!=(:amg), M.PRECONDITIONERS)
