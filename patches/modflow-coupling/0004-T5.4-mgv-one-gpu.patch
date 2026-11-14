@@ -1,23 +1,34 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Bart Schilperoort <b.schilperoort@gmail.com>
-Date: Sat, 14 Nov 2026 17:44:25 +0100
+From: Bart Schilperoort <b.schilperoort@esciencecenter.nl>
+Date: Sat, 14 Nov 2026 18:22:21 +0100
 Subject: [PATCH] T5.4: mGV and ModflowGPU on one GPU
+
+Device exchange with another model on the same device (set_value_device!,
+get_value_device!), device BOUND writes through ModflowGPU.device_bound!, host
+arrays kept current across updates, one record per cell on the device path,
+finalize! frees the coupling's device arrays, outer/inner dvclose default per
+engine (gpu 0.01, mf6 5). examples/mgv_coupling for mGV main (unstructured grid
+of active cells) with the device exchange.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- examples/indus/indus.toml           |    5 +
- examples/mgv_coupling/Manifest.toml | 1326 +++++++++++++++++++++++++++
- examples/mgv_coupling/Project.toml  |   12 +
- src/ModflowCoupling.jl              |    3 +-
- src/bmi.jl                          |   52 +-
- src/config.jl                       |   26 +-
- src/device_coupling.jl              |  212 ++++-
- src/gpu_engine.jl                   |    4 +-
- src/mf6_writer.jl                   |    4 +-
- src/model.jl                        |   84 +-
- src/output.jl                       |   12 +-
- test/runtests.jl                    |  141 ++-
- 12 files changed, 1806 insertions(+), 75 deletions(-)
+ examples/indus/indus.toml                    |    5 +
+ examples/mgv_coupling/Manifest.toml          | 1326 ++++++++++++++++++
+ examples/mgv_coupling/Project.toml           |   12 +
+ examples/mgv_coupling/README.md              |   39 +-
+ examples/mgv_coupling/couple_mgv.jl          |   15 +-
+ examples/mgv_coupling/coupling.jl            |  189 ++-
+ examples/mgv_coupling/spinup_steady_state.jl |    2 +-
+ src/ModflowCoupling.jl                       |    3 +-
+ src/bmi.jl                                   |   52 +-
+ src/config.jl                                |   26 +-
+ src/device_coupling.jl                       |  212 ++-
+ src/gpu_engine.jl                            |    4 +-
+ src/mf6_writer.jl                            |    4 +-
+ src/model.jl                                 |   84 +-
+ src/output.jl                                |   12 +-
+ test/runtests.jl                             |  145 +-
+ 16 files changed, 2013 insertions(+), 117 deletions(-)
  create mode 100644 examples/mgv_coupling/Manifest.toml
 
 diff --git a/examples/indus/indus.toml b/examples/indus/indus.toml
@@ -1393,6 +1404,391 @@ index a0d2df2..1f826e0 100644
 +[compat]
 +AMDGPU = "2.11"
 +KernelAbstractions = "0.10.7"
+diff --git a/examples/mgv_coupling/README.md b/examples/mgv_coupling/README.md
+index 1dbe7b0..8c2398e 100644
+--- a/examples/mgv_coupling/README.md
++++ b/examples/mgv_coupling/README.md
+@@ -48,26 +48,43 @@ later, and added capillary rise once at the start of the month.)
+ 
+ ## Setup
+ 
+-mGV needs its `mgv-to-modflow-coupling` branch (tested at `34bccf3`), which
+-exposes all the variables above through BMI and has the
+-`external_groundwater_routing` setting. The variables don't have to be listed in
+-`variables` in the `[API]` section of the mGV config: that list only sets
+-which names mGV advertises.
++mGV `main` (tested at `42aebaa`, 2026-11-13) exposes all the variables above through
++BMI and has the `external_groundwater_routing` setting. Its BMI grid is unstructured:
++one `(x, y)` per active land cell, so the cell maps below pair each mGV cell with the
++MODFLOW cell of the same centre. The variables don't have to be listed in `variables`
++in the `[API]` section of the mGV config: that list only sets which names mGV
++advertises. Set `external_groundwater_routing = true` under `[API]` in the mGV config.
++
++`Project.toml` here takes ModflowCoupling and ModflowGPU from this checkout (the patched
++clone inside ModflowGPU's `reference/`) and mGV from its repository at that commit
++(`[sources]`); `Manifest.toml` holds the resolved versions (KernelAbstractions 0.10.7,
++AMDGPU 2.11.0). For a local mGV checkout, `Pkg.develop(path = "/path/to/mGV")`.
+ 
+ ```bash
+-cd /path/to/mGV
+-git switch mgv-to-modflow-coupling
+-# and set `external_groundwater_routing = true` under [API] in the mGV config
+-
+ cd /path/to/ModflowCoupling
+-julia --project=examples/mgv_coupling -e 'using Pkg; Pkg.develop([PackageSpec(path="."), PackageSpec(path="/path/to/mGV")])'
++julia --project=examples/mgv_coupling -e 'using Pkg; Pkg.instantiate()'
+ julia --project=examples/mgv_coupling examples/mgv_coupling/couple_mgv.jl \
+-    /path/to/mGV/configs/indus_config.toml examples/indus/indus.toml
++    /path/to/mgv_config.toml examples/indus/indus.toml
+ ```
+ 
+ The MODFLOW config must have `period = "day"` under `[time]`; the script stops
+ with an error if it doesn't. The mGV config sets the years that run.
+ 
++### Both models on one GPU
++
++With `[solver] engine = "gpu"` (and `backend = "rocm"` or `"auto"`) in the MODFLOW
++config and `MGV_BACKEND=rocm` for mGV, both models run on the same GPU in one process
++(the script loads AMDGPU, `COUPLING_GPU_PACKAGE`). The fields are then exchanged as
++device arrays (`Coupling(gw, vic; exchange = :device)`, the default when both are on one
++backend): `set_value_device!` and `get_value_device!` of ModflowCoupling gather through
++the cell maps and convert between mGV's Float32 and the engine precision in one kernel
++(in `:single` both sides are Float32), and the capillary rise and baseflow are applied to
++mGV's soil moisture and channel storage in kernels. When the maps are the identity (the
++same cells in the same order) only the conversion runs. `COUPLING_EXCHANGE=host` uses the
++host path (BMI arrays), which the mf6 engine always uses; both give the same values
++(ModflowGPU T5.4: bitwise equal heads, baseflow and capillary rise over 10 days in
++`:single` and `:double`).
++
+ ## Starting heads
+ 
+ The global steady-state heads that MODFLOW starts from by default are close to
+diff --git a/examples/mgv_coupling/couple_mgv.jl b/examples/mgv_coupling/couple_mgv.jl
+index 9ae6833..479f661 100644
+--- a/examples/mgv_coupling/couple_mgv.jl
++++ b/examples/mgv_coupling/couple_mgv.jl
+@@ -37,7 +37,15 @@ day D with mGV's day-D values, then its feedback is set for mGV day D+1.
+ A river loss (negative baseflow) can only be taken from water in mGV's channel.
+ The volume MODFLOW calculated but mGV could not supply enters the aquifer
+ without leaving the river; the script reports it at the end.
++
++Both models on one GPU (ModflowGPU T5.4): with `[solver] engine = "gpu"` in the MODFLOW
++config, both packages select their backend the same way; load the GPU package first
++(`COUPLING_GPU_PACKAGE`, default AMDGPU; empty for the CPU) and set `MGV_BACKEND` (e.g.
++`rocm`) for mGV. With both on the same device the fields are exchanged as device arrays
++(`exchange = :device` in coupling.jl); `COUPLING_EXCHANGE=host` forces the host path.
+ =#
++const GPU_PACKAGE = get(ENV, "COUPLING_GPU_PACKAGE", "AMDGPU")
++isempty(GPU_PACKAGE) || @eval using $(Symbol(GPU_PACKAGE))
+ include(joinpath(@__DIR__, "coupling.jl"))
+ 
+ mgv_config = abspath(get(ARGS, 1, ""))
+@@ -46,14 +54,15 @@ mf_config = abspath(get(ARGS, 2, ""))
+ 
+ gw = BMI.initialize(GroundwaterModel, mf_config)
+ vic = BMI.initialize(mGV.Model, mgv_config)
+-coupling = Coupling(gw, vic)
++coupling = Coupling(gw, vic; exchange = Symbol(get(ENV, "COUPLING_EXCHANGE", "auto")))
+ 
+-for day in current_date(gw):Day(1):last_day(gw, vic)
++t = @elapsed for day in current_date(gw):Day(1):last_day(gw, vic)
+     step_day!(coupling, gw, vic)
+ end
++@printf("%d coupled days in %.1f s (%s exchange)\n", round(Int, BMI.get_current_time(gw)), t, coupling.exchange)
+ 
+ @printf("baseflow requested %.4g m3, applied %.4g m3, not supplied by the channels %.4g m3\n",
+-        coupling.requested, coupling.applied, created_water(coupling))
++        baseflow_volumes(coupling)..., created_water(coupling))
+ 
+ BMI.finalize(gw)
+ BMI.finalize(vic)
+diff --git a/examples/mgv_coupling/coupling.jl b/examples/mgv_coupling/coupling.jl
+index d644af4..d902369 100644
+--- a/examples/mgv_coupling/coupling.jl
++++ b/examples/mgv_coupling/coupling.jl
+@@ -1,23 +1,54 @@
+ #= Shared functions of the mGV <-> MODFLOW coupling, used by couple_mgv.jl and
+-spinup_steady_state.jl. See couple_mgv.jl for what is exchanged and when. =#
++spinup_steady_state.jl. See couple_mgv.jl for what is exchanged and when.
++
++Two ways to exchange the fields (`Coupling(gw, vic; exchange)`):
++
++- `:device` (the default when MODFLOW runs on ModflowGPU with the device-resident
++  coupling and both models are on the same backend): the fields stay on the device.
++  mGV's arrays (Float32) go to MODFLOW through `set_value_device!` and come back through
++  `get_value_device!` (a gather through the cell maps and the conversion to the engine
++  precision in one kernel; Float32 on both sides in `:single`), and the feedback is
++  applied to mGV's state in kernels (`add_capillary_rise_kernel!`,
++  `add_baseflow_kernel!`). Nothing is copied to the host per day.
++- `:host`: through host arrays and the BMI getters and setters of both models (the mf6
++  engine, `coupling = "host"`, or models on different backends).
++
++Both give the same values: the device kernels do the host arithmetic in the same order
++and precision (the water budget sums are accumulated per cell on the device and summed
++at the end, so they agree to rounding).
++=#
+ using ModflowCoupling, Dates, Printf
++import ModflowCoupling as MC
+ import BasicModelInterface as BMI
++import KernelAbstractions as KA
++using KernelAbstractions: @kernel, @index, @Const
+ import mGV
+ 
+ const COORD_ATOL = 1e-3    # degrees; both models are on the same 5 arcmin grid
+ 
++"Index of the value of `v` within `atol` of `x`, or 0."
++near(v, x; atol = COORD_ATOL) = (i = argmin(abs.(v .- x)); abs(v[i] - x) <= atol ? i : 0)
++
+ """
+-For every destination cell, the linear index of the source cell with the same
+-centre (within `atol`), or 0 when the source grid does not cover it. Both
+-grids are flattened longitude-fastest, as both BMIs return them.
++Cell maps between the MODFLOW grid (rectilinear, `mf_x` × `mf_y` flattened
++longitude-fastest) and mGV's cells (mGV `main`: an unstructured grid of the active land
++cells, one `(x, y)` per cell). Returns `(mf_to_vic, vic_to_mf)`: for every mGV cell the
++MODFLOW cell with the same centre (within `atol`), and for every MODFLOW cell the mGV
++cell; 0 where the other grid has no such cell.
+ """
+-function cell_map(src_x, src_y, dst_x, dst_y; atol = COORD_ATOL)
+-    near(v, x) = (i = argmin(abs.(v .- x)); abs(v[i] - x) <= atol ? i : 0)
+-    ix = [near(src_x, x) for x in dst_x]
+-    iy = [near(src_y, y) for y in dst_y]
+-    nx = length(src_x)
+-    return [(ix[i] > 0 && iy[j] > 0) ? ix[i] + (iy[j] - 1) * nx : 0
+-            for i in eachindex(dst_x), j in eachindex(dst_y)] |> vec
++function cell_maps(mf_x, mf_y, vic_x, vic_y; atol = COORD_ATOL)
++    nx = length(mf_x)
++    mf_to_vic = map(zip(vic_x, vic_y)) do (x, y)
++        i, j = near(mf_x, x; atol), near(mf_y, y; atol)
++        (i > 0 && j > 0) ? i + (j - 1) * nx : 0
++    end
++    vic_to_mf = zeros(Int, nx * length(mf_y))
++    for (k, i) in enumerate(mf_to_vic)
++        i == 0 && continue
++        vic_to_mf[i] == 0 || error("mGV cells $(vic_to_mf[i]) and $k have the same MODFLOW cell $i")
++        vic_to_mf[i] = k
++    end
++    return mf_to_vic, vic_to_mf
+ end
+ 
+ "Source values on the destination grid; uncovered and non-finite cells become 0."
+@@ -54,6 +85,28 @@ function add_capillary_rise!(vic, cpr::Vector{Float32})
+     return overflow
+ end
+ 
++# `add_capillary_rise!` per cell on the device: `w` and `wmax` are mGV's soil moisture and
++# its maximum, (cells, layers) flattened; same operations in the same order (Float32).
++@kernel function add_capillary_rise_kernel!(w, @Const(wmax), @Const(cpr), n, nlayers)
++    i = @index(Global)
++    @inbounds begin
++        c = cpr[i]
++        active = c > 0
++        for k in 1:nlayers
++            active &= isfinite(w[(k - 1) * n + i]) & isfinite(wmax[(k - 1) * n + i])
++        end
++        if active
++            w[(nlayers - 1) * n + i] += c
++            for k in nlayers:-1:1
++                j = (k - 1) * n + i
++                excess = max(w[j] - wmax[j], zero(c))
++                w[j] -= excess
++                k > 1 && (w[j - n] += excess)
++            end
++        end
++    end
++end
++
+ """
+ Add one mGV time step of baseflow [m3/s] to the channel storage. mGV stores the
+ water in a channel as its wetted cross-section `channel_water__area~cross-sectional`
+@@ -68,26 +121,42 @@ function add_baseflow!(vic, baseflow::Vector{Float32}, cell_length::Vector{Float
+     return sum(Float64, @. ifelse(cell_length > 0, (new_area - area) * cell_length, 0f0))
+ end
+ 
++# `add_baseflow!` per cell on the device, accumulating the requested (`baseflow · dt`) and
++# applied volumes per cell (summed once at the end, `created_water`).
++@kernel function add_baseflow_kernel!(area, requested, applied, @Const(baseflow), @Const(cell_length), dt)
++    i = @index(Global)
++    @inbounds begin
++        len = cell_length[i]
++        if len > 0
++            a = area[i]
++            b = baseflow[i]
++            new = max(a + b * dt / len, zero(a))
++            area[i] = new
++            requested[i] += b * dt
++            applied[i] += (new - a) * len
++        end
++    end
++end
++
+ """
+ Cell maps between the MODFLOW grid (`gw`) and the mGV grid (`vic`), by cell
+-centre. Returns `(mf_to_vic, vic_to_mf, n_vic)`: for every mGV cell the MODFLOW
+-cell index, for every MODFLOW cell the mGV cell index (0 where not covered, see
+-`cell_map`), and the number of mGV cells. Warns about cells without a match.
++centre. Returns `(mf_to_vic, vic_to_mf, n_vic)`: for every mGV cell the
++MODFLOW cell index, for every MODFLOW cell the mGV cell index (0 where not covered, see
++`cell_maps`), and the number of mGV cells. Warns about cells without a match.
+ """
+ function grid_maps(gw, vic)
+     mf_x = BMI.get_grid_x(gw, 0, zeros(BMI.get_grid_shape(gw, 0)[2]))
+     mf_y = BMI.get_grid_y(gw, 0, zeros(BMI.get_grid_shape(gw, 0)[1]))
+     vic_x = BMI.get_grid_x(vic, 0)
+     vic_y = BMI.get_grid_y(vic, 0)
+-    n_vic = length(vic_x) * length(vic_y)
++    n_vic = length(vic_x)
+     length(BMI.get_value_ptr(vic, "channel_water__area~cross-sectional")) == n_vic ||
+         error("mGV routing grid differs from its land grid")
+ 
+-    mf_to_vic = cell_map(mf_x, mf_y, vic_x, vic_y)
++    mf_to_vic, vic_to_mf = cell_maps(mf_x, mf_y, vic_x, vic_y)
+     n_shared = count(>(0), mf_to_vic)
+     @info "Grid overlap" mGV_cells = n_vic MODFLOW_cells = length(mf_x) * length(mf_y) shared = n_shared
+     n_shared == 0 && @warn "mGV and MODFLOW grids do not overlap: the feedback will be zero"
+-    vic_to_mf = cell_map(vic_x, vic_y, mf_x, mf_y)
+     n_missing = count(==(0), vic_to_mf)
+     n_missing > 0 && @warn "$n_missing MODFLOW cells are outside the mGV grid: they get zero recharge and discharge"
+     return mf_to_vic, vic_to_mf, n_vic
+@@ -98,21 +167,38 @@ State of a daily mGV <-> MODFLOW exchange: the grid maps, the channel lengths
+ and MODFLOW's feedback from the previous day. `requested` and `applied` are
+ the baseflow volumes [m3] over all days so far; their difference is the river
+ loss that mGV's channels could not supply (water created by the coupling).
++With `exchange = :device` the feedback and the volumes (per cell) live on the device.
+ """
+ mutable struct Coupling
++    exchange::Symbol               # :device or :host
+     mf_to_vic::Vector{Int}
+     vic_to_mf::Vector{Int}
+     n_vic::Int
+     dt::Float32                    # s
+-    cell_length::Vector{Float32}   # m; 0 where mGV has no channel
+-    baseflow::Vector{Float32}      # m3/s on the mGV grid, from the previous MODFLOW day
+-    cpr::Vector{Float32}           # mm/day on the mGV grid, from the previous MODFLOW day
++    cell_length::AbstractVector{Float32}   # m; 0 where mGV has no channel
++    baseflow::AbstractVector{Float32}      # m3/s on the mGV grid, from the previous MODFLOW day
++    cpr::AbstractVector{Float32}           # mm/day on the mGV grid, from the previous MODFLOW day
+     requested::Float64
+     applied::Float64
++    # device exchange: the maps on the device (`nothing`: the grids hold the same cells in
++    # the same order, the identity) and the per-cell volumes
++    dev_mf_to_vic::Any
++    dev_vic_to_mf::Any
++    requested_cell::Any
++    applied_cell::Any
+ end
+ 
+-"Check that `gw` and `vic` can be coupled daily, and set up the exchange."
+-function Coupling(gw, vic)
++"The backend of mGV's arrays."
++mgv_backend(vic) = KA.get_backend(BMI.get_value_ptr(vic, "channel_water__area~cross-sectional"))
++
++"""
++    Coupling(gw, vic; exchange = :auto)
++
++Check that `gw` and `vic` can be coupled daily, and set up the exchange: `:device` when
++MODFLOW runs the GPU engine with the device-resident coupling on mGV's backend, else
++`:host` (`:auto`); or as given.
++"""
++function Coupling(gw, vic; exchange::Symbol = :auto)
+     BMI.get_time_step(vic) == 86400 || error("the coupling steps mGV per day")
+     BMI.get_time_step(gw) == 1 || error("MODFLOW must run daily periods: set `period = \"day\"` under [time]")
+     mgv_start = Date(unix2datetime(BMI.get_start_time(vic)))
+@@ -123,10 +209,29 @@ function Coupling(gw, vic)
+     vic.config.API.external_groundwater_routing ||
+         error("set `external_groundwater_routing = true` in the [API] section of the mGV config")
+     mf_to_vic, vic_to_mf, n_vic = grid_maps(gw, vic)
++    backend = mgv_backend(vic)
++    same_device = MC.device_coupling(gw) && typeof(KA.get_backend(gw.dev.h)) == typeof(backend)
++    exchange === :auto && (exchange = same_device ? :device : :host)
++    exchange in (:device, :host) || error("exchange must be :auto, :device or :host")
++    exchange === :device && !same_device &&
++        error("exchange = :device needs MODFLOW's GPU engine with coupling = \"device\" on mGV's backend")
+     # NaN where the routing input has no channel; those cells take no baseflow
+     cell_length = replace(get_field(vic, "channel__length", n_vic), NaN32 => 0f0)
+-    return Coupling(mf_to_vic, vic_to_mf, n_vic, Float32(BMI.get_time_step(vic)), cell_length,
+-                    zeros(Float32, n_vic), zeros(Float32, n_vic), 0.0, 0.0)
++    dt = Float32(BMI.get_time_step(vic))
++    if exchange === :host
++        return Coupling(:host, mf_to_vic, vic_to_mf, n_vic, dt, cell_length,
++                        zeros(Float32, n_vic), zeros(Float32, n_vic), 0.0, 0.0, nothing, nothing, nothing, nothing)
++    end
++    todev(x) = (d = KA.allocate(backend, eltype(x), size(x)); copyto!(d, x); d)
++    # The identity map (the same cells in the same order) needs no gather: conversion only.
++    n_mf = length(vic_to_mf)
++    identity = n_vic == n_mf && mf_to_vic == 1:n_mf
++    dmf = identity ? nothing : todev(Int32.(mf_to_vic))
++    dvic = identity ? nothing : todev(Int32.(vic_to_mf))
++    @info "Device exchange" backend = typeof(backend) precision = gw.mf.T identity_map = identity
++    return Coupling(:device, mf_to_vic, vic_to_mf, n_vic, dt, todev(cell_length),
++                    KA.zeros(backend, Float32, n_vic), KA.zeros(backend, Float32, n_vic), 0.0, 0.0,
++                    dmf, dvic, KA.zeros(backend, Float64, n_vic), KA.zeros(backend, Float64, n_vic))
+ end
+ 
+ "Last day both models can run."
+@@ -135,10 +240,12 @@ last_day(gw, vic) = min(Date(unix2datetime(BMI.get_end_time(vic))),
+ 
+ """
+ Run one coupled day D: mGV with MODFLOW's feedback from day D-1, then MODFLOW
+-with mGV's values of day D. Returns `(discharge, recharge)` as sent to MODFLOW,
+-on the MODFLOW grid (m3/s and m/day; MODFLOW applies only positive recharge).
++with mGV's values of day D. With the host exchange, returns `(discharge, recharge)` as
++sent to MODFLOW, on the MODFLOW grid (m3/s and m/day; MODFLOW applies only positive
++recharge); with the device exchange, `nothing` (the fields stay on the device).
+ """
+ function step_day!(c::Coupling, gw, vic)
++    c.exchange === :device && return step_day_device!(c, gw, vic)
+     # 1. mGV day D, with MODFLOW's feedback from day D-1
+     add_capillary_rise!(vic, c.cpr)
+     c.requested += sum(Float64, @. ifelse(c.cell_length > 0, c.baseflow, 0f0)) * c.dt
+@@ -158,5 +265,33 @@ function step_day!(c::Coupling, gw, vic)
+     return discharge, recharge
+ end
+ 
++"`step_day!` with device arrays only (`exchange = :device`)."
++function step_day_device!(c::Coupling, gw, vic)
++    backend = mgv_backend(vic)
++    n = c.n_vic
++    # 1. mGV day D, with MODFLOW's feedback from day D-1
++    w = BMI.get_value_ptr(vic, "soil__moisture")
++    wmax = BMI.get_value_ptr(vic, "soil__moisture~maximum")
++    add_capillary_rise_kernel!(backend)(w, wmax, c.cpr, n, length(w) ÷ n; ndrange = n)
++    area = BMI.get_value_ptr(vic, "channel_water__area~cross-sectional")
++    add_baseflow_kernel!(backend)(area, c.requested_cell, c.applied_cell, c.baseflow, c.cell_length, c.dt; ndrange = n)
++    BMI.update(vic)
++
++    # 2. mGV day D -> MODFLOW day D (converted to the engine precision in the gather)
++    set_value_device!(gw, "river_discharge", BMI.get_value_ptr(vic, "channel_water__volume_flow_rate"); map = c.dev_vic_to_mf)
++    set_value_device!(gw, "groundwater_recharge", BMI.get_value_ptr(vic, "land_subsurface__runoff");
++                      map = c.dev_vic_to_mf, divisor = 1000)   # mm/day -> m/day
++    BMI.update(gw)
++
++    # 3. MODFLOW day D -> mGV day D+1 (Float32 on the mGV grid)
++    get_value_device!(c.baseflow, gw, "baseflow_to_routing"; map = c.dev_mf_to_vic)
++    get_value_device!(c.cpr, gw, "capillary_rise"; map = c.dev_mf_to_vic)
++    return nothing
++end
++
++"Baseflow volumes `(requested, applied)` [m3] over all days so far."
++baseflow_volumes(c::Coupling) = c.exchange === :host ? (c.requested, c.applied) :
++    (sum(Array(c.requested_cell)), sum(Array(c.applied_cell)))
++
+ "River loss [m3] that mGV's channels could not supply so far."
+-created_water(c::Coupling) = c.applied - c.requested
++created_water(c::Coupling) = ((requested, applied) = baseflow_volumes(c); applied - requested)
+diff --git a/examples/mgv_coupling/spinup_steady_state.jl b/examples/mgv_coupling/spinup_steady_state.jl
+index cb65cd5..669dfd7 100644
+--- a/examples/mgv_coupling/spinup_steady_state.jl
++++ b/examples/mgv_coupling/spinup_steady_state.jl
+@@ -50,7 +50,7 @@ for it in 1:iterations
+     # 1. coupled run from the current heads
+     gw = GroundwaterModel(Config(base; initial_head_file = start_head, write_monthly_output = false))
+     vic = BMI.initialize(mGV.Model, mgv_config)
+-    c = Coupling(gw, vic)
++    c = Coupling(gw, vic; exchange = :host)   # the means below need the fields on the host
+     head0 = copy(gw.head)
+     first, last = current_date(gw), last_day(gw, vic)
+     avg_from = first + Year(skip_years)
 diff --git a/src/ModflowCoupling.jl b/src/ModflowCoupling.jl
 index 8c6c3a6..95ebd4b 100644
 --- a/src/ModflowCoupling.jl
@@ -2069,10 +2465,21 @@ index a3649c9..256b5fb 100644
      end
      return path
 diff --git a/test/runtests.jl b/test/runtests.jl
-index 3dabfa4..5a7503a 100644
+index 3dabfa4..59b805c 100644
 --- a/test/runtests.jl
 +++ b/test/runtests.jl
-@@ -263,18 +263,23 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+@@ -235,6 +235,10 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+         @test_throws ErrorException align_to_grid(zeros(204, 180), s.lon .+ 0.01, s.lat, s)
+         shuffled = reverse(s.dem; dims = 2)
+         @test isequal(align_to_grid(shuffled, s.lon, reverse(s.lat), s), s.dem)
++        # T5.4: on the model's own grid align_to_grid is the identity (so a field on the
++        # same grid can go to the device as it is)
++        @test isequal(align_to_grid(s.dem, s.lon, s.lat, s), s.dem)
++        @test isequal(align_to_grid(Float32.(s.qbank), s.lon, s.lat, s), Float64.(Float32.(s.qbank)))
+     end
+     end   # let
+     end   # engine testset
+@@ -263,18 +267,23 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
          G = MC.ModflowGPU
          land = s.landmask
          active = cat(s.idomain .> 0, s.idomain .> 0; dims = 3)
@@ -2102,7 +2509,7 @@ index 3dabfa4..5a7503a 100644
                  end
                  BMI.finalize(m)
                  return out
-@@ -284,11 +289,14 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+@@ -284,11 +293,14 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
                          stop = Date(1979, 1, 1), write_monthly_output = false, solver = with_engine(INDUS.solver, "gpu"; coupling = "host")))
                  try BMI.get_value_ptr(m, "groundwater_head"; device = true) finally BMI.finalize(m) end
              end
@@ -2121,7 +2528,7 @@ index 3dabfa4..5a7503a 100644
                  T = m.mf.T
                  dh = BMI.get_value_ptr(m, "groundwater_head"; device = true)
                  @test eltype(dh) === T && length(dh) == 2length(land)
-@@ -314,7 +322,7 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+@@ -314,7 +326,7 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
                  lin = LinearIndices(land)
                  rref = [href[lin[c]] for c in r.cells]
                  stage = Float64.(bound[1, 1:length(r.cells)]) .+ rref
@@ -2130,7 +2537,7 @@ index 3dabfa4..5a7503a 100644
                  if single   # the offsets of bottom_bankfull and of the stage, and the depth, in Float32
                      scale = max.(1, abs.(expected .- rref), replace(abs.(r.bottom_bankfull .- rref), NaN => 0.0))
                      @test all(abs.(stage .- expected) .<= 4eps(Float32) .* scale)
-@@ -322,13 +330,22 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+@@ -322,13 +334,22 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
                      @test maximum(abs.(stage .- expected)) < 1e-9
                  end
                  rch = Array(G.get_value_ptr(m.mf, "INDUS/RCH/BOUND"; device = true))[1, :]
@@ -2155,7 +2562,7 @@ index 3dabfa4..5a7503a 100644
                  @test rel(db, hb) < (single ? 1e-5 : 1e-12)
                  @test rel(dc, hc) < (single ? 1e-5 : 1e-12)
                  @test maximum(abs.(dd .- hd)[land .& (s.idomain .> 0)]) < (single ? 1e-4 : 1e-9)
-@@ -336,6 +353,91 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+@@ -336,6 +357,91 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
          end
          @test_throws r"needs engine = \"gpu\"" MC.validate(Config(cfg; solver = with_engine(cfg.solver, "mf6"; coupling = "device")))
          @test_throws r"solver.coupling must be" MC.validate(Config(cfg; solver = with_engine(cfg.solver, "gpu"; coupling = "gpu")))
@@ -2247,7 +2654,7 @@ index 3dabfa4..5a7503a 100644
      end
  
      if all(in(ENGINES), ("mf6", "gpu"))
-@@ -371,7 +473,7 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+@@ -371,7 +477,7 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
                  emf6 = maxdiff(case_heads["mf6"][k], heads["mf6"][k])
                  egpu = maxdiff(case_heads["gpu"][k], heads["mf6"][k])
                  @info "Case 1/2 month $k, production closures: max |h_gpu - h_mf6| = $d m (distance to the tight heads: mf6 $emf6 m, gpu $egpu m)"
@@ -2256,7 +2663,7 @@ index 3dabfa4..5a7503a 100644
                  @test egpu < 1e-2   # so d <= emf6 + 1e-2
              end
          end
-@@ -417,6 +519,17 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+@@ -417,6 +523,17 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
          gpu = load_config(write_toml("gpu.toml", read(joinpath(INDUS_DIR, "indus.toml"), String) *
                                       "\n[solver]\nengine = \"GPU\"\nprecision = \"single\"\nbackend = \"cpu\"\n"))
          @test gpu.solver.engine == "gpu" && gpu.solver.precision == "single" && gpu.solver.backend == "cpu"
