@@ -126,7 +126,7 @@ function _universal_residual(name, rundir, m, sim)
         # The fused `formulate_system!` (T4.5) against the separate kernels, bitwise, with
         # the off-diagonals rewritten only when IBOUND changes (as `formulate!(::GwfModel)`).
         sys2 = LinearSystem(TEST_BACKEND, T, c.csr)
-        res2, scale2, bound2 = (KernelAbstractions.zeros(TEST_BACKEND, T, conn.nodes) for _ in 1:3)
+        res2, scale2 = (KernelAbstractions.zeros(TEST_BACKEND, T, conn.nodes) for _ in 1:2)
         ibprev, fused_ok = nothing, true
         for k in 1:nstep
             st = hf.steps[k]
@@ -137,11 +137,11 @@ function _universal_residual(name, rundir, m, sim)
             assemble!(c.sys, c.csr, c.npf, h, c.ib; symmetric)
             pkgs = Tuple((x.hcof, x.rhs, x.nodeptr, x.noderec) for x in c.pk if ModflowGPU.boundary_kind(x) !== :CHD && x.nbound > 0)
             sto = !isnothing(c.sto) && c.sto.transient ? (c.sto.rho, hold) : nothing
-            ModflowGPU.formulate_system!(sys2, res2, c.csr, c.npf, h, c.ib, pkgs, sto; symmetric, offdiag = ibh != ibprev, scale = scale2, bound = bound2)
+            ModflowGPU.formulate_system!(sys2, res2, c.csr, c.npf, h, c.ib, pkgs, sto; symmetric, offdiag = ibh != ibprev, scale = scale2)
             ibprev = ibh
             KernelAbstractions.synchronize(TEST_BACKEND)
             fused_ok &= Array(sys2.amat) == Array(c.sys.amat) && Array(sys2.rhs) == Array(c.sys.rhs) &&
-                Array(res2) == Array(res) && Array(scale2) == Array(scale) && Array(bound2) == Array(bound)
+                Array(res2) == Array(res) && Array(scale2) == Array(scale)
             rel, roundoff = residual_stats(T, res, scale, bound)
             ok = rel < 1.0e-8 || (T === Float32 && rel <= roundoff)
             ok || (fails += 1)

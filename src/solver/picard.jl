@@ -26,13 +26,12 @@ Float32 by `PicardSettings`:
 - `outer_dvclose`, `inner_dvclose`: fixed floors (m);
 - `dvclose_head_factor`: OUTER_DVCLOSE is also at least this factor times
   `eps(Float32)·max_n |h'_n|`, the resolution of the offset heads (checked every outer
-  iteration; e.g. 1.2e-4 m on ex-gwf-toth, whose offsets reach 1010 m); INNER_DVCLOSE
-  is also at least that head resolution of the previous outer iteration (T6.0);
+  iteration; e.g. 1.2e-4 m on ex-gwf-toth, whose offsets reach 1010 m); with
+  `INNER_RCLOSE ... STRICT`, INNER_DVCLOSE is also at least this head resolution of the
+  previous outer iteration (T6.0, see `outer_iteration!`);
 - `inner_rclose_factor`: an absolute INNER_RCLOSE is at least this factor times
-  `eps(Float32)·max_n bound_n` of the current outer iteration, the rounding level of the
-  flux-form residual at the current offset heads (rule 2; `bound` of `flux_residual!`,
-  which is `Σ_m |terms|` where `h' = 0`). Until T6.0: `Σ_m |terms|` of the first outer
-  iteration of a step.
+  `eps(Float32)·max_n Σ_m |terms|` of the first outer iteration of a step, the rounding
+  level of the flux-form residual (rule 2).
 """
 const FLOAT32_CLOSURES = (; outer_dvclose = 1.0e-6, inner_dvclose = 1.0e-6, dvclose_head_factor = 1.0, inner_rclose_factor = 1.0)
 
@@ -153,6 +152,9 @@ end
 
 Adapt.@adapt_structure PicardSolver
 
+# KrylovSettings with a different INNER_RCLOSE (the Float32 floor).
+_with_rclose(k::KrylovSettings, rclose) = _with(k; rclose = Float64(rclose))
+
 _with_settings(s::KrylovSolver, st::KrylovSettings) = KrylovSolver(
     st, s.csr, s.x, s.r, s.p, s.q, s.z, s.b0, s.dhat, s.phat, s.qhat, s.t, s.v, s.minv, s.rowfac, s.colfac, s.reducer, s.precond,
     s.reducer2, s.reducer3, s.sa, s.ss,
@@ -166,7 +168,7 @@ The state of the outer iterations of the current time step, for one iteration at
 rclose floor), the iteration count `kiter`, total inner iterations, the last `hncg`/`lrch`,
 `dvclose`, `rclose`, `converged`, `diverged` (the correction or the heads were not
 finite; no further iteration is done), and `dvfloor` (Float32: `eps(T)·max|h'|` of the last
-outer iteration, the floor of INNER_DVCLOSE; 0 before the first).
+outer iteration; 0 before the first).
 
     OuterState(ps::PicardSolver)
 """
@@ -202,31 +204,30 @@ function outer_iteration!(state::OuterState, ps::PicardSolver, m::GwfModel{T}, k
     backend = m.backend
     n = Int(m.conn.nodes)
     it = state.kiter += 1
-    floor_step = st.rclose_floor_factor > 0
-    @timed_section :assembly formulate!(m; symmetric = st.symmetric, bound = floor_step ? ps.scale : nothing)
-    if floor_step || st.dvclose_head_factor > 0
-        # Float32 floors of the inner closures (FLOAT32_CLOSURES), from the current heads:
-        # - INNER_RCLOSE >= factor·eps(T)·max_n bound_n, the residual of the rounded offset
-        #   heads (rule 2; `bound` of `flux_residual!`, Σ C·(|h'_m| + |h'_n| + |Δr|) + ...).
-        #   It equals eps(T)·max Σ|terms| where h' = 0; once the offsets grow (ex-gwf-lgrv-gr:
-        #   48 m with small flows) the rounding noise of a converged state is several times
-        #   eps(T)·max Σ|terms|, which an absolute rclose below it cannot reach (T6.0).
-        # - INNER_DVCLOSE >= the head resolution of the last outer iteration (eps32·max|h'|): a
-        #   converged Float32 state still has a correction of that size; with a fixed 1e-6
-        #   floor STRICT (inner convergence in the first inner iteration, ImsLinearBase.f90
-        #   `ims_base_testcnvg`) never holds once max|h'| > ~8 m (T6.0, ex-gwf-lgrv-gc).
-        kst = st.krylov
-        if floor_step
-            bmax = @timed_section :outer_reduction _mapreduce!(ps.reducer, backend, _maxscale_term, _MAXSCALE_OPS, n, ps.scale)[1]
-            floor = st.rclose_floor_factor * eps(T) * abs(bmax)
-            rc = kst.icnvgopt == 2 || kst.icnvgopt == 4 ? floor * sqrt(n) : floor
-            state.rclose = max(kst.rclose, rc)
-        end
-        kdv = max(kst.dvclose, state.dvfloor)
+    floor_step = it == 1 && st.rclose_floor_factor > 0
+    @timed_section :assembly formulate!(m; symmetric = st.symmetric, scale = floor_step ? ps.scale : nothing)
+    if floor_step
+        # Float32: the attainable residual, eps(T)·max Σ|terms| (rule 2 rounding).
+        smax = @timed_section :outer_reduction _mapreduce!(ps.reducer, backend, _maxscale_term, _MAXSCALE_OPS, n, ps.scale)[1]
+        floor = st.rclose_floor_factor * eps(T) * abs(smax)
+        rc = st.krylov.icnvgopt == 2 || st.krylov.icnvgopt == 4 ? floor * sqrt(n) : floor
+        state.rclose = max(st.krylov.rclose, rc)
         k = state.krylov
-        if state.rclose != k.settings.rclose || kdv != k.settings.dvclose
-            state.krylov = _with_settings(k, _with(kst; rclose = Float64(state.rclose), dvclose = kdv))
-        end
+        state.krylov = state.rclose == k.settings.rclose ? k : _with_settings(k, _with_rclose(st.krylov, state.rclose))
+    end
+    if st.dvclose_head_factor > 0 && st.krylov.icnvgopt == 1
+        # Float32 with STRICT (ImsLinearBase.f90 `ims_base_testcnvg`: the inner solve
+        # converges only in its first iteration, otherwise the outer iteration does not
+        # converge): INNER_DVCLOSE is at least the head resolution eps32·max|h'| of the last
+        # outer iteration. A converged Float32 state still gets a first-iteration correction
+        # of about that size from the rounding noise of its residual, so with the fixed 1e-6
+        # floor STRICT never holds once max|h'| > ~8 m (T6.0, ex-gwf-lgrv-gc: offsets up to
+        # 49 m, no convergence in 500 outer iterations). Not applied to the other options,
+        # where it is not needed and costs accuracy (T6.0: looser inner floors on every
+        # option moved ex-gwf-toth, offsets up to 1010 m, from 6.6e-5 to 1.4e-3 m).
+        kdv = max(st.krylov.dvclose, state.dvfloor)
+        k = state.krylov
+        kdv == k.settings.dvclose || (state.krylov = _with_settings(k, _with(k.settings; dvclose = kdv)))
     end
     res = @timed_section :linear_solve solve!(m.δ, state.krylov, m.sys.amat, m.res; kstp)
     state.inner += res.iterations
