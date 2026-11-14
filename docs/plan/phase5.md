@@ -224,7 +224,12 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
 **T5.5b Global 5′ run with real data (L)**
 - Depends: T5.5a. The global inputs are available since 2026-11-14 (PLAN.md section 8,
   decisions 1 and 8): MODFLOW in `/home/bart/data/modflow/global_data`, mGV as in
-  T5.5a, with the file choices T5.5a recorded.
+  T5.5a, with the file choices T5.5a recorded: `docs/global_inputs.md` (file choices,
+  what does not line up, package sizes) and the draft config
+  `examples/global/global.toml` of ModflowCoupling patch 0005. Before the run, decide the
+  CHD heads (the chosen steady-head file has none on the 173,727 CHD ring cells; sea
+  level 0 m is the proposal), and use the routing file and mGV config of the T5.5a
+  report (`benchmark/results/2026-11-14-T5.5a.md`).
 - Deliver: a global ModflowCoupling config, a steady-state spin-up
   (`period = "steady"`) on the GPU, then 1 year daily coupled with mGV. There is no
   global coupled steady-state head yet: it comes from coupling mGV to MODFLOW
