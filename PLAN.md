@@ -488,7 +488,7 @@ marked; their merge commits on `main` hold the card reports.
   - T5.0 KernelAbstractions 0.10 as the minimum (done)
   - T5.1 Engine switch in ModflowCoupling (done)
   - T5.2 Device-resident coupling
-  - T5.3 Coupling parity on the Indus
+  - T5.3 Coupling parity on the Indus (done)
   - T5.4 mGV + ModflowGPU on one GPU (mGV is on KA 0.10 since 2026-11-13; T5.0 is done)
   - T5.5a Global-size dress rehearsal
   - T5.5b Global 5′ run with real data (global inputs available since 2026-11-14)
@@ -603,5 +603,7 @@ Still open:
 - **Longitude wrap (T7.1):** it waits for all of T6.6, but `ex-gwf-spbc` needs
   only a self-exchange of one model. A periodic connection in the DIS
   connectivity would take T7.1 off the Milestone C path.
-- **Production closures for the GPU engine:** T5.3 delivers the numbers and a
-  proposal (section 4).
+- **Production closures for the GPU engine:** T5.3 delivered the numbers and a
+  proposal (`docs/precision.md`): `outer_dvclose = inner_dvclose = 0.01` for the
+  GPU engine, for 20–40 % more time per period on rocm. The owner decides;
+  T5.4 and T5.5a recheck the cost at global size.
