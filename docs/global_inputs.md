@@ -80,6 +80,12 @@ the nogl domain), `Clone_05min_oc.*` and `conflayers_oc.nc` (not ModflowCoupling
    gridded stores with one entry per variable (`precipitation_file = ".../prec"`, …;
    `{year}` in the path when they are split by year).
 
+5. **Routing.** The generated file (`benchmark/results/2026-11-14-T5.5a.md`, "Global
+   routing file") has 2,286,186 HydroSHEDS network cells; 2,841 active mGV cells have no
+   HydroSHEDS land data, and mGV stops on them ("Routing channel length is not positive
+   and finite"), so they were added as one-cell basins. Final file: 2,289,027 cells, every
+   mGV active cell covered, 170 cells outside mGV's domain (ignored by mGV).
+
 ## Packages and size (nogl domain, from the checks)
 
 | | records |
