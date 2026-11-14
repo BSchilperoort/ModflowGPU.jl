@@ -387,8 +387,10 @@ NamedTuple of keywords for its constructor, see `build_preconditioner`).
 From an `ImsSpec` (with its COMPLEXITY defaults already applied by the loader), IMS's
 preconditioner (`resolve_ipc`: ILU0, MILU0 when RELAXATION_FACTOR > 0, ILUT/MILUT when
 PRECONDITIONER_LEVELS > 0) is replaced by `preconditioner`; `:auto` (the default) is
-`DEFAULT_PRECONDITIONER` (`:mc_ilu0`), logged as a message for ILU0 and as a warning for
-the others (their relaxation and fill levels are not used). REORDERING_METHOD is ignored
+`DEFAULT_PRECONDITIONER` (`:mc_ilu0`), logged once per session: as a message for ILU0
+and for preconditioners that come from the COMPLEXITY defaults only, as a warning when
+PRECONDITIONER_LEVELS or RELAXATION_FACTOR were given (their fill levels and relaxation
+are not used). REORDERING_METHOD is ignored
 with a logged message. See
 docs/mf6_notes.md (IMS linear solver mapping).
 """
@@ -440,15 +442,30 @@ MF6's preconditioner for PRECONDITIONER_LEVELS and RELAXATION_FACTOR
 """
 ims_preconditioner(levels, relax) = levels > 0 ? (relax > 0 ? :milut : :ilut) : (relax > 0 ? :milu0 : :ilu0)
 
+# Whether the options that make IMS's preconditioner more than ILU0 (PRECONDITIONER_LEVELS
+# > 0 for ILUT, RELAXATION_FACTOR > 0 for MILU) all come from the COMPLEXITY defaults,
+# i.e. none of them is given as a keyword (`ImsSpec.given`).
+function _precond_from_complexity(ims::ImsSpec)
+    ims.preconditioner_levels > 0 && "PRECONDITIONER_LEVELS" in ims.given && return false
+    ims.relaxation_factor > 0 && "RELAXATION_FACTOR" in ims.given && return false
+    return true
+end
+
 function KrylovSettings(ims::ImsSpec; preconditioner::Symbol = :auto, precond_options::NamedTuple = (;))
     pc = ims_preconditioner(ims.preconditioner_levels, ims.relaxation_factor)
     if preconditioner === :auto
         preconditioner = resolve_preconditioner(preconditioner)
         msg = "IMS preconditioner $(uppercase(String(pc))) is replaced by $preconditioner (multicolour ILU0 in red–black order, the default; see the `preconditioner` option)"
-        # ILU0 maps to ILU0 in another ordering; MILU0 / ILUT / MILUT lose their options.
-        pc === :ilu0 ? (@info msg ims.file) : (@warn msg ims.file)
+        # ILU0 maps to ILU0 in another ordering; MILU0 / ILUT / MILUT lose their options:
+        # a warning when those were given explicitly, a message when they come from the
+        # COMPLEXITY defaults only (e.g. ILUT of COMPLEXITY COMPLEX). Logged once per session.
+        if pc === :ilu0 || _precond_from_complexity(ims)
+            @info msg ims.file maxlog = 1
+        else
+            @warn msg ims.file maxlog = 1
+        end
     else
-        @info "IMS preconditioner $(uppercase(String(pc))) replaced by the ModflowGPU preconditioner $preconditioner" ims.file
+        @info "IMS preconditioner $(uppercase(String(pc))) replaced by the ModflowGPU preconditioner $preconditioner" ims.file maxlog = 1
     end
     ims.reordering_method === :none ||
         @info "IMS REORDERING_METHOD $(uppercase(String(ims.reordering_method))) has no effect with the $preconditioner preconditioner" ims.file

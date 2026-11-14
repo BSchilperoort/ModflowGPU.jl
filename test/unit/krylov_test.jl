@@ -6,7 +6,7 @@
 using LinearAlgebra: LinearAlgebra, Diagonal, norm, dot
 using Random: Random, MersenneTwister
 using ModflowGPU: CsrStructure, KrylovSettings, KrylovSolver, KrylovResult, solve!, spmv!, ims_testcnvg, ims_epfact,
-    ims_preconditioner, ims_defaults, ImsSpec, device_dot, device_maxabs, device_argmaxabs, build_connectivity, accumulation_type
+    ims_preconditioner, ims_defaults, ImsSpec, PicardSettings, device_dot, device_maxabs, device_argmaxabs, build_connectivity, accumulation_type
 
 # --- matrices in MF6's CSR layout (diagonal first, then the sorted neighbours)
 
@@ -219,13 +219,31 @@ _tight(T, method; kw...) = KrylovSettings(;
         @test ims_preconditioner(5, 0.5) === :milut
         for (cx, method, pc, north) in ((:simple, :cg, "ILU0", 0), (:moderate, :bicgstab, "MILU0", 0), (:complex, :bicgstab, "ILUT", 2))
             ims = ims_defaults(cx)
-            level = pc == "ILU0" ? :info : :warn  # the default mc_ilu0 is ILU0 in red–black order
-            st = @test_logs (level, Regex("preconditioner $pc is replaced by mc_ilu0")) KrylovSettings(ims)
+            # mc_ilu0 is ILU0 in red–black order; MILU0 / ILUT from COMPLEXITY only: a message
+            st = @test_logs (:info, Regex("preconditioner $pc is replaced by mc_ilu0")) KrylovSettings(ims)
             @test st.preconditioner === ModflowGPU.DEFAULT_PRECONDITIONER === :mc_ilu0
             @test (@test_logs (:info, Regex("$pc replaced by the ModflowGPU preconditioner jacobi")) KrylovSettings(ims; preconditioner = :jacobi)).preconditioner === :jacobi
             @test st.method === method && st.north == north && st.maxiter == ims.inner_maximum
             @test st.dvclose == ims.inner_dvclose && st.rclose == ims.inner_rclose && st.icnvgopt == 0
         end
+        # Fill levels or relaxation given explicitly: they are lost, a warning.
+        for (given, pc) in (("PRECONDITIONER_LEVELS", "ILUT"), ("RELAXATION_FACTOR", "MILU0"))
+            ims = ImsSpec(; preconditioner_levels = pc == "ILUT" ? 5 : 0, relaxation_factor = pc == "ILUT" ? 0.0 : 0.97, given = [given])
+            @test_logs (:warn, Regex("preconditioner $pc is replaced by mc_ilu0")) KrylovSettings(ims)
+        end
+        # ILUT of COMPLEXITY COMPLEX with RELAXATION_FACTOR 0 given (ModflowCoupling): a message.
+        ims = ImsSpec(; complexity = :complex, preconditioner_levels = 5, relaxation_factor = 0.0, given = ["COMPLEXITY", "RELAXATION_FACTOR"])
+        @test_logs (:info, r"ILUT is replaced by mc_ilu0") KrylovSettings(ims)
+        # Logged once per session (maxlog = 1), also the backtracking warning (T5.2).
+        logger = Test.TestLogger(; respect_maxlog = true)
+        Base.CoreLogging.with_logger(logger) do
+            for _ in 1:3
+                KrylovSettings(ImsSpec(; preconditioner_levels = 5, given = ["PRECONDITIONER_LEVELS"]))
+                PicardSettings(ImsSpec(; backtracking_number = 5), Float64)
+            end
+        end
+        @test count(r -> occursin("ILUT is replaced", r.message), logger.logs) == 1
+        @test count(r -> occursin("backtracking is not implemented", r.message), logger.logs) == 1
         ims = ImsSpec(; rclose_option = :l2norm_relative, scaling_method = :diagonal, reordering_method = :rcm)
         st = @test_logs (:info,) (:info, r"REORDERING_METHOD RCM") KrylovSettings(ims)
         @test st.icnvgopt == 4 && st.scaling === :diagonal

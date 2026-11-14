@@ -54,7 +54,7 @@ and `precond_options` as in `KrylovSettings(::ImsSpec)`). `closures` (a
 NamedTuple with any of `outer_dvclose`, `outer_maximum`, `inner_dvclose`, `inner_rclose`,
 `inner_maximum`) overrides them. For `T = Float32`, closures below `FLOAT32_CLOSURES` are
 raised to them (logged), since Float32 cannot reach MF6's tight closures (PLAN.md 3.7).
-Warns when the input would use backtracking (BACKTRACKING_NUMBER > 0), which is not
+Warns (once per session) when the input would use backtracking (BACKTRACKING_NUMBER > 0), which is not
 implemented until T6.2.
 """
 struct PicardSettings
@@ -73,7 +73,7 @@ function PicardSettings(
     ) where {T <: AbstractFloat}
     get_c(k, default) = (isnothing(closures) || !haskey(closures, k)) ? default : getfield(closures, k)
     ims.backtracking_number > 0 &&
-        @warn "IMS BACKTRACKING_NUMBER = $(ims.backtracking_number) (COMPLEXITY $(uppercase(String(ims.complexity))) or given): backtracking is not implemented until T6.2; outer iterations may differ from MF6" ims.file
+        @warn "IMS BACKTRACKING_NUMBER = $(ims.backtracking_number) (COMPLEXITY $(uppercase(String(ims.complexity))) or given): backtracking is not implemented until T6.2; outer iterations may differ from MF6" ims.file maxlog = 1
     ims.under_relaxation in (:none, :simple, :cooley, :dbd) || throw(ArgumentError("unknown IMS UNDER_RELAXATION $(ims.under_relaxation)"))
     dvclose = Float64(get_c(:outer_dvclose, ims.outer_dvclose))
     maxiter = Int(get_c(:outer_maximum, ims.outer_maximum))
