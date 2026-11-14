@@ -8,8 +8,9 @@ Whether `backend` can run kernels in Float64. Extension hook like [`pin_memory!`
 the default is `true` (CPU, CUDA, ROCm). The Metal extension returns `false`, and the oneAPI
 and OpenCL extensions query the device.
 
-This is deliberately not `KernelAbstractions.supports_float64`: its default is `true` in
-KernelAbstractions 0.9 but `false` in 0.10, and ModflowGPU supports both.
+This is deliberately not `KernelAbstractions.supports_float64`, whose default (through
+KernelInterface, since KernelAbstractions 0.10) is `false` for backends that do not define
+it.
 """
 supports_float64(::Backend) = true
 

@@ -30,20 +30,6 @@ julia --project=@runic -m Runic --inplace .                   # format (or `runi
 julia --project=benchmark benchmark/hardware.jl rocm          # hardware baseline (T0.4), also `cpu`
 ```
 
-Until T5.0 is merged, CI also runs the CPU tests on KernelAbstractions 0.9 (its CPU
-backend is native Julia, while KA 0.10's is POCL). mGV has moved to KA 0.10, so T5.0 drops
-KA 0.9. The local equivalent temporarily adds a
-compat entry to `test/Project.toml`. `Pkg.resolve` does not downgrade an existing
-manifest, so delete the shared root `Manifest.toml` (not committed) first, and again after
-reverting the compat entry so the next resolve returns to KA 0.10:
-
-```sh
-rm -f Manifest.toml
-julia --project=test -e 'using Pkg; Pkg.compat("KernelAbstractions", "0.9"); Pkg.resolve()'
-julia --project=test test/runtests.jl                          # (MFGPU_TEST_BACKEND=rocm works too)
-git checkout test/Project.toml && rm Manifest.toml             # undo
-```
-
 `test/` and `benchmark/` are workspace projects of the package (`[workspace]` in `Project.toml`), so there is
 one `Manifest.toml` at the root (not committed). It includes AMDGPU, so the GPU test command
 above works without extra setup. CI (`.github/workflows/`) runs only the CPU tests and Runic.
@@ -68,11 +54,10 @@ above works without extra setup. CI (`.github/workflows/`) runs only the CPU tes
 - **Host vs device:** input parsing, connectivity, graph colouring and AMG setup run on the
   host. Everything done once per outer iteration (assembly, boundary formulation, SpMV,
   preconditioner, convergence checks, budgets) runs in KA kernels.
-- **Compat:** `KernelAbstractions = "0.9.41, 0.10"` until T5.0 makes KA 0.10 the minimum
-  (PLAN.md decision 7). mGV (a package with GPU weak dependencies since 2026-11-13)
-  requires KA 0.10.7 and AMDGPU 2.11, and Milestone B loads both in one environment. Do
-  not add new KA 0.9 workarounds. See `docs/compat.md` (e.g. `CPU()` is `POCLBackend` in
-  KA 0.10).
+- **Compat:** `KernelAbstractions = "0.10"` and `AMDGPU = "2.11"` (KA 0.10 is the minimum
+  since T5.0, PLAN.md decision 7). mGV (a package with GPU weak dependencies) requires
+  KA 0.10.7 and AMDGPU 2.11, and Milestone B loads both in one environment. KA 0.9 is no
+  longer supported. See `docs/compat.md` (e.g. `CPU()` is `POCLBackend` in KA 0.10).
 
 ## Float32 and Float64 (PLAN.md section 3.7)
 

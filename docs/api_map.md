@@ -10,11 +10,11 @@ it. Underscore-prefixed helpers are omitted.
 
 - **backend_setup.jl**: backend registry, adapted from mGV. `select_backend` (name → KA
   backend), `register_backend!` (called by `ext/*Ext.jl`), `backend_options`,
-  `backend_name`, `known_backend_package`, `_WG` (T4.5: static work-group size 256 of the element-wise kernels), `pin_memory!` (extension hook; returns a handle to keep, or `nothing`; CUDA, ROCm >= AMDGPU 2.10 since T4.6), `host_mapped_zeros`
+  `backend_name`, `known_backend_package`, `_WG` (T4.5: static work-group size 256 of the element-wise kernels), `pin_memory!` (extension hook; returns a handle to keep, or `nothing`; CUDA, ROCm since T4.6), `host_mapped_zeros`
   (extension hook, T3.1: device view of a host vector for reduction results; CPU, ROCm), `BackendEntry`, `BACKEND_REGISTRY`, `KNOWN_BACKENDS`; `_device_copy` (host array → new device array). Tests: backend.
 - **ext/*Ext.jl** (AMDGPU, CUDA, Metal, oneAPI, OpenCL): `__init__` registers the backend;
   overrides `supports_float64` where needed; AMDGPUExt adds `host_mapped_zeros` and
-  `pin_memory!` (registered host memory; AMDGPU >= 2.10 only, older versions copy). Tests: backend (GPU file with `MFGPU_TEST_BACKEND`).
+  `pin_memory!` (registered host memory). Tests: backend (GPU file with `MFGPU_TEST_BACKEND`).
 - **precision.jl**: precision presets (PLAN.md 3.7). `resolve_precision(backend, preset)`
   → `(; T, Ts, Tp)` (`:double`, `:mixed` = Float64 with Float32 `Tp` since T4.4, `:single`; `:auto` = `:mixed` with Float64, else `:single`), `PRECISION_PRESETS`, `supports_float64` (extension hook). Tests: precision, kernel.
 - **instrument.jl** (T4.1): optional timing of the hot loop. `@timed_section name expr`

@@ -26,9 +26,12 @@ Float32 by `PicardSettings`:
 - `outer_dvclose`, `inner_dvclose`: fixed floors (m);
 - `dvclose_head_factor`: OUTER_DVCLOSE is also at least this factor times
   `eps(Float32)·max_n |h'_n|`, the resolution of the offset heads (checked every outer
-  iteration; e.g. 1.2e-4 m on ex-gwf-toth, whose offsets reach 1010 m); with
-  `INNER_RCLOSE ... STRICT`, INNER_DVCLOSE is also at least this head resolution of the
-  previous outer iteration (T6.0, see `outer_iteration!`);
+  iteration; e.g. 1.2e-4 m on ex-gwf-toth, whose offsets reach 1010 m). Once a
+  correction of the step meets OUTER_DVCLOSE but its inner solve did not converge, the
+  next inner solves of the step use INNER_DVCLOSE >= that head resolution of the previous
+  outer iteration (never more): the first inner correction of a converged Float32 state is
+  rounding noise of about `eps32·max|h'|`, which a fixed 1e-6 m INNER_DVCLOSE rejects
+  for ever (T5.3, T6.0; see `outer_iteration!`);
 - `inner_rclose_factor`: an absolute INNER_RCLOSE is at least this factor times
   `eps(Float32)·max_n Σ_m |terms|` of the first outer iteration of a step, the rounding
   level of the flux-form residual (rule 2).
@@ -167,8 +170,9 @@ The state of the outer iterations of the current time step, for one iteration at
 (`outer_iteration!`, the stepping API's `solve`): the Krylov solver in use (with the Float32
 rclose floor), the iteration count `kiter`, total inner iterations, the last `hncg`/`lrch`,
 `dvclose`, `rclose`, `converged`, `diverged` (the correction or the heads were not
-finite; no further iteration is done), and `dvfloor` (Float32: `eps(T)·max|h'|` of the last
-outer iteration; 0 before the first).
+finite; no further iteration is done), `dvfloor` (Float32: `eps(T)·max|h'|` of the last
+outer iteration; 0 before the first) and `noise_floor` (Float32: INNER_DVCLOSE is at least
+`dvfloor` for the rest of the step, see `outer_iteration!`).
 
     OuterState(ps::PicardSolver)
 """
@@ -183,9 +187,10 @@ mutable struct OuterState{K <: KrylovSolver}
     converged::Bool
     diverged::Bool
     dvfloor::Float64
+    noise_floor::Bool
 end
 
-OuterState(ps::PicardSolver) = OuterState(ps.krylov, 0, 0, 0.0, 0, ps.settings.dvclose, ps.settings.krylov.rclose, false, false, 0.0)
+OuterState(ps::PicardSolver) = OuterState(ps.krylov, 0, 0, 0.0, 0, ps.settings.dvclose, ps.settings.krylov.rclose, false, false, 0.0, false)
 
 OuterResult(s::OuterState) = OuterResult(s.converged, s.kiter, s.inner, s.hncg, s.lrch, s.dvclose, s.rclose)
 
@@ -215,16 +220,22 @@ function outer_iteration!(state::OuterState, ps::PicardSolver, m::GwfModel{T}, k
         k = state.krylov
         state.krylov = state.rclose == k.settings.rclose ? k : _with_settings(k, _with_rclose(st.krylov, state.rclose))
     end
-    if st.dvclose_head_factor > 0 && st.krylov.icnvgopt == 1
-        # Float32 with STRICT (ImsLinearBase.f90 `ims_base_testcnvg`: the inner solve
-        # converges only in its first iteration, otherwise the outer iteration does not
-        # converge): INNER_DVCLOSE is at least the head resolution eps32·max|h'| of the last
-        # outer iteration. A converged Float32 state still gets a first-iteration correction
-        # of about that size from the rounding noise of its residual, so with the fixed 1e-6
-        # floor STRICT never holds once max|h'| > ~8 m (T6.0, ex-gwf-lgrv-gc: offsets up to
-        # 49 m, no convergence in 500 outer iterations). Not applied to the other options,
-        # where it is not needed and costs accuracy (T6.0: looser inner floors on every
-        # option moved ex-gwf-toth, offsets up to 1010 m, from 6.6e-5 to 1.4e-3 m).
+    if st.dvclose_head_factor > 0 && it > 1 && abs(state.hncg) <= state.dvclose
+        # Float32: the last correction met OUTER_DVCLOSE, so only the inner test kept the
+        # step from converging. Such a correction is rounding noise of about eps32·max|h'|
+        # (the residual of a converged Float32 state), and an inner solve from it cannot get
+        # its per-iteration change below a fixed INNER_DVCLOSE under that size: it stalls at
+        # INNER_MAXIMUM (T5.3, Indus: 1.45e-6 m with offsets up to 62 m), or with STRICT
+        # (ImsLinearBase.f90 `ims_base_testcnvg`: converged only in the first inner
+        # iteration) never converges (T6.0, ex-gwf-lgrv-gc: 2–3e-6 m, offsets up to 49 m).
+        # From here to the end of the step INNER_DVCLOSE is at least that noise level,
+        # `dvfloor` = eps32·max|h'| of the last outer iteration, and never above it: a loose
+        # OUTER_DVCLOSE does not loosen the inner test. Not applied before the trigger: a
+        # head-resolution INNER_DVCLOSE from the first outer iteration on costs accuracy
+        # (ex-gwf-toth, offsets 1010 m: 1.4e-3 m instead of 6.6e-5 m, T5.3 and T6.0).
+        state.noise_floor = true
+    end
+    if state.noise_floor
         kdv = max(st.krylov.dvclose, state.dvfloor)
         k = state.krylov
         kdv == k.settings.dvclose || (state.krylov = _with_settings(k, _with(k.settings; dvclose = kdv)))

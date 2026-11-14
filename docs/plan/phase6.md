@@ -22,6 +22,13 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
   suite, make it opt-out like hwell-a (`MFGPU_TEST_HWELL`). Add the measured numbers to
   `docs/precision.md` and both examples to "Validated models" in
   `docs/support_matrix.md`.
+- From the T5.3 report: T5.3 (merged first) and this card both changed the Float32
+  convergence test in `src/solver/picard.jl` for the same stall (a converged state whose
+  first inner correction is above the fixed 1e-6 m INNER_DVCLOSE floor). T5.3 raises
+  INNER_DVCLOSE to OUTER_DVCLOSE once the outer test is met and only the inner test
+  fails, which also loosens the inner test when OUTER_DVCLOSE is loose. This card
+  floors INNER_DVCLOSE at `eps32·max|h'|` under STRICT. Reconcile them into one rule
+  that passes both the Indus coupling parity (patch 0002) and the lgrv tests.
 - Done when: the section 4 heads and budget criteria pass in all three presets on CPU
   and rocm. A failure is fixed in this card if it is a bug in a supported feature, and
   otherwise reported with the missing feature named.

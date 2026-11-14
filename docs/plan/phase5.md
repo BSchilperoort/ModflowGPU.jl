@@ -11,7 +11,7 @@ All ModflowCoupling changes follow the patch workflow of section 2: work in
 `scripts/apply_coupling_patches.sh` run, so the patch series always applies
 cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
 
-**T5.0 KernelAbstractions 0.10 as the minimum (S) ‖**
+**T5.0 KernelAbstractions 0.10 as the minimum (S) ‖ (done 2026-11-14)**
 - Depends: nothing. Owner decision of 2026-11-11 (PLAN.md section 8, decision 7): mGV
   moves to KA 0.10, so ModflowGPU no longer has to run on KA 0.9 with AMDGPU 2.8. Done
   on 2026-11-13: mGV `main` is a package (GPU weak dependencies, `ext/*Ext.jl`, BMI in
@@ -64,17 +64,20 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
 - From the T5.1 report:
   - The patched clone has no AMDGPU dependency, so its suite ran on the CPU backend
     only. Add AMDGPU to its test environment and a way to select the backend (for
-    example `MODFLOWCOUPLING_BACKEND=rocm`), and run the engine tests on rocm. If T5.3
-    is done first, it adds this.
+    example `MODFLOWCOUPLING_BACKEND=rocm`), and run the engine tests on rocm. Done in
+    T5.3 (patch 0002: `MODFLOWCOUPLING_BACKEND=auto|cpu|rocm`, AMDGPU as a test
+    dependency, test groups); reuse it.
   - In ModflowGPU, the "backtracking is not applied" and "ILUT is replaced by
     `:mc_ilu0`" warnings appear on every GPU build. Log them once (`maxlog = 1`), and
     log the ILUT one at info level when ILUT comes from COMPLEXITY and not from an
     explicit keyword.
+- From the T5.3 report: the review ran only the parity group of the clone on rocm.
+  Run the clone's full suite on rocm here.
 - Done when: results match T5.1 on CPU and rocm, and a daily step has no host↔device
   transfer beyond the BMI calls that ask for host arrays (check with the profiler or
   timers).
 
-**T5.3 Coupling parity on the Indus (S)**
+**T5.3 Coupling parity on the Indus (S) (done 2026-11-14)**
 - Depends: T5.1.
 - Deliver: `test/coupling_parity.jl` (in the patched ModflowCoupling clone, as a patch) running 1979-01 to 1979-03
   monthly and 31 daily periods with tight solver settings on both engines, with
@@ -113,6 +116,13 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
     returns to its level before `initialize`.
   - ModflowGPU is a hard dependency of the patched ModflowCoupling. Decide here whether
     it becomes a weak dependency (extension), so the mf6 engine installs without it.
+- From the T5.3 report:
+  - Recheck the closure proposal (`outer_dvclose = inner_dvclose = 0.01` for the GPU
+    engine, `docs/precision.md`) on the 1-year run and report its cost; T5.5a repeats
+    this at global size.
+  - At closures 5 and 0.5, `:single` stops 3e-3 m from its tight heads on monthly
+    periods, where `:mixed` stops 8.2e-6 m away. The Float32 INNER_RCLOSE floor is the
+    likely cause; check it if `:single` is used for the coupled run.
 - Done when: the Indus 1-year coupled run with tight closures gives the same results as
   the mf6-engine run within T5.3 tolerances, and timings for both engines are reported
   at tight and at production closures.

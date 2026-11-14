@@ -38,10 +38,10 @@
 # Device reductions
 
 # Work-group size and number of values reduced at once (every reduction carries 4 values;
-# unused ones are zero). The tree below is unrolled for _RED_WG = 256, and the kernels
-# write `@localmem eltype(partials) (256, 4)` literally: `@localmem` with the element type
+# unused ones are zero). The local arrays are sized for _RED_WG = 256, and the
+# kernels write `@localmem eltype(partials) (256, 4)` literally (`@localmem` with the element type
 # in a kernel-local variable fails at run time on KA 0.10's POCL backend ("undefined
-# variable").
+# variable")).
 const _RED_WG = 256
 const _RED_K = 4
 
@@ -95,8 +95,18 @@ end
 
 @inline _zeros4(::Type{Ta}) where {Ta} = (zero(Ta), zero(Ta), zero(Ta), zero(Ta))
 
-# The tree is written out in each kernel: KA 0.9's CPU backend only accepts `@synchronize`
-# in the kernel body itself.
+# Pairwise tree over the `_RED_WG` slots of a work group, with a barrier after each level
+# (every work item runs the same number of levels); on return slot 1 holds the result.
+# `@synchronize` is a plain barrier call in KA 0.10, so it may sit in a loop of a helper.
+@inline function _tree_reduce!(shared, sloc, ops, li)
+    s = _RED_WG >> 1
+    while s >= 1
+        _tree_step!(shared, sloc, ops, li, s)
+        @synchronize
+        s >>= 1
+    end
+    return nothing
+end
 
 # Stage 1: work item `i` evaluates `f(Ta, i, args...)` (which may also write vectors) and
 # returns 4 values in `Ta`; each work group reduces them in local memory (a pairwise tree)
@@ -114,22 +124,7 @@ end
         @inbounds sloc[li] = vals[1] != zero(Ta) ? i % Int32 : Int32(0)
     end
     @synchronize
-    _tree_step!(shared, sloc, ops, li, 128)
-    @synchronize
-    _tree_step!(shared, sloc, ops, li, 64)
-    @synchronize
-    _tree_step!(shared, sloc, ops, li, 32)
-    @synchronize
-    _tree_step!(shared, sloc, ops, li, 16)
-    @synchronize
-    _tree_step!(shared, sloc, ops, li, 8)
-    @synchronize
-    _tree_step!(shared, sloc, ops, li, 4)
-    @synchronize
-    _tree_step!(shared, sloc, ops, li, 2)
-    @synchronize
-    _tree_step!(shared, sloc, ops, li, 1)
-    @synchronize
+    _tree_reduce!(shared, sloc, ops, li)
     if li == 1
         g = @index(Group, Linear) + goff
         @inbounds for k in 1:_RED_K
@@ -177,22 +172,7 @@ end
         @inbounds sloc[li] = loc
     end
     @synchronize
-    _tree_step!(shared, sloc, ops, li, 128)
-    @synchronize
-    _tree_step!(shared, sloc, ops, li, 64)
-    @synchronize
-    _tree_step!(shared, sloc, ops, li, 32)
-    @synchronize
-    _tree_step!(shared, sloc, ops, li, 16)
-    @synchronize
-    _tree_step!(shared, sloc, ops, li, 8)
-    @synchronize
-    _tree_step!(shared, sloc, ops, li, 4)
-    @synchronize
-    _tree_step!(shared, sloc, ops, li, 2)
-    @synchronize
-    _tree_step!(shared, sloc, ops, li, 1)
-    @synchronize
+    _tree_reduce!(shared, sloc, ops, li)
     if li == 1
         r = @inbounds _post(post, (shared[1, 1], shared[1, 2], shared[1, 3], shared[1, 4]), sa, ss)
         @inbounds for k in 1:_RED_K
