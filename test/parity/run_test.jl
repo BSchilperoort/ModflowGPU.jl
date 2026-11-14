@@ -4,7 +4,9 @@
 # - models: the Tier 0–2 examples that load with `strict = true` and have a tight run in
 #   reference/runs/<example>/tight (ex-gwf-hwell-a, 153164 cells and 60 steps, runs with
 #   the AMG preconditioner since T4.3, about 15 s on the CPU backend; MFGPU_TEST_HWELL=0
-#   skips it), and the synthetic
+#   skips it), the confined Tier 3 examples ex-gwf-lgrv-gc and ex-gwf-lgrv-gr (T6.0;
+#   `parity_examples`; -gr has 672525 cells, :single with AMG, MFGPU_TEST_LGRV_GR=0 skips
+#   it), and the synthetic
 #   models test/models/fhb_const and test/models/coupling_rde, run with mf6 at test time;
 # - heads: every saved step of our HDS file (read back with our reader) vs MF6's:
 #   `:double` max |Δh| < max(1e-6 m, 1e-7 × head range), `:single` < 1e-3 m;
@@ -22,7 +24,7 @@
 
 function _run_models(f)
     hwell = get(ENV, "MFGPU_TEST_HWELL", "1") != "0"
-    for (name, _) in in_scope_examples(; tiers = 0:2)
+    for (name, _) in parity_examples()
         rundir = joinpath(REFERENCE_DIR, "runs", name, "tight")
         if !isdir(rundir)
             @info "Skipping $name in the run parity test: $rundir not found"
@@ -120,8 +122,14 @@ end
         @testset "$name" begin
             # ex-gwf-hwell-a: Jacobi BiCGSTAB does not converge in :single (T2.8); AMG does
             # (T4.3), unless MFGPU_TEST_PRECONDITIONER chooses another preconditioner.
-            hwell_amg = name == "ex-gwf-hwell-a" && !haskey(ENV, "MFGPU_TEST_PRECONDITIONER")
-            _run_parity(name, rundir; preconditioner = hwell_amg ? :amg : RUN_PRECONDITIONER)
+            default_pc = !haskey(ENV, "MFGPU_TEST_PRECONDITIONER")
+            hwell_amg = name == "ex-gwf-hwell-a" && default_pc
+            pc = hwell_amg ? :amg : RUN_PRECONDITIONER
+            # ex-gwf-lgrv-gr in :single: Float32 CG with MC-ILU0 stops 6.1e-3 m from the exact
+            # heads (the correction solves converge too slowly on this badly conditioned steady
+            # state); with AMG 6.7e-6 m (T6.0, docs/precision.md).
+            spc = name == "ex-gwf-lgrv-gr" && default_pc ? :amg : pc
+            _run_parity(name, rundir; preconditioner = pc, single_preconditioner = spc)
         end
     end
     @info "Run parity test: $(nmodels[]) model(s)"

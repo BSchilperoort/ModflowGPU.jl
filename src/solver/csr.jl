@@ -308,7 +308,7 @@ end
 end
 
 @kernel function formulate_kernel!(
-        amat, rhs, bdiag, brhs, res, scale, @Const(ia), @Const(ja), @Const(jas), @Const(condsat), @Const(Δr),
+        amat, rhs, bdiag, brhs, res, scale, bound, @Const(ia), @Const(ja), @Const(jas), @Const(condsat), @Const(Δr),
         @Const(h), @Const(ibound), pkgs, sto, symmetric::Bool, offdiag::Bool, tiny,
     )
     n = @index(Global)
@@ -324,6 +324,7 @@ end
         rs = zero(T)
         rc = zero(T)
         sc = zero(T)
+        rb = zero(T)
         if ibound[n] > 0
             d = zero(T)
             s = br
@@ -336,6 +337,7 @@ end
                 q = c * (h[m] - hn + dr)
                 rs, rc = _sum_add(rs, rc, -q)
                 sc += abs(q)
+                rb += c * (abs(h[m]) + abs(hn) + abs(dr))
                 if symmetric && ibound[m] < 0
                     s -= c * h[m]
                     offdiag && (amat[ii] = zero(T))
@@ -354,6 +356,7 @@ end
             rs, rc = _sum_add(rs, rc, -tb)
             rs, rc = _sum_add(rs, rc, br)
             sc += abs(tb) + abs(br)
+            rb += abs(tb) + abs(br)
         else
             amat[id] = one(T)
             if offdiag
@@ -365,12 +368,13 @@ end
         end
         res[n] = rs + rc
         scale === nothing || (scale[n] = sc)
+        bound === nothing || (bound[n] = rb)
     end
 end
 
 """
     formulate_system!(sys, res, csr, npf, h, ibound, packages, storage; symmetric = false,
-                      offdiag = true, scale = nothing) -> sys
+                      offdiag = true, scale = nothing, bound = nothing) -> sys
 
 `reset_terms!`, `add_terms!` of the boundary packages and storage, `assemble!` and
 `flux_residual!` in one kernel (T4.5), with bitwise the same results. `packages`: a tuple
@@ -378,15 +382,16 @@ of `(hcof, rhs, nodeptr, noderec)` per boundary package with records (after its
 `formulate!`), in package order; `storage`: `(rho, hold)` in a transient period, otherwise
 `nothing`. `offdiag = false` skips writing the off-diagonal entries of `sys.amat`; valid
 only when they were written by an earlier call with the same `ibound` and `symmetric` (they
-depend on nothing else).
+depend on nothing else). `scale` and `bound` (optional vectors of length `nodes`) receive
+the row sums of `flux_residual!`.
 """
 function formulate_system!(
         sys::LinearSystem, res, csr::CsrStructure, npf::NpfModel, h, ibound, packages::Tuple, storage;
-        symmetric::Bool = false, offdiag::Bool = true, scale = nothing,
+        symmetric::Bool = false, offdiag::Bool = true, scale = nothing, bound = nothing,
     )
     backend = get_backend(sys.amat)
     formulate_kernel!(backend, _WG)(
-        sys.amat, sys.rhs, sys.bdiag, sys.brhs, res, scale, csr.ia, csr.ja, csr.jas, npf.condsat, npf.Δr, h, ibound,
+        sys.amat, sys.rhs, sys.bdiag, sys.brhs, res, scale, bound, csr.ia, csr.ja, csr.jas, npf.condsat, npf.Δr, h, ibound,
         packages, storage, symmetric, offdiag, eltype(sys)(1.0e-15); ndrange = csr.nodes,
     )
     return sys

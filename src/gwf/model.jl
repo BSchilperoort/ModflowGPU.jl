@@ -126,16 +126,16 @@ function start_timestep!(m::GwfModel, delt::Float64)
 end
 
 """
-    formulate!(m::GwfModel; symmetric = false, scale = nothing) -> m
+    formulate!(m::GwfModel; symmetric = false, scale = nothing, bound = nothing) -> m
 
 Formulate and assemble the system of an outer iteration from the current offset heads
 (`bnd_cf`/`bnd_fc` of every stress package except CHD, `sto_fc`, `npf_fc`, `sln_ls`), then
 the flux-form residual `m.res` (PLAN.md section 3.7, rule 2; with `scale`, also the
-row sums `Σ |terms|`, see `flux_residual!`). Device work only: one formulation kernel per
+row sums `Σ |terms|`, and with `bound` the head-rounding sums, see `flux_residual!`). Device work only: one formulation kernel per
 package, then `formulate_system!` (T4.5), which rewrites the off-diagonal entries of the
 matrix only when `ibound` or `symmetric` changed since they were last written.
 """
-function formulate!(m::GwfModel; symmetric::Bool = false, scale = nothing)
+function formulate!(m::GwfModel; symmetric::Bool = false, scale = nothing, bound = nothing)
     for pkg in m.packages
         boundary_kind(pkg) === :CHD && continue
         formulate!(pkg, m.h, m.ibound, m.area)
@@ -152,7 +152,7 @@ function formulate!(m::GwfModel; symmetric::Bool = false, scale = nothing)
     # either do so every outer iteration or pass `offdiag = true`. Calling `assemble!` on
     # `m.sys` directly also leaves `m.offdiag` stale.
     offdiag = m.offdiag !== symmetric
-    formulate_system!(m.sys, m.res, m.csr, m.npf, m.h, m.ibound, pkgs, storage; symmetric, offdiag, scale)
+    formulate_system!(m.sys, m.res, m.csr, m.npf, m.h, m.ibound, pkgs, storage; symmetric, offdiag, scale, bound)
     m.offdiag = symmetric
     return m
 end
