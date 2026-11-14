@@ -126,7 +126,7 @@ closures already looser are kept):
 | Closure | Float32 floor | Why |
 | --- | --- | --- |
 | OUTER_DVCLOSE | `max(1e-6 m, eps32 · max_n \|h'_n\|)` (checked every outer iteration) | A Float32 offset head resolves `eps32·\|h'\|`; the correction of a converged state is noise of ~0.25 `eps32·max\|h'\|` (toth: `\|δ\|` stalls at 3.05e-5 m with offsets up to 1010 m, so a fixed 1e-5 never converges) |
-| INNER_DVCLOSE | 1e-6 m | below the outer floor is wasted work |
+| INNER_DVCLOSE | 1e-6 m; raised to OUTER_DVCLOSE for the rest of the step once a correction meets OUTER_DVCLOSE but its inner solve did not converge (T5.3, below) | below the outer floor is wasted work |
 | INNER_RCLOSE (absolute options) | `≥ eps32 · max_n Σ_m \|terms\|` of the first outer iteration of the step (×√n for the L2 options) | the rounding level of the flux-form residual (rule 2); T2.7: an absolute rclose below ~`eps32·‖A‖·‖δ‖` is unreachable |
 
 Measured: the factor on the rclose floor sets the `:single` budget discrepancy (hanic: 10
@@ -279,3 +279,111 @@ the section 4 `:single` tolerance of 1e-3 m). `:amg` remains the choice for badl
 conditioned steady states where MC-ILU0 needs many iterations (e.g. on the CPU backend).
 IMS ILU0 maps to `:mc_ilu0` with a logged message; MILU0 / ILUT / MILUT with a warning
 (their relaxation and fill levels are not used).
+
+## Coupling parity on the Indus (T5.3)
+
+Test: `test/coupling_parity.jl` in the patched ModflowCoupling (patch 0002; run with
+`Pkg.test(test_args = ["parity"])`, `MODFLOWCOUPLING_BACKEND=rocm` for the GPU). The Indus
+model (180 × 204 × 2, `period = "month"` 1979-01 to 1979-03 and `period = "day"`
+1979-01-01 to 1979-01-31, from the global steady state, synthetic forcing as in the
+ModflowCoupling tests) with both engines; every period compared. Heads: max |Δh| over the
+active cells; `baseflow_to_routing` and `capillary_rise`: max |Δ| over the land cells
+divided by the domain maximum of the mf6 field in that period.
+
+**Tight closures.** OUTER_DVCLOSE 1e-9, INNER_DVCLOSE 1e-10 and INNER_RCLOSE **1e-8**
+m³/d (STRICT), OUTER_MAXIMUM 500, INNER_MAXIMUM 2000, for both engines. MF6 does not
+converge on the Indus with INNER_RCLOSE 1e-10 (section 4's value): its residual does not
+get below the rounding level of the large RIV and DRN terms; 1e-8 is the tightest power
+of ten that converges (1e-2 to 1e-8 give the same MF6 heads to the printed digits). `:single` uses
+the Float32 floors (`FLOAT32_CLOSURES`; outer 7e-6 to 9e-6 m from the offsets of up to
+79 m, rclose 19 to 42 m³/d).
+
+| GPU engine | period | max \|Δh\| | baseflow | capillary rise | outer / inner it. | criterion (heads; fluxes) |
+| --- | --- | --- | --- | --- | --- | --- |
+| `:double` | 3 months | 6.9e-11 m | 2.2e-12 | 6.4e-14 | 25 / 87 | 1e-4 m; 1e-6 |
+| `:mixed` | 3 months | 6.9e-11 m | 2.2e-12 | 6.4e-14 | 25 / 87 | 1e-4 m; 1e-6 |
+| `:single` | 3 months | 4.6e-5 m | 1.8e-6 | 1.8e-7 | 20 / 53 | 1e-3 m; 1e-4 |
+| `:double` | 31 days | 3.5e-11 m | 1.5e-12 | 4.1e-13 | 210 / 451 | 1e-4 m; 1e-6 |
+| `:mixed` | 31 days | 3.5e-11 m | 1.5e-12 | 4.1e-13 | 210 / 451 | 1e-4 m; 1e-6 |
+| `:single` | 31 days | 1.9e-5 m | 3.1e-6 | 2.9e-7 | 158 / 286 | 1e-3 m; 1e-4 |
+
+The CPU backend and rocm (RX 7800 XT) give the same numbers to two digits and the same
+iteration counts. Every section 4 coupling criterion passes, `:mixed` against the
+`:double` ones, with margins of 1e6 (`:double`, `:mixed`) and 20 to 30 (`:single`).
+
+**Fix found on the way (`:single`).** Before T5.3, `:single` with tight closures did not
+converge on the Indus: the outer correction stalled at 1.45e-6 m, below the Float32
+OUTER_DVCLOSE floor (7.4e-6 m = `eps32·max|h'|`, offsets up to 62 m), but above the fixed
+INNER_DVCLOSE floor of 1e-6 m, so the correction solves stagnated after two iterations
+without reporting convergence and the outer iterations ran to OUTER_MAXIMUM (MF6
+requires inner convergence too, `sln_has_converged` after `imslinear_ap`). Now, in
+Float32, when an outer correction is already within OUTER_DVCLOSE and only the inner test
+failed, the next inner solves of the step use INNER_DVCLOSE ≥ OUTER_DVCLOSE
+(`outer_iteration!`, src/solver/picard.jl; one extra outer iteration per period). A
+general floor `INNER_DVCLOSE ≥ eps32·max|h'|` was tried first and rejected: on ex-gwf-toth
+(offsets 1010 m, steady, slow CG) it stops the inner solves early and the head error
+rises from 6.6e-5 to 1.4e-3 m. The conditional rule leaves every Phase 2 parity model
+bitwise unchanged (it never triggers there).
+
+**Production closures** (indus.toml: OUTER_DVCLOSE 5, INNER_DVCLOSE 5, INNER_RCLOSE 10),
+GPU engine vs mf6 engine (logged, not tested):
+
+| GPU engine | period | max \|Δh\| | baseflow | capillary rise |
+| --- | --- | --- | --- | --- |
+| `:double`, `:mixed` | 3 months | 1.9 m | 0.59 | 1.0e-8 |
+| `:single` | 3 months | 1.9 m | 0.59 | 2.1e-7 |
+| `:double`, `:mixed` | 31 days | 6.0e-7 m | 3.3e-8 | 3.9e-10 |
+| `:single` | 31 days | 1.9e-5 m | 2.6e-6 | 2.6e-7 |
+
+Monthly, MF6 stops up to 1.9 m from its tight heads (February), and the baseflow differs by 59 %
+of its domain maximum in some cells; the GPU engine stops within 8.2e-6 m (`:mixed`). Daily, both
+engines stop after the same first outer iteration (the correction is below 5 m), so they
+agree with each other, and both are 0.15 m from their tight heads.
+
+### Closure table
+
+Distance to the engine's own tight heads (max over periods and active cells) and median
+wall time of a period (`BMI.update`, including the coupling's host work), after a warm-up
+run; OUTER_DVCLOSE = INNER_DVCLOSE = the value in the column head, the other settings of
+indus.toml. `MODFLOWCOUPLING_CLOSURE_TABLE=1`, run under the GPU benchmark lock;
+2026-11-14, RX 7800 XT, mf6 = libmf6 6.3.0 (Modflow6_jll) on the CPU.
+
+| engine | monthly tight | monthly 5 | monthly 0.5 | monthly 0.01 | daily tight | daily 5 | daily 0.5 | daily 0.01 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| mf6 | 0.096 s | 1.9 m, 0.021 s | 3.0e-3 m, 0.050 s | 9.8e-10 m, 0.059 s | 0.059 s | 0.15 m, 0.011 s | 0.012 m, 0.019 s | 1.5e-4 m, 0.027 s |
+| gpu `:single` rocm | 0.0061 s | 3.0e-3 m, 0.0036 s | 3.0e-3 m, 0.0041 s | 9.5e-7 m, 0.0046 s | 0.0045 s | 0.15 m, 0.0028 s | 0.012 m, 0.0032 s | 1.5e-4 m, 0.0038 s |
+| gpu `:mixed` rocm | 0.0087 s | 8.2e-6 m, 0.0039 s | 5.0e-7 m, 0.0042 s | 4.0e-7 m, 0.0047 s | 0.0060 s | 0.15 m, 0.0028 s | 0.012 m, 0.0032 s | 1.5e-4 m, 0.0039 s |
+| gpu `:double` rocm | 0.0079 s | 8.2e-6 m, 0.0037 s | 5.0e-7 m, 0.0042 s | 4.0e-7 m, 0.0045 s | 0.0056 s | 0.15 m, 0.0027 s | 0.012 m, 0.0031 s | 1.5e-4 m, 0.0035 s |
+| gpu `:single` CPU | 0.048 s | 3.0e-3 m, 0.018 s | 3.0e-3 m, 0.025 s | 9.5e-7 m, 0.031 s | 0.029 s | 0.15 m, 0.0082 s | 0.012 m, 0.013 s | 1.5e-4 m, 0.018 s |
+| gpu `:mixed` CPU | 0.064 s | 8.2e-6 m, 0.018 s | 5.0e-7 m, 0.024 s | 4.0e-7 m, 0.030 s | 0.043 s | 0.15 m, 0.0081 s | 0.012 m, 0.013 s | 1.5e-4 m, 0.019 s |
+| gpu `:double` CPU | 0.068 s | 8.2e-6 m, 0.017 s | 5.0e-7 m, 0.025 s | 4.0e-7 m, 0.027 s | 0.040 s | 0.15 m, 0.0074 s | 0.012 m, 0.012 s | 1.5e-4 m, 0.017 s |
+
+Notes. The timings are small (180 × 204 × 2 cells) and on rocm near the launch-latency
+floor; the mf6 rows are the same in both runs (within 3 %). Daily, the distance is the
+same for every engine: it is set by the outer iteration at which the loop stops, not by
+the linear solver. At 0.01 the GPU engine stops 4e-7 m from its tight heads monthly,
+MF6 1e-9 m; both are far below any coupling tolerance. `:single` at 5 and
+0.5 stops 3e-3 m from its tight heads monthly, where `:mixed` stops 8e-6 m away: the
+inner solves of `:single` end at the Float32 floors (INNER_RCLOSE ≥ 19 m³/d), probably
+the cause (not investigated further).
+
+### Proposal: production closures of the GPU engine (owner decides, PLAN.md section 8)
+
+1. **Use `outer_dvclose = inner_dvclose = 0.01` m for the GPU engine** (keep
+   INNER_RCLOSE 10, the other settings unchanged). Measured on the Indus it is within
+   1.5e-4 m (daily) and 4e-7 m (monthly) of the tight heads, against 0.15 m and 1.9 m at
+   5, for +20 to +40 % wall time per period on rocm (daily 3.9 vs 2.8 ms, monthly 4.7 vs
+   3.9 ms) and 1.7 to 2.3× the time on the CPU backend. The baseflow and capillary rise
+   sent to the land-surface model then no longer depend on where the outer loop happened
+   to stop, which matters for parity runs and for comparing engines.
+2. Keep `5` as the mf6-engine default (the Python reference), but note in indus.toml
+   that it stops up to 1.9 m from the converged heads on monthly periods; for mf6, 0.01
+   costs 2.4× (daily) to 2.8× (monthly) the time.
+3. Tight closures (1e-9) cost 2.1 to 2.2× the 5 m time on the GPU engine (rocm: 6.0 vs
+   2.8 ms per day). At global size the ratio is the one to recheck (T5.4/T5.5a: global5m
+   tight daily steps take 0.39 s, `:mixed` MC-ILU0); if 0.01 is within 10 % of 5 there
+   as well, a tighter value (1e-3) is an option.
+
+The ModflowCoupling default is not changed by this card (`SolverSettings` keeps 5 for
+both engines); adopting the proposal means a per-engine default in the patched
+`config.jl` (a later patch).
