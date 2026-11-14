@@ -487,7 +487,7 @@ marked; their merge commits on `main` hold the card reports.
 - **Phase 5: ModflowCoupling integration and Milestone B**: [docs/plan/phase5.md](docs/plan/phase5.md)
   - T5.0 KernelAbstractions 0.10 as the minimum (done)
   - T5.1 Engine switch in ModflowCoupling (done)
-  - T5.2 Device-resident coupling
+  - T5.2 Device-resident coupling (done)
   - T5.3 Coupling parity on the Indus (done)
   - T5.4 mGV + ModflowGPU on one GPU (mGV is on KA 0.10 since 2026-11-13; T5.0 is done)
   - T5.5a Global-size dress rehearsal

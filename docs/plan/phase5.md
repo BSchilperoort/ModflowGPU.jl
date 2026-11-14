@@ -51,7 +51,7 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
 - Done when: ModflowCoupling's test suite passes with both engines
   (`INDUS_DATA=/home/bart/data/modflow/data`).
 
-**T5.2 Device-resident coupling (M)**
+**T5.2 Device-resident coupling (M) (done 2026-11-14)**
 - Depends: T5.1.
 - Deliver: rewrite `apply_stresses!` and `collect_outputs!` in ModflowCoupling
   as KA kernels on device arrays (record→cell index maps on the device), so the
@@ -116,6 +116,25 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
     returns to its level before `initialize`.
   - ModflowGPU is a hard dependency of the patched ModflowCoupling. Decide here whether
     it becomes a weak dependency (extension), so the mf6 engine installs without it.
+- From the T5.2 report:
+  - The device path takes its inputs from host BMI calls only. Add setters that take
+    device arrays (the mGV exchange) and the Float32 ↔ Float64 kernel this card asks for.
+  - A host array from `BMI.get_value_ptr` is refreshed only on the next property read,
+    so a caller that keeps the pointer across `update` sees old values, and inputs
+    written straight into `m.recharge` (not through `set_value`) are ignored on the
+    device path. Make this safe for the mGV coupling, or make the misuse an error.
+  - The contract for writing device BOUND (between `prepare_time_step` and
+    `prepare_solve`) is documented but not enforced, and device writes are unchecked.
+  - `rec_map` keeps only the last record of a cell, where the host path adds up DRN
+    records on one cell. Sum them, or error when a cell has more than one record.
+  - The device path is not tested with `foc = false` (no EVT), and WEL only by its sum.
+  - `maxlog = 1` is per call site, so the message for a different preconditioner of a
+    later model in the same process is suppressed.
+  - rocprofv3 shows three `hipMemcpy` calls per daily step: two BMI uploads and one not
+    identified (probably the device-to-device `hold ← h` copy). Identify it. Monthly
+    periods also copy `rho` from host to device when the step length changes.
+  - In `:single` the river stage rounds to 1.2e-4 m where the cell reference is 3.2 km
+    from the stage (the Float32 limit of the offset form with this reference).
 - From the T5.3 report:
   - The owner adopted the closure proposal on 2026-11-14 (PLAN.md section 8,
     decision 9). Make `outer_dvclose = inner_dvclose = 0.01` the default of the GPU
