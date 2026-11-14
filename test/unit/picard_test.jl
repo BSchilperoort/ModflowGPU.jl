@@ -230,6 +230,33 @@ end
     end
 end
 
+# T5.3: in Float32, once a correction meets OUTER_DVCLOSE and only the inner test failed,
+# INNER_DVCLOSE is raised to OUTER_DVCLOSE for the rest of the step. With one inner
+# iteration the corrections stall near the fixed 1e-6 m inner floor: before the rule this
+# step took 99 outer iterations in Float32 (46 with it). Float64 keeps its inner settings.
+@testset "Float32: INNER_DVCLOSE raised when only the inner test blocks convergence" begin
+    sim = load_simulation(joinpath(@__DIR__, "..", "models", "coupling_rde"))
+    spec = only(sim.models)
+    ims = only(only(sim.solution_groups).solutions)
+    cl = (; inner_maximum = 1, outer_dvclose = 1.0e-3, inner_dvclose = 1.0e-6, inner_rclose = 1.0e10, outer_maximum = 70)
+    for_each_precision() do p
+        m = GwfModel(TEST_BACKEND, p.T, spec, 3)
+        ps = PicardSolver(m, PicardSettings(ims, p.T; closures = cl))
+        ModflowGPU.apply_period!(m, 1)
+        start_timestep!(m, 1.0)
+        s = ModflowGPU.OuterState(ps)
+        for _ in 1:70
+            ModflowGPU.outer_iteration!(s, ps, m, 1) && break
+        end
+        if p.T === Float32
+            @test s.converged && s.kiter < 70 && abs(s.hncg) <= 1.0e-3
+            @test s.krylov.settings.dvclose == s.dvclose
+        else
+            @test s.krylov.settings.dvclose == 1.0e-6 && s.krylov.settings == ps.krylov.settings
+        end
+    end
+end
+
 # T3.1: Adapt rules on the engine structs. A model, its outer-loop solver and budget
 # accumulator built on the CPU and moved with `adapt` to the test backend (and back) give
 # the same heads and budgets as ones built there.
