@@ -945,7 +945,7 @@ index 086791a..ae71d5e 100644
          m.mf = nothing
      end
 diff --git a/test/runtests.jl b/test/runtests.jl
-index 4db8b1d..eb0ec99 100644
+index 4db8b1d..3dabfa4 100644
 --- a/test/runtests.jl
 +++ b/test/runtests.jl
 @@ -257,6 +257,87 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
@@ -989,7 +989,7 @@ index 4db8b1d..eb0ec99 100644
 +                @test eltype(dh) === T && length(dh) == 2length(land)
 +                @test isequal(head_reference(m) .+ Float64.(Array(dh)), vec(m.head))   # m.head syncs here
 +                l2 = BMI.get_value_ptr(m, "groundwater_head_layer_2"; device = true)
-+                @test parent(l2) === dh && parentindices(l2) == ((length(land) + 1):2length(land),)
++                @test isequal(Array(l2), Array(dh)[(length(land) + 1):2length(land)])   # a view (a ROCArray on rocm)
 +                for name in ("baseflow_to_routing", "capillary_rise")
 +                    @test isequal(Float64.(Array(BMI.get_value_ptr(m, name; device = true))),
 +                                  vec(name == "capillary_rise" ? m.capillary : m.baseflow))
