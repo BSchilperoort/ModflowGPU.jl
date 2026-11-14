@@ -579,6 +579,13 @@ with mGV's real global model for 1979 on rocm (`benchmark/results/2026-11-14-T5.
   (21 / 325) and ends 1.5e-5 m from `:double`; with AMG 41.5 s (16 / 87) and 9.4e-4 m.
   The lgrv-gr failure (above) shows as non-convergence, not as a wrong answer: run such a
   spin-up with `preconditioner = :amg`, or in `:mixed` (`:auto` where Float64 exists).
+  On the Indus (real inputs, ModflowCoupling's spin-up settings, CPU backend) the Float32
+  steady state stops about 0.03 m from the converged (`:double`, closure 1e-6) heads
+  whatever the preconditioner and closure: at 0.01 MC-ILU0 0.072 m (42 / 14867, 22 s),
+  AMG 0.032 m (34 / 16605, 46 s); at 1e-6 both 0.032 m (20886 and 31321 inner
+  iterations); `:double` at 0.01 is 0.028 m away, `:mixed` at 1e-6 9.3e-10 m. **Spin-ups
+  should run in `:mixed`**; `:single` (backends without Float64) gives centimetre heads on
+  such steady states, beyond the 1e-3 m `:single` tolerance, and AMG does not change that.
 - **Rclose floor.** Not changed: a floor from the head-rounding bound made lgrv-gr
   "converge" 6.1e-3 m from the exact heads (above), turning a visible failure into a
   silent error.
