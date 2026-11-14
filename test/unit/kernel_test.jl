@@ -1,5 +1,5 @@
-# Launches a KA kernel on TEST_BACKEND in each precision (CPU in CI: native Julia in KA 0.9,
-# POCL in KA 0.10; a GPU with MFGPU_TEST_BACKEND) and compares with a host computation.
+# Launches a KA kernel on TEST_BACKEND in each precision (CPU in CI, which is POCL since
+# KA 0.10; a GPU with MFGPU_TEST_BACKEND) and compares with a host computation.
 using KernelAbstractions: @kernel, @index, @Const
 
 @kernel function axpy_kernel!(y, a, @Const(x))
