@@ -81,3 +81,10 @@ PLAN.md section 4; numbers in docs/precision.md and docs/scaling.md): Tier 0
 `:double`, opt-in), and Tier 1, the synthetic coupling models (test/models/coupling_rde
 and benchmark/synthetic.jl `tiny` and `indus`). The Tier 3–7 examples load with
 `strict = false` only.
+
+T6.0 adds the two confined Tier 3 examples (ICELLTYPE 0, steady state, RIV, RCHA,
+K33OVERK, IMS CG with STRICT rclose): ex-gwf-lgrv-gc (9×61×49) and ex-gwf-lgrv-gr
+(25×183×147, 672525 cells; `MFGPU_TEST_LGRV_GR=0` skips it), in the universal residual
+test and the run parity test, `:single`, `:mixed` and `:double`, CPU and ROCm. Default
+preconditioner, except ex-gwf-lgrv-gr in `:single`, which runs with `:amg`: with
+`:mc_ilu0` the Float32 solve does not converge (docs/precision.md, T6.0).

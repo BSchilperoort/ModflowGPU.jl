@@ -279,3 +279,71 @@ the section 4 `:single` tolerance of 1e-3 m). `:amg` remains the choice for badl
 conditioned steady states where MC-ILU0 needs many iterations (e.g. on the CPU backend).
 IMS ILU0 maps to `:mc_ilu0` with a logged message; MILU0 / ILUT / MILUT with a warning
 (their relaxation and fill levels are not used).
+
+## Confined lgrv examples (T6.0)
+
+ex-gwf-lgrv-gc (9×61×49, 26901 cells) and ex-gwf-lgrv-gr (25×183×147, 672525 cells):
+ICELLTYPE 0, one steady period, RIV, RCHA, K33OVERK; IMS CG, ILU0, `INNER_RCLOSE ...
+STRICT`. Both are in the assembly and run parity tests (`parity_examples`, test/input_files.jl;
+`MFGPU_TEST_LGRV_GR=0` skips -gr, which adds about 3 min to the CPU suite).
+
+**Universal residual and oracle** (MF6 tight heads; CPU and ROCm alike): max |res| / max
+Σ|terms| in `:single` (rounding bound) and `:double`; libmf6 first solve, `amat` and `b'`.
+
+| Model | `:single` | `:double` | oracle `:double` amat / b' | oracle `:single` amat / b' |
+| --- | --- | --- | --- | --- |
+| ex-gwf-lgrv-gc | 1.84e-7 (6.08e-7) | 2.04e-13 | 0 / 1.2e-16 | 6.8e-8 / 5.0e-9 |
+| ex-gwf-lgrv-gr | 2.61e-7 (8.26e-7) | 1.34e-12 | 0 / 1.0e-16 | 1.2e-7 / 5.3e-9 |
+
+**Run parity** (max |Δh| vs MF6, tolerance `:double`/`:mixed` max(1e-6, 1e-7 × head
+range) = 4.0e-6 m (gc) and 3.6e-6 m (gr), `:single` 1e-3 m; CBC max |Δq| / total in;
+pd = |percent discrepancy|; listing 0 in every case; CPU backend times):
+
+| Model, preset (preconditioner) | max \|Δh\| | CBC | pd | outer/inner (MF6 2/1001) | CPU time |
+| --- | --- | --- | --- | --- | --- |
+| gc `:single` (mc_ilu0) | 2.38e-5 | 7.1e-6 | 3.4e-4 % | 3/739 | 1.2 s |
+| gc `:mixed` (mc_ilu0) | 3.06e-7 | 8.5e-11 | 5.9e-10 % | 2/566 | 1.0 s |
+| gc `:double` (mc_ilu0) | 3.06e-7 | 8.5e-11 | 6.4e-10 % | 2/566 | 0.5 s |
+| gr `:single` (amg) | 6.67e-6 | 2.7e-6 | 6.2e-5 % | 5/133 | 15.2 s |
+| gr `:mixed` (mc_ilu0) | 2.32e-6 | 2.0e-10 | 2.6e-8 % | 5/3422 | 65.3 s |
+| gr `:double` (mc_ilu0) | 2.32e-6 | 2.0e-10 | 2.6e-8 % | 5/3421 | 68.0 s |
+
+ROCMPLACEHOLDER
+
+**The `:double` differences are MF6's.** Against the exact solution (a sparse Cholesky
+solve of our Float64 system, residual 1e-15), MF6's tight heads are 3.1e-7 m (gc) and
+2.3e-6 m (gr) off, ours in `:double` 3.5e-10 m and 3.5e-9 m. MF6 stops when one CG
+iteration of the STRICT solve changes the heads by less than 1e-9 m; on gr its first
+correction solve hits INNER_MAXIMUM (1000), and the remaining error is about 2300 times
+the closure. gr therefore uses 64 % of its `:double` head tolerance; this is the reference,
+not the engine.
+
+**Fix: Float32 INNER_DVCLOSE under STRICT** (src/solver/picard.jl `outer_iteration!`).
+STRICT (ImsLinearBase.f90 `ims_base_testcnvg`, option 1) lets an outer iteration converge
+only when the inner solve converges in its first iteration. In Float32 a converged state
+still gets a first-iteration correction of about eps32·max|h'| (gc: offsets up to 49 m,
+2–3e-6 m) from the rounding noise of its residual, which the fixed 1e-6 m INNER_DVCLOSE
+floor rejected: gc did not converge in 500 outer iterations (correction 2.1e-6 m against
+an outer floor of 5.8e-6 m, 4 inner iterations each). With STRICT, INNER_DVCLOSE is now at
+least eps32·max|h'| of the previous outer iteration: 3 outer iterations. The other rclose
+options keep the old floors; applying this and an rclose floor from the current heads to
+every option made ex-gwf-toth (offsets up to 1010 m, not STRICT) fail (1.4e-3 m instead of
+6.6e-5 m). The Tier 0–2 and synthetic numbers are unchanged (hanic, the other STRICT model
+with Float32 runs, 10/1726 iterations instead of 10/1747, same heads).
+
+**ex-gwf-lgrv-gr in `:single` needs AMG.** With the default `:mc_ilu0` the Float32 run does
+not converge in 500 outer iterations: the residual of a converged Float32 state (6.7e-8, the
+exact heads rounded to Float32) is 4.4 times the STRICT rclose floor eps32·max Σ|terms| =
+1.5e-8 (Σ|terms| is small where the offsets are large: 48 m with small flows). An rclose
+floor from the head-rounding bound (`bound` of `flux_residual!`, eps32·max bound = 2.1e-7)
+makes it converge in 3 outer iterations, but 6.1e-3 m from the exact heads: Float32 CG
+with MC-ILU0 converges so slowly on this steady state that it stops on the 1e-6 m
+per-iteration change while the error, a smooth mode, is about 5000 times larger, and the
+residual cannot see it (7.8e-8 against 6.7e-8 for the rounded exact heads). Neither
+INNER_MAXIMUM 10000, nor an INNER_DVCLOSE floor of 1e-7, nor NUMBER_ORTHOGONALIZATIONS 20
+(true residual every 20 iterations) gets below 5.8e-3 m. AMG in Float32 reaches 6.7e-6 m
+in 5 outer and 133 inner iterations, and `:mixed` (Float64 Krylov, Float32 MC-ILU0) is
+fine. That floor was therefore not adopted; the run parity test uses `:amg` for gr in
+`:single` (as for ex-gwf-hwell-a), and the section 4 criteria are not met with the default
+preconditioner in `:single` on this model. Open: an automatic `:amg` choice for badly
+conditioned steady states in `:single` (`preconditioner = :auto`), see T5.5a.
