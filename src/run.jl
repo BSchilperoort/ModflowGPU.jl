@@ -108,12 +108,13 @@ function _write_step(out::ModelOutput, m::GwfModel, step::TimeStep, r::OuterResu
     oc = m.spec.oc
     @printf(io, "\n %d CALLS TO NUMERICAL SOLUTION IN TIME STEP %d STRESS PERIOD %d\n %d TOTAL ITERATIONS\n", r.iterations, step.kstp, step.kper, r.inner)
     r.converged || @printf(io, "\n Solution did not converge for stress period %d and time step %d\n", step.kper, step.kstp)
-    heads = absolute_heads(m)
     oc_selected(oc, :save, "BUDGET", step) && write_budget(out, m, step)
-    oc_selected(oc, :save, "HEAD", step) && write_heads(out, m, step, heads)
-    if oc_selected(oc, :print, "HEAD", step)
-        write_head_listing(io, m, step, heads)
-    end
+    # Heads are copied from the device only when OC saves or prints them (T5.2: a step
+    # with budget output only moves no array between device and host).
+    save_head, print_head = oc_selected(oc, :save, "HEAD", step), oc_selected(oc, :print, "HEAD", step)
+    heads = (save_head || print_head) ? absolute_heads(m) : nothing
+    save_head && write_heads(out, m, step, heads)
+    print_head && write_head_listing(io, m, step, heads)
     # set_print_flag: also at the end of a period and after a failed step (without CONTINUE).
     if oc_selected(oc, :print, "BUDGET", step) || step.endofperiod || (!r.converged && !sim.continue_on_nonconvergence)
         terms = [(t.name, t.package, t.cum_in, t.cum_out, t.rate_in, t.rate_out) for t in b.terms]

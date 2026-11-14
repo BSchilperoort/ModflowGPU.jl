@@ -183,7 +183,7 @@ it. Underscore-prefixed helpers are omitted.
   (PLAN.md 3.7 rules 3–4; ImsLinearBase.f90 `ims_base_cg`, `ims_base_bcgs`,
   `ims_base_scale`, `ims_base_testcnvg`, `ims_base_epfact`). `KrylovSettings` (host; from
   an `ImsSpec`: LINEAR_ACCELERATION, INNER_*, rclose options, NUMBER_ORTHOGONALIZATIONS,
-  SCALING_METHOD, `preconditioner`; ILU0/MILU0/ILUT → `preconditioner`, `:auto` = `:mc_ilu0` by default since T4.4), `ims_preconditioner`
+  SCALING_METHOD, `preconditioner`; ILU0/MILU0/ILUT → `preconditioner`, `:auto` = `:mc_ilu0` by default since T4.4; the replacement is logged once per session, at info level when ILUT/MILU come from COMPLEXITY only, T5.2), `ims_preconditioner`
   (`resolve_ipc`), `ims_testcnvg`, `ims_epfact`, `KrylovSolver{Ts,Tp,Ta}` (device
   workspace), `solve!(δ, solver, amat, res; kstp)` → `KrylovResult` (converged,
   iterations, status, dvmax, rmax, l2norm0, l2norm). Device reductions: `Reducer`,
@@ -291,7 +291,8 @@ it. Underscore-prefixed helpers are omitted.
   outdir, closures, write_output, preconditioner, precond_options)` (on the stepping API since T3.3) → `RunResult` (model, precision types, `StepResult`s,
   `ModelBudget`s, final heads, output paths); `ConvergenceError`. One model, one IMS
   solution. Tests: run (parity vs MF6 on Tier 0, fhb_const, coupling_rde and IMS
-  variants; flopy read-back with MFGPU_FLOPY=1).
+  variants; flopy read-back with MFGPU_FLOPY=1). `_write_step` (step output) copies the
+  heads to the host only when OC saves or prints them (T5.2).
 
 - **stepping.jl** (T3.3): libmf6/XMI-like stepping (PLAN.md 3.6). `Simulation`,
   `initialize`, `prepare_time_step`, `prepare_solve`, `solve` (one outer iteration),
@@ -301,7 +302,8 @@ it. Underscore-prefixed helpers are omitted.
   Float64 mirror, absolute; `device = true` for the engine array), `get_value`,
   `set_value` (X, BOUND). Mirror sync rules in the file header; BOUND and NODELIST
   mirrors are versioned (T4.6: copied only when the engine values changed, dirty check by
-  memcmp). Tests: stepping.
+  memcmp). T5.2: device BOUND writes between `prepare_time_step` and `prepare_solve` (the
+  contract ModflowCoupling's device-resident coupling uses; header of the file). Tests: stepping.
 - **bmi.jl** (T3.3): BasicModelInterface methods on `Simulation` (`BMI.initialize`,
   `update`, `update_until`, time, variables, `get_value(_ptr)`, `set_value(_at_indices)`,
   grid 1 = model grid). Tests: stepping.

@@ -128,6 +128,40 @@ _budget_rates(b) = [(t.name, t.package, t.rate_in, t.rate_out, t.cum_in, t.cum_o
             riv = get_value_ptr(s, "RDE/RIV/BOUND")
             @test riv[1, :] == stages && riv[2, :] == per3.bound[rows[2], :]
             ModflowGPU.finalize(s)
+
+            # T5.2 (ModflowCoupling's device-resident coupling): the same values written
+            # straight into the device BOUND arrays (`get_value_ptr(...; device = true)`:
+            # offsets, multiplier applied) between prepare_time_step and prepare_solve take
+            # effect as the mirror writes do, also with host mirrors of BOUND present (they
+            # are not dirty, so prepare_solve sends nothing over the device values).
+            # Captured from a run with mirror writes, in period 2 after the conversion.
+            dev(s, pkg) = get_value_ptr(s, "RDE/$pkg/BOUND"; device = true)
+            captured = Dict{String, Any}()
+            s = initialize(STEPPING_MODEL; kw...)
+            _drive_like_coupling(
+                s, function (ptr, step)
+                    if step.kper == 2 && step.kstp == 1
+                        ptr.riv_bound[1, :] .= stages
+                        ptr.riv_bound[2, :] .= conds
+                        set_value(s, "RDE/RCHA/BOUND", fill(rch, size(ptr.rch_bound)))
+                    elseif step.kper == 2 && step.kstp == 2
+                        captured["RIV"], captured["RCHA"] = Array(dev(s, "RIV")), Array(dev(s, "RCHA"))
+                    end
+                end
+            )
+            ModflowGPU.finalize(s)
+            s = initialize(STEPPING_MODEL; kw...)
+            out = _drive_like_coupling(
+                s, function (ptr, step)
+                    step.kper == 2 && step.kstp == 1 || return
+                    @test eltype(dev(s, "RIV")) === p.T
+                    copyto!(dev(s, "RIV"), captured["RIV"])
+                    copyto!(dev(s, "RCHA"), captured["RCHA"])
+                end
+            )
+            @test last(out).head == ref2.heads
+            @test [_budget_rates(b) for b in s.budgets] == [_budget_rates(b) for b in ref2.budgets]
+            ModflowGPU.finalize(s)
         end
 
         @testset "API checks" begin
