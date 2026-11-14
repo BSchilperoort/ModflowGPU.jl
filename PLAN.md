@@ -126,9 +126,8 @@ CG-compatible boundaries the matrix is symmetric, so preconditioned CG applies.
   (reductions run in a different order). Every card that touches kernels, solver or assembly
   includes the local GPU test summary in its card report. Parity tests that need
   `reference/` skip with a message when it is missing.
-- **Compat:** `KernelAbstractions = "0.10"` from T5.0 on (section 8,
-  decision 7). Until T5.0 is merged the code and CI still cover KA 0.9.41 as
-  well; do not add new KA 0.9 workarounds.
+- **Compat:** `KernelAbstractions = "0.10"` since T5.0 (section 8,
+  decision 7); KA 0.9 is no longer supported or tested.
 - **Data:** Indus static inputs are in `/home/bart/data/modflow/data`. Tests
   find them through `INDUS_DATA=/home/bart/data/modflow/data` and skip with a
   message when it is unset. Never copy the data into this repository.
@@ -486,11 +485,11 @@ marked; their merge commits on `main` hold the card reports.
   - T4.6 Period-data path (done)
   - T4.7 Carried-over Phase 4 targets (scheduled after T5.4)
 - **Phase 5: ModflowCoupling integration and Milestone B**: [docs/plan/phase5.md](docs/plan/phase5.md)
-  - T5.0 KernelAbstractions 0.10 as the minimum
+  - T5.0 KernelAbstractions 0.10 as the minimum (done)
   - T5.1 Engine switch in ModflowCoupling (done)
   - T5.2 Device-resident coupling
   - T5.3 Coupling parity on the Indus
-  - T5.4 mGV + ModflowGPU on one GPU (mGV is on KA 0.10 since 2026-11-13; needs T5.0)
+  - T5.4 mGV + ModflowGPU on one GPU (mGV is on KA 0.10 since 2026-11-13; T5.0 is done)
   - T5.5a Global-size dress rehearsal
   - T5.5b Global 5′ run with real data (global inputs available since 2026-11-14)
 - **Phase 6: generic MF6 GWF (Milestone C); dependencies between the cards are in the phase file and section 6**: [docs/plan/phase6.md](docs/plan/phase6.md)
@@ -525,7 +524,7 @@ T3.1 ─┬─ T3.2 → T3.4 → T4.1 ─┬─ T4.2 ─┬→ T4.4 → T4.5 →
       │                      └─ T4.6
       ├─ T3.2 + T3.3 → T5.1 ─┬─ T5.2 → T5.4 → T5.5a → T5.5b
       │                      └─ T5.3
-      │   T5.0 → T5.4 (mGV on KA 0.10: done)
+      │   T5.0 (done) → T5.4 (mGV on KA 0.10: done)
       └─ Phase 6, no dependency inside the phase: T6.0, T6.1, T6.2a (backtracking),
          T6.3, T6.4, and the DIS parts of T6.5 (hanix, whirl) and T6.6 (s1, lgrv-lgr, spbc)
            T6.1 → T6.2 (Newton)

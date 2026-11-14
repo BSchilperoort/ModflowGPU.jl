@@ -11,7 +11,7 @@ All ModflowCoupling changes follow the patch workflow of section 2: work in
 `scripts/apply_coupling_patches.sh` run, so the patch series always applies
 cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
 
-**T5.0 KernelAbstractions 0.10 as the minimum (S) ‖**
+**T5.0 KernelAbstractions 0.10 as the minimum (S) ‖ (done 2026-11-14)**
 - Depends: nothing. Owner decision of 2026-11-11 (PLAN.md section 8, decision 7): mGV
   moves to KA 0.10, so ModflowGPU no longer has to run on KA 0.9 with AMDGPU 2.8. Done
   on 2026-11-13: mGV `main` is a package (GPU weak dependencies, `ext/*Ext.jl`, BMI in
