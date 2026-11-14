@@ -493,7 +493,7 @@ marked; their merge commits on `main` hold the card reports.
   - T5.5a Global-size dress rehearsal
   - T5.5b Global 5′ run with real data (global inputs available since 2026-11-14)
 - **Phase 6: generic MF6 GWF (Milestone C); dependencies between the cards are in the phase file and section 6**: [docs/plan/phase6.md](docs/plan/phase6.md)
-  - T6.0 Parity on the confined lgrv examples
+  - T6.0 Parity on the confined lgrv examples (done)
   - T6.1 Convertible cells and rewetting
   - T6.2 Newton–Raphson (backtracking part first, as T6.2a)
   - T6.3 Time series and time-array series

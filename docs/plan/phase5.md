@@ -158,6 +158,14 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
 - Report the wall time per daily step at `outer_dvclose = inner_dvclose` = 5, 0.01 (the
   GPU engine default, PLAN.md section 8, decision 9) and 1e-3 on `global5m`, so the
   owner can revisit the value at global size.
+- From the T6.0 report: `ex-gwf-lgrv-gr` in `:single` does not converge with the
+  default `:mc_ilu0` (500 outer iterations) and passes only with `:amg`. Under STRICT
+  the Float32 INNER_RCLOSE floor (`eps32·max Σ|terms|`) is below the residual of the
+  rounded exact heads, and a floor that converges leaves the heads 6.1e-3 m off,
+  because Float32 CG with MC-ILU0 is too slow there. For the steady-state spin-up,
+  decide how `:single` picks its preconditioner (for example `:amg` automatically for
+  badly conditioned steady states) and whether the rclose floor should account for
+  head rounding. `:mixed` with `:mc_ilu0` is fine.
 - Check that the device memory of the spin-up simulation is released before the daily
   run starts (the `finalize` fix of T5.4), and report the peak over the whole sequence.
 - Done when: a report gives device memory of both models together and wall time
