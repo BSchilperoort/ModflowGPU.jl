@@ -1,0 +1,1038 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bart Schilperoort <b.schilperoort@esciencecenter.nl>
+Date: Sat, 14 Nov 2026 13:13:11 +0100
+Subject: [PATCH] T5.2: device-resident coupling
+
+With the GPU engine, apply_stresses! and collect_outputs! run as KernelAbstractions
+kernels on the engine's device arrays (ModflowGPU get_value_ptr(...; device = true)),
+with the record -> cell maps on the device (src/device_coupling.jl, DeviceCoupling).
+River stages are written as offsets from the cell reference (bottom_bankfull - r on the
+host in Float64, plus the Manning depth in T); groundwater_depth is top' - h' on the
+device. Inputs are copied to the device in the BMI setters; the host copies of head,
+baseflow and capillary are refreshed when read (getproperty), so an update moves no
+array between host and device. The engine keeps no host mirrors (one-time reads through
+ModflowGPU.get_value; package_flows too).
+
+[solver] coupling = "auto" | "device" | "host" ("auto" = device for the GPU engine; host
+keeps the T5.1 mirror path; mf6 only host). BMI.get_value_ptr(m, name; device = true)
+returns the device arrays (heads as offsets from head_reference(m)). KernelAbstractions
+as a direct dependency (Manifest.toml re-resolved). Tests: device vs host coupling in
+single and double, no engine mirrors and no output copied during update, device stage
+offsets and RCH rates, device depth and outputs vs the host values.
+---
+ Manifest.toml             | 124 +++++++++++++++-
+ Project.toml              |   2 +
+ examples/indus/indus.toml |   1 +
+ src/ModflowCoupling.jl    |   5 +-
+ src/bmi.jl                |  44 +++++-
+ src/config.jl             |  12 +-
+ src/device_coupling.jl    | 299 ++++++++++++++++++++++++++++++++++++++
+ src/gpu_engine.jl         |  15 ++
+ src/model.jl              |  85 +++++++++--
+ test/runtests.jl          |  81 +++++++++++
+ 10 files changed, 643 insertions(+), 25 deletions(-)
+ create mode 100644 src/device_coupling.jl
+
+diff --git a/Manifest.toml b/Manifest.toml
+index fce3508..d2b26f5 100644
+--- a/Manifest.toml
++++ b/Manifest.toml
+@@ -2,7 +2,31 @@
+ 
+ julia_version = "1.12.6"
+ manifest_format = "2.0"
+-project_hash = "f0dc44b38d96960dd459503bb467cad77fd74837"
++project_hash = "4f0df201a9d3802549bbe266321236ad8ab4c9b4"
++
++[[deps.Accessors]]
++deps = ["CompositionsBase", "ConstructionBase", "Dates", "InverseFunctions", "MacroTools"]
++git-tree-sha1 = "8c0bc12397dabf5d2dfc4b5763ec463854cc44d3"
++uuid = "7d9f7c33-5ae7-4f3b-8dc6-eff91059b697"
++version = "0.1.46"
++
++    [deps.Accessors.extensions]
++    AxisKeysExt = "AxisKeys"
++    IntervalSetsExt = "IntervalSets"
++    LinearAlgebraExt = "LinearAlgebra"
++    StaticArraysExt = "StaticArrays"
++    StructArraysExt = "StructArrays"
++    TestExt = "Test"
++    UnitfulExt = "Unitful"
++
++    [deps.Accessors.weakdeps]
++    AxisKeys = "94b1ba4f-4ee9-5380-92f1-94cde586c3c5"
++    IntervalSets = "8197267c-284f-5f27-9208-e0e47529a953"
++    LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
++    StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
++    StructArrays = "09ab397b-f2b6-538f-b94a-2f83cf4a842a"
++    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
++    Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
+ 
+ [[deps.Adapt]]
+ deps = ["LinearAlgebra"]
+@@ -36,6 +60,28 @@ version = "1.7.0"
+     CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+     CUDACore = "bd0ed864-bdfe-4181-a5ed-ce625a5fdea2"
+ 
++[[deps.BangBang]]
++deps = ["Accessors", "ConstructionBase", "InitialValues", "LinearAlgebra"]
++git-tree-sha1 = "cceb62468025be98d42a5dc581b163c20896b040"
++uuid = "198e06fe-97b7-11e9-32a5-e1d131e6ad66"
++version = "0.4.9"
++
++    [deps.BangBang.extensions]
++    BangBangChainRulesCoreExt = "ChainRulesCore"
++    BangBangDataFramesExt = "DataFrames"
++    BangBangStaticArraysExt = "StaticArrays"
++    BangBangStructArraysExt = "StructArrays"
++    BangBangTablesExt = "Tables"
++    BangBangTypedTablesExt = "TypedTables"
++
++    [deps.BangBang.weakdeps]
++    ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
++    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
++    StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
++    StructArrays = "09ab397b-f2b6-538f-b94a-2f83cf4a842a"
++    Tables = "bd369af6-aec1-5ad0-b16a-f7cc5008161c"
++    TypedTables = "9d95f2ec-7b3d-5a63-8d20-e2491e220bb9"
++
+ [[deps.Base64]]
+ uuid = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"
+ version = "1.11.0"
+@@ -68,6 +114,11 @@ git-tree-sha1 = "fad2f199d1f1ae0c8e820ab68f81f6dbf62e60b2"
+ uuid = "179af706-886a-5703-950a-314cd64e0468"
+ version = "0.2.10"
+ 
++[[deps.ChunkSplitters]]
++git-tree-sha1 = "1c52c8e2673edc030191177ff1aee42d25149acb"
++uuid = "ae650224-84b6-46f8-82ea-d812ca08434e"
++version = "3.2.0"
++
+ [[deps.CommonDataModel]]
+ deps = ["CFTime", "DataStructures", "Dates", "DiskArrays", "Preferences", "Printf", "Statistics"]
+ git-tree-sha1 = "54d50f8a0a68ff4160564dfa09fc5de32465cfca"
+@@ -85,6 +136,15 @@ deps = ["Artifacts", "Libdl"]
+ uuid = "e66e0078-7015-5450-92f7-15fbd957f2ae"
+ version = "1.3.0+1"
+ 
++[[deps.CompositionsBase]]
++git-tree-sha1 = "802bb88cd69dfd1509f6670416bd4434015693ad"
++uuid = "a33af91c-f02d-484b-be07-31d278c5ca2b"
++version = "0.1.2"
++weakdeps = ["InverseFunctions"]
++
++    [deps.CompositionsBase.extensions]
++    CompositionsBaseInverseFunctionsExt = "InverseFunctions"
++
+ [[deps.ConstructionBase]]
+ git-tree-sha1 = "b4b092499347b18a015186eae3042f72267106cb"
+ uuid = "187b0558-2788-49d3-abe0-74a17ed4e7c9"
+@@ -172,11 +232,29 @@ git-tree-sha1 = "c35847ca5b4997fc8418836354a56c459bcf48d8"
+ uuid = "e33a78d0-f292-5ffc-b300-72abe9b543c8"
+ version = "2.14.0+0"
+ 
++[[deps.InitialValues]]
++git-tree-sha1 = "4da0f88e9a39111c2fa3add390ab15f3a44f3ca3"
++uuid = "22cec73e-a1b8-11e9-2c92-598750a2cf9c"
++version = "0.3.1"
++
+ [[deps.InteractiveUtils]]
+ deps = ["Markdown"]
+ uuid = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
+ version = "1.11.0"
+ 
++[[deps.InverseFunctions]]
++git-tree-sha1 = "5cc6ad3e2bfc75a11eed92632ee341d37f4a4536"
++uuid = "3587e190-3f89-42d0-90ee-14403ec27112"
++version = "0.1.18"
++
++    [deps.InverseFunctions.extensions]
++    InverseFunctionsDatesExt = "Dates"
++    InverseFunctionsTestExt = "Test"
++
++    [deps.InverseFunctions.weakdeps]
++    Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
++    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
++
+ [[deps.JLLWrappers]]
+ deps = ["Artifacts", "Preferences"]
+ git-tree-sha1 = "7204148362dafe5fe6a273f855b8ccbe4df8173e"
+@@ -189,10 +267,10 @@ uuid = "ac6e5ff7-fb65-4e79-a425-ec3bc9c03011"
+ version = "1.12.0"
+ 
+ [[deps.KernelAbstractions]]
+-deps = ["Adapt", "Atomix", "GPUCompiler", "GPUToolbox", "KernelInterface", "LLVM", "MacroTools", "PrecompileTools", "Printf", "Random", "Random123", "RandomNumbers", "SPIRVIntrinsics", "SPIRV_LLVM_Backend_jll", "SPIRV_Tools_jll", "StaticArraysCore", "UnsafeAtomics", "pocl_standalone_jll"]
+-git-tree-sha1 = "0b9e978d21df1aa3ead81c89a2bdf3c6f063a39c"
++deps = ["Adapt", "Atomix", "GPUCompiler", "GPUToolbox", "KernelInterface", "LLVM", "MacroTools", "PrecompileTools", "Printf", "Random", "Random123", "RandomNumbers", "SPIRVIntrinsics", "SPIRV_LLVM_Backend_jll", "SPIRV_Tools_jll", "StaticArraysCore", "ThreadTeams", "UnsafeAtomics", "pocl_standalone_jll"]
++git-tree-sha1 = "08b081d7d69e3cc989babee2c74c1d16c0f6baa1"
+ uuid = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+-version = "0.10.5"
++version = "0.10.7"
+ 
+     [deps.KernelAbstractions.extensions]
+     AMDGPUExt = "AMDGPU"
+@@ -366,7 +444,7 @@ uuid = "81230ed9-c869-5493-bf63-2c1575eaf49b"
+ version = "6.3.0+0"
+ 
+ [[deps.ModflowCoupling]]
+-deps = ["BasicModelInterface", "Dates", "ModflowGPU", "ModflowInterface", "NCDatasets", "Statistics", "TOML"]
++deps = ["BasicModelInterface", "Dates", "KernelAbstractions", "ModflowGPU", "ModflowInterface", "NCDatasets", "Statistics", "TOML"]
+ path = "."
+ uuid = "5b8c2f1e-3d4a-4c7e-9f21-6a0e8d7b4c13"
+ version = "0.1.0"
+@@ -432,6 +510,20 @@ weakdeps = ["Adapt"]
+     [deps.OffsetArrays.extensions]
+     OffsetArraysAdaptExt = "Adapt"
+ 
++[[deps.OhMyThreads]]
++deps = ["BangBang", "ChunkSplitters", "ScopedValues", "StableTasks", "TaskLocalValues"]
++git-tree-sha1 = "a73a90d87e3f941f5084d34d56934c2fb59dd9b1"
++uuid = "67456a42-1dca-4109-a031-0a68de7e3ad5"
++version = "0.8.9"
++
++    [deps.OhMyThreads.extensions]
++    MarkdownExt = "Markdown"
++    ProgressMeterExt = "ProgressMeter"
++
++    [deps.OhMyThreads.weakdeps]
++    Markdown = "d6f4376e-aef5-505a-96c1-9c027394607a"
++    ProgressMeter = "92933f4c-e287-5a05-a399-4b506db050ca"
++
+ [[deps.OpenBLAS_jll]]
+ deps = ["Artifacts", "CompilerSupportLibraries_jll", "Libdl"]
+ uuid = "4536629a-c528-5b80-bd46-f80d51c5b363"
+@@ -564,6 +656,11 @@ deps = ["Libdl", "LinearAlgebra", "Random", "Serialization", "SuiteSparse_jll"]
+ uuid = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+ version = "1.12.0"
+ 
++[[deps.StableTasks]]
++git-tree-sha1 = "c4f6610f85cb965bee5bfafa64cbeeda55a4e0b2"
++uuid = "91464d47-22a1-43fe-8b7f-2d57ee82463f"
++version = "0.1.7"
++
+ [[deps.StaticArraysCore]]
+ git-tree-sha1 = "6ab403037779dae8c514bad259f32a447262455a"
+ uuid = "1e83bf80-4336-4d27-bf5d-d5a4f845583c"
+@@ -598,6 +695,23 @@ deps = ["ArgTools", "SHA"]
+ uuid = "a4e569a6-e804-4fa4-b0f3-eef7a1d5b13e"
+ version = "1.10.0"
+ 
++[[deps.TaskLocalValues]]
++git-tree-sha1 = "67e469338d9ce74fc578f7db1736a74d93a49eb8"
++uuid = "ed4db957-447d-4319-bfb6-7fa9ae7ecf34"
++version = "0.1.3"
++
++[[deps.ThreadTeams]]
++deps = ["ChunkSplitters", "OhMyThreads", "ScopedValues"]
++git-tree-sha1 = "15736830cfa2bc55b27769222cefb371800d4f25"
++uuid = "100744f9-5cbb-42a9-938e-f15a20f71997"
++version = "1.4.0"
++
++    [deps.ThreadTeams.extensions]
++    ThreadTeamsEnzymeCoreExt = "EnzymeCore"
++
++    [deps.ThreadTeams.weakdeps]
++    EnzymeCore = "f151be2c-9106-41f4-ab19-57ee4f262869"
++
+ [[deps.Tracy]]
+ deps = ["ExprTools", "LibTracyClient_jll", "Libdl"]
+ git-tree-sha1 = "73e3ff50fd3990874c59fef0f35d10644a1487bc"
+diff --git a/Project.toml b/Project.toml
+index 53b085e..8d0b51e 100644
+--- a/Project.toml
++++ b/Project.toml
+@@ -5,6 +5,7 @@ version = "0.1.0"
+ [deps]
+ BasicModelInterface = "59605e27-edc0-445a-b93d-c09a3a50b330"
+ Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
++KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+ ModflowGPU = "80579596-0efa-413b-aeef-37d798abb369"
+ ModflowInterface = "a348c28d-122a-4d3f-b833-160dba4591a7"
+ NCDatasets = "85f8d34a-cbdd-5861-8df4-14fed0d494ab"
+@@ -18,6 +19,7 @@ ModflowGPU = {path = "../.."}
+ AMDGPU = "2.11"
+ BasicModelInterface = "0.1.1"
+ Dates = "1.11.0"
++KernelAbstractions = "0.10"
+ ModflowGPU = "0.1"
+ ModflowInterface = "1.0.0"
+ NCDatasets = "0.14.15"
+diff --git a/examples/indus/indus.toml b/examples/indus/indus.toml
+index 8264f56..eadfd51 100644
+--- a/examples/indus/indus.toml
++++ b/examples/indus/indus.toml
+@@ -34,6 +34,7 @@ orientation = true
+ # backend = "auto"        # gpu engine: "auto" (a loaded GPU package, else CPU), "cpu", "rocm", "cuda", ...
+ # precision = "auto"      # gpu engine: "auto" (:mixed with Float64, else :single), "double", "mixed", "single"
+ # preconditioner = "auto" # gpu engine: ModflowGPU's default (mc_ilu0), or "jacobi", "amg", ...
++# coupling = "auto"       # gpu engine: "device" (stresses and outputs in kernels on the device; the default) or "host"
+ # outer_dvclose = 5.0
+ # inner_dvclose = 5.0
+ # inner_rclose = 10.0
+diff --git a/src/ModflowCoupling.jl b/src/ModflowCoupling.jl
+index 20540e0..8c6c3a6 100644
+--- a/src/ModflowCoupling.jl
++++ b/src/ModflowCoupling.jl
+@@ -18,15 +18,18 @@ using ModflowInterface
+ import ModflowInterface as MF
+ import ModflowGPU
+ import BasicModelInterface as BMI
++import KernelAbstractions
++using KernelAbstractions: @kernel, @index, @Const
+ 
+ export GroundwaterModel, Config, InputSpec, load_config, read_static_inputs, build_parameters,
+-       audit_static_inputs, align_to_grid, current_date, package_flows, write_head
++       audit_static_inputs, align_to_grid, current_date, package_flows, write_head, head_reference
+ 
+ include("config.jl")
+ include("inputs.jl")
+ include("parameters.jl")
+ include("mf6_writer.jl")
+ include("gpu_engine.jl")
++include("device_coupling.jl")
+ include("forcing.jl")
+ include("model.jl")
+ include("output.jl")
+diff --git a/src/bmi.jl b/src/bmi.jl
+index 63b1d58..01d0f54 100644
+--- a/src/bmi.jl
++++ b/src/bmi.jl
+@@ -77,14 +77,54 @@ function var_array(m::GroundwaterModel, name::String)
+     name == "groundwater_head" && return m.head
+     name == "groundwater_head_layer_1" && return view(m.head, :, :, 1)
+     name == "groundwater_head_layer_2" && return view(m.head, :, :, 2)
+-    # Depth of the layer-1 head below land surface (derived; a copy, not a pointer)
++    # Depth of the layer-1 head below land surface (derived; a copy, not a pointer). On the
++    # host from the Float64 heads; the device-resident coupling also computes it on the
++    # device as top' − h' (`get_value_ptr(m, "groundwater_depth"; device = true)`).
+     name == "groundwater_depth" && return ifelse.(m.inputs.landmask, m.params.top .- m.head[:, :, 1], NaN)
+     name == "baseflow_to_routing" && return m.baseflow
+     name == "capillary_rise" && return m.capillary
+     error("unknown variable $name")
+ end
+ 
+-BMI.get_value_ptr(m::GroundwaterModel, name::String) = vec(var_array(m, name))
++"""
++    BMI.get_value_ptr(m::GroundwaterModel, name; device = false)
++
++The host array of variable `name` (Float64, flattened). With the device-resident
++coupling, an output's host array is refreshed from the device by this call (and by
++`get_value`), not by `update`: call it again after each update.
++
++With `device = true` (device-resident coupling only): the device array that the coupling
++kernels use, in the engine precision `T` (`m.mf.T`), flattened per 2D cell (both layers
++for `groundwater_head`). Heads (`groundwater_head`, `groundwater_head_layer_1`/`_2`) are
++offsets from `head_reference(m)` (absolute = reference + offset, in Float64 on the host);
++`groundwater_depth`, `baseflow_to_routing` and `capillary_rise` are in their BMI units.
++The inputs are the values last set on the host. Read only: writes are overwritten by the
++next update (inputs: by the next `set_value`).
++"""
++function BMI.get_value_ptr(m::GroundwaterModel, name::String; device::Bool = false)
++    device || return vec(var_array(m, name))
++    device_coupling(m) || error("get_value_ptr(...; device = true) needs the GPU engine with coupling = \"device\"")
++    d, n = m.dev, length(m.recharge)
++    name == "groundwater_recharge" && return d.recharge
++    name == "river_discharge" && return d.discharge
++    name == "groundwater_abstraction" && return d.abstraction
++    name == "groundwater_head" && return d.head
++    name == "groundwater_head_layer_1" && return view(d.head, 1:n)
++    name == "groundwater_head_layer_2" && return view(d.head, (n + 1):2n)
++    name == "groundwater_depth" && return d.depth
++    name == "baseflow_to_routing" && return d.baseflow
++    name == "capillary_rise" && return d.capillary
++    error("unknown variable $name")
++end
++
++"""
++    head_reference(m::GroundwaterModel) -> Vector{Float64}
++
++The reference head per user cell of both layers (NaN without an active cell) of the
++device head offsets (`BMI.get_value_ptr(m, "groundwater_head"; device = true)`).
++"""
++head_reference(m::GroundwaterModel) = device_coupling(m) ? copy(m.dev.href) :
++    error("head_reference needs the GPU engine with coupling = \"device\"")
+ BMI.get_value(m::GroundwaterModel, name::String, dest) = copyto!(dest, vec(var_array(m, name)))
+ BMI.get_value_at_indices(m::GroundwaterModel, name::String, dest, inds) =
+     copyto!(dest, vec(var_array(m, name))[inds])
+diff --git a/src/config.jl b/src/config.jl
+index dfcff36..500cc5c 100644
+--- a/src/config.jl
++++ b/src/config.jl
+@@ -69,14 +69,18 @@ IMS settings; defaults are those of the Python reference (`mf_run.mfrun`).
+ ModflowInterface) or `"gpu"` (ModflowGPU.jl, built in memory). The GPU engine also reads
+ `backend` (a `ModflowGPU.select_backend` name; `"auto"` picks a loaded GPU, else the CPU),
+ `precision` (`"auto"`, `"double"`, `"mixed"`, `"single"`; `ModflowGPU.resolve_precision`)
+-and `preconditioner` (`"auto"` = ModflowGPU's default, or `"jacobi"`, `"mc_ilu0"`, ...);
+-the mf6 engine ignores them.
++`preconditioner` (`"auto"` = ModflowGPU's default, or `"jacobi"`, `"mc_ilu0"`, ...)
++and `coupling`: `"device"` computes the stresses and outputs in kernels on the engine's
++device arrays (`device_coupling.jl`), `"host"` through ModflowGPU's host mirrors as the
++mf6 engine does with libmf6's arrays; `"auto"` is `"device"` for the GPU engine. The mf6
++engine ignores them (`coupling` must be `"auto"` or `"host"` there).
+ """
+ Base.@kwdef struct SolverSettings
+     engine::String = "mf6"
+     backend::String = "auto"
+     precision::String = "auto"
+     preconditioner::String = "auto"
++    coupling::String = "auto"
+     outer_dvclose::Float64 = 5.0
+     inner_dvclose::Float64 = 5.0
+     inner_rclose::Float64 = 10.0
+@@ -137,6 +141,7 @@ Config(c::Config; kw...) = Config(; (f => get(kw, f, getfield(c, f)) for f in fi
+ 
+ const ENGINES = ("mf6", "gpu")
+ const GPU_PRECISIONS = ("auto", "double", "mixed", "single")
++const COUPLINGS = ("auto", "device", "host")
+ 
+ const CONFIG_KEYS = ("model_name", "paths", "time", "coupling", "output", "audit", "forcing", "solver", "inputs")
+ 
+@@ -196,6 +201,9 @@ function validate(config::Config)
+     sv.engine in ENGINES || error("solver.engine must be one of $(join(repr.(ENGINES), ", ")), got \"$(sv.engine)\"")
+     sv.precision in GPU_PRECISIONS ||
+         error("solver.precision must be one of $(join(repr.(GPU_PRECISIONS), ", ")), got \"$(sv.precision)\"")
++    sv.coupling in COUPLINGS ||
++        error("solver.coupling must be one of $(join(repr.(COUPLINGS), ", ")), got \"$(sv.coupling)\"")
++    sv.engine == "mf6" && sv.coupling == "device" && error("solver.coupling = \"device\" needs engine = \"gpu\"")
+     length(config.model_name) <= 16 || error("MODFLOW 6 model names are limited to 16 characters")
+     config.pumping && !config.foc && @warn "pumping without FOC: capillary rise is not returned"
+ 
+diff --git a/src/device_coupling.jl b/src/device_coupling.jl
+new file mode 100644
+index 0000000..870939a
+--- /dev/null
++++ b/src/device_coupling.jl
+@@ -0,0 +1,299 @@
++#=
++Device-resident coupling with the GPU engine (`[solver] coupling = "device"`, the default
++of `engine = "gpu"`; ModflowGPU T5.2). `apply_stresses!` and `collect_outputs!` run as
++KernelAbstractions kernels on the engine's own arrays (`ModflowGPU.get_value_ptr(sim,
++address; device = true)`: precision `T`, head-like values as offsets from
++`"<model>/HREF"`), with the record → cell maps on the device, so a stress period moves no
++data between host and device except what a caller asks for on the host:
++
++- inputs set on the host (`BMI.set_value`, the forcing file) are copied to the device in
++  the setter, once per call;
++- outputs (heads, `groundwater_depth`, `baseflow`, `capillary`) are computed on the
++  device by `collect_outputs!`; the host copies of `head`, `baseflow` and `capillary` are
++  refreshed on first access after an update (`GroundwaterModel` fields, `BMI.get_value`,
++  `get_value_ptr`, the monthly output file; the host `groundwater_depth` is derived from
++  the Float64 host heads as before). `BMI.get_value_ptr(model, name; device = true)`
++  returns the device arrays.
++
++Precision (ModflowGPU PLAN.md section 3.7): the river stage is computed in offset form,
++`stage' = (bottom_bankfull − r) + depth`, with the reference `r` of the record's cell
++subtracted on the host in Float64, so a Float32 stage keeps millimetre resolution where
++the absolute stage (hundreds to thousands of metres) would not. The groundwater depth is
++`top' − h'` with `top' = top − r` (host, Float64), not the difference of two absolute
++heads. Absolute heads exist on the host only (`r + h'` in Float64).
++
++The host path (`coupling = "host"`) writes the stresses into ModflowGPU's host mirrors
++(`get_value_ptr` without `device`), as the mf6 engine does with libmf6's arrays.
++=#
++
++"""
++    DeviceCoupling
++
++Device arrays of the device-resident coupling (`coupling = "device"`), in the engine
++precision `T`: the engine arrays (offset heads `h`, BOUND of RCH, RIV and WEL, SIMVALS of
++RIV, DRN and EVT), the input fields (per 2D cell, `ncell = ncol·nrow`), the per-record
++parameters and record → cell maps, the cell → node and cell → record maps of the outputs,
++and the outputs (`head` offsets for both layers, `depth`, `baseflow`, `capillary`). Host
++side: the per-cell references `href` (Float64, NaN without a node) that turn offsets into
++absolute heads, and staging buffers in `T`.
++"""
++struct DeviceCoupling{T, V <: AbstractVector{T}, VI <: AbstractVector{Int32}, VB <: AbstractVector{Bool}, M <: AbstractMatrix{T}}
++    mxiter::Int
++    # engine arrays (ModflowGPU.get_value_ptr(...; device = true))
++    h::V
++    rch_bound::M
++    riv_bound::M
++    wel_bound::M                # (1, 0) without WEL
++    riv_simvals::V
++    drn_simvals::V
++    evt_simvals::V              # empty without EVT
++    # inputs per 2D cell (copied from the host fields by the setters)
++    recharge::V
++    discharge::V
++    abstraction::V
++    # RCH records: cell, area factor
++    rch_cell::VI
++    rch_factor::V
++    # RIV records: cell, kind, Manning denominator, offsets of the stage levels
++    riv_cell::VI
++    riv_is_river::VB
++    riv_denom::V                # width · sqrt(slope), NaN without a usable slope
++    riv_bankfull::V             # bottom_bankfull − r
++    riv_ini::V                  # head_ini − r
++    riv_bottom::V               # bottom − r
++    # WEL records: cell
++    wel_cell::VI
++    # output maps per user cell
++    head_node::VI               # (2·ncell): reduced node, 0 without one (idomain <= 0)
++    riv_rec::VI                 # (ncell): RIV record of the cell, 0 without one
++    drn_rec::VI
++    evt_rec::VI
++    land::VB
++    area::V                     # true cell area (m2)
++    top_offset::V               # top − r of the layer-1 node (NaN without one)
++    # outputs
++    head::V                     # (2·ncell) offsets from href, NaN without a node
++    depth::V                    # (ncell) top' − h' of layer 1 on land, NaN elsewhere
++    baseflow::V                 # (ncell) m3/s, NaN off land
++    capillary::V                # (ncell) mm per stress period
++    # host side
++    href::Vector{Float64}       # (2·ncell) reference head per user cell, NaN without a node
++    staging::Vector{T}          # (ncell) input upload buffer
++    head_host::Vector{T}        # (2·ncell) output download buffers
++    field_host::Vector{T}       # (ncell)
++end
++
++"Copy host array `x` to a new device array on `backend`."
++function to_device(backend, x::AbstractArray)
++    d = KernelAbstractions.allocate(backend, eltype(x), size(x))
++    isempty(x) || copyto!(d, x)
++    return d
++end
++
++"""
++    DeviceCoupling(m::GroundwaterModel, sim::ModflowGPU.Simulation)
++
++Set up the device-resident coupling of `m` on the engine `sim` (after `initialize`):
++engine arrays, maps and per-record parameters (host Float64, cast to `sim.T` once).
++Reads host values through `ModflowGPU.get_value` (copies) only, so the engine keeps no
++host mirrors to synchronise.
++"""
++function DeviceCoupling(m, sim::ModflowGPU.Simulation)
++    G = ModflowGPU
++    T = sim.T
++    name = m.config.model_name
++    dptr(var, sub = "") = G.get_value_ptr(sim, join(filter(!isempty, [name, sub, var]), "/"); device = true)
++    value(var, sub = "") = G.get_value(sim, join(filter(!isempty, [name, sub, var]), "/"))
++    h = dptr("X")
++    backend = KernelAbstractions.get_backend(h)
++    dev(x) = to_device(backend, x)
++    p, s = m.params, m.inputs
++    lin = LinearIndices(s.idomain)
++    ncell = length(s.idomain)
++
++    # reduced node of each user cell (as `collect_outputs!` of the host path: NaN where
++    # idomain <= 0), and the reference of each node
++    href_node = value("HREF")
++    nodeuser = Int.(value("NODEUSER", "DIS"))
++    nodes = length(href_node)
++    length(nodeuser) == nodes || (nodeuser = collect(1:nodes))   # no inactive cells (MF6's dummy array)
++    head_node = zeros(Int32, 2ncell)
++    for (n, u) in enumerate(nodeuser)
++        s.idomain[mod1(u, ncell)] > 0 && (head_node[u] = n)
++    end
++    href = [n > 0 ? href_node[n] : NaN for n in head_node]
++    r_cell(c) = href[lin[c]]   # reference of the layer-1 node of 2D cell c
++
++    rec_map(cells) = (map = zeros(Int32, ncell); for (i, c) in enumerate(cells); map[lin[c]] = i; end; map)
++    cell_index(cells) = Int32[lin[c] for c in cells]
++    r = p.river
++    rr = r_cell.(r.cells)
++    any(isnan, rr) && error("RIV records on cells without a node")
++    top_offset = [n > 0 ? p.top[c] - href_node[n] : NaN for (c, n) in zip(CartesianIndices(s.idomain), view(head_node, 1:ncell))]
++
++    evt = m.config.foc ? dptr("SIMVALS", "EVT") : similar(h, 0)
++    wel = m.config.pumping ? dptr("BOUND", "WEL") : similar(h, 1, 0)
++    return DeviceCoupling(
++        Int(only(G.get_value(sim, "SLN_1/MXITER"))),
++        h, dptr("BOUND", "RCH"), dptr("BOUND", "RIV"), wel,
++        dptr("SIMVALS", "RIV"), dptr("SIMVALS", "DRN"), evt,
++        dev(zeros(T, ncell)), dev(zeros(T, ncell)), dev(zeros(T, ncell)),
++        dev(cell_index(p.rch_cells)), dev(T.(p.area_factor[p.rch_cells])),
++        dev(cell_index(r.cells)), dev(Vector{Bool}(r.is_river)), dev(T.(r.width .* sqrt.(r.slope))),
++        dev(T.(r.bottom_bankfull .- rr)), dev(T.(r.head_ini .- rr)), dev(T.(r.bottom .- rr)),
++        dev(cell_index(m.config.pumping ? p.wel_cells : CartesianIndex{2}[])),
++        dev(head_node), dev(rec_map(r.cells)), dev(rec_map(p.drain.cells)),
++        dev(rec_map(m.config.foc ? p.evt_cells : CartesianIndex{2}[])),
++        dev(Vector{Bool}(vec(s.landmask))), dev(T.(vec(s.cell_area))), dev(T.(top_offset)),
++        dev(fill(T(NaN), 2ncell)), dev(fill(T(NaN), ncell)), dev(fill(T(NaN), ncell)), dev(zeros(T, ncell)),
++        href, zeros(T, ncell), zeros(T, 2ncell), zeros(T, ncell),
++    )
++end
++
++"Copy the host input field `x` (Float64, finite) into the device array `d` (through the staging buffer)."
++function upload_input!(d::DeviceCoupling, dest, x::AbstractArray)
++    d.staging .= vec(x)
++    copyto!(dest, d.staging)
++    return dest
++end
++
++# ------------------------------------------------------------------------------------
++# apply_stresses!: BOUND of RCH, RIV and WEL from the input fields
++# ------------------------------------------------------------------------------------
++
++# RCH (`apply_stresses!` of the host path): rate = max(0, recharge · area_factor), per
++# unit area (the GPU engine's RCH scale is 1).
++@kernel function recharge_bound_kernel!(bound, @Const(recharge), @Const(cell), @Const(factor))
++    i = @index(Global)
++    @inbounds bound[1, i] = max(zero(eltype(bound)), recharge[cell[i]] * factor[i])
++end
++
++# RIV stage as an offset from the record's reference (`river_stage` in offset form).
++@kernel function river_stage_kernel!(
++        bound, @Const(discharge), @Const(cell), @Const(is_river), @Const(denom),
++        @Const(bankfull), @Const(ini), @Const(bottom), manning, expo,
++    )
++    i = @index(Global)
++    @inbounds begin
++        q = discharge[cell[i]]
++        T = eltype(bound)
++        if q < zero(T)
++            stage = bottom[i]                 # no river infiltration
++        elseif !is_river[i]
++            stage = ini[i]
++        else
++            x = manning * q / denom[i]
++            depth = x >= zero(T) ? x^expo : T(NaN)   # NaN without a usable slope
++            depth = (isnan(depth) || depth < T(0.01)) ? zero(T) : depth
++            stage = bankfull[i] + depth
++            isnan(stage) && (stage = ini[i])
++        end
++        bound[1, i] = stage
++    end
++end
++
++# WEL: q = −abstraction.
++@kernel function well_bound_kernel!(bound, @Const(abstraction), @Const(cell))
++    i = @index(Global)
++    @inbounds bound[1, i] = -abstraction[cell[i]]
++end
++
++"""
++    apply_stresses_device!(d::DeviceCoupling)
++
++`apply_stresses!` on the device: write the RCH rates, the RIV stages (offsets) and the
++WEL rates of the input fields into the engine's device BOUND arrays.
++"""
++function apply_stresses_device!(d::DeviceCoupling{T}) where {T}
++    backend = KernelAbstractions.get_backend(d.h)
++    n = length(d.rch_cell)
++    n > 0 && recharge_bound_kernel!(backend)(d.rch_bound, d.recharge, d.rch_cell, d.rch_factor; ndrange = n)
++    n = length(d.riv_cell)
++    n > 0 && river_stage_kernel!(backend)(
++        d.riv_bound, d.discharge, d.riv_cell, d.riv_is_river, d.riv_denom, d.riv_bankfull, d.riv_ini, d.riv_bottom,
++        T(RIV_MANNING), T(3 / 5); ndrange = n,
++    )
++    n = length(d.wel_cell)
++    n > 0 && well_bound_kernel!(backend)(d.wel_bound, d.abstraction, d.wel_cell; ndrange = n)
++    return d
++end
++
++# ------------------------------------------------------------------------------------
++# collect_outputs!: heads, groundwater depth, baseflow and capillary rise
++# ------------------------------------------------------------------------------------
++
++# Offset head per user cell of both layers (NaN without a node).
++@kernel function head_output_kernel!(head, @Const(h), @Const(node))
++    u = @index(Global)
++    @inbounds begin
++        n = node[u]
++        head[u] = n > 0 ? h[n] : eltype(head)(NaN)
++    end
++end
++
++# Per 2D cell: baseflow_to_routing = −(RIV + DRN)/86400 (m3/s; |x| > 1e8 → 0; NaN off
++# land), capillary rise = −EVT · days / area · 1000 (mm per period), groundwater depth
++# top' − h' of layer 1 (NaN off land or without a node). As `collect_outputs!` of the
++# host path, in the same order of operations.
++@kernel function flux_output_kernel!(
++        baseflow, capillary, depth, @Const(riv), @Const(drn), @Const(evt),
++        @Const(riv_rec), @Const(drn_rec), @Const(evt_rec), @Const(land), @Const(area),
++        @Const(top_offset), @Const(h), @Const(node), spd, days,
++    )
++    c = @index(Global)
++    @inbounds begin
++        T = eltype(baseflow)
++        bf = zero(T)
++        ir = riv_rec[c]
++        ir > 0 && (bf = -riv[ir] / spd)
++        id = drn_rec[c]
++        id > 0 && (bf -= drn[id] / spd)
++        abs(bf) > T(1.0e8) && (bf = zero(T))
++        baseflow[c] = land[c] ? bf : T(NaN)
++        ie = evt_rec[c]
++        capillary[c] = ie > 0 ? -evt[ie] * days / area[c] * T(1000) : zero(T)
++        n = node[c]
++        depth[c] = (land[c] && n > 0) ? top_offset[c] - h[n] : T(NaN)
++    end
++end
++
++"""
++    collect_outputs_device!(d::DeviceCoupling, days)
++
++`collect_outputs!` on the device, from the engine's offset heads and SIMVALS: the head
++offsets of both layers, the groundwater depth, baseflow and capillary rise (`days`: the
++length of the completed stress period).
++"""
++function collect_outputs_device!(d::DeviceCoupling{T}, days::Real) where {T}
++    backend = KernelAbstractions.get_backend(d.h)
++    head_output_kernel!(backend)(d.head, d.h, d.head_node; ndrange = length(d.head))
++    evt = isempty(d.evt_simvals) ? d.riv_simvals : d.evt_simvals   # evt_rec is all 0 without EVT
++    flux_output_kernel!(backend)(
++        d.baseflow, d.capillary, d.depth, d.riv_simvals, d.drn_simvals, evt,
++        d.riv_rec, d.drn_rec, d.evt_rec, d.land, d.area, d.top_offset, d.h, d.head_node,
++        T(SECONDS_PER_DAY), T(days); ndrange = length(d.baseflow),
++    )
++    return d
++end
++
++"""
++    sync_output!(m, field)
++
++Refresh the host copy of output `field` (`:head`, `:baseflow` or `:capillary`)
++from the device, if it changed since it was last copied (the device-resident coupling).
++Heads become absolute (`href + h'`, Float64).
++"""
++function sync_output!(m, field::Symbol)
++    stale = getfield(m, :host_stale)
++    field in stale || return nothing
++    d = getfield(m, :dev)
++    if field === :head
++        copyto!(d.head_host, d.head)
++        getfield(m, :head) .= reshape(d.href .+ Float64.(d.head_host), size(getfield(m, :head)))
++    else
++        copyto!(d.field_host, getfield(d, field))
++        getfield(m, field) .= reshape(d.field_host, size(getfield(m, field)))
++    end
++    delete!(stale, field)
++    return nothing
++end
+diff --git a/src/gpu_engine.jl b/src/gpu_engine.jl
+index 25928b7..360a886 100644
+--- a/src/gpu_engine.jl
++++ b/src/gpu_engine.jl
+@@ -11,6 +11,9 @@ libmf6's). No MF6 input files are written. Differences from the mf6 engine:
+   RIV BOUND mirror are converted to offsets in Float64 when they are sent to the device
+   (at `prepare_solve`, as `set_value` does).
+ - Several GPU models can be active at a time (no libmf6 instance).
++- With `[solver] coupling = "device"` (the default) the stresses and outputs are
++  computed on the device, on the engine arrays (`device_coupling.jl`); `coupling =
++  "host"` uses the host mirrors as above.
+ =#
+ 
+ """
+@@ -91,6 +94,18 @@ engine_pointer(mf::ModflowModel, component, var; sub = "") =
+ engine_pointer(sim::GpuSimulation, component, var; sub = "") =
+     ModflowGPU.get_value_ptr(sim, join(filter(!isempty, [component, sub, var]), "/"))
+ 
++"A copy of an engine variable on the host (libmf6: the array behind the pointer; ModflowGPU: `get_value`, which keeps no host mirror)."
++engine_value(mf::ModflowModel, component, var; sub = "") = copy(engine_pointer(mf, component, var; sub))
++engine_value(sim::GpuSimulation, component, var; sub = "") =
++    ModflowGPU.get_value(sim, join(filter(!isempty, [component, sub, var]), "/"))
++
++"Reduced node → user node of the GPU engine (a copy)."
++function engine_nodeuser(m)
++    nodeuser = Int.(vec(engine_value(m.mf, m.config.model_name, "NODEUSER"; sub = "DIS")))
++    nodes = length(engine_value(m.mf, m.config.model_name, "HREF"))
++    return length(nodeuser) == nodes ? nodeuser : collect(1:nodes)
++end
++
+ engine_prepare_time_step(mf::ModflowModel) = MF.prepare_time_step(mf, 0.0)
+ engine_prepare_time_step(sim::GpuSimulation) = ModflowGPU.prepare_time_step(sim)
+ engine_prepare_solve(mf::ModflowModel) = MF.prepare_solve(mf)
+diff --git a/src/model.jl b/src/model.jl
+index 086791a..ae71d5e 100644
+--- a/src/model.jl
++++ b/src/model.jl
+@@ -1,6 +1,7 @@
+ """
+ Views into the engine's memory (libmf6 arrays, or ModflowGPU's host mirrors), valid
+-between initialize and finalize.
++between initialize and finalize. Not used by the device-resident coupling of the GPU
++engine (`DeviceCoupling`).
+ """
+ struct Mf6Pointers
+     head::Vector{Float64}                        # X, reduced nodes
+@@ -23,6 +24,11 @@ one stress period (a calendar month, or a day with `period = "day"`) per
+ `BMI.update`. Set the period's land-surface fields (mGV, VIC) before calling
+ `update`; afterwards the outputs describe the end of that period and are meant
+ for the *next* land-surface period.
++
++With the GPU engine and `[solver] coupling = "device"` (the default), the stresses and
++outputs are computed on the device (`DeviceCoupling`, `device_coupling.jl`); the output
++fields `head`, `baseflow` and `capillary` are then refreshed
++from the device when they are first read after an update (`getproperty`, `sync_output!`).
+ """
+ mutable struct GroundwaterModel
+     config::Config
+@@ -30,7 +36,8 @@ mutable struct GroundwaterModel
+     params::StaticParameters
+     periods::Vector{Date}
+     mf::Union{ModflowModel,ModflowGPU.Simulation,Nothing}   # the engine
+-    ptr::Union{Mf6Pointers,Nothing}
++    ptr::Union{Mf6Pointers,Nothing}           # host path (mf6, or gpu with coupling = "host")
++    dev::Union{DeviceCoupling,Nothing}        # device-resident coupling (gpu, coupling = "device")
+     # inputs for the coming stress period
+     recharge::Matrix{Float64}       # m/day
+     discharge::Matrix{Float64}      # m3/s
+@@ -39,6 +46,7 @@ mutable struct GroundwaterModel
+     head::Array{Float64,3}          # m
+     baseflow::Matrix{Float64}       # m3/s
+     capillary::Matrix{Float64}      # mm per stress period
++    host_stale::Set{Symbol}         # outputs whose host copy lags the device (device-resident coupling)
+     completed::Int
+     rch_scale::Vector{Float64}      # BOUND value per unit RCH rate (1, or the DIS cell area in MF6 6.3)
+     inputs_set::Set{Symbol}         # inputs set since the last update (override `forcing_file`)
+@@ -72,9 +80,9 @@ function GroundwaterModel(config::Config)
+         view(head, :, :, l)[active] .= view(params.initial_head, :, :, l)[active]
+     end
+     model = GroundwaterModel(
+-        config, inputs, params, periods, nothing, nothing,
++        config, inputs, params, periods, nothing, nothing, nothing,
+         zeros(grid), zeros(grid), zeros(grid),
+-        head, fill(NaN, grid), zeros(grid), 0, Float64[], Set{Symbol}(),
++        head, fill(NaN, grid), zeros(grid), Set{Symbol}(), 0, Float64[], Set{Symbol}(),
+     )
+     initialize_engine!(model)
+     gpu || (ACTIVE_MODEL[] = model)
+@@ -83,6 +91,21 @@ end
+ 
+ mf6_pointer(mf, component, var; sub = "") = engine_pointer(mf, component, var; sub)
+ 
++# Output fields refreshed from the device on access (device-resident coupling).
++const DEVICE_OUTPUTS = (:head, :baseflow, :capillary)
++
++function Base.getproperty(m::GroundwaterModel, f::Symbol)
++    f in DEVICE_OUTPUTS && sync_output!(m, f)
++    return getfield(m, f)
++end
++
++"Whether `m` uses the device-resident coupling (GPU engine, `coupling` \"auto\" or \"device\")."
++device_coupling(c::Config) = c.solver.engine == "gpu" && c.solver.coupling != "host"
++device_coupling(m::GroundwaterModel) = getfield(m, :dev) !== nothing
++
++"Maximum number of outer iterations of the engine (`SLN_1/MXITER`)."
++max_outer(m::GroundwaterModel) = device_coupling(m) ? m.dev.mxiter : m.ptr.mxiter
++
+ function initialize_engine!(m::GroundwaterModel)
+     if m.config.solver.engine == "gpu"
+         mf = initialize_gpu(m)
+@@ -91,6 +114,18 @@ function initialize_engine!(m::GroundwaterModel)
+         BMI.initialize(mf)
+     end
+     m.mf = mf
++    if device_coupling(m.config)
++        # No host mirrors: the engine arrays are used on the device.
++        d = m.dev = DeviceCoupling(m, mf)
++        upload_input!(d, d.recharge, m.recharge)
++        upload_input!(d, d.discharge, m.discharge)
++        upload_input!(d, d.abstraction, m.abstraction)
++        collect_outputs_device!(d, 0)   # heads and depth of the starting heads
++        fill!(d.baseflow, NaN)          # as the host path before the first update
++        fill!(d.capillary, 0)
++        union!(m.host_stale, DEVICE_OUTPUTS)
++        return m
++    end
+     name = m.config.model_name
+     ptr(var, sub = "") = mf6_pointer(mf, name, var; sub)
+ 
+@@ -122,11 +157,12 @@ the cell area on reading, so a rate set through BMI must be scaled the same way)
+ The GPU engine stores rates per unit area: its scale is 1.
+ """
+ function calibrate_bmi!(m::GroundwaterModel)
+-    p, ptr = m.params, m.ptr
++    p = m.params
+     lin = LinearIndices(m.inputs.idomain)
++    nodeuser = device_coupling(m) ? engine_nodeuser(m) : m.ptr.nodeuser
+     function check(pkg, cells)
+-        nodelist = vec(mf6_pointer(m.mf, m.config.model_name, "NODELIST"; sub = pkg))
+-        users = [ptr.nodeuser[n] for n in nodelist[1:length(cells)]]
++        nodelist = vec(engine_value(m.mf, m.config.model_name, "NODELIST"; sub = pkg))
++        users = [nodeuser[n] for n in nodelist[1:length(cells)]]
+         users == [lin[c] for c in cells] || error("$pkg record order differs from the written input")
+     end
+     check("RCH", p.rch_cells)
+@@ -134,7 +170,7 @@ function calibrate_bmi!(m::GroundwaterModel)
+     check("DRN", p.drain.cells)
+     m.config.foc && check("EVT", p.evt_cells)
+     m.config.pumping && check("WEL", p.wel_cells)
+-    m.rch_scale = ptr.rch_bound[1, :]
++    m.rch_scale = engine_value(m.mf, m.config.model_name, "BOUND"; sub = "RCH")[1, :]
+     if m.mf isa ModflowGPU.Simulation
+         all(==(1.0), m.rch_scale) || error("unexpected RCH BOUND after reading period 1")
+     else
+@@ -151,6 +187,7 @@ current_date(m::GroundwaterModel) =
+ function set_recharge!(m::GroundwaterModel, recharge::AbstractArray)
+     m.recharge .= reshape(recharge, size(m.recharge))
+     replace!(x -> isfinite(x) ? x : 0.0, m.recharge)
++    device_coupling(m) && upload_input!(m.dev, m.dev.recharge, m.recharge)
+     push!(m.inputs_set, :recharge)
+     return m
+ end
+@@ -158,6 +195,7 @@ end
+ function set_discharge!(m::GroundwaterModel, discharge::AbstractArray)
+     m.discharge .= reshape(discharge, size(m.discharge))
+     replace!(x -> isfinite(x) ? x : 0.0, m.discharge)
++    device_coupling(m) && upload_input!(m.dev, m.dev.discharge, m.discharge)
+     push!(m.inputs_set, :discharge)
+     return m
+ end
+@@ -170,16 +208,20 @@ function set_abstraction!(m::GroundwaterModel, abstraction::AbstractArray)
+         error("positive groundwater abstraction is only allowed on idomain == 1 cells")
+     any(a .> 0) && !m.config.pumping && error("abstraction given but pumping is disabled")
+     m.abstraction .= a
++    device_coupling(m) && upload_input!(m.dev, m.dev.abstraction, m.abstraction)
+     push!(m.inputs_set, :abstraction)
+     return m
+ end
+ 
+ """
+-Write the period's RCH, RIV and WEL values into the engine's BOUND arrays. River stages
+-are absolute heads; the GPU engine converts them to offsets from `"<model>/HREF"` in
+-Float64 when the mirror is sent to the device (`prepare_solve`).
++Write the period's RCH, RIV and WEL values into the engine's BOUND arrays. Host path:
++river stages are absolute heads; the GPU engine converts them to offsets from
++`"<model>/HREF"` in Float64 when the mirror is sent to the device (`prepare_solve`).
++Device-resident coupling: kernels write the engine's device BOUND arrays, river stages
++as offsets (`apply_stresses_device!`).
+ """
+ function apply_stresses!(m::GroundwaterModel)
++    device_coupling(m) && return apply_stresses_device!(m.dev)
+     p, ptr = m.params, m.ptr
+     for (i, c) in enumerate(p.rch_cells)
+         ptr.rch_bound[1, i] = max(0.0, m.recharge[c] * p.area_factor[c]) * m.rch_scale[i]
+@@ -195,8 +237,17 @@ function apply_stresses!(m::GroundwaterModel)
+     end
+ end
+ 
+-"Read heads and exchange fluxes of the completed stress period."
++"""
++Read heads and exchange fluxes of the completed stress period. Device-resident coupling:
++computed on the device (`collect_outputs_device!`); the host fields are refreshed when
++they are read.
++"""
+ function collect_outputs!(m::GroundwaterModel)
++    if device_coupling(m)
++        collect_outputs_device!(m.dev, period_days(m.config, m.periods[m.completed]))
++        union!(getfield(m, :host_stale), DEVICE_OUTPUTS)
++        return m
++    end
+     p, ptr, s = m.params, m.ptr, m.inputs
+     fill!(m.head, NaN)
+     for (n, u) in zip(eachindex(ptr.head), ptr.nodeuser)
+@@ -243,7 +294,7 @@ function advance!(m::GroundwaterModel)
+     apply_stresses!(m)
+     engine_prepare_solve(mf)
+     converged = false
+-    for _ in 1:m.ptr.mxiter
++    for _ in 1:max_outer(m)
+         converged = engine_solve(mf)
+         (converged || engine_diverged(mf)) && break
+     end
+@@ -259,13 +310,17 @@ end
+ "Name of the engine of `m` for messages."
+ engine_label(m::GroundwaterModel) = m.config.solver.engine == "gpu" ? "ModflowGPU" : "MODFLOW 6"
+ 
+-"Raw MF6 boundary flows (m3/day) of a package, in record order."
++"Raw MF6 boundary flows (m3/day) of a package, in record order (a copy)."
+ package_flows(m::GroundwaterModel, package::AbstractString) =
+-    copy(vec(mf6_pointer(m.mf, m.config.model_name, "SIMVALS"; sub = uppercase(package))))
++    vec(engine_value(m.mf, m.config.model_name, "SIMVALS"; sub = uppercase(package)))
+ 
+ function finalize!(m::GroundwaterModel)
+     if m.mf !== nothing
++        for f in DEVICE_OUTPUTS   # keep the last outputs readable on the host
++            sync_output!(m, f)
++        end
+         m.ptr = nothing
++        m.dev = nothing
+         engine_finalize(m.mf)
+         m.mf = nothing
+     end
+diff --git a/test/runtests.jl b/test/runtests.jl
+index 4db8b1d..eb0ec99 100644
+--- a/test/runtests.jl
++++ b/test/runtests.jl
+@@ -257,6 +257,87 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+         end
+     end
+ 
++    "gpu" in ENGINES && @testset "GPU engine: device-resident coupling (T5.2)" begin
++        # coupling = "device" (the default of the GPU engine: kernels on the engine's device
++        # arrays) against coupling = "host" (ModflowGPU's host mirrors), 3 daily periods.
++        G = MC.ModflowGPU
++        land = s.landmask
++        active = cat(s.idomain .> 0, s.idomain .> 0; dims = 3)
++        for precision in ("single", "double")
++            single = precision == "single"
++            function run_days(coupling; check = m -> nothing)
++                c = test_config(joinpath(tmp, "device_$(precision)_$coupling"); period = "day", stop = Date(1979, 1, 3),
++                                write_monthly_output = false, solver = with_engine(INDUS.solver, "gpu"; precision, coupling))
++                m = GroundwaterModel(c)
++                out = map(1:3) do k
++                    force!(m, FORCING[k])
++                    BMI.update(m)
++                    check(m)
++                    (copy(m.head), copy(m.baseflow), copy(m.capillary),
++                     reshape(BMI.get_value(m, "groundwater_depth", zeros(length(m.recharge))), size(land)))
++                end
++                BMI.finalize(m)
++                return out
++            end
++            host = run_days("host")
++            @test_throws r"coupling = \"device\"" let m = GroundwaterModel(test_config(joinpath(tmp, "device_err"); period = "day",
++                        stop = Date(1979, 1, 1), write_monthly_output = false, solver = with_engine(INDUS.solver, "gpu"; coupling = "host")))
++                try BMI.get_value_ptr(m, "groundwater_head"; device = true) finally BMI.finalize(m) end
++            end
++            device = run_days("device"; check = function (m)
++                # No host mirror in the engine, and the update copied no output to the host:
++                # the host fields are refreshed when they are read (below, by `copy(m.head)`).
++                @test isempty(m.mf.mirrors)
++                @test getfield(m, :host_stale) == Set(MC.DEVICE_OUTPUTS)
++                T = m.mf.T
++                dh = BMI.get_value_ptr(m, "groundwater_head"; device = true)
++                @test eltype(dh) === T && length(dh) == 2length(land)
++                @test isequal(head_reference(m) .+ Float64.(Array(dh)), vec(m.head))   # m.head syncs here
++                l2 = BMI.get_value_ptr(m, "groundwater_head_layer_2"; device = true)
++                @test parent(l2) === dh && parentindices(l2) == ((length(land) + 1):2length(land),)
++                for name in ("baseflow_to_routing", "capillary_rise")
++                    @test isequal(Float64.(Array(BMI.get_value_ptr(m, name; device = true))),
++                                  vec(name == "capillary_rise" ? m.capillary : m.baseflow))
++                end
++                # groundwater depth top' - h' on the device, against top - h on the host
++                depth = Float64.(Array(BMI.get_value_ptr(m, "groundwater_depth"; device = true)))
++                host_depth = BMI.get_value(m, "groundwater_depth", zeros(length(land)))
++                @test isequal(isnan.(depth), isnan.(host_depth))
++                ok = .!isnan.(depth)
++                @test maximum(abs.(depth[ok] .- host_depth[ok]) ./ max.(1, abs.(host_depth[ok]))) < (single ? 1e-6 : 1e-12)
++                # River stages as offsets on the device: within Float32 rounding of the
++                # offset stage − r (not of the absolute stage, up to thousands of metres)
++                # of the host Float64 stage.
++                r = p.river
++                bound = Array(G.get_value_ptr(m.mf, "INDUS/RIV/BOUND"; device = true))
++                href = head_reference(m)
++                lin = LinearIndices(land)
++                rref = [href[lin[c]] for c in r.cells]
++                stage = Float64.(bound[1, 1:length(r.cells)]) .+ rref
++                expected = [MC.river_stage(r, i, m.discharge[c]) for (i, c) in enumerate(r.cells)]
++                if single   # the offsets of bottom_bankfull and of the stage, and the depth, in Float32
++                    scale = max.(1, abs.(expected .- rref), replace(abs.(r.bottom_bankfull .- rref), NaN => 0.0))
++                    @test all(abs.(stage .- expected) .<= 4eps(Float32) .* scale)
++                else
++                    @test maximum(abs.(stage .- expected)) < 1e-9
++                end
++                rch = Array(G.get_value_ptr(m.mf, "INDUS/RCH/BOUND"; device = true))[1, :]
++                @test rch ≈ T[max(0, m.recharge[c] * p.area_factor[c]) for c in p.rch_cells]
++            end)
++            for k in 1:3
++                (hh, hb, hc, hd), (dh, db, dc, dd) = host[k], device[k]
++                @test isequal(isnan.(hh), isnan.(dh)) && isequal(isnan.(hb), isnan.(db))
++                @test maximum(abs.(hh .- dh)[active]) < (single ? 1e-4 : 1e-9)
++                rel(a, b) = maximum(abs.(a .- b)[land]) / maximum(abs.(b[land]))
++                @test rel(db, hb) < (single ? 1e-5 : 1e-12)
++                @test rel(dc, hc) < (single ? 1e-5 : 1e-12)
++                @test maximum(abs.(dd .- hd)[land .& (s.idomain .> 0)]) < (single ? 1e-4 : 1e-9)
++            end
++        end
++        @test_throws r"needs engine = \"gpu\"" MC.validate(Config(cfg; solver = with_engine(cfg.solver, "mf6"; coupling = "device")))
++        @test_throws r"solver.coupling must be" MC.validate(Config(cfg; solver = with_engine(cfg.solver, "gpu"; coupling = "gpu")))
++    end
++
+     if all(in(ENGINES), ("mf6", "gpu"))
+         @testset "engine parity" begin
+             active = cat(s.idomain .> 0, s.idomain .> 0; dims = 3)
