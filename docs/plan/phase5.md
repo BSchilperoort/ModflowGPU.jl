@@ -348,6 +348,28 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
   default `:mc_ilu0`, and switch to `:amg` if they are far above the synthetic ones.
 - Done when: the run completes on the 16 GB GPU.
 
+**T5.6 Global parity and timing against MODFLOW 6 (S)**
+- Depends: T5.5b. Added 2026-11-15 at the owner's request: at global size MF6 and
+  ModflowGPU were compared only for run time on the synthetic `global5m` (T4.1), never
+  for heads and never on the real model.
+- Deliver: the real masked global model (60°N mask, CHD ring at 0 m, inputs in
+  `/home/bart/data/mGV/global_60N/`) run by the mf6 engine and by the GPU engine from
+  the same start, the year-200 heads of T5.5b, with the same inputs: record mGV's daily
+  recharge, discharge and channel volume once and replay them to both engines (the
+  open-loop method of T5.4, so coupled drift does not enter). One month of daily steps
+  at tight closures, the river-loss limit on in both.
+- Compare heads, baseflow and capillary rise per day against the T5.3 tolerances, for
+  the GPU engine in `:mixed`, `:double` and `:single`, and the water budgets of both
+  engines. Report where the largest differences are.
+- Timing: wall time per daily step of MF6 (serial, and parallel if the MF6 build in
+  `reference/` supports it) against ModflowGPU on rocm and on the CPU backend, at the
+  production closures of each engine (mf6 5, GPU 0.01) and at equal closures (0.01 and
+  tight), with outer and inner iterations. Separate solve time from MF6's file input
+  and output, and say what is included in each number. Report the speed-up.
+- Done when: a results file gives the parity table and the timing table, and states
+  whether the GPU engine matches MF6 on the real global model within the T5.3
+  tolerances.
+
 **Milestone B gate:** T5.0–T5.5b merged; the section 4 coupling criteria pass on the
 Indus in `:single`, `:mixed` and `:double` on CPU and rocm; mGV and ModflowGPU run the
 global 5′ steady state and one year of daily steps together on the 16 GB GPU.
