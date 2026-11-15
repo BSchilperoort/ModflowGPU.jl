@@ -252,9 +252,13 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
 - Owner decisions (2026-11-15) after the blow-up investigation:
   - Spin-up: MODFLOW's steady state is reached by running the coupled system for
     100–200 years, not by a steady-state solve that has to converge first. Report how
-    the heads and the baseflow drift per year, and stop when they level off. Only the
-    1979 forcing is on this machine (`WFDE5_v3.1_5arcmin_land_1979.zarr`): ask the owner
-    whether to repeat 1979 or to use the full record.
+    the heads and the baseflow drift per year, and stop when they level off. Forcing:
+    the gridded store `/media/bart/Data/Work/SWIFT/WFDE5_v3.1_5arcmin.zarr` is mounted
+    since 2026-11-15. It is one zarr v3 store with all seven variables as
+    `(time, lat, lon)` int16 arrays on the 4320 × 1680 grid, 16,802 daily steps
+    (1979–2024), 239 GB. Cycle through this record for the spin-up (the default, unless
+    the owner says otherwise), and check first that mGV `main` reads it; the land-only
+    1979 store in `/home/bart/data/mGV/` is the fallback.
   - River loss is limited to the water present in the channel: MODFLOW must not take
     more from a river than mGV has there, so the exchange creates no water. Design this
     in the card (for example no infiltration from a RIV cell on a day when the channel
