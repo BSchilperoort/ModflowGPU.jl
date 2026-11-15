@@ -589,3 +589,30 @@ with mGV's real global model for 1979 on rocm (`benchmark/results/2026-11-14-T5.
 - **Rclose floor.** Not changed: a floor from the head-rounding bound made lgrv-gr
   "converge" 6.1e-3 m from the exact heads (above), turning a visible failure into a
   silent error.
+
+## Real global model against MODFLOW 6 (T5.6)
+
+The real masked global model (60°N mask, 3,675,450 nodes, year-200 heads of T5.5b), 31
+daily steps, open loop: mGV's daily discharge, recharge and channel volume recorded once
+from the coupled GPU run and replayed to the mf6 engine (libmf6 6.3.0) and the GPU engine
+from the same heads, river-loss limit on, tight closures (T5.3: 1e-9 / 1e-10 / INNER_RCLOSE
+1e-8 STRICT) in both engines (`benchmark/results/2026-11-15-T5.6.md`). A replayed GPU run
+reproduces the coupled run bitwise.
+
+| GPU engine (rocm) | max \|Δh\| | baseflow | capillary rise | T5.3 tolerance |
+| --- | --- | --- | --- | --- |
+| `:mixed`, `:double` | 4.4e-11 m | 3.6e-12 | 5.3e-12 | 1e-4 m; 1e-6 |
+| `:single` | 2.5e-5 m | 1.2e-5 | 3.9e-6 | 1e-3 m; 1e-4 |
+
+Every T5.3 tolerance holds at global size, with margins 2.8e5 or more (`:mixed`,
+`:double`) and 8 or more (`:single`). The differences grow over the month (`:mixed`
+3.6e-12 m on day 1, 4.4e-11 m on day 31; `:single` 5.0e-6 to 2.5e-5 m). The largest
+`:mixed` head differences are in deep water tables (164–508 m) in the Andes, the largest
+`:single` ones in the lower Amazon, where the heads lie up to 105 m above the model top
+(largest offsets from the per-cell reference). The budgets agree per term to 1e-12
+(`:mixed`, `:double`) and 1e-6 (`:single`); MF6 converges in 7 outer / 14–15 inner
+iterations per day, the GPU engine in 7 / 15 (`:single` 5 / 9 at its Float32 floors). The
+river-loss limit gives the formula's fluxes in both engines (to 3.5e-7 relative) and no
+loss above 0.999 of the channel volume, except in `:single` (117 record-days above the
+volume in 31 days, 322 m³: the T5.5b review issue). At equal closures 0.01 the engines agree
+to 4.4e-11 m, at 5 to 3.5e-7 m (both 0.51 m from the tight heads after 31 days).
