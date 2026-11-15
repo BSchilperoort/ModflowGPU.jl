@@ -14,7 +14,7 @@ merge script; tests.
  examples/global/global.toml               |  60 +++++
  examples/global/merge_routing_tiles.py    | 122 +++++++++
  examples/global/mgv_global.toml           |  40 +++
- examples/mgv_coupling/README.md           |  19 ++
+ examples/mgv_coupling/README.md           |  20 ++
  examples/mgv_coupling/coupling.jl         |  35 +--
  examples/mgv_coupling/global_rehearsal.jl | 302 ++++++++++++++++++++++
  src/ModflowCoupling.jl                    |   3 +-
@@ -24,7 +24,7 @@ merge script; tests.
  src/inputs.jl                             |  34 +++
  src/model.jl                              |  18 +-
  test/runtests.jl                          |  86 ++++++
- 15 files changed, 989 insertions(+), 29 deletions(-)
+ 15 files changed, 990 insertions(+), 29 deletions(-)
  create mode 100644 examples/global/README.md
  create mode 100644 examples/global/check_inputs.jl
  create mode 100644 examples/global/global.toml
@@ -484,10 +484,10 @@ index 0000000..00cc48e
 +
 +[input.names]
 diff --git a/examples/mgv_coupling/README.md b/examples/mgv_coupling/README.md
-index 8c2398e..b204a4b 100644
+index 8c2398e..1def3f6 100644
 --- a/examples/mgv_coupling/README.md
 +++ b/examples/mgv_coupling/README.md
-@@ -85,6 +85,25 @@ host path (BMI arrays), which the mf6 engine always uses; both give the same val
+@@ -85,6 +85,26 @@ host path (BMI arrays), which the mf6 engine always uses; both give the same val
  (ModflowGPU T5.4: bitwise equal heads, baseflow and capillary rise over 10 days in
  `:single` and `:double`).
  
@@ -502,6 +502,7 @@ index 8c2398e..b204a4b 100644
 +and the time per day of each model:
 +
 +```bash
++mkdir -p run/global/mgv   # mGV's output directory of mgv_global.toml must exist
 +MGV_BACKEND=rocm julia -t 8 --project=examples/mgv_coupling examples/mgv_coupling/global_rehearsal.jl \
 +    examples/global/mgv_global.toml /tmp/rehearsal precision=mixed dvclose=0.01 days=365
 +```
@@ -575,7 +576,7 @@ index d902369..474fe05 100644
      @info "Device exchange" backend = typeof(backend) precision = gw.mf.T identity_map = identity
 diff --git a/examples/mgv_coupling/global_rehearsal.jl b/examples/mgv_coupling/global_rehearsal.jl
 new file mode 100644
-index 0000000..b982633
+index 0000000..05edfd7
 --- /dev/null
 +++ b/examples/mgv_coupling/global_rehearsal.jl
 @@ -0,0 +1,302 @@
@@ -791,11 +792,11 @@ index 0000000..b982633
 +coupling === nothing || mark!("coupling_built")
 +# The synthetic recharge and 0.3 × bankfull discharge, with the seasonal factors of the
 +# synthetic model, as device arrays (no host transfer per day). MODFLOW alone takes both;
-+# coupled, it takes mGV's recharge and this discharge: mGV's real river discharge on the
-+# synthetic channels (whose widths come from the synthetic bankfull discharge) sets stages
-+# tens of metres above the river bed, and day 2 did not converge in 200 outer iterations
-+# (first attempt, `:mixed`, closure 0.01). mGV's discharge is still gathered and converted
-+# on the device every day (into `qmgv`), so the exchange costs what it would.
++# coupled, it takes mGV's recharge and this discharge: with mGV's discharge day 2 did not
++# converge in 200 outer iterations, because mGV's routing blows up once MODFLOW's baseflow
++# is fed back (discharges up to 1e37 m3/s and NaN from day 2; mGV alone stays finite; see
++# ModflowGPU's T5.5a report). mGV's discharge is still gathered and converted on the
++# device every day (into `qmgv`), so the exchange costs what it would.
 +rch0 = KA.allocate(backend, Float32, length(land)); copyto!(rch0, Float32.(vec(ifelse.(land, fields.rch, 0.0))))
 +q0 = KA.allocate(backend, Float32, length(land)); copyto!(q0, Float32.(vec(ifelse.(land, 0.3 .* inputs.qbank, 0.0))))
 +rch, q = similar(rch0), similar(q0)

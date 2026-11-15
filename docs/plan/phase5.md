@@ -230,6 +230,11 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
   CHD heads (the chosen steady-head file has none on the 173,727 CHD ring cells; sea
   level 0 m is the proposal), and use the routing file and mGV config of the T5.5a
   report (`benchmark/results/2026-11-14-T5.5a.md`).
+- From the T5.5a review: with MODFLOW's baseflow and capillary rise fed back, mGV's
+  routing on the global routing file produces discharges up to 1e37 m³/s and NaN from
+  day 2 (mGV alone stays finite), which stopped MODFLOW when it took mGV's discharge
+  (T5.5a report, "mGV's routing blows up"). Resolve it (owner decision, mGV is not
+  patched here) and check mGV's discharge for finite, plausible values every day.
 - Deliver: a global ModflowCoupling config, a steady-state spin-up
   (`period = "steady"`) on the GPU, then 1 year daily coupled with mGV. There is no
   global coupled steady-state head yet: it comes from coupling mGV to MODFLOW
