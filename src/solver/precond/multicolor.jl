@@ -560,8 +560,8 @@ function _precond_apply_dot!(z, P::MulticolorPreconditioner, r, red, post, sa, s
     len(c) = P.cptr[c + 1] - P.cptr[c]
     off(c) = Int32(P.cptr[c] - 1)
     g = _reduce_stage1!(red, backend, 0, _mc_forward_dot, _SUM4, len(2), off(2), z, r, r, P.vals, P.dinv, P.perm, P.cia, P.cja, P.cup, sa)
-    g += _reduce_stage1!(red, backend, g, _mc_backward_ilu_dot, _SUM4, len(1), off(1), z, r, P.vals, P.dinv, P.perm, P.cia, P.cja, P.cup, sa)
-    _finalize_async!(red, backend, _SUM4, g, post, sa, ss)
+    # T4.7: the backward kernel also finalises (`_reduce_last!`)
+    _reduce_last!(red, backend, g, _mc_backward_ilu_dot, _SUM4, len(1), post, sa, ss, off(1), z, r, P.vals, P.dinv, P.perm, P.cia, P.cja, P.cup, sa)
     return true
 end
 

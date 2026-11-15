@@ -132,21 +132,25 @@ end
 const _OFFDIAG_IDS = Threads.Atomic{Int}(0)
 
 """
-    formulate!(m::GwfModel; symmetric = false, scale = nothing) -> m
+    formulate!(m::GwfModel; symmetric = false, terms = true, scale = nothing) -> m
 
 Formulate and assemble the system of an outer iteration from the current offset heads
 (`bnd_cf`/`bnd_fc` of every stress package except CHD, `sto_fc`, `npf_fc`, `sln_ls`), then
 the flux-form residual `m.res` (PLAN.md section 3.7, rule 2; with `scale`, also the
-row sums `Σ |terms|`, see `flux_residual!`). Device work only: one formulation kernel per
-package, then `formulate_system!` (T4.5), which rewrites the off-diagonal entries of the
+row sums `Σ |terms|`, see `flux_residual!`). Device work only: `formulate_system!` (T4.5;
+since T4.7 it also formulates the package records), which rewrites the off-diagonal entries of the
 matrix only when `ibound` or `symmetric` changed since they were last written.
+`terms = false` (the outer iterations, T4.7) leaves `sys.rhs`, `sys.bdiag` and `sys.brhs`
+unwritten (see `formulate_system!`).
 """
-function formulate!(m::GwfModel; symmetric::Bool = false, scale = nothing)
-    for pkg in m.packages
-        boundary_kind(pkg) === :CHD && continue
-        formulate!(pkg, m.h, m.ibound, m.area)
-    end
-    pkgs = Tuple((p.hcof, p.rhs, p.nodeptr, p.noderec) for p in m.packages if boundary_kind(p) !== :CHD && p.nbound > 0)
+function formulate!(m::GwfModel; symmetric::Bool = false, terms::Bool = true, scale = nothing)
+    # The package records are formulated in the row kernel (T4.7; `formulate!` per package
+    # did it in a kernel of its own). Records without a cell keep their `hcof`/`rhs`; no
+    # reader uses them (`calc_simvals!` skips them).
+    pkgs = Tuple(
+        (BoundaryKind{boundary_kind(p)}(), p.bound, m.area, p.hcof, p.rhs, p.nodeptr, p.noderec)
+            for p in m.packages if boundary_kind(p) !== :CHD && p.nbound > 0
+    )
     storage = nothing
     if !isnothing(m.sto) && m.sto.transient
         _check_timestep(m.sto)
@@ -159,7 +163,7 @@ function formulate!(m::GwfModel; symmetric::Bool = false, scale = nothing)
     # `m.sys` directly also leaves `m.offdiag` stale.
     offdiag = m.offdiag !== symmetric
     offdiag && (m.offdiag_id = Threads.atomic_add!(_OFFDIAG_IDS, 1) + 1)
-    formulate_system!(m.sys, m.res, m.csr, m.npf, m.h, m.ibound, pkgs, storage; symmetric, offdiag, scale)
+    formulate_system!(m.sys, m.res, m.csr, m.npf, m.h, m.ibound, pkgs, storage; symmetric, offdiag, terms, scale)
     m.offdiag = symmetric
     return m
 end

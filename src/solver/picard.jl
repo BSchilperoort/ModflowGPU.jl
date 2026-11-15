@@ -212,7 +212,7 @@ function outer_iteration!(state::OuterState, ps::PicardSolver, m::GwfModel{T}, k
     n = Int(m.conn.nodes)
     it = state.kiter += 1
     floor_step = it == 1 && st.rclose_floor_factor > 0
-    @timed_section :assembly formulate!(m; symmetric = st.symmetric, scale = floor_step ? ps.scale : nothing)
+    @timed_section :assembly formulate!(m; symmetric = st.symmetric, terms = false, scale = floor_step ? ps.scale : nothing)
     if floor_step
         # Float32: the attainable residual, eps(T)·max Σ|terms| (rule 2 rounding).
         smax = @timed_section :outer_reduction _mapreduce!(ps.reducer, backend, _maxscale_term, _MAXSCALE_OPS, n, ps.scale)[1]

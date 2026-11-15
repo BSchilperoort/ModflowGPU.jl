@@ -142,6 +142,14 @@ function _universal_residual(name, rundir, m, sim)
             KernelAbstractions.synchronize(TEST_BACKEND)
             fused_ok &= Array(sys2.amat) == Array(c.sys.amat) && Array(sys2.rhs) == Array(c.sys.rhs) &&
                 Array(res2) == Array(res) && Array(scale2) == Array(scale)
+            # T4.7: the contiguous diagonal, and `terms = false` (the solver's path)
+            dg = Array(sys2.amat)[Array(c.csr.ia)[1:conn.nodes]]
+            fused_ok &= Array(sys2.diag) == dg && Array(c.sys.diag) == dg
+            sys3 = LinearSystem(TEST_BACKEND, T, c.csr)
+            res3 = KernelAbstractions.zeros(TEST_BACKEND, T, conn.nodes)
+            ModflowGPU.formulate_system!(sys3, res3, c.csr, c.npf, h, c.ib, pkgs, sto; symmetric, terms = false)
+            fused_ok &= Array(sys3.amat) == Array(sys2.amat) && Array(res3) == Array(res2) && Array(sys3.diag) == dg &&
+                all(iszero, Array(sys3.rhs))
             rel, roundoff = residual_stats(T, res, scale, bound)
             ok = rel < 1.0e-8 || (T === Float32 && rel <= roundoff)
             ok || (fails += 1)

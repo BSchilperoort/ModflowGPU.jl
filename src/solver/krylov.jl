@@ -184,6 +184,61 @@ end
     end
 end
 
+# Single pass (T4.7): stage 1 as `mapreduce_kernel!`, then lane 1 of each work group counts
+# the finished groups in `count[1]` (an atomic add, which also orders its write of
+# `partials`), and the last of the `ng` groups of this launch finalises as
+# `finalize_reduction_kernel!` over all `gtotal` columns (with `goff` columns from earlier
+# stage-1 launches) and resets the counter. One kernel instead of two; bitwise the same
+# result (same tree, same fold).
+@kernel function mapreduce_last_kernel!(
+        partials, ploc, count, out, outloc, f, ops, len, goff, ng, gtotal, post, sa, ss, args,
+    )
+    Ta = eltype(partials)
+    shared = @localmem eltype(partials) (256, 4)
+    sloc = @localmem Int32 (256,)
+    islast = @localmem Int32 (1,)
+    i = @index(Global, Linear)
+    li = @index(Local, Linear)
+    vals = i <= len ? f(Ta, i, args...) : _zeros4(Ta)
+    _store4!(shared, li, vals)
+    if ops[1] isa _ArgMaxAbsOp
+        @inbounds sloc[li] = vals[1] != zero(Ta) ? i % Int32 : Int32(0)
+    end
+    @synchronize
+    _tree_reduce!(shared, sloc, ops, li)
+    if li == 1
+        g = @index(Group, Linear) + goff
+        @inbounds for k in 1:_RED_K
+            partials[k, g] = shared[1, k]
+        end
+        if ops[1] isa _ArgMaxAbsOp
+            @inbounds ploc[g] = sloc[1]
+        end
+        done = Atomix.@atomic count[1] += Int32(1)
+        @inbounds islast[1] = done == ng ? Int32(1) : Int32(0)
+    end
+    @synchronize
+    if @inbounds(islast[1]) == Int32(1)
+        fv, loc = _fold_partials(partials, ploc, ops, li, gtotal)
+        _store4!(shared, li, fv)
+        if ops[1] isa _ArgMaxAbsOp
+            @inbounds sloc[li] = loc
+        end
+        @synchronize
+        _tree_reduce!(shared, sloc, ops, li)
+        if li == 1
+            r = @inbounds _post(post, (shared[1, 1], shared[1, 2], shared[1, 3], shared[1, 4]), sa, ss)
+            @inbounds for k in 1:_RED_K
+                out[k] = r[k]
+            end
+            if ops[1] isa _ArgMaxAbsOp
+                @inbounds outloc[1] = sloc[1]
+            end
+            @inbounds count[1] = Int32(0)
+        end
+    end
+end
+
 # Post-reduction maps (lane 1 of the finalisation; `sa` in `Ta`, `ss` in `Ts`).
 struct _NoPost end
 @inline _post(::_NoPost, v, sa, ss) = v
@@ -268,6 +323,7 @@ struct Reducer{Ta, MA <: AbstractMatrix{Ta}, VA <: AbstractVector{Ta}, VI <: Abs
     host::Vector{Ta}
     hostloc::Vector{Int32}
     mapped::Bool
+    count::VI
 end
 
 # `out` and `outloc` alias `host` and `hostloc` where the backend maps host memory
@@ -276,14 +332,15 @@ function Reducer(backend::Backend, len::Integer, ::Type{Ta}) where {Ta}
     ng = cld(len, _RED_WG) + 1  # + 1: room for reductions split over kernels (`_reduce_stage1!`)
     partials = KernelAbstractions.zeros(backend, Ta, _RED_K, ng)
     ploc = KernelAbstractions.zeros(backend, Int32, ng)
+    count = KernelAbstractions.zeros(backend, Int32, 1)
     mo = host_mapped_zeros(backend, Ta, _RED_K)
     ml = host_mapped_zeros(backend, Int32, 1)
     if isnothing(mo) || isnothing(ml)
         out = KernelAbstractions.zeros(backend, Ta, _RED_K)
         outloc = KernelAbstractions.zeros(backend, Int32, 1)
-        return Reducer(partials, out, ploc, outloc, zeros(Ta, _RED_K), zeros(Int32, 1), false)
+        return Reducer(partials, out, ploc, outloc, zeros(Ta, _RED_K), zeros(Int32, 1), false, count)
     end
-    return Reducer(partials, mo[1], ploc, ml[1], mo[2], ml[2], true)
+    return Reducer(partials, mo[1], ploc, ml[1], mo[2], ml[2], true, count)
 end
 
 # Adapt: a Reducer is scratch space, so a new one is made on the target backend.
@@ -329,9 +386,21 @@ function _reduce_async!(red::Reducer, backend, f, ops, len, args...; post = _NoP
     ng = cld(len, _RED_WG)
     ng <= size(red.partials, 2) || throw(ArgumentError("reduction over $len entries exceeds the Reducer"))
     ng == 0 && return false
-    mapreduce_kernel!(backend, _RED_WG)(red.partials, red.ploc, f, ops, len, Int32(0), args; ndrange = ng * _RED_WG)
-    _finalize_async!(red, backend, ops, ng, post, sa, ss)
+    _reduce_last!(red, backend, 0, f, ops, len, post, sa, ss, args...)
     return true
+end
+
+# Stage 1 into the columns after `goff` and the finalisation over all `goff + ng` columns
+# in one kernel (`mapreduce_last_kernel!`), or only the finalisation when `len == 0`.
+function _reduce_last!(red::Reducer, backend, goff::Integer, f, ops, len, post, sa, ss, args...)
+    ng = cld(len, _RED_WG)
+    goff + ng <= size(red.partials, 2) || throw(ArgumentError("reduction over $len entries exceeds the Reducer"))
+    ng == 0 && return _finalize_async!(red, backend, ops, goff, post, sa, ss)
+    mapreduce_last_kernel!(backend, _RED_WG)(
+        red.partials, red.ploc, red.count, red.out, red.outloc, f, ops, len, Int32(goff), Int32(ng), Int32(goff + ng), post, sa,
+        ss, args; ndrange = ng * _RED_WG,
+    )
+    return nothing
 end
 
 _finalize_async!(red::Reducer, backend, ops, ng, post, sa, ss) =
@@ -738,11 +807,25 @@ end
     @inbounds begin
         for ii in ia[n]:(ia[n + 1] - Int32(1))
             m = ja[ii]
-            s += Ts(amat[ii]) * colfac[m] * p[m]
+            s += _colmul(Ts(amat[ii]), colfac, m) * p[m]
         end
-        return rowfac[n] * s
+        return _rowmul(rowfac, n, s, amat, ia)
     end
 end
+
+# SCALING_METHOD NONE (T4.7): the factors are known without reading `rowfac` and `colfac`:
+# column factors 1, row factor the sign of the diagonal (`Signed`, CG) or 1 (BiCGSTAB), as
+# `_setup_row` sets them; the products are bitwise those with the vectors.
+struct _NoScale{Signed} end
+@inline _colmul(a, colfac::AbstractVector, m) = @inbounds a * colfac[m]
+@inline _colmul(a, ::_NoScale, m) = a
+@inline _rowmul(rowfac::AbstractVector, n, s, amat, ia) = @inbounds rowfac[n] * s
+@inline _rowmul(::_NoScale{false}, n, s, amat, ia) = s
+@inline _rowmul(::_NoScale{true}, n, s, amat, ia) = @inbounds typeof(s)(amat[ia[n]]) < zero(s) ? -s : s
+
+# The row and column factors as the operator kernels take them.
+_op_factors(s::KrylovSolver) =
+    s.settings.scaling === :none ? (_NoScale{s.settings.method === :cg}(), _NoScale{s.settings.method === :cg}()) : (s.rowfac, s.colfac)
 
 # --- PCG (ims_base_cg)
 
@@ -775,9 +858,9 @@ end
     @inbounds begin
         for ii in ia[n]:(ia[n + 1] - Int32(1))
             m = ja[ii]
-            s += Ts(amat[ii]) * colfac[m] * (z[m] + beta * pold[m])
+            s += _colmul(Ts(amat[ii]), colfac, m) * (z[m] + beta * pold[m])
         end
-        return rowfac[n] * s
+        return _rowmul(rowfac, n, s, amat, ia)
     end
 end
 
@@ -1015,7 +1098,9 @@ end
 # continues after all (it cannot with Float64 reductions, which the host tests unchanged),
 # the application is repeated. The direction update is fused into the SpMV
 # (`_dir_apply_dot`, two direction vectors `p` and `phat`).
-function _solve_cg!(s::KrylovSolver{Ts}, amat, kstp, res) where {Ts}
+_solve_cg!(s::KrylovSolver, amat, kstp, res) = _solve_cg!(s, amat, kstp, res, _op_factors(s)...)
+
+function _solve_cg!(s::KrylovSolver{Ts}, amat, kstp, res, rf, cf) where {Ts}
     st = s.settings
     csr = s.csr
     backend = get_backend(s)
@@ -1058,7 +1143,7 @@ function _solve_cg!(s::KrylovSolver{Ts}, amat, kstp, res) where {Ts}
         beta = iiter == 1 ? 0.0 : rho / rho0
         pold, p = p, pold
         @timed_section :spmv_dot _reduce_async!(
-            red2, backend, _dir_apply_dot, _SUM4, n, s.q, p, s.z, pold, Ts(beta), amat, csr.ia, csr.ja, s.rowfac, s.colfac;
+            red2, backend, _dir_apply_dot, _SUM4, n, s.q, p, s.z, pold, Ts(beta), amat, csr.ia, csr.ja, rf, cf;
             post = _AlphaPost(), sa, ss,
         )
         north = st.north > 0 && mod(iiter + 1, st.north) == 0
@@ -1068,14 +1153,14 @@ function _solve_cg!(s::KrylovSolver{Ts}, amat, kstp, res) where {Ts}
                 post = north ? _NoPost() : _SetRho{4}(), sa, ss,
             )
             north && @timed_section :true_residual _reduce_async!(
-                red3, backend, _cg_true_residual, _SUM4, n, s.r, s.z, s.x, s.b0, amat, csr.ia, csr.ja, s.rowfac, s.colfac, s.minv;
+                red3, backend, _cg_true_residual, _SUM4, n, s.r, s.z, s.x, s.b0, amat, csr.ia, csr.ja, rf, cf, s.minv;
                 post = _SetRho{1}(), sa, ss,
             )
         else
             @timed_section :update_reduce _reduce_async!(
                 red, backend, _cg_update_nf, _CG_UPDATE_OPS, n, s.x, s.r, p, s.q, ss; post = stoppost, sa, ss,
             )
-            north && @timed_section :true_residual _map!(backend, _true_residual_nf, n, s.r, s.x, s.b0, amat, csr.ia, csr.ja, s.rowfac, s.colfac)
+            north && @timed_section :true_residual _map!(backend, _true_residual_nf, n, s.r, s.x, s.b0, amat, csr.ia, csr.ja, rf, cf)
             _apply_dot_async!(s, backend, n, red3, _SetRho{1}())
         end
         _sync(backend)
@@ -1101,7 +1186,9 @@ function _solve_cg!(s::KrylovSolver{Ts}, amat, kstp, res) where {Ts}
     return KrylovResult(icnvg == 1, innerit, _status(icnvg, innerit, st.maxiter), abs(deltax), abs(rmax), l2norm0, l2norm)
 end
 
-function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res) where {Ts}
+_solve_bcgs!(s::KrylovSolver, amat, kstp, res) = _solve_bcgs!(s, amat, kstp, res, _op_factors(s)...)
+
+function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res, rf, cf) where {Ts}
     st = s.settings
     csr = s.csr
     backend = get_backend(s)
@@ -1136,7 +1223,7 @@ function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res) where {Ts}
             @timed_section :precond_apply precond_apply!(s.phat, s.precond, s.p)
         end
         @timed_section :spmv_dot _reduce_async!(
-            red2, backend, _apply_dot, _SUM4, n, s.v, s.phat, s.dhat, amat, csr.ia, csr.ja, s.rowfac, s.colfac; post = _AlphaPost(), sa, ss,
+            red2, backend, _apply_dot, _SUM4, n, s.v, s.phat, s.dhat, amat, csr.ia, csr.ja, rf, cf; post = _AlphaPost(), sa, ss,
         )
         if jac
             @timed_section :vector_update _map!(backend, _bcgs_half, n, s.q, s.qhat, s.r, s.v, s.minv, ss)
@@ -1145,7 +1232,7 @@ function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res) where {Ts}
             @timed_section :precond_apply precond_apply!(s.qhat, s.precond, s.q)
         end
         @timed_section :spmv_dot _reduce_async!(
-            red3, backend, _bcgs_apply_t, _SUM4, n, s.t, s.qhat, s.q, amat, csr.ia, csr.ja, s.rowfac, s.colfac; post = _OmegaPost(), sa, ss,
+            red3, backend, _bcgs_apply_t, _SUM4, n, s.t, s.qhat, s.q, amat, csr.ia, csr.ja, rf, cf; post = _OmegaPost(), sa, ss,
         )
         north = st.north > 0 && mod(iiter + 1, st.north) == 0
         @timed_section :update_reduce _reduce_async!(
@@ -1159,7 +1246,7 @@ function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res) where {Ts}
         if north
             # ims_base_residual; reduced into `red2`, whose alpha has been read.
             @timed_section :true_residual _reduce_async!(
-                red2, backend, _bcgs_true_residual, _SUM4, n, s.r, s.dhat, s.x, s.b0, amat, csr.ia, csr.ja, s.rowfac, s.colfac;
+                red2, backend, _bcgs_true_residual, _SUM4, n, s.r, s.dhat, s.x, s.b0, amat, csr.ia, csr.ja, rf, cf;
                 post = _SetRho{1}(), sa, ss,
             )
             _sync(backend)
