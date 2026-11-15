@@ -1,0 +1,1214 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Bart Schilperoort <b.schilperoort@esciencecenter.nl>
+Date: Sun, 15 Nov 2026 00:02:41 +0100
+Subject: [PATCH] T5.5a: global-size dress rehearsal
+
+Models from arrays (StaticInputs keyword constructor, GroundwaterModel(config, inputs));
+cell maps by binary search and host checks of the gather maps (src/cell_maps.jl);
+examples/mgv_coupling/global_rehearsal.jl (mGV global + synthetic global5m MODFLOW on one
+GPU); examples/global: draft global config, mGV global config, input checks, routing
+merge script; tests.
+---
+ examples/global/README.md                 |  34 +++
+ examples/global/check_inputs.jl           | 164 ++++++++++++
+ examples/global/global.toml               |  60 +++++
+ examples/global/merge_routing_tiles.py    | 122 +++++++++
+ examples/global/mgv_global.toml           |  40 +++
+ examples/mgv_coupling/README.md           |  20 ++
+ examples/mgv_coupling/coupling.jl         |  35 +--
+ examples/mgv_coupling/global_rehearsal.jl | 302 ++++++++++++++++++++++
+ src/ModflowCoupling.jl                    |   3 +-
+ src/cell_maps.jl                          |  79 ++++++
+ src/config.jl                             |  10 +-
+ src/gpu_engine.jl                         |  12 +-
+ src/inputs.jl                             |  34 +++
+ src/model.jl                              |  18 +-
+ test/runtests.jl                          |  86 ++++++
+ 15 files changed, 990 insertions(+), 29 deletions(-)
+ create mode 100644 examples/global/README.md
+ create mode 100644 examples/global/check_inputs.jl
+ create mode 100644 examples/global/global.toml
+ create mode 100644 examples/global/merge_routing_tiles.py
+ create mode 100644 examples/global/mgv_global.toml
+ create mode 100644 examples/mgv_coupling/global_rehearsal.jl
+ create mode 100644 src/cell_maps.jl
+
+diff --git a/examples/global/README.md b/examples/global/README.md
+new file mode 100644
+index 0000000..2e0237e
+--- /dev/null
++++ b/examples/global/README.md
+@@ -0,0 +1,34 @@
++# Global inputs (ModflowGPU T5.5a, for T5.5b)
++
++- `global.toml`: the global MODFLOW config with the chosen input files (draft for the
++  coupled global run; GPU engine). It does **not** run as is: the steady-head file has no
++  head on the 173,727 CHD cells (see below).
++- `mgv_global.toml`: the mGV config (parameters, generated routing, land-only forcing).
++- `check_inputs.jl`: reads every input through ModflowCoupling and compares the grids of
++  MODFLOW, the mGV parameters, the forcing and the routing file. The results and the
++  reasons for each file choice are in ModflowGPU's `docs/global_inputs.md`.
++- `merge_routing_tiles.py`: merges routing files of mGV-input-data's `make-routing.py`.
++
++## The global routing file
++
++mGV-input-data at `7e4418b`, HydroSHEDS v1 DEM `hyd_glo_dem_15s.tif` (from
++`hyd_glo_dem_15s.zip`, sha256 `630e92fa…5301`), in `/home/bart/data/mGV/`. The global box
++(`--bbox -180 -56 180 84`) was killed by the out-of-memory killer at 52 GB in the IHU
++upscaling step (61 GB machine, 50 GB limit), so the globe is made in two boxes split at
++-25° (Atlantic; crosses only Greenland) and merged; mGV needs routing values on every
++active cell, so the 2,841 active cells without HydroSHEDS data are added as one-cell
++basins (`--fill-domain`):
++
++```sh
++cd /home/bart/data/mGV
++uv run mGV-input-data/routing/HydroSHEDS/make-routing.py --bbox -25 -56 180 84 \
++    --dem hydrosheds/hyd_glo_dem_15s.tif --output routing/routing_5min_tile_east.nc   # 29.2 GB, 6 min
++uv run mGV-input-data/routing/HydroSHEDS/make-routing.py --bbox -180 -56 -25 84 \
++    --dem hydrosheds/hyd_glo_dem_15s.tif --output routing/routing_5min_tile_west.nc   # 21.5 GB, 3 min
++uv run <this directory>/merge_routing_tiles.py --output routing/routing_global_5min.nc \
++    --fill-domain vic_global_5min_params_lossless.nc routing/routing_5min_tile_west.nc routing/routing_5min_tile_east.nc
++```
++
++The routing grid is the parameter grid (4320 × 1680, coordinates within 5.1e-6°). The
++DEM covers 84 N to 56 S, the same extent as the parameter grid (its northernmost valid
++data at about 83.5 N).
+diff --git a/examples/global/check_inputs.jl b/examples/global/check_inputs.jl
+new file mode 100644
+index 0000000..10c93cb
+--- /dev/null
++++ b/examples/global/check_inputs.jl
+@@ -0,0 +1,164 @@
++#= Checks of the global MODFLOW and mGV inputs before a coupled global run (ModflowGPU
++card T5.5a, for T5.5b). Reads only; prints a report (README.md next to this file has the
++results of 2026-11-14).
++
++    julia --project=examples/mgv_coupling examples/global/check_inputs.jl \
++        examples/global/global.toml <mgv_param.nc> <mgv_forcing.zarr> [<routing.nc>]
++
++1. The MODFLOW inputs of the config: read through ModflowCoupling (every file's
++   coordinates within 1e-3 degrees of the ibound grid), the parameters built, the
++   static audit, records per package and duplicate records per cell (DRN, RIV, EVT:
++   the device coupling allows one record per cell and package).
++2. The file variants: `_nogl` against the original domain, capillary rise v2 against
++   v3, the v2clamped Z0 and min_dem, the CHD heads of the steady-head file.
++3. The grids of MODFLOW, the mGV parameters, the forcing and the routing file: the
++   same coordinates, and which active cells of each model the other lacks.
++=#
++using ModflowCoupling, NCDatasets, Printf, Statistics
++import ModflowCoupling as MC
++import mGV
++
++length(ARGS) >= 3 || error("usage: check_inputs.jl <global.toml> <mgv_param.nc> <mgv_forcing.zarr> [<routing.nc>]")
++config_path, param_path, forcing_path = ARGS[1:3]
++routing_path = get(ARGS, 4, "")
++
++section(title) = println("\n== ", title)
++pct(a, b) = @sprintf("%.2f %%", 100 * a / b)
++
++config = load_config(config_path)
++section("MODFLOW inputs ($(config_path))")
++t = @elapsed s = read_static_inputs(config)
++@printf("read in %.0f s: grid %d x %d, lon %.4f .. %.4f, lat %.4f .. %.4f, DELR %.1f m\n", t, size(s)..., s.lon[1], s.lon[end],
++        s.lat[1], s.lat[end], s.delr)
++idcount = Dict(v => count(==(v), s.idomain) for v in unique(s.idomain))
++println("idomain counts: ", sort(collect(idcount)), "; landmask ", count(s.landmask))
++active = s.idomain .> 0
++println("active cells not on land: ", count(active .& .!s.landmask), " (idomain 2: ", count((s.idomain .== 2) .& s.landmask), " on land)")
++for f in (:dem, :aqdepth, :cell_area, :ksat_log, :spe_yi, :qbank, :riv_slope, :min_dem, :z0_floodplain, :kq3, :catchment,
++          :cpsurface, :cprate, :cpdistinct)
++    a = getfield(s, f)
++    land = s.landmask .& active
++    @printf("  %-15s finite on %8d of %d active land cells (%s missing)\n", f, count(isfinite, a[land]), count(land),
++            pct(count(!isfinite, a[land]), count(land)))
++end
++for l in 1:2
++    h = s.steady_head[:, :, l]
++    @printf("  steady_head layer %d: finite on %d of %d land cells, on %d of %d CHD cells\n", l, count(isfinite, h[s.landmask .& active]),
++            count(s.landmask .& active), count(isfinite, h[s.idomain .== 2]), count(==(2), s.idomain))
++end
++
++p = try
++    build_parameters(s, config)
++catch err
++    println("build_parameters FAILED: ", sprint(showerror, err))
++    # The CHD ring lies in the ocean: with heads at sea level the rest can be checked.
++    chd = (s.idomain .== 2) .& .!isfinite.(s.steady_head[:, :, 1])
++    println("  retrying with sea level (0 m) on the $(count(chd)) CHD cells without a head")
++    h = copy(s.steady_head)
++    for l in 1:2
++        view(h, :, :, l)[chd] .= 0.0
++    end
++    global s = MC.StaticInputs((getfield(s, f) for f in fieldnames(MC.StaticInputs)[1:(end - 1)])..., h)
++    build_parameters(s, config)
++end
++section("Packages")
++nland = count(s.landmask .& active)
++for (name, cells) in (("CHD (per layer)", p.chd_cells), ("RCH", p.rch_cells), ("RIV", p.river.cells), ("DRN", p.drain.cells),
++                      ("EVT", p.evt_cells))
++    dup = length(cells) - length(unique(cells))
++    @printf("  %-15s %8d records, %d duplicate cells\n", name, length(cells), dup)
++end
++@printf("  RIV with width > 30 m (river conductance): %d; drain-like: %d\n", count(p.river.is_river), count(.!p.river.is_river))
++@printf("  model nodes (2 layers): %d\n", 2 * count(active))
++for (name, ok) in audit_static_inputs(s, p, config)
++    println("  audit: ", ok ? "pass" : "FAIL", "  ", name)
++end
++
++section("File variants")
++gd = config.data_dir
++readvar(file, var = nothing) = NCDataset(joinpath(gd, file)) do ds
++    v = var === nothing ? only(k for k in keys(ds) if ndims(ds[k]) >= 2) : var
++    MC.to_float.(ds[v][:, :, ntuple(_ -> 1, ndims(ds[v]) - 2)...])
++end
++ib_old, ib_new = readvar("ibound_oc.nc"), readvar("ibound_oc_nogl.nc")
++lm_old, lm_new = readvar("landmask_oc.nc"), readvar("landmask_oc_nogl.nc")
++@printf("ibound active: original %d, nogl %d; nogl ⊂ original: %s\n", count(>(0), ib_old), count(>(0), ib_new),
++        all(ib_old[ib_new .> 0] .> 0))
++removed = (ib_old .== 1) .& .!(ib_new .== 1)
++rem = findall(removed)
++@printf("cells removed by nogl: %d, lon %.2f .. %.2f, lat %.2f .. %.2f\n", length(rem), extrema(s.lon[[c[1] for c in rem]])...,
++        extrema(s.lat[[c[2] for c in rem]])...)
++@printf("landmask: original %d, nogl %d\n", count(x -> isfinite(x) && x != 0, lm_old), count(x -> isfinite(x) && x != 0, lm_new))
++v2 = readvar("capillary_rise_oc_v2.nc", "cprate")
++v3 = readvar("capillary_rise_oc_v3.nc", "cprate")
++phys = readvar("capillary_rise_oc_v3.nc", "cprate_physical")
++area = readvar("cell_area_oc.nc")
++both = isfinite.(v2) .& isfinite.(v3) .& (v2 .!= 0)
++ratio = v3[both] ./ v2[both]
++factor = (area ./ (s.delr * s.delc))[both]
++@printf("capillary v3/v2 cprate: median %.4f; max |v3/v2 - cell_area/(DELR*DELC)| = %.2e; v3 cprate_physical == v2 cprate: %s\n",
++        median(ratio), maximum(abs.(ratio .- factor)), isequal(phys[both], v2[both]))
++for name in ("cpsurface", "cpdistinct")
++    @printf("capillary v2 vs v3 %s identical: %s\n", name, isequal(readvar("capillary_rise_oc_v2.nc", name), readvar("capillary_rise_oc_v3.nc", name)))
++end
++for (new, old) in (("Z0_floodplain_oc_v2clamped.nc", "Z0_floodplain_oc.nc"), ("min_dem_oc_v2clamped.nc", "min_dem_oc.nc"))
++    a, b = readvar(new), readvar(old)
++    m = (ib_new .== 1) .& isfinite.(a) .& isfinite.(b)
++    @printf("%s - %s on nogl land: median %.1f m, p95 |.| %.1f m; finite on nogl land: %d / %d\n", new, old,
++            median(a[m] .- b[m]), quantile(abs.(a[m] .- b[m]), 0.95), count(isfinite, a[ib_new .== 1]), count(==(1), ib_new))
++end
++q_old, q_new = readvar("bankfull_discharge_1979_2010_vicwur5min.nc"), readvar("qbank_daily_1979_2019_natpcv_gwm_v1.nc")
++m = (ib_new .== 1) .& isfinite.(q_old) .& isfinite.(q_new) .& (q_old .> 0)
++@printf("qbank new/old on nogl land: median %.2f\n", median(q_new[m] ./ q_old[m]))
++for file in ("initial_head_gv2p41_5min_nogl.nc", "daily_bankfull_mf_ss_gwl_5minDRN.nc")
++    NCDataset(joinpath(gd, file)) do ds
++        h = MC.to_float.(ds["gwl"][:, :, 1])
++        @printf("%s layer 1: finite on %d of %d nogl CHD cells (values there: %s), %d of %d nogl land cells\n", file,
++                count(isfinite, h[ib_new .== 2]), count(==(2), ib_new),
++                count(isfinite, h[ib_new .== 2]) > 0 ? @sprintf("%.1f .. %.1f m", extrema(filter(isfinite, h[ib_new .== 2]))...) : "-",
++                count(isfinite, h[ib_new .== 1]), count(==(1), ib_new))
++    end
++end
++
++section("Grids")
++coords(path, lon = "lon", lat = "lat") = NCDataset(path) do ds
++    Float64.(ds[lon][:]), Float64.(ds[lat][:])
++end
++plon, plat = coords(param_path)
++run_cell = NCDataset(ds -> Array(ds["run_cell"][:, :]), param_path)
++mgv_active = map(x -> !ismissing(x) && x > 0, run_cell)
++@printf("mGV parameters: %d x %d, max |Δlon| %.2e, max |Δlat| %.2e against MODFLOW; %d active cells\n", length(plon), length(plat),
++        maximum(abs.(plon .- s.lon)), maximum(abs.(plat .- s.lat)), count(mgv_active))
++mf_active = s.idomain .== 1
++@printf("  mGV active, not MODFLOW land (idomain 1): %d (of which idomain 2: %d, idomain 0: %d)\n", count(mgv_active .& .!mf_active),
++        count(mgv_active .& (s.idomain .== 2)), count(mgv_active .& (s.idomain .== 0)))
++ex = findall(mgv_active .& .!mf_active)
++isempty(ex) || @printf("    their extent: lon %.2f .. %.2f, lat %.2f .. %.2f; in the nogl removal: %d\n",
++                       extrema(s.lon[[c[1] for c in ex]])..., extrema(s.lat[[c[2] for c in ex]])..., count(removed[ex]))
++@printf("  MODFLOW land, not mGV active: %d\n", count(mf_active .& .!mgv_active))
++
++z = mGV.Zarr.zopen(forcing_path)
++flon, flat = Float64.(z["lon"][:]), Float64.(z["lat"][:])
++@printf("forcing %s: %d x %d, max |Δlon| %.2e, max |Δlat| %.2e against the parameters; variables %s\n", basename(forcing_path),
++        length(flon), length(flat), maximum(abs.(flon .- plon)), maximum(abs.(flat .- plat)), join(sort(collect(keys(z.arrays))), ", "))
++if haskey(z.arrays, "lon_index")
++    idx = Int.(z["lon_index"][:]) .+ 1 .+ Int.(z["lat_index"][:]) .* length(flon)
++    have = falses(size(mgv_active))
++    have[idx] .= true
++    @printf("  land-only store: %d cells (%d unique); mGV active cells without forcing: %d; forcing cells not mGV active: %d\n",
++            length(idx), length(unique(idx)), count(mgv_active .& .!have), count(have .& .!mgv_active))
++    t = z["time"]
++    @printf("  time: %d steps, %s\n", length(t), get(t.attrs, "units", "?"))
++end
++
++if !isempty(routing_path)
++    rlon, rlat = coords(routing_path)
++    ids = NCDataset(ds -> Array(ds["downstream_id"][:, :]), routing_path)
++    valid = map(x -> !ismissing(x) && x > 0, ids)
++    @printf("routing %s: %d x %d, max |Δlon| %.2e, max |Δlat| %.2e against the parameters; %d network cells\n", basename(routing_path),
++            length(rlon), length(rlat), maximum(abs.(rlon .- plon)), maximum(abs.(rlat .- plat)), count(valid))
++    @printf("  mGV active cells without a routing cell: %d; routing cells not mGV active: %d\n",
++            count(mgv_active .& .!valid), count(valid .& .!mgv_active))
++    miss = findall(mgv_active .& .!valid)
++    isempty(miss) || @printf("    their latitude range: %.2f .. %.2f\n", extrema(plat[[c[2] for c in miss]])...)
++end
+diff --git a/examples/global/global.toml b/examples/global/global.toml
+new file mode 100644
+index 0000000..77754b1
+--- /dev/null
++++ b/examples/global/global.toml
+@@ -0,0 +1,60 @@
++# Global 5 arcmin MODFLOW model for the mGV coupling (ModflowGPU T5.5b), with the input
++# file choices of the T5.5a input checks (examples/global/README.md; run
++# `check_inputs.jl` to repeat them). Paths are those of the machine the checks ran on.
++# Relative paths are resolved against this file's directory.
++model_name = "GLOBAL"
++
++[paths]
++data_dir = "/home/bart/data/modflow/global_data"
++work_dir = "../../run/global/mf6"
++output_dir = "../../run/global/output"
++# No coupled steady state yet: T5.5b computes the first one (steady-state spin-up,
++# period = "steady"). Until then the initial head is inputs.steady_head.
++
++[time]
++start_date = 1979-01-01
++end_date = 1979-12-31
++period = "day"   # the mGV coupling exchanges daily
++
++[coupling]
++foc = true       # EVT package + capillary-rise feedback
++pumping = false
++
++[output]
++write_monthly = false
++save_mf6_binary = false
++
++[audit]
++orientation = true
++
++[solver]
++engine = "gpu"   # the mf6 engine would need about 2 GB of MF6 input files and runs serially
++# backend, precision, preconditioner, coupling: "auto" (rocm, :mixed, mc_ilu0, device)
++# outer_dvclose = inner_dvclose = 0.01 (the GPU engine default, ModflowGPU decision 9)
++
++# Static inputs, relative to data_dir. All files are on the 4320 x 1680 grid of the mGV
++# parameter file (84 N to 56 S, latitude ascending in every file; checked by
++# check_inputs.jl). The `_nogl` domain (VIC active domain without Greenland,
++# coupled_domain_rebuild.qa.json) and the files rebuilt on it are used throughout.
++[inputs]
++ibound = "ibound_oc_nogl.nc"
++landmask = "landmask_oc_nogl.nc"
++dem = "dem_ini_oc.nc"
++aqdepth = "aqdepth_ini_oc.nc"
++cell_area = "cell_area_oc.nc"
++ksat_log = "ksat_log_oc.nc"
++ksat_l1_conf_log = "ksat_l1_conf_log_oc.nc"
++ksat_l2_conf_log = "ksat_l2_conf_log_oc.nc"
++spe_yi = "spe_yi_inp_oc.nc"
++qbank = "qbank_daily_1979_2019_natpcv_gwm_v1.nc"
++riv_slope = "riv_slope_oc.nc"
++min_dem = "min_dem_oc_v2clamped.nc"
++z0_floodplain = "Z0_floodplain_oc_v2clamped.nc"
++kq3 = "KQ3_oc.nc"
++catchment = "ldd_oc_nogl.nc"   # catchment ids, not flow directions (as ldd_indus_updated.nc)
++# v2, not v3: v3's `cprate` is the physical rate times cell_area / (DELR * DELC), and
++# ModflowCoupling applies that factor itself (evt_parameters), so v3 would apply it twice.
++cpsurface = { file = "capillary_rise_oc_v2.nc", variable = "cpsurface" }
++cprate = { file = "capillary_rise_oc_v2.nc", variable = "cprate" }
++cpdistinct = { file = "capillary_rise_oc_v2.nc", variable = "cpdistinct" }
++steady_head = "initial_head_gv2p41_5min_nogl.nc"
+diff --git a/examples/global/merge_routing_tiles.py b/examples/global/merge_routing_tiles.py
+new file mode 100644
+index 0000000..a55d304
+--- /dev/null
++++ b/examples/global/merge_routing_tiles.py
+@@ -0,0 +1,122 @@
++# /// script
++# requires-python = ">=3.12"
++# dependencies = ["netCDF4", "numpy", "xarray"]
++# ///
++"""Merge routing files of make-routing.py (mGV-input-data) for adjacent longitude boxes.
++
++ModflowGPU T5.5a: make-routing.py with the global box (--bbox -180 -56 180 84) needs more
++than 50 GB of memory (killed in the IHU upscaling step on a 61 GB machine), so the global
++file is made from boxes that split the globe at a meridian, here -25 (in the Atlantic: it
++crosses only Greenland's ice sheet; Iceland lies east of it). Each box is a complete
++network; cells that drain across the seam become outlets, as at the edge of any box.
++
++The boxes must be on one grid (same resolution, latitudes and longitude spacing) and
++adjacent in longitude, given west to east. The merged file has the variables, attributes
++and conventions of make-routing.py: ids 1..N in (lat, lon) order with latitude from
++south to north, `downstream` the id of the downstream cell (outlets drain to themselves).
++
++`--fill-domain <mGV parameter file>`: mGV needs routing values on every active cell of
++its parameter file (`run_cell > 0`). Active cells without HydroSHEDS land data (2,841 on
++the global 5' grid) are added as one-cell basins: their own outlet, with the spherical
++cell area (as make-routing.py), `cell_dist` sqrt(cell_area) (what make-routing.py writes
++for outlets) and the cell area as accumulation; `flow_direction` 0 (outlet).
++
++Usage:
++    uv run merge_routing_tiles.py --output routing_global.nc [--fill-domain params.nc] west.nc east.nc
++"""
++
++import argparse
++from datetime import datetime, timezone
++
++import numpy as np
++import xarray as xr
++
++EARTH_RADIUS = 6371.0e3  # m, as make-routing.py
++
++
++def cell_area(lat, res):
++    """Spherical area [m2] of cells with centre latitude lat and size res (degrees), as make-routing.py."""
++    return EARTH_RADIUS**2 * np.deg2rad(res) * np.abs(np.sin(np.deg2rad(lat + res / 2)) - np.sin(np.deg2rad(lat - res / 2)))
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
++    parser.add_argument("tiles", nargs="+", help="routing files, west to east")
++    parser.add_argument("--output", required=True)
++    parser.add_argument("--fill-domain", help="mGV parameter file: add its active cells without routing data as outlets")
++    args = parser.parse_args()
++
++    tiles = [xr.open_dataset(p, mask_and_scale=False) for p in args.tiles]
++    lat = tiles[0]["lat"].values
++    for p, t in zip(args.tiles, tiles):
++        if not np.array_equal(t["lat"].values, lat):
++            raise ValueError(f"{p}: latitudes differ from {args.tiles[0]}")
++    lon = np.concatenate([t["lon"].values for t in tiles])
++    steps = np.diff(lon)
++    if not np.allclose(steps, steps[0], rtol=0, atol=1e-6 * abs(steps[0])):
++        raise ValueError("the tiles are not adjacent on one longitude grid (give them west to east)")
++    res = abs(steps[0])
++
++    ids = [t["downstream_id"].values.astype(np.int64) for t in tiles]
++    routed = np.concatenate([i > 0 for i in ids], axis=1)
++    filled = np.zeros_like(routed)
++    if args.fill_domain:
++        with xr.open_dataset(args.fill_domain) as p:
++            if not (np.allclose(p["lat"].values, lat, atol=1e-4) and np.allclose(p["lon"].values, lon, atol=1e-4)):
++                raise ValueError(f"{args.fill_domain} is on another grid")
++            run_cell = np.nan_to_num(p["run_cell"].values.astype(np.float64)) > 0
++        filled = run_cell & ~routed
++    valid = routed | filled
++
++    # New ids: 1..N over the merged grid in (lat, lon) order, latitude south to north (the
++    # files store latitude ascending, as make-routing.py writes them)
++    new_id = np.zeros(valid.shape, dtype=np.int64)
++    new_id[valid] = np.arange(1, valid.sum() + 1)
++    downstream = np.full(valid.shape, -1, dtype=np.int64)
++    col = 0
++    for t, old in zip(tiles, ids):
++        n = old.shape[1]
++        block = new_id[:, col : col + n]
++        lookup = np.zeros(old.max() + 1, dtype=np.int64)  # old id -> new id within this tile
++        lookup[old[old > 0]] = block[old > 0]
++        ds = t["downstream"].values.astype(np.int64)
++        sel = old > 0
++        sub = downstream[:, col : col + n]
++        sub[sel] = lookup[ds[sel]]
++        col += n
++    downstream[filled] = new_id[filled]
++    if np.any(downstream[valid] <= 0):
++        raise ValueError("a downstream id was not found in its tile")
++
++    area = cell_area(np.broadcast_to(lat[:, None], valid.shape), res)
++    fill_values = {"cell_area": area, "accumulation": area, "cell_dist": np.sqrt(area), "flow_direction": np.zeros(valid.shape)}
++    out = xr.Dataset(coords={"lat": tiles[0]["lat"], "lon": ("lon", lon, tiles[0]["lon"].attrs)})
++    for name in tiles[0].data_vars:
++        attrs = tiles[0][name].attrs
++        if name == "downstream_id":
++            data = np.where(valid, new_id, -1).astype(np.int32)
++        elif name == "downstream":
++            data = np.where(valid, downstream, -1).astype(np.int32)
++        else:
++            data = np.concatenate([t[name].values for t in tiles], axis=1)
++            if name in fill_values:
++                data[filled] = fill_values[name][filled].astype(data.dtype)
++        out[name] = (("lat", "lon"), data, {k: v for k, v in attrs.items() if k != "_FillValue"})
++    out.attrs = dict(tiles[0].attrs)
++    out.attrs["history"] = (
++        f"{datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S} UTC: merge_routing_tiles.py of "
++        + ", ".join(f"[{t.attrs.get('history', '?')}]" for t in tiles)
++        + (f"; {int(filled.sum())} active cells of {args.fill_domain} without routing data added as outlets" if filled.any() else "")
++    )
++    encoding = {v: {"zlib": True, "complevel": 4} for v in out.data_vars}
++    for v in out.data_vars:
++        fill = tiles[0][v].attrs.get("_FillValue", tiles[0][v].encoding.get("_FillValue"))
++        if fill is not None:
++            encoding[v]["_FillValue"] = fill
++    out.to_netcdf(args.output, encoding=encoding)
++    print(f"written {args.output}: {lat.size} x {lon.size}, {valid.sum()} network cells, "
++          f"{int((new_id[valid] == downstream[valid]).sum())} outlets, {int(filled.sum())} cells added from the domain")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/examples/global/mgv_global.toml b/examples/global/mgv_global.toml
+new file mode 100644
+index 0000000..00cc48e
+--- /dev/null
++++ b/examples/global/mgv_global.toml
+@@ -0,0 +1,40 @@
++# mGV global config for the coupled global run (ModflowGPU T5.5a/T5.5b), from mGV's
++# configs/global_config_zarr.toml with the inputs on this machine (README.md here):
++# - parameters: vic_global_5min_params_lossless.nc (2,288,857 active cells, 84 N - 56 S)
++# - routing: routing_global_5min.nc, made with mGV-input-data's make-routing.py in two
++#   longitude boxes and merged (merge_routing_tiles.py, README.md)
++# - forcing: the land-only WFDE5 v3.1 store of 1979, all seven variables in one store
++#   (`forcing_file`; the per-variable entries default to it, names are mGV's defaults)
++start_year = 1979
++end_year = 1979
++
++enable_routing = true
++enable_snow = true
++fillvalue_threshold = 1e15
++
++[output]
++dir         = "../../run/global/mgv"
++file_prefix = "global_"
++format      = "netcdf"
++variables   = []   # none; list mGV output variables to write them
++
++[API]
++# MODFLOW routes the subsurface runoff (required by the coupling, examples/mgv_coupling)
++external_groundwater_routing = true
++
++[input]
++[input.paths]
++input_param_file   = "/home/bart/data/mGV/vic_global_5min_params_lossless.nc"
++routing_param_file = "/home/bart/data/mGV/routing/routing_global_5min.nc"
++forcing_file       = "/home/bart/data/mGV/WFDE5_v3.1_5arcmin_land_1979.zarr"
++# The gridded per-variable stores: one entry per variable, for example as below. Their
++# layout is NOT checked: the drive was not mounted when this was written (T5.5a).
++# precipitation_file    = "/media/bart/Data/Work/SWIFT/WFDE5_v3.1_5arcmin.zarr/prec"
++# air_temperature_file  = ".../tair"
++# wind_speed_file       = ".../wind"
++# vapor_pressure_file   = ".../vp"
++# shortwave_down_file   = ".../swdown"
++# longwave_down_file    = ".../lwdown"
++# surface_pressure_file = ".../psurf"
++
++[input.names]
+diff --git a/examples/mgv_coupling/README.md b/examples/mgv_coupling/README.md
+index 8c2398e..1def3f6 100644
+--- a/examples/mgv_coupling/README.md
++++ b/examples/mgv_coupling/README.md
+@@ -85,6 +85,26 @@ host path (BMI arrays), which the mf6 engine always uses; both give the same val
+ (ModflowGPU T5.4: bitwise equal heads, baseflow and capillary rise over 10 days in
+ `:single` and `:double`).
+ 
++### Global dress rehearsal
++
++`global_rehearsal.jl` (ModflowGPU T5.5a) runs the whole sequence at global size on one
++GPU: mGV with its real global inputs (`../global/mgv_global.toml`), MODFLOW as
++ModflowGPU's synthetic `global5m` model (6.6 M nodes) put through this package's
++parameters and GPU engine from arrays (`StaticInputs`, `GroundwaterModel(config,
++inputs)`), a steady-state spin-up whose model is finalized before the daily model is
++built from its heads, then daily coupled steps. It reports device memory at every stage
++and the time per day of each model:
++
++```bash
++mkdir -p run/global/mgv   # mGV's output directory of mgv_global.toml must exist
++MGV_BACKEND=rocm julia -t 8 --project=examples/mgv_coupling examples/mgv_coupling/global_rehearsal.jl \
++    examples/global/mgv_global.toml /tmp/rehearsal precision=mixed dvclose=0.01 days=365
++```
++
++The cell maps are built with `ModflowCoupling.cell_maps` (a binary search in the sorted
++MODFLOW coordinates) and checked on the host (`check_cell_map`) before they go to the
++device.
++
+ ## Starting heads
+ 
+ The global steady-state heads that MODFLOW starts from by default are close to
+diff --git a/examples/mgv_coupling/coupling.jl b/examples/mgv_coupling/coupling.jl
+index d902369..474fe05 100644
+--- a/examples/mgv_coupling/coupling.jl
++++ b/examples/mgv_coupling/coupling.jl
+@@ -26,30 +26,9 @@ import mGV
+ 
+ const COORD_ATOL = 1e-3    # degrees; both models are on the same 5 arcmin grid
+ 
+-"Index of the value of `v` within `atol` of `x`, or 0."
+-near(v, x; atol = COORD_ATOL) = (i = argmin(abs.(v .- x)); abs(v[i] - x) <= atol ? i : 0)
+-
+-"""
+-Cell maps between the MODFLOW grid (rectilinear, `mf_x` × `mf_y` flattened
+-longitude-fastest) and mGV's cells (mGV `main`: an unstructured grid of the active land
+-cells, one `(x, y)` per cell). Returns `(mf_to_vic, vic_to_mf)`: for every mGV cell the
+-MODFLOW cell with the same centre (within `atol`), and for every MODFLOW cell the mGV
+-cell; 0 where the other grid has no such cell.
+-"""
+-function cell_maps(mf_x, mf_y, vic_x, vic_y; atol = COORD_ATOL)
+-    nx = length(mf_x)
+-    mf_to_vic = map(zip(vic_x, vic_y)) do (x, y)
+-        i, j = near(mf_x, x; atol), near(mf_y, y; atol)
+-        (i > 0 && j > 0) ? i + (j - 1) * nx : 0
+-    end
+-    vic_to_mf = zeros(Int, nx * length(mf_y))
+-    for (k, i) in enumerate(mf_to_vic)
+-        i == 0 && continue
+-        vic_to_mf[i] == 0 || error("mGV cells $(vic_to_mf[i]) and $k have the same MODFLOW cell $i")
+-        vic_to_mf[i] = k
+-    end
+-    return mf_to_vic, vic_to_mf
+-end
++# `MC.cell_maps` (ModflowCoupling `src/cell_maps.jl`) pairs each mGV cell with the MODFLOW
++# cell of the same centre by binary search in the sorted MODFLOW coordinates (T5.5a; the
++# per-cell `argmin` over all coordinates took about 1e10 operations at global size).
+ 
+ "Source values on the destination grid; uncovered and non-finite cells become 0."
+ function regrid(src, map)
+@@ -153,7 +132,7 @@ function grid_maps(gw, vic)
+     length(BMI.get_value_ptr(vic, "channel_water__area~cross-sectional")) == n_vic ||
+         error("mGV routing grid differs from its land grid")
+ 
+-    mf_to_vic, vic_to_mf = cell_maps(mf_x, mf_y, vic_x, vic_y)
++    mf_to_vic, vic_to_mf = MC.cell_maps(mf_x, mf_y, vic_x, vic_y; atol = COORD_ATOL)
+     n_shared = count(>(0), mf_to_vic)
+     @info "Grid overlap" mGV_cells = n_vic MODFLOW_cells = length(mf_x) * length(mf_y) shared = n_shared
+     n_shared == 0 && @warn "mGV and MODFLOW grids do not overlap: the feedback will be zero"
+@@ -226,6 +205,12 @@ function Coupling(gw, vic; exchange::Symbol = :auto)
+     # The identity map (the same cells in the same order) needs no gather: conversion only.
+     n_mf = length(vic_to_mf)
+     identity = n_vic == n_mf && mf_to_vic == 1:n_mf
++    # The gather kernels read `src[map[i]]` without bounds checks: check the maps against
++    # the lengths of their sources once here, on the host (MODFLOW grid cells for
++    # `mf_to_vic`, mGV cells for `vic_to_mf`).
++    MC.check_cell_map(mf_to_vic, n_mf; name = "mf_to_vic")
++    MC.check_cell_map(vic_to_mf, n_vic; name = "vic_to_mf")
++    n_mf == prod(size(gw.inputs)) || error("the cell map covers $n_mf MODFLOW cells, the grid has $(prod(size(gw.inputs)))")
+     dmf = identity ? nothing : todev(Int32.(mf_to_vic))
+     dvic = identity ? nothing : todev(Int32.(vic_to_mf))
+     @info "Device exchange" backend = typeof(backend) precision = gw.mf.T identity_map = identity
+diff --git a/examples/mgv_coupling/global_rehearsal.jl b/examples/mgv_coupling/global_rehearsal.jl
+new file mode 100644
+index 0000000..05edfd7
+--- /dev/null
++++ b/examples/mgv_coupling/global_rehearsal.jl
+@@ -0,0 +1,302 @@
++#= Global-size dress rehearsal (ModflowGPU card T5.5a).
++
++How to run (both models on one GPU; see README.md, "Global dress rehearsal"):
++    MGV_BACKEND=rocm julia -t 8 --project=examples/mgv_coupling \
++        examples/mgv_coupling/global_rehearsal.jl <mgv_config.toml|none> <outdir> [key=value ...]
++
++MODFLOW is the synthetic `global5m` model of ModflowGPU (benchmark/synthetic.jl, T3.4:
++4320 × 2160 cells, 35 % land) put through ModflowCoupling's parameter transformations and
++GPU engine, built from arrays (`StaticInputs`, `GroundwaterModel(config, inputs)`; no
++NetCDF). Its grid is the global 5′ grid (cell centres -179.958 … 179.958 E, -89.958 …
++89.958 N), so the cells of mGV's global parameter grid (84 N to 56 S) map onto it by
++centre. The land masks of the two models differ (synthetic against real): the exchange
++runs on every overlapping cell, but the fields mean nothing physically. The run measures
++memory and time. MODFLOW takes mGV's recharge, but a synthetic river discharge (see the
++daily loop); mGV takes MODFLOW's baseflow and capillary rise.
++
++Sequence: mGV is initialized first (with `mgv_config`; `none` runs MODFLOW alone with
++synthetic forcing), then the MODFLOW steady-state spin-up (`period = "steady"`, synthetic
++mean recharge and 0.3 × bankfull discharge), whose model is finalized (its device memory
++freed) before the daily model is built from the spin-up heads; then `days` coupled days
++(mGV day D, MODFLOW day D, feedback for D+1, as `step_day_device!` in coupling.jl, with
++the two parts timed separately).
++
++Keys (defaults): precision=auto, dvclose=0.01 (outer and inner, daily and spin-up),
++days=365, steady_precond=auto (spin-up preconditioner), precond=auto (daily),
++steady_dvclose=dvclose, steady_gamma=0.5 and steady_outer=2000 (as spinup_steady_state.jl).
++
++Writes `<outdir>/days.csv` (per day: total, mGV and MODFLOW seconds, outer and inner
++iterations), `<outdir>/summary.toml` (memory and times) and `<outdir>/head_final.bin` (the
++layer-1 heads after the last day, Float64, for comparing closures; `head_steady.bin` those
++of the spin-up).
++=#
++const GPU_PACKAGE = get(ENV, "COUPLING_GPU_PACKAGE", "AMDGPU")
++isempty(GPU_PACKAGE) || @eval using $(Symbol(GPU_PACKAGE))
++include(joinpath(@__DIR__, "coupling.jl"))
++using TOML, Statistics
++import ModflowGPU
++include(joinpath(pkgdir(ModflowGPU), "benchmark", "synthetic.jl"))
++using .SyntheticModels: synthetic_fields
++
++const ARGV = ARGS
++length(ARGV) >= 2 || error("usage: global_rehearsal.jl <mgv_config.toml|none> <outdir> [key=value ...]")
++const MGV_CONFIG = ARGV[1] == "none" ? "" : abspath(ARGV[1])
++const OUTDIR = abspath(ARGV[2])
++const OPTS = Dict(split(a, "="; limit = 2)[1] => split(a, "="; limit = 2)[2] for a in ARGV[3:end])
++opt(k, default) = get(OPTS, k, string(default))
++const PRECISION = opt("precision", "auto")
++const DVCLOSE = parse(Float64, opt("dvclose", 0.01))
++const STEADY_DVCLOSE = parse(Float64, opt("steady_dvclose", DVCLOSE))
++const NDAYS = parse(Int, opt("days", 365))
++const STEADY_PRECOND = opt("steady_precond", "auto")
++const PRECOND = opt("precond", "auto")
++const STEADY_GAMMA = parse(Float64, opt("steady_gamma", 0.5))
++const STEADY_OUTER = parse(Int, opt("steady_outer", 2000))
++mkpath(OUTDIR)
++
++# ------------------------------------------------------------------------------------
++# Device memory: the stream-ordered pool (`AMDGPU.used_memory`, its high-water mark) and
++# the whole card (sysfs `mem_info_vram_used`, sampled every 20 ms: includes the
++# runtime, code objects, the pool's reserve and the desktop).
++# ------------------------------------------------------------------------------------
++const ROCM = GPU_PACKAGE == "AMDGPU"
++const SYSFS = get(ENV, "VRAM_SYSFS", "/sys/class/drm/card1/device/mem_info_vram_used")
++vram() = isfile(SYSFS) ? parse(Int, readchomp(SYSFS)) : 0
++sync() = ROCM ? AMDGPU.synchronize() : nothing
++pool_used() = ROCM ? (AMDGPU.synchronize(); Int(AMDGPU.used_memory())) : 0
++_pool() = AMDGPU.Mem.pool_create(AMDGPU.device())
++pool_peak() = ROCM ? (AMDGPU.synchronize(); Int(AMDGPU.HIP.attribute(UInt64, _pool(), AMDGPU.HIP.hipMemPoolAttrUsedMemHigh))) : 0
++pool_reset_peak!() = ROCM ? (AMDGPU.synchronize(); AMDGPU.HIP.attribute!(_pool(), AMDGPU.HIP.hipMemPoolAttrUsedMemHigh, UInt64(0)); nothing) : nothing
++mib(b) = round(b / 2^20; digits = 1)
++
++const VRAM_MAX = Threads.Atomic{Int}(0)
++const SAMPLING = Threads.Atomic{Bool}(true)
++sampler = Threads.@spawn while SAMPLING[]
++    Threads.atomic_max!(VRAM_MAX, vram())
++    sleep(0.02)
++end
++"Highest sysfs reading since the last call (and the current one)."
++vram_max!() = (v = max(VRAM_MAX[], vram()); VRAM_MAX[] = vram(); v)
++
++const LOG = Dict{String, Any}()
++const VRAM0 = vram()
++LOG["vram_before_mib"] = mib(VRAM0)
++"Record the memory state `name`: pool in use, pool peak and sysfs peak since the last record (net of the start)."
++function mark!(name)
++    sync()
++    d = Dict("pool_used_mib" => mib(pool_used()), "pool_peak_mib" => mib(pool_peak()),
++             "vram_peak_net_mib" => mib(vram_max!() - VRAM0), "vram_now_net_mib" => mib(vram() - VRAM0))
++    LOG["mem_$name"] = d
++    println("[mem] ", rpad(name, 22), join(("$k = $v" for (k, v) in sort(collect(d))), ", "))
++    flush(stdout)
++    return d
++end
++pool_reset_peak!()
++mark!("start")
++
++# ------------------------------------------------------------------------------------
++# The synthetic global5m model as ModflowCoupling static inputs
++# ------------------------------------------------------------------------------------
++
++"Permeability (log10 m²) for a conductivity in m/day (inverse of `permeability_to_conductivity`)."
++log10_permeability(k) = log10(k / (MC.RHO_WATER * MC.G_GRAVITY / MC.MU_WATER * 86400.0))
++
++"""
++ModflowCoupling `StaticInputs` from the synthetic fields `f` on the global 5′ grid:
++idomain = kind (land 1, ocean rim 2 = CHD at sea level), DEM, aquifer depth, K of both
++layers as permeabilities, storage coefficient as specific yield, bankfull discharge
++4 m³/s per upstream cell (river cells, ≥ 10 upstream cells, are wider than 30 m: RIV;
++the others drain-like), slope 1e-3, Z0 (drain level) `ddrn` below the DEM, KQ3 0.02 /day,
++one catchment per cell, EVT at the DEM with 1 mm/day and 2 m extinction depth, cell area
++DELR × DELC (uniform, as the synthetic model). Starting heads as the synthetic model
++(0.5 m above the drain level, 0 on the rim).
++"""
++function synthetic_inputs(f)
++    nx, ny = f.ncol, f.nrow
++    lon = [-180 + (i - 0.5) / 12 for i in 1:nx]
++    lat = [-90 + (j - 0.5) / 12 for j in 1:ny]
++    delr = delc = 1 / 12 * 111_000.0
++    land = f.kind .== 0x01
++    nan_off(a) = ifelse.(land, a, NaN)
++    top = f.top
++    aq = top .- f.botm[:, :, 2]
++    z0 = top .- f.ddrn
++    head = zeros(nx, ny, 2)
++    for l in 1:2
++        view(head, :, :, l) .= ifelse.(land, z0 .+ 0.5, ifelse.(f.kind .== 0x02, 0.0, NaN))
++    end
++    return MC.StaticInputs(;
++        lon, lat, delr, delc, idomain = Int.(f.kind), landmask = land,
++        dem = nan_off(top), aqdepth = nan_off(aq), cell_area = fill(delr * delc, nx, ny),
++        ksat_log = nan_off(log10_permeability.(f.k[:, :, 1])),
++        ksat_l1_conf_log = nan_off(log10_permeability.(f.k[:, :, 1])),
++        ksat_l2_conf_log = nan_off(log10_permeability.(f.k[:, :, 2])),
++        spe_yi = nan_off(f.sc), qbank = nan_off(min.(4.0 .* f.acc, 1.0e4)), riv_slope = nan_off(fill(1.0e-3, nx, ny)),
++        min_dem = nan_off(top), z0_floodplain = nan_off(z0), kq3 = nan_off(fill(0.02, nx, ny)),
++        catchment = nan_off(Float64.(reshape(1:(nx * ny), nx, ny))),
++        cpsurface = nan_off(top), cprate = nan_off(fill(1.0e-3, nx, ny)), cpdistinct = nan_off(fill(2.0, nx, ny)),
++        steady_head = head,
++    )
++end
++
++t_fields = @elapsed fields = synthetic_fields(:global5m)
++t_inputs = @elapsed inputs = synthetic_inputs(fields)
++LOG["host_fields_s"] = t_fields
++LOG["host_inputs_s"] = t_inputs
++println("synthetic global5m fields $(round(t_fields; digits = 1)) s, inputs $(round(t_inputs; digits = 1)) s")
++
++workdir = joinpath(OUTDIR, "work")
++solver(; kw...) = MC.SolverSettings(; engine = "gpu", backend = ROCM ? "rocm" : "auto", precision = PRECISION,
++                                    outer_dvclose = DVCLOSE, inner_dvclose = DVCLOSE, preconditioner = PRECOND, kw...)
++base = Config(; data_dir = workdir, work_dir = workdir, output_dir = workdir, start_date = Date(1979, 1, 1),
++              end_date = Date(1979, 1, 1) + Day(NDAYS - 1), inputs = Dict{String, MC.InputSpec}(), period = "day",
++              model_name = "GLOBAL5M", foc = true, write_monthly_output = false, check_orientation = true,
++              solver = solver())
++
++# ------------------------------------------------------------------------------------
++# mGV (real global inputs)
++# ------------------------------------------------------------------------------------
++vic = nothing
++if !isempty(MGV_CONFIG)
++    LOG["mgv_init_s"] = @elapsed global vic = BMI.initialize(mGV.Model, MGV_CONFIG)
++    LOG["mgv_cells"] = length(BMI.get_grid_x(vic, 0))
++    mark!("mgv_initialized")
++end
++
++# ------------------------------------------------------------------------------------
++# Steady-state spin-up
++# ------------------------------------------------------------------------------------
++"Iterations (outer, inner) of the last step of the GPU engine."
++iterations(gw) = (r = last(gw.mf.results).outer; (r.iterations, r.inner))
++
++ss_cfg = Config(base; period = "steady", end_date = base.start_date,
++                solver = solver(; outer_dvclose = STEADY_DVCLOSE, inner_dvclose = STEADY_DVCLOSE, preconditioner = STEADY_PRECOND,
++                                outer_maximum = STEADY_OUTER, under_relaxation_gamma = STEADY_GAMMA))
++LOG["steady_build_s"] = @elapsed ss = GroundwaterModel(ss_cfg, inputs)
++LOG["T"] = string(ss.mf.T); LOG["Ts"] = string(ss.mf.Ts); LOG["Tp"] = string(ss.mf.Tp)
++LOG["nodes"] = Int(ss.mf.model.conn.nodes)
++LOG["records"] = Dict("CHD" => 2 * length(ss.params.chd_cells), "RCH" => length(ss.params.rch_cells),
++                      "RIV" => length(ss.params.river.cells), "DRN" => length(ss.params.drain.cells),
++                      "EVT" => length(ss.params.evt_cells))
++mark!("steady_built")
++land = inputs.landmask
++BMI.set_value(ss, "groundwater_recharge", vec(ifelse.(land, fields.rch, 0.0)))
++BMI.set_value(ss, "river_discharge", vec(ifelse.(land, 0.3 .* inputs.qbank, 0.0)))
++t_ss = @elapsed begin
++    BMI.update(ss)
++    sync()
++end
++ss_it = iterations(ss)
++LOG["steady_s"] = t_ss
++LOG["steady_outer"], LOG["steady_inner"] = ss_it
++println("spin-up: $(round(t_ss; digits = 2)) s, $(ss_it[1]) outer / $(ss_it[2]) inner iterations ($(ss.mf.T), Tp = $(ss.mf.Tp))")
++mark!("steady_solved")
++steady_head = copy(MC.host_field(ss, :head))
++write(joinpath(OUTDIR, "head_steady.bin"), vec(steady_head[:, :, 1]))
++BMI.finalize(ss)
++ss = nothing
++GC.gc(true)
++mark!("steady_finalized")
++
++# ------------------------------------------------------------------------------------
++# Daily run from the spin-up heads
++# ------------------------------------------------------------------------------------
++day_inputs = MC.StaticInputs((getfield(inputs, f) for f in fieldnames(MC.StaticInputs)[1:(end - 1)])...,
++                             ifelse.(isfinite.(steady_head), steady_head, inputs.steady_head))
++LOG["daily_build_s"] = @elapsed gw = GroundwaterModel(base, day_inputs)
++mark!("daily_built")
++backend = KA.get_backend(gw.dev.h)
++coupling = vic === nothing ? nothing : Coupling(gw, vic; exchange = :device)
++coupling === nothing || mark!("coupling_built")
++# The synthetic recharge and 0.3 × bankfull discharge, with the seasonal factors of the
++# synthetic model, as device arrays (no host transfer per day). MODFLOW alone takes both;
++# coupled, it takes mGV's recharge and this discharge: with mGV's discharge day 2 did not
++# converge in 200 outer iterations, because mGV's routing blows up once MODFLOW's baseflow
++# is fed back (discharges up to 1e37 m3/s and NaN from day 2; mGV alone stays finite; see
++# ModflowGPU's T5.5a report). mGV's discharge is still gathered and converted on the
++# device every day (into `qmgv`), so the exchange costs what it would.
++rch0 = KA.allocate(backend, Float32, length(land)); copyto!(rch0, Float32.(vec(ifelse.(land, fields.rch, 0.0))))
++q0 = KA.allocate(backend, Float32, length(land)); copyto!(q0, Float32.(vec(ifelse.(land, 0.3 .* inputs.qbank, 0.0))))
++rch, q = similar(rch0), similar(q0)
++qmgv = KA.allocate(backend, gw.mf.T, length(land))
++
++rows = NamedTuple[]
++for day in 1:NDAYS
++    t0 = time_ns()
++    if coupling !== nothing
++        c = coupling
++        n = c.n_vic
++        w = BMI.get_value_ptr(vic, "soil__moisture")
++        wmax = BMI.get_value_ptr(vic, "soil__moisture~maximum")
++        add_capillary_rise_kernel!(backend)(w, wmax, c.cpr, n, length(w) ÷ n; ndrange = n)
++        area = BMI.get_value_ptr(vic, "channel_water__area~cross-sectional")
++        add_baseflow_kernel!(backend)(area, c.requested_cell, c.applied_cell, c.baseflow, c.cell_length, c.dt; ndrange = n)
++        BMI.update(vic)
++        sync()
++        t1 = time_ns()
++        q .= q0 .* Float32(1 + 0.5 * cos(2π * mod(day - 1, 12) / 12))
++        MC.gather_convert!(qmgv, BMI.get_value_ptr(vic, "channel_water__volume_flow_rate"), c.dev_vic_to_mf, 1)
++        set_value_device!(gw, "river_discharge", q)
++        set_value_device!(gw, "groundwater_recharge", BMI.get_value_ptr(vic, "land_subsurface__runoff"); map = c.dev_vic_to_mf, divisor = 1000)
++        BMI.update(gw)
++        get_value_device!(c.baseflow, gw, "baseflow_to_routing"; map = c.dev_mf_to_vic)
++        get_value_device!(c.cpr, gw, "capillary_rise"; map = c.dev_mf_to_vic)
++        sync()
++    else
++        k = mod(day - 1, 12)
++        rch .= rch0 .* Float32(1 + 0.8 * sin(2π * k / 12))
++        q .= q0 .* Float32(1 + 0.5 * cos(2π * k / 12))
++        t1 = time_ns()
++        set_value_device!(gw, "river_discharge", q)
++        set_value_device!(gw, "groundwater_recharge", rch)
++        BMI.update(gw)
++        sync()
++    end
++    t2 = time_ns()
++    o, i = iterations(gw)
++    push!(rows, (; day, total = (t2 - t0) / 1e9, mgv = (t1 - t0) / 1e9, modflow = (t2 - t1) / 1e9, outer = o, inner = i))
++    (day <= 3 || day % 30 == 0) && (println("day $day: ", rows[end]); flush(stdout))
++end
++mark!("daily_done")
++
++open(joinpath(OUTDIR, "days.csv"), "w") do io
++    println(io, "day,total_s,mgv_s,modflow_s,outer,inner")
++    for r in rows
++        println(io, join((r.day, r.total, r.mgv, r.modflow, r.outer, r.inner), ","))
++    end
++end
++write(joinpath(OUTDIR, "head_final.bin"), vec(MC.host_field(gw, :head)[:, :, 1]))
++later = rows[min(3, end):end]   # from day 3: day 1 compiles, day 2 may still
++for (k, key) in (("total", :total), ("mgv", :mgv), ("modflow", :modflow))
++    LOG["median_$(k)_ms"] = 1000 * median(getfield.(later, key))
++end
++LOG["days"] = NDAYS
++LOG["days_total_from_day2_s"] = sum(getfield.(rows[min(2, end):end], :total))
++LOG["outer_total"] = sum(getfield.(rows, :outer))
++LOG["inner_total"] = sum(getfield.(rows, :inner))
++if coupling !== nothing
++    LOG["baseflow_requested_m3"], LOG["baseflow_applied_m3"] = baseflow_volumes(coupling)
++end
++println("median per day from day 3: total $(round(LOG["median_total_ms"]; digits = 1)) ms, mGV $(round(LOG["median_mgv_ms"]; digits = 1)) ms, MODFLOW $(round(LOG["median_modflow_ms"]; digits = 1)) ms")
++
++BMI.finalize(gw)
++foreach(KA.unsafe_free!, (rch0, q0, rch, q, qmgv))
++coupling === nothing || ModflowGPU.free_device_arrays!(coupling)
++coupling = nothing; gw = nothing
++GC.gc(true)
++mark!("modflow_finalized")
++if vic !== nothing
++    BMI.finalize(vic)
++    GC.gc(true)
++    mark!("mgv_finalized")
++    vic = nothing
++    GC.gc(true); GC.gc(true)
++    mark!("mgv_dropped")
++end
++SAMPLING[] = false
++wait(sampler)
++LOG["vram_peak_net_mib_overall"] = maximum(v["vram_peak_net_mib"] for (k, v) in LOG if startswith(k, "mem_"))
++LOG["pool_peak_mib_overall"] = maximum(v["pool_peak_mib"] for (k, v) in LOG if startswith(k, "mem_"))
++LOG["options"] = Dict(OPTS)
++open(io -> TOML.print(io, LOG; sorted = true), joinpath(OUTDIR, "summary.toml"), "w")
++println("written $(OUTDIR)/summary.toml")
+diff --git a/src/ModflowCoupling.jl b/src/ModflowCoupling.jl
+index 95ebd4b..55133cf 100644
+--- a/src/ModflowCoupling.jl
++++ b/src/ModflowCoupling.jl
+@@ -23,7 +23,7 @@ using KernelAbstractions: @kernel, @index, @Const
+ 
+ export GroundwaterModel, Config, InputSpec, load_config, read_static_inputs, build_parameters,
+        audit_static_inputs, align_to_grid, current_date, package_flows, write_head, head_reference,
+-       set_value_device!, get_value_device!
++       set_value_device!, get_value_device!, StaticInputs, cell_maps, check_cell_map
+ 
+ include("config.jl")
+ include("inputs.jl")
+@@ -31,6 +31,7 @@ include("parameters.jl")
+ include("mf6_writer.jl")
+ include("gpu_engine.jl")
+ include("device_coupling.jl")
++include("cell_maps.jl")
+ include("forcing.jl")
+ include("model.jl")
+ include("output.jl")
+diff --git a/src/cell_maps.jl b/src/cell_maps.jl
+new file mode 100644
+index 0000000..a4d618d
+--- /dev/null
++++ b/src/cell_maps.jl
+@@ -0,0 +1,79 @@
++#=
++Cell maps between the MODFLOW grid and another model's cells (mGV), by cell centre, for
++the exchange of `set_value_device!` / `get_value_device!` (examples/mgv_coupling). Built
++once on the host; at global size (2.3 M mGV cells on a 4320 × 1680 grid) a per-cell
++search over all coordinates (`argmin(abs.(v .- x))`, about 1e10 operations) is replaced
++by a binary search in the sorted coordinates.
++=#
++
++"""
++    coordinate_index(coords, x; atol, rev = !issorted(coords)) -> Int
++
++Index of the coordinate of `coords` (sorted ascending, or descending with `rev = true`)
++nearest to `x`, or 0 when it is more than `atol` away. Ties go to the lower index (as
++`argmin`). A binary search: O(log n).
++"""
++function coordinate_index(coords::AbstractVector, x::Real; atol::Real, rev::Bool = !issorted(coords))
++    i = searchsortedfirst(coords, x; rev)
++    best, dist = 0, Inf
++    for j in (i - 1, i)
++        1 <= j <= length(coords) || continue
++        d = abs(coords[j] - x)
++        if d < dist
++            best, dist = j, d
++        end
++    end
++    return dist <= atol ? best : 0
++end
++
++"""
++    cell_maps(mf_x, mf_y, vic_x, vic_y; atol = 1e-3) -> (mf_to_vic, vic_to_mf)
++
++Cell maps between the MODFLOW grid (rectilinear, `mf_x` × `mf_y` cell centres, each
++sorted ascending or descending, flattened longitude-fastest) and the cells of another
++model given by their centres `(vic_x[k], vic_y[k])` (mGV `main`: an unstructured grid of
++the active land cells). Returns for every mGV cell the MODFLOW cell with the same centre
++(within `atol` degrees in each coordinate), and for every MODFLOW cell the mGV cell; 0
++where the other grid has no such cell. Two mGV cells on one MODFLOW cell are an error.
++Both maps are checked with `check_cell_map`.
++"""
++function cell_maps(mf_x::AbstractVector, mf_y::AbstractVector, vic_x::AbstractVector, vic_y::AbstractVector;
++                   atol::Real = 1e-3)
++    length(vic_x) == length(vic_y) || error("cell_maps: $(length(vic_x)) x and $(length(vic_y)) y coordinates")
++    monotone(v) = issorted(v) || issorted(v; rev = true) ||
++        error("cell_maps: the MODFLOW coordinates must be sorted (ascending or descending)")
++    monotone(mf_x)
++    monotone(mf_y)
++    nx = length(mf_x)
++    revx, revy = !issorted(mf_x), !issorted(mf_y)
++    mf_to_vic = Vector{Int}(undef, length(vic_x))
++    for k in eachindex(vic_x, vic_y)
++        i = coordinate_index(mf_x, vic_x[k]; atol, rev = revx)
++        j = coordinate_index(mf_y, vic_y[k]; atol, rev = revy)
++        mf_to_vic[k] = (i > 0 && j > 0) ? i + (j - 1) * nx : 0
++    end
++    vic_to_mf = zeros(Int, nx * length(mf_y))
++    for (k, i) in enumerate(mf_to_vic)
++        i == 0 && continue
++        vic_to_mf[i] == 0 || error("mGV cells $(vic_to_mf[i]) and $k have the same MODFLOW cell $i")
++        vic_to_mf[i] = k
++    end
++    check_cell_map(mf_to_vic, length(vic_to_mf); name = "mf_to_vic")
++    check_cell_map(vic_to_mf, length(mf_to_vic); name = "vic_to_mf")
++    return mf_to_vic, vic_to_mf
++end
++
++"""
++    check_cell_map(map, nsource; name = "cell map") -> map
++
++Check on the host that every entry of a gather map is 0 (no source cell) or a valid index
++of a source of length `nsource`, and that it fits in `Int32` (the device maps of
++`set_value_device!` / `get_value_device!`, whose kernel reads `src[map[i]]` without bounds
++checks). Call it where the map is built, before it goes to the device.
++"""
++function check_cell_map(map::AbstractVector{<:Integer}, nsource::Integer; name::AbstractString = "cell map")
++    nsource <= typemax(Int32) || error("$name: a source of $nsource values does not fit Int32 indices")
++    bad = findfirst(k -> !(0 <= k <= nsource), map)
++    bad === nothing || error("$name: entry $bad is $(map[bad]), outside 0:$nsource (the source length)")
++    return map
++end
+diff --git a/src/config.jl b/src/config.jl
+index e93097b..e1ac431 100644
+--- a/src/config.jl
++++ b/src/config.jl
+@@ -213,7 +213,14 @@ function load_config(path::AbstractString)
+     return config
+ end
+ 
+-function validate(config::Config)
++"""
++    validate(config; files = true) -> config
++
++Check the settings of `config`. With `files = false` (a model built from arrays,
++`GroundwaterModel(config, inputs)`) the `[inputs]` table and the initial head source are
++not checked: the arrays replace them.
++"""
++function validate(config::Config; files::Bool = true)
+     config.period in ("month", "day", "steady") ||
+         error("period must be \"month\", \"day\" or \"steady\", got \"$(config.period)\"")
+     config.period == "month" && day(config.start_date) != 1 &&
+@@ -228,6 +235,7 @@ function validate(config::Config)
+     sv.engine == "mf6" && sv.coupling == "device" && error("solver.coupling = \"device\" needs engine = \"gpu\"")
+     length(config.model_name) <= 16 || error("MODFLOW 6 model names are limited to 16 characters")
+     config.pumping && !config.foc && @warn "pumping without FOC: capillary rise is not returned"
++    files || return config
+ 
+     unknown = setdiff(keys(config.inputs), INPUT_KEYS)
+     isempty(unknown) || error("unknown inputs $(join(sort(collect(unknown)), ", ")); known roles: $(join(INPUT_KEYS, ", "))")
+diff --git a/src/gpu_engine.jl b/src/gpu_engine.jl
+index f706677..0dcd55c 100644
+--- a/src/gpu_engine.jl
++++ b/src/gpu_engine.jl
+@@ -75,7 +75,17 @@ function build_spec(config::Config, s::StaticInputs, p::StaticParameters, period
+     return G.build_simulation(model; tdis, ims, simdir = config.work_dir)
+ end
+ 
+-"Build and initialize the ModflowGPU simulation of `m` (the GPU engine)."
++"""
++Build and initialize the ModflowGPU simulation of `m` (the GPU engine).
++
++`[solver] preconditioner = "auto"` is ModflowGPU's default (`:mc_ilu0`) in every period
++kind and precision, the steady-state spin-up in `"single"` included (ModflowGPU T5.5a:
++on the synthetic global model `:amg` took 2.5 times as long there and stopped 63 times
++farther from the Float64 heads; on the Indus both stop 0.03 m from the converged heads
++in Float32 at any closure). Run spin-ups in `"mixed"` (the `"auto"` precision where the
++backend has Float64); a steady state that does not converge in `"single"` (ModflowGPU
++T6.0, ex-gwf-lgrv-gr) can be run with `preconditioner = "amg"`.
++"""
+ function initialize_gpu(m)
+     c = m.config
+     sv = c.solver
+diff --git a/src/inputs.jl b/src/inputs.jl
+index baacd0b..2730b79 100644
+--- a/src/inputs.jl
++++ b/src/inputs.jl
+@@ -42,6 +42,40 @@ end
+ 
+ Base.size(s::StaticInputs) = size(s.idomain)
+ 
++"""
++    StaticInputs(; lon, lat, idomain, landmask, dem, aqdepth, cell_area, ksat_log, spe_yi,
++                 qbank, riv_slope, min_dem, z0_floodplain, kq3, catchment, ...)
++
++Static inputs from arrays (`(lon, lat)` maps on the model grid, latitude ascending; see the
++grid convention above), for `GroundwaterModel(config, inputs)`. The optional inputs of
++`INPUT_ROLES` (`ksat_l1_conf_log`, `ksat_l2_conf_log`, `cpsurface`, `cprate`,
++`cpdistinct`, `steady_head`) default to NaN; `delr` and `delc` default to the coordinate
++spacing × 111 km, as `read_grid`.
++"""
++function StaticInputs(; lon, lat, idomain, landmask, dem, aqdepth, cell_area, ksat_log, spe_yi, qbank,
++                      riv_slope, min_dem, z0_floodplain, kq3, catchment,
++                      delr = (lon[end] - lon[1]) / (length(lon) - 1) * 111_000.0,
++                      delc = (lat[end] - lat[1]) / (length(lat) - 1) * 111_000.0,
++                      ksat_l1_conf_log = nothing, ksat_l2_conf_log = nothing, cpsurface = nothing,
++                      cprate = nothing, cpdistinct = nothing, steady_head = nothing)
++    grid = (length(lon), length(lat))
++    issorted(lon) && issorted(lat) || error("StaticInputs: lon and lat must be ascending")
++    field(a, name) = (a === nothing ? fill(NaN, grid) :
++                      size(a) == grid ? Matrix{Float64}(a) : error("StaticInputs: $name has size $(size(a)), the grid is $grid"))
++    head = steady_head === nothing ? fill(NaN, grid..., 2) : Array{Float64,3}(steady_head)
++    size(head) == (grid..., 2) || error("StaticInputs: steady_head has size $(size(head)), expected $((grid..., 2))")
++    size(idomain) == grid || error("StaticInputs: idomain has size $(size(idomain)), the grid is $grid")
++    size(landmask) == grid || error("StaticInputs: landmask has size $(size(landmask)), the grid is $grid")
++    return StaticInputs(
++        Float64.(lon), Float64.(lat), Float64(delr), Float64(delc), Int.(idomain), BitMatrix(landmask),
++        field(dem, "dem"), field(aqdepth, "aqdepth"), field(cell_area, "cell_area"), field(ksat_log, "ksat_log"),
++        field(ksat_l1_conf_log, "ksat_l1_conf_log"), field(ksat_l2_conf_log, "ksat_l2_conf_log"),
++        field(spe_yi, "spe_yi"), field(qbank, "qbank"), field(riv_slope, "riv_slope"), field(min_dem, "min_dem"),
++        field(z0_floodplain, "z0_floodplain"), field(cpsurface, "cpsurface"), field(cprate, "cprate"),
++        field(cpdistinct, "cpdistinct"), field(kq3, "kq3"), field(catchment, "catchment"), head,
++    )
++end
++
+ "Convert raw NetCDF values to Float64, mapping missing, non-finite and fill values (≥ 1e30) to NaN."
+ to_float(x) = ismissing(x) || !isfinite(x) || abs(x) >= 1e30 ? NaN : Float64(x)
+ 
+diff --git a/src/model.jl b/src/model.jl
+index e2a24b1..547d42f 100644
+--- a/src/model.jl
++++ b/src/model.jl
+@@ -65,9 +65,25 @@ model in memory (`build_spec`). Only one MODFLOW 6 instance can be active per Ju
+ process; with the mf6 engine, a model that is still active is finalized first.
+ """
+ function GroundwaterModel(config::Config)
++    config.solver.engine == "gpu" || ACTIVE_MODEL[] === nothing || finalize!(ACTIVE_MODEL[])
++    return GroundwaterModel(config, read_static_inputs(config))
++end
++
++"""
++    GroundwaterModel(config, inputs::StaticInputs)
++
++The model of `config` with the static inputs given as arrays (`StaticInputs`, aligned to
++the model grid as `read_static_inputs` returns them) instead of read from the files of
++`config.inputs`, which is then ignored (it may be empty). The initial head is
++`inputs.steady_head` unless `config.initial_head_file` is set. Everything else is as for
++`GroundwaterModel(config)`: parameters, audit, engine.
++"""
++function GroundwaterModel(config::Config, inputs::StaticInputs)
+     gpu = config.solver.engine == "gpu"
++    validate(config; files = false)
+     gpu || ACTIVE_MODEL[] === nothing || finalize!(ACTIVE_MODEL[])
+-    inputs = read_static_inputs(config)
++    isempty(config.initial_head_file) && !any(isfinite, inputs.steady_head) &&
++        error("set paths.initial_head_file or a finite steady_head in the inputs for the initial head")
+     params = build_parameters(inputs, config)
+     failed = [name for (name, ok) in audit_static_inputs(inputs, params, config) if !ok]
+     isempty(failed) || error("static input audit failed:\n  " * join(failed, "\n  "))
+diff --git a/test/runtests.jl b/test/runtests.jl
+index 59b805c..8a3ce98 100644
+--- a/test/runtests.jl
++++ b/test/runtests.jl
+@@ -558,6 +558,92 @@ const FORCING = (0.3, 0.5, -0.1)   # March has negative discharge
+         end
+         @test w.delr ≈ s.delr && w.delc ≈ s.delc
+     end
++
++    @testset "cell maps (T5.5a)" begin
++        # The binary search gives the maps of the per-cell argmin it replaced.
++        near(v, x; atol) = (i = argmin(abs.(v .- x)); abs(v[i] - x) <= atol ? i : 0)
++        function argmin_maps(mf_x, mf_y, vx, vy; atol)
++            m2v = [(i = near(mf_x, x; atol); j = near(mf_y, y; atol); (i > 0 && j > 0) ? i + (j - 1) * length(mf_x) : 0)
++                   for (x, y) in zip(vx, vy)]
++            v2m = zeros(Int, length(mf_x) * length(mf_y))
++            for (k, i) in enumerate(m2v)
++                i > 0 && (v2m[i] = k)
++            end
++            return m2v, v2m
++        end
++        lon, lat = s.lon, s.lat
++        # mGV-like cells: the land cells in grid order, a few off the grid, coordinates in
++        # Float32 (as mGV's), plus cells at the grid edges and midway between centres
++        cells = findall(vec(s.landmask))
++        vx = Float64.(Float32.([lon[mod1(c, length(lon))] for c in cells]))
++        vy = Float64.(Float32.([lat[cld(c, length(lon))] for c in cells]))
++        append!(vx, [lon[1] - 1, lon[end], lon[1], (lon[1] + lon[2]) / 2, lon[3]])
++        append!(vy, [lat[1], lat[1] - 0.0005, lat[end] + 0.0005, lat[2], (lat[3] + lat[4]) / 2])
++        for (y, rev) in ((lat, false), (reverse(lat), true))
++            ref = argmin_maps(lon, y, vx, vy; atol = 1e-3)
++            maps = cell_maps(lon, y, vx, vy; atol = 1e-3)
++            @test maps == ref
++            @test count(>(0), maps[1]) == length(cells) + 2
++            @test MC.coordinate_index(y, y[7]; atol = 1e-3) == 7
++            @test MC.coordinate_index(y, y[7] + 0.01; atol = 1e-3) == 0
++        end
++        @test_throws r"must be sorted" cell_maps([1.0, 3.0, 2.0], lat, vx, vy)
++        @test_throws r"have the same MODFLOW cell" cell_maps(lon, lat, [lon[1], lon[1]], [lat[1], lat[1]])
++        @test check_cell_map(Int32[0, 3, 1], 3) == Int32[0, 3, 1]
++        @test_throws r"entry 2 is 4, outside 0:3" check_cell_map([0, 4, 1], 3; name = "m")
++        @test_throws r"entry 1 is -1" check_cell_map([-1], 3)
++    end
++
++    "gpu" in ENGINES && @testset "GPU engine: model built from arrays (T5.5a)" begin
++        # `GroundwaterModel(config, inputs)` with the inputs as arrays (no [inputs] table)
++        # is the model read from the files, bitwise.
++        for precision in ("single", "double")
++            cfg_files = test_config(joinpath(tmp, "arrays_files_$precision"); period = "day", stop = Date(1979, 1, 3),
++                                    write_monthly_output = false, solver = with_engine(INDUS.solver, "gpu"; precision))
++            inputs = read_static_inputs(cfg_files)
++            arrays = MC.StaticInputs(; (f => getfield(inputs, f) for f in fieldnames(MC.StaticInputs))...)
++            @test all(isequal(getfield(arrays, f), getfield(inputs, f)) for f in fieldnames(MC.StaticInputs))
++            cfg_arrays = Config(cfg_files; work_dir = joinpath(tmp, "arrays_mem_$precision"), inputs = Dict{String,InputSpec}())
++            a, b = GroundwaterModel(cfg_files), GroundwaterModel(cfg_arrays, arrays)
++            for k in 1:3
++                force!(a, FORCING[1]); force!(b, FORCING[1])
++                BMI.update(a); BMI.update(b)
++                @test isequal(MC.host_field(a, :head), MC.host_field(b, :head))
++                @test isequal(MC.host_field(a, :baseflow), MC.host_field(b, :baseflow))
++            end
++            foreach(BMI.finalize, (a, b))
++        end
++        @test_throws r"missing inputs" MC.validate(Config(cfg; inputs = Dict{String,InputSpec}()))
++        @test MC.validate(Config(cfg; inputs = Dict{String,InputSpec}()); files = false) isa Config
++        @test_throws r"steady_head has size" MC.StaticInputs(; (f => getfield(s, f) for f in fieldnames(MC.StaticInputs) if f != :steady_head)...,
++                                                              steady_head = zeros(2, 2, 2))
++        nohead = MC.StaticInputs(; (f => getfield(s, f) for f in fieldnames(MC.StaticInputs) if f != :steady_head)...)
++        @test_throws r"finite steady_head" GroundwaterModel(Config(cfg; initial_head_file = "", solver = with_engine(cfg.solver, "gpu")), nohead)
++    end
++
++    "gpu" in ENGINES && @testset "GPU engine: steady-state spin-up (T5.5a)" begin
++        # The spin-up of the coupled run (`period = "steady"`, the solver settings of
++        # spinup_steady_state.jl) in :single and :double with the default preconditioner
++        G = MC.ModflowGPU
++        steady(precision) =
++            test_config(joinpath(tmp, "steady_$precision"); period = "steady", stop = Date(1979, 1, 1),
++                        write_monthly_output = false,
++                        solver = with_engine(INDUS.solver, "gpu"; precision, outer_maximum = 2000, under_relaxation_gamma = 0.5))
++        heads = Dict{String,Array{Float64,3}}()
++        for precision in ("single", "double")
++            m = GroundwaterModel(steady(precision))
++            @test m.mf.solver.krylov.precond isa G.MulticolorPreconditioner
++            force!(m, 0.3)
++            BMI.update(m)
++            heads[precision] = copy(MC.host_field(m, :head))
++            BMI.finalize(m)
++        end
++        active = cat(s.idomain .> 0, s.idomain .> 0; dims = 3)
++        # Not the 1e-3 m :single tolerance: the Float32 steady state of the Indus stops about
++        # 0.03 m from the converged heads at any closure and with either preconditioner
++        # (ModflowGPU T5.5a; 0.045 m here, both at closure 0.01), so spin-ups run in :mixed.
++        @test maximum(abs.(heads["single"] .- heads["double"])[active]) < 0.1
++    end
+ end
+ 
+ "parity" in TEST_GROUPS && include("coupling_parity.jl")
