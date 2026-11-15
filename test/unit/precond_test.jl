@@ -233,6 +233,50 @@ end
         end
     end
 
+    @testset "incremental red–black ILU0 setup (T4.7)" begin
+        conn = build_connectivity(_synthetic_coupling_dis())
+        gcsr = CsrStructure(TEST_BACKEND, conn)
+        gia, gja, gisym = Int.(conn.ia), Int.(conn.ja), Int.(conn.isym)
+        nn = Int(conn.nodes)
+        colors = grid_colors(conn, _synthetic_coupling_dis())
+        a1 = _mmatrix(MersenneTwister(19), gia, gja, gisym; symmetric = true, negate = true, chd = [1, nn], shift = 1.0e-3)
+        # Diagonal changes: a few first- and second-colour rows, one sign flip (its row
+        # factor changes for CG), one change below Float32 resolution.
+        a2 = copy(a1)
+        rows = [3, 4, nn ÷ 3, nn ÷ 2 + 1]
+        for r in rows
+            a2[gia[r]] *= 1.5
+        end
+        a2[gia[nn ÷ 4]] = -a2[gia[nn ÷ 4]]
+        a2[gia[nn ÷ 5]] *= 1 + 1.0e-12
+        diagof(a) = [a[gia[r]] for r in 1:nn]
+        for_each_precision(; presets = SOLVER_TEST_PRESETS) do p
+            for (method, relax) in ((:cg, 0.0), (:bicgstab, 0.0), (:cg, 0.97))
+                st = KrylovSettings(; method, maxiter = 3, preconditioner = :mc_ilu0, precond_options = (; relax))
+                inc = KrylovSolver(TEST_BACKEND, gcsr, st; Ts = p.Ts, Tp = p.Tp, colors)
+                full = KrylovSolver(TEST_BACKEND, gcsr, st; Ts = p.Ts, Tp = p.Tp, colors)
+                δ = to_test_device(zeros(p.T, nn))
+                b = to_test_device(ones(p.T, nn))
+                da1, da2 = to_test_device(p.T.(a1)), to_test_device(p.T.(a2))
+                solve!(δ, inc, da1, b; diag = to_test_device(p.T.(diagof(a1))), offdiag_id = 1_000_001)
+                @test inc.precond.key[] == 1_000_001
+                r1 = solve!(δ, inc, da2, b; diag = to_test_device(p.T.(diagof(a2))), offdiag_id = 1_000_001)
+                x1 = Array(δ)
+                r2 = solve!(δ, full, da2, b)
+                @test full.precond.key[] == 0
+                @test Array(inc.precond.vals) == Array(full.precond.vals)
+                @test Array(inc.precond.dinv) == Array(full.precond.dinv)
+                @test x1 == Array(δ) && r1.iterations == r2.iterations
+                # only the changed rows and their neighbours were flagged
+                @test count(!=(0), Array(inc.precond.flag)) == length(rows) + 2 - (p.T == Float32 && Float32(a2[gia[nn ÷ 5]]) == Float32(a1[gia[nn ÷ 5]]))
+                # another id: a full setup
+                solve!(δ, inc, da1, b; diag = to_test_device(p.T.(diagof(a1))), offdiag_id = 1_000_002)
+                solve!(δ, full, da1, b)
+                @test Array(inc.precond.vals) == Array(full.precond.vals)
+            end
+        end
+    end
+
     @testset "run: coupling_rde with each preconditioner (and AMG)" begin
         dir = joinpath(@__DIR__, "..", "models", "coupling_rde")
         for_each_precision(; presets = SOLVER_TEST_PRESETS) do p

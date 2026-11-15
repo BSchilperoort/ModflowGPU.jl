@@ -88,13 +88,17 @@ The assembled system of one model on a device, in the engine precision `T`:
 - `rhs` `(nodes)`: the right-hand side `b' = b − A·r` for offset heads;
 - `bdiag`, `brhs` `(nodes)`: the sums of the boundary and storage terms of each node
   (`hcof` and `rhs` of `bnd_fc`, `−rho` and `−rho·hold` of `sto_fc`), filled by
-  `add_terms!` after `reset_terms!`, and used by both `assemble!` and `flux_residual!`.
+  `add_terms!` after `reset_terms!`, and used by both `assemble!` and `flux_residual!`;
+- `diag` `(nodes)` (T4.7): a contiguous copy of the diagonal of `amat`, written by
+  `assemble!` and `formulate_system!` (the solver setup reads it instead of the strided
+  `amat[ia[n]]`).
 """
 struct LinearSystem{T <: AbstractFloat, VT <: AbstractVector{T}}
     amat::VT
     rhs::VT
     bdiag::VT
     brhs::VT
+    diag::VT
 end
 
 Adapt.@adapt_structure LinearSystem
@@ -106,7 +110,7 @@ A zeroed system for the structure `csr` on `backend`.
 """
 function LinearSystem(backend::Backend, ::Type{T}, csr::CsrStructure) where {T <: AbstractFloat}
     z(n) = KernelAbstractions.zeros(backend, T, n)
-    return LinearSystem{T, typeof(z(0))}(z(csr.nja), z(csr.nodes), z(csr.nodes), z(csr.nodes))
+    return LinearSystem{T, typeof(z(0))}(z(csr.nja), z(csr.nodes), z(csr.nodes), z(csr.nodes), z(csr.nodes))
 end
 
 Base.eltype(::LinearSystem{T}) where {T} = T
@@ -149,7 +153,7 @@ end
 end
 
 @kernel function assemble_kernel!(
-        amat, rhs, @Const(ia), @Const(ja), @Const(jas), @Const(condsat), @Const(Δr), @Const(bdiag), @Const(brhs),
+        amat, rhs, diag, @Const(ia), @Const(ja), @Const(jas), @Const(condsat), @Const(Δr), @Const(bdiag), @Const(brhs),
         @Const(h), @Const(ibound), symmetric::Bool, tiny,
     )
     n = @index(Global)
@@ -180,10 +184,12 @@ end
                 s -= h[n]
             end
             amat[id] = d
+            diag[n] = d
             rhs[n] = s
         else
             # sln_ls: Dirichlet (constant-head) row.
             amat[id] = one(T)
+            diag[n] = one(T)
             for ii in (id + Int32(1)):i2
                 amat[ii] = zero(T)
             end
@@ -206,7 +212,7 @@ for a symmetric solver.
 function assemble!(sys::LinearSystem, csr::CsrStructure, npf::NpfModel, h, ibound; symmetric::Bool = false)
     backend = get_backend(sys.amat)
     assemble_kernel!(backend, _WG)(
-        sys.amat, sys.rhs, csr.ia, csr.ja, csr.jas, npf.condsat, npf.Δr, sys.bdiag, sys.brhs, h, ibound, symmetric,
+        sys.amat, sys.rhs, sys.diag, csr.ia, csr.ja, csr.jas, npf.condsat, npf.Δr, sys.bdiag, sys.brhs, h, ibound, symmetric,
         eltype(sys)(1.0e-15); ndrange = csr.nodes,
     )
     return sys
@@ -308,7 +314,7 @@ end
 end
 
 @kernel function formulate_kernel!(
-        amat, rhs, bdiag, brhs, res, scale, @Const(ia), @Const(ja), @Const(jas), @Const(condsat), @Const(Δr),
+        amat, rhs, diag, bdiag, brhs, res, scale, @Const(ia), @Const(ja), @Const(jas), @Const(condsat), @Const(Δr),
         @Const(h), @Const(ibound), pkgs, sto, symmetric::Bool, offdiag::Bool, tiny,
     )
     n = @index(Global)
@@ -349,6 +355,7 @@ end
                 s -= hn
             end
             amat[id] = d
+            diag[n] = d
             rhs[n] = s
             tb = bd * hn
             rs, rc = _sum_add(rs, rc, -tb)
@@ -356,6 +363,7 @@ end
             sc += abs(tb) + abs(br)
         else
             amat[id] = one(T)
+            diag[n] = one(T)
             if offdiag
                 for ii in (id + Int32(1)):i2
                     amat[ii] = zero(T)
@@ -386,7 +394,7 @@ function formulate_system!(
     )
     backend = get_backend(sys.amat)
     formulate_kernel!(backend, _WG)(
-        sys.amat, sys.rhs, sys.bdiag, sys.brhs, res, scale, csr.ia, csr.ja, csr.jas, npf.condsat, npf.Δr, h, ibound,
+        sys.amat, sys.rhs, sys.diag, sys.bdiag, sys.brhs, res, scale, csr.ia, csr.ja, csr.jas, npf.condsat, npf.Δr, h, ibound,
         packages, storage, symmetric, offdiag, eltype(sys)(1.0e-15); ndrange = csr.nodes,
     )
     return sys

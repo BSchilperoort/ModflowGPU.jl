@@ -11,7 +11,9 @@ A GWF model ready to run on a device in precision `T` (state and assembly):
   `r` and differences, Float64), `ibound_host` (1 active, −1 constant head), `kper`
   (stress period applied last, 0 before the first), `offdiag` (the `symmetric` setting
   the off-diagonal entries of `sys.amat` were last assembled for, `nothing` when they are
-  stale: T4.5, see `formulate!`);
+  stale: T4.5, see `formulate!`), `offdiag_id` (T4.7: an id, unique in the session, of
+  the last write of the off-diagonal entries by `formulate!`, 0 before; the solver reuses
+  preconditioner data while it is unchanged);
 - device: `csr::CsrStructure`, `npf::NpfModel{T}`, `sys::LinearSystem{T}`, `packages`
   (`BoundaryPackage`s in MF6's order, `GwfSpec.boundaries`), `sto` (`StoragePackage` or
   `nothing`), `area` (cell areas, for RCH/EVT), `ibound`, the offset heads `h` and the
@@ -40,6 +42,7 @@ mutable struct GwfModel{T <: AbstractFloat, B <: Backend, C <: CsrStructure, N <
     const flowja::V
     kper::Int
     offdiag::Union{Nothing, Bool}
+    offdiag_id::Int
 end
 
 function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) where {T <: AbstractFloat}
@@ -58,7 +61,7 @@ function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) whe
     return GwfModel(
         spec, backend, conn, setup, csr, npf, sys, packages, sto, _device_copy(backend, T.(conn.area)),
         _device_copy(backend, ibh), ibh, h, hold, z(), z(), KernelAbstractions.zeros(backend, T, conn.nja), 0,
-        nothing,
+        nothing, 0,
     )
 end
 
@@ -70,7 +73,7 @@ function Adapt.adapt_structure(to, m::GwfModel)
         m.spec, get_backend(h), m.conn, m.setup, adapt(to, m.csr), adapt(to, m.npf), adapt(to, m.sys),
         BoundaryPackage[adapt(to, p) for p in m.packages], adapt(to, m.sto), adapt(to, m.area), adapt(to, m.ibound),
         copy(m.ibound_host), h, adapt(to, m.hold), adapt(to, m.res), adapt(to, m.δ), adapt(to, m.flowja), m.kper,
-        nothing,
+        nothing, 0,
     )
 end
 
@@ -125,6 +128,9 @@ function start_timestep!(m::GwfModel, delt::Float64)
     return m
 end
 
+# Ids of the writes of off-diagonal entries (`GwfModel.offdiag_id`), unique per session.
+const _OFFDIAG_IDS = Threads.Atomic{Int}(0)
+
 """
     formulate!(m::GwfModel; symmetric = false, scale = nothing) -> m
 
@@ -152,6 +158,7 @@ function formulate!(m::GwfModel; symmetric::Bool = false, scale = nothing)
     # either do so every outer iteration or pass `offdiag = true`. Calling `assemble!` on
     # `m.sys` directly also leaves `m.offdiag` stale.
     offdiag = m.offdiag !== symmetric
+    offdiag && (m.offdiag_id = Threads.atomic_add!(_OFFDIAG_IDS, 1) + 1)
     formulate_system!(m.sys, m.res, m.csr, m.npf, m.h, m.ibound, pkgs, storage; symmetric, offdiag, scale)
     m.offdiag = symmetric
     return m
