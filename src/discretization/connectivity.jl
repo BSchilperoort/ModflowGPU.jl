@@ -1,5 +1,5 @@
-# Host-side grid connectivity in MF6's layout (PLAN.md section 3.3), shared by DIS (dis.jl)
-# and, later, DISV and DISU (T6.4).
+# Host-side grid connectivity in MF6's layout (PLAN.md section 3.3), shared by DIS (dis.jl),
+# DISV (disv.jl) and DISU (disu.jl, T6.4).
 #
 # Ports the grid-independent parts of MF6 6.8.2 Connections.f90 (`fillisym`, `filljas`,
 # `iajausr`, `getjaindex`) and of the `grid_finalize` routines of Dis.f90/Disv.f90
@@ -37,7 +37,9 @@ Nodes:
   Unlike MF6, both maps are always filled (MF6 keeps dummies of length 1 when no cell is
   excluded).
 - `top`, `bot`, `area` `(nodes)`: cell top, bottom and plan area; `xc`, `yc` `(nodes)`:
-  cell centre in model coordinates (no origin or rotation applied).
+  cell centre in model coordinates (no origin or rotation applied); empty for a DISU grid
+  without vertices (as in MF6).
+- `grid`: `:dis`, `:disv` or `:disu`, the discretization the connectivity was built from.
 
 Connections (CSR, diagonal first in each row; see the header of
 src/discretization/connectivity.jl):
@@ -48,7 +50,7 @@ src/discretization/connectivity.jl):
   (`cl2`) node to the shared face; `hwva` `(njas)`: face width for horizontal
   connections, face area for vertical ones; `anglex` `(njas)`: angle (radians) between
   the x axis and the connection normal pointing from the lower- to the higher-numbered
-  node (horizontal connections).
+  node (horizontal connections); `DNODATA` (3e30) for a DISU grid without ANGLDEGX.
 """
 struct Connectivity
     nodes::Int32
@@ -71,6 +73,7 @@ struct Connectivity
     area::Vector{Float64}
     xc::Vector{Float64}
     yc::Vector{Float64}
+    grid::Symbol
 end
 
 function Base.show(io::IO, c::Connectivity)
@@ -206,11 +209,7 @@ end
     build_connectivity(model::GwfSpec) -> Connectivity
 
 Reduced nodes, cell geometry and the CSR connectivity of a grid, after MF6's setup-time
-grid checks (which throw an `MF6InputError` with MF6's messages). DIS is implemented
-(src/discretization/dis.jl); DISV and DISU follow in T6.4.
+grid checks (which throw an `MF6InputError` with MF6's messages): DIS
+(src/discretization/dis.jl), DISV (disv.jl) and DISU (disu.jl).
 """
 build_connectivity(model::GwfSpec) = build_connectivity(model.dis)
-
-function build_connectivity(dis::AbstractDisSpec)
-    return unsupported(dis.file, "connectivity for $(nameof(typeof(dis))) (T6.4)")
-end

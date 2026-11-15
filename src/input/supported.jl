@@ -73,6 +73,9 @@ const SUPPORTED_OPTIONS = Dict{Tuple{String, String}, Vector{String}}(
     ("sim-tdis", "OPTIONS") => ["TIME_UNITS", "START_DATE_TIME"],
     ("gwf-nam", "OPTIONS") => ["LIST", "PRINT_INPUT", "PRINT_FLOWS", "SAVE_FLOWS"],
     ("gwf-dis", "OPTIONS") => ["LENGTH_UNITS", "NOGRB", "GRB6", "XORIGIN", "YORIGIN", "ANGROT", "CRS"],
+    # T6.4: vertex and unstructured grids.
+    ("gwf-disv", "OPTIONS") => ["LENGTH_UNITS", "NOGRB", "GRB6", "XORIGIN", "YORIGIN", "ANGROT", "CRS"],
+    ("gwf-disu", "OPTIONS") => ["LENGTH_UNITS", "NOGRB", "GRB6", "XORIGIN", "YORIGIN", "ANGROT", "VERTICAL_OFFSET_TOLERANCE", "CRS"],
     # T2.2: harmonic, LOGARITHMIC, AMT-LMK, AMT-HMK, K22/K33/ANGLE*; T2.8: specific discharge.
     ("gwf-npf", "OPTIONS") => ["SAVE_FLOWS", "PRINT_FLOWS", "ALTERNATIVE_CELL_AVERAGING", "SAVE_SPECIFIC_DISCHARGE", "K22OVERK", "K33OVERK"],
     ("gwf-sto", "OPTIONS") => ["SAVE_FLOWS", "STORAGECOEFFICIENT", "SS_CONFINED_ONLY"],
@@ -120,9 +123,9 @@ const SUPPORTED_VALUES = Dict{Tuple{String, String}, Vector{String}}(
     SUPPORTED_FEATURES
 
 Model features beyond options accepted with `strict = true` (names as in the `requires`
-field of `validation/examples.toml`). Features not in the set are rejected:
+field of `validation/examples.toml`). Supported: `:disv`, `:disu` (DISV6 / DISU6 grids,
+T6.4). Features not in the set are rejected:
 
-- `:disv`, `:disu`: DISV6 / DISU6 grids (T6.4);
 - `:convertible`: NPF ICELLTYPE /= 0 in an active cell (T6.1);
 - `:convertible_storage`: STO ICONVERT /= 0 in an active cell of a model with a transient
   period (T6.1);
@@ -135,7 +138,7 @@ field of `validation/examples.toml`). Features not in the set are rejected:
 TAS6, ATS6, TVK6, TVS6 and HPC6 files are options (`TAS6 FILEIN ...`) and are rejected
 through `SUPPORTED_OPTIONS`.
 """
-const SUPPORTED_FEATURES = Set{Symbol}()
+const SUPPORTED_FEATURES = Set{Symbol}([:disv, :disu])
 
 """
     check_options(o::OptionSet, dfn_name, ftype, ctx)
