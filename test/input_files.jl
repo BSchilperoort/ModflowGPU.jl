@@ -55,6 +55,32 @@ function parity_examples()
 end
 
 """
+    rad_disu_confined(dir) -> Bool
+
+Write `rad_disu_confined` to `dir` (T6.4): the tight-closure inputs of `ex-gwf-rad-disu`
+(reference/runs/ex-gwf-rad-disu/tight-relative: INNER_RCLOSE 1e-10 RELATIVE_RCLOSE, with
+which MF6 converges; DISU with vertices, 550 cells, transient WEL) with
+STO ICONVERT 0, the only feature of the example that needs another card (convertible
+storage, T6.1), so that DISU runs against MF6 (run at test time). Returns `false` when
+the reference run is missing.
+"""
+function rad_disu_confined(dir::AbstractString)
+    src = joinpath(REFERENCE_DIR, "runs", "ex-gwf-rad-disu", "tight-relative")
+    isdir(src) || return false
+    mkpath(dir)
+    for f in readdir(src)
+        any(e -> endswith(f, e), (".hds", ".cbc", ".lst", ".txt", ".toml", ".grb", ".csv")) && continue
+        cp(joinpath(src, f), joinpath(dir, f))
+    end
+    sto = joinpath(dir, "ex-gwf-rad-disu.sto")
+    txt = read(sto, String)
+    new = replace(txt, r"iconvert\s*\n\s*CONSTANT\s+1" => "iconvert\n    CONSTANT  0")
+    new != txt || error("rad_disu_confined: ICONVERT not found in $sto")
+    write(sto, new)
+    return true
+end
+
+"""
     simulation_input_files(simdir) -> Vector{ModflowGPU.InputFile}
 
 Read every block-structured input file of the simulation in `simdir`: `mfsim.nam`, the

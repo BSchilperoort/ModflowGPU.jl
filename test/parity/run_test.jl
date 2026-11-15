@@ -8,6 +8,9 @@
 #   `parity_examples`; -gr has 672525 cells, :single with AMG, MFGPU_TEST_LGRV_GR=0 skips
 #   it), and the synthetic
 #   models test/models/fhb_const and test/models/coupling_rde, run with mf6 at test time;
+#   the Tier 5 examples (T6.4: DISV ex-gwf-u1disv, ex-gwf-curve-90, ex-gwf-curvilin) and
+#   rad_disu_confined (ex-gwf-rad-disu with ICONVERT 0, `rad_disu_confined`, run with mf6
+#   at test time, AMG preconditioner);
 # - heads: every saved step of our HDS file (read back with our reader) vs MF6's:
 #   `:double` max |Δh| < max(1e-6 m, 1e-7 × head range), `:single` < 1e-3 m;
 # - budgets: every package list record and FLOW-JA-FACE/STO-SS of our CBC vs MF6's
@@ -55,6 +58,17 @@ function _run_models(f)
             @test occursin("Normal termination", out)
             f(name, rundir)
         end
+    end
+    # DISU against MF6 (T6.4): ex-gwf-rad-disu with confined storage.
+    mktempdir() do tmp
+        rundir = joinpath(tmp, "rad_disu_confined")
+        if !rad_disu_confined(rundir)
+            @info "Skipping rad_disu_confined in the run parity test: reference/runs/ex-gwf-rad-disu not found"
+            return nothing
+        end
+        out = read(Cmd(`$RUN_MF6`; dir = rundir), String)
+        @test occursin("Normal termination", out)
+        f("rad_disu_confined", rundir)
     end
     return nothing
 end
@@ -123,13 +137,21 @@ end
             # ex-gwf-hwell-a: Jacobi BiCGSTAB does not converge in :single (T2.8); AMG does
             # (T4.3), unless MFGPU_TEST_PRECONDITIONER chooses another preconditioner.
             default_pc = !haskey(ENV, "MFGPU_TEST_PRECONDITIONER")
-            hwell_amg = name == "ex-gwf-hwell-a" && default_pc
+            # rad_disu_confined (T6.4): radial DISU grid without fixed heads, nearly singular
+            # in the late (long) steps; MC-ILU0 BiCGSTAB stalls near 1e-8 m from step 21 on,
+            # AMG converges in 2 outer iterations per step, as MF6 with ILUT does.
+            hwell_amg = name in ("ex-gwf-hwell-a", "rad_disu_confined") && default_pc
             pc = hwell_amg ? :amg : RUN_PRECONDITIONER
             # ex-gwf-lgrv-gr in :single: Float32 CG with MC-ILU0 stops 6.1e-3 m from the exact
             # heads (the correction solves converge too slowly on this badly conditioned steady
             # state); with AMG 6.7e-6 m (T6.0, docs/precision.md).
             spc = name == "ex-gwf-lgrv-gr" && default_pc ? :amg : pc
-            _run_parity(name, rundir; preconditioner = pc, single_preconditioner = spc)
+            # rad_disu_confined in :single (T6.4): the FLOW-JA-FACE flows next to the wells have
+            # conductances up to 5.5e7 ft²/d and offsets up to 26 ft, so one Float32 flow
+            # rounds to C·eps32·(|h'n| + |h'm|) = 2e-2 × total in; measured 1.9e-4 (heads
+            # 1.5e-6 m). The budget criterion is 5e-4 × total in there (docs/precision.md).
+            sbt = name == "rad_disu_confined" ? 5.0e-4 : 1.0e-4
+            _run_parity(name, rundir; preconditioner = pc, single_preconditioner = spc, single_budget_tol = sbt)
         end
     end
     @info "Run parity test: $(nmodels[]) model(s)"
