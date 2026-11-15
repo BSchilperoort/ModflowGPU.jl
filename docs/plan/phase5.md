@@ -235,6 +235,23 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
   day 2 (mGV alone stays finite), which stopped MODFLOW when it took mGV's discharge
   (T5.5a report, "mGV's routing blows up"). Resolve it (owner decision, mGV is not
   patched here) and check mGV's discharge for finite, plausible values every day.
+- From the T5.5a report:
+  - Owner decision: mGV has 100,306 Greenland cells with no MODFLOW cell (they get zero
+    feedback); keep them or mask them.
+  - Missing values in the chosen files: aqdepth 39.5 %, cprate 10.5 %. Check how
+    `build_parameters` fills them.
+  - Run the spin-up in `:mixed`: on the real Indus inputs `:single` stops about 0.03 m
+    from the converged heads with either preconditioner.
+  - T5.5a's iteration counts and closure costs were measured with a synthetic river
+    discharge on `global5m` (6.59 M nodes; the real model has 4.72 M). Measure them
+    again with mGV's discharge: time per day at closures 5, 0.01 and 1e-3.
+  - `mGV.finalize!` frees no device memory (2428 MiB at global size), and dropping the
+    model did not free it in the rehearsal script; the globals in
+    `global_rehearsal.jl:227-232` may hold it.
+  - The gridded WFDE5 stores were not checked (`/media/bart/Data` was not mounted); the
+    land-only `WFDE5_v3.1_5arcmin_land_1979.zarr` covers the one year.
+  - The routing file was built from two longitude boxes split at −25° (the global run
+    needed more than 52 GB of RAM). The seam adds 131 outlets, all on Greenland.
 - Deliver: a global ModflowCoupling config, a steady-state spin-up
   (`period = "steady"`) on the GPU, then 1 year daily coupled with mGV. There is no
   global coupled steady-state head yet: it comes from coupling mGV to MODFLOW
