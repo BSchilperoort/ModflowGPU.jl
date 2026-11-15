@@ -491,7 +491,7 @@ marked; their merge commits on `main` hold the card reports.
   - T5.3 Coupling parity on the Indus (done)
   - T5.4 mGV + ModflowGPU on one GPU (merged 2026-11-14; the closed-loop parity criterion is an open owner decision, see the card)
   - T5.5a Global-size dress rehearsal (done 2026-11-15)
-  - T5.5b Global 5′ run with real data (blocked on owner decisions: mGV routing under feedback, CHD ring heads; see the card)
+  - T5.5b Global 5′ run with real data (merged 2026-11-15: the run completed on the GPU; the 200-year spin-up has not converged in heads and used 1979 forcing only, see the card)
 - **Phase 6: generic MF6 GWF (Milestone C); dependencies between the cards are in the phase file and section 6**: [docs/plan/phase6.md](docs/plan/phase6.md)
   - T6.0 Parity on the confined lgrv examples (done)
   - T6.1 Convertible cells and rewetting

@@ -221,7 +221,29 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
   they do not, it proposes a fix (`:single` or `:mixed` preset, mGV memory reduction,
   Phase 7).
 
-**T5.5b Global 5′ run with real data (L)**
+**T5.5b Global 5′ run with real data (L) (merged 2026-11-15, open points below)**
+- Result (`benchmark/results/2026-11-15-T5.5b.md`): the run completed on the 16 GB GPU
+  in `:mixed` (pool peak 5229 MiB): a 200-year coupled spin-up (34 s per year) and one
+  year of daily steps (89.0 ms per day at closure 0.01). Open for the owner before
+  Milestone B is called reached:
+  - The spin-up stopped at 200 years without meeting its head criterion (layer-1 mean
+    |Δh| 0.0134 m/yr against 0.01, p99 0.252 against 0.1; baseflow and storage met it).
+    The drift sits in cells with the water table more than 100 m below the DEM (Sichuan
+    and the Tibet margin, the Andes, the Atlas, the Karakoram, Anatolia). Continue from
+    `/home/bart/data/mGV/global_60N/runs/spinup/checkpoint_y0200` (estimate 150–1000
+    more years), accelerate the deep cells, or accept the state with this caveat.
+  - Forcing was the 1979 land-only store repeated, because mGV `main`'s gridded reader
+    (`reader.jl:450-475`) applies no `scale_factor`, `add_offset` or `_FillValue` to
+    the int16 WFDE5 store. Fix in mGV (owner), or land-only stores for more years.
+  - Plausibility of the year-200 balance (km³/day): recharge 57.5, river loss 23.3,
+    baseflow 79.4, capillary rise 0.45, CHD 0.69. The recharge is above usual global
+    figures, 23 km³/day circulates river → aquifer → river from year 1, and about 7,000
+    channels are drained to the cap every day.
+  - In `:single` the river-loss limit is exceeded by up to 0.2 % on 1–7 records per day
+    (Float32 rounding in `river_bottom`); the device exchange reads a non-finite channel
+    volume as "no loss", the host path as "no limit".
+  - T4.7 is needed: MODFLOW is 74 % of the coupled day.
+  - The closed-loop parity criterion of T5.4 is still undecided.
 - Depends: T5.5a. The global inputs are available since 2026-11-14 (PLAN.md section 8,
   decisions 1 and 8): MODFLOW in `/home/bart/data/modflow/global_data`, mGV as in
   T5.5a, with the file choices T5.5a recorded: `docs/global_inputs.md` (file choices,
