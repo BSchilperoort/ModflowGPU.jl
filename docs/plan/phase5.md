@@ -241,11 +241,11 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
   - mGV: a derived parameter file with `run_cell` cleared north of 60°N, written next to
     the original under `/home/bart/data/mGV/` (do not change the original; mGV itself is
     not patched), with the forcing and routing inputs cut to the same cells.
-  - MODFLOW: clear `ibound` north of 60°N in the config or a derived file, and say what
-    the boundary at the cut is (no-flow unless decided otherwise).
-  - Routing: rivers that cross 60°N are cut. Northward rivers (Ob, Yenisei, Lena,
-    Mackenzie) end in an outlet at the cut; southward ones lose their upstream inflow.
-    Report how many links are cut.
+  - MODFLOW: clear `ibound` north of 60°N in the config or a derived file. The boundary
+    at the cut is no-flow (owner, 2026-11-15).
+  - Routing: rivers that cross 60°N are cut, which the owner accepts for now. Northward
+    rivers (Ob, Yenisei, Lena, Mackenzie) end in an outlet at the cut; southward ones
+    lose their upstream inflow. Report how many links are cut.
   - Check whether the mask removes the routing blow-up below (it started on Greenland
     and Arctic cells, where the cells and channels are shortest), and report the
     shortest channel length that remains.
