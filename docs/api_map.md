@@ -60,7 +60,7 @@ it. Underscore-prefixed helpers are omitted.
 - **input/supported.jl**: what the engine supports; the loader checks input against it.
   `MF6UnsupportedError`, `SUPPORTED_OPTIONS`, `SUPPORTED_VALUES`, `SUPPORTED_FEATURES`,
   `UNSUPPORTED_PACKAGES` / `UNSUPPORTED_MODELS`, `check_options`, `check_value`,
-  `check_feature`. Tests: simulation_loader, input_lists.
+  `check_feature` (T6.4: `:disv`, `:disu` supported; DISV/DISU options). Tests: simulation_loader, input_lists.
 
 ## Model description (host specs, plain structs)
 
@@ -82,11 +82,23 @@ it. Underscore-prefixed helpers are omitted.
 
 - **discretization/connectivity.jl**: MF6 CSR connectivity layout (PLAN.md 3.3).
   `Connectivity` (ia/ja/jas/isym/ihc, cl1/cl2/hwva/anglex, top/bot/area/xc/yc, reduced
-  numbering), `build_connectivity`, `reduced_numbering`, `fill_isym!`, `fill_jas!`,
+  numbering; T6.4: `grid` = `:dis`/`:disv`/`:disu`, xc/yc empty for DISU without vertices),
+  `build_connectivity`, `reduced_numbering`, `fill_isym!`, `fill_jas!`,
   `iajausr`, `getjaindex`, `connection_lengths`. Tests: connectivity.
 - **discretization/dis.jl**: DIS → `Connectivity` (Dis.f90): `build_connectivity(::DisSpec)`
   with IDOMAIN 0 / pass-through cells, `check_dis_grid`. Tests: connectivity (parity vs
   libmf6 and `.grb`).
+- **discretization/disv.jl** (T6.4): DISV → `Connectivity` (Disv.f90 `grid_finalize`,
+  `connect`, `define_cellverts`; Connections.f90 `disvconnections`/`vertexconnect`;
+  DisvGeom.f90 `cprops`, `shared_edge`, `anglex`): `build_connectivity(::DisvSpec)`,
+  `check_disv_grid` (MF6 messages; returns the cell2d areas), `disv_anglex`;
+  `_cell_vertex_csr` (closed vertex lists, the GRB IAVERT/JAVERT). Tests: disv_disu,
+  connectivity (libmf6 oracle, `.grb`), npf (CONDSAT oracle).
+- **discretization/disu.jl** (T6.4): DISU → `Connectivity` (Disu.f90 `disu_ck`,
+  `grid_finalize`, `disu_face_normal`; Connections.f90 `disuconnections`, `con_finalize`):
+  `build_connectivity(::DisuSpec)` (reduced grids: rows sorted, input arrays compressed),
+  `check_disu_grid`, `disu_angldegx_errors` (MF6's `nangldegxerr` and warnings), `DNODATA`.
+  Tests: disv_disu, connectivity, npf.
 
 ## In-memory models and the MF6 writer (host, T3.2)
 
@@ -113,8 +125,10 @@ it. Underscore-prefixed helpers are omitted.
 - **gwf/npf.jl**: NPF, confined: saturated conductance per connection (NPF.f90). Device-safe
   `logmean`, `condmean`, `staggered_thkfrac`; host `hyeff` / `hy_eff` (anisotropic K),
   `NpfProperties` / `npf_properties`, `check_npf_options`, `calc_condsat`, `NpfSetup` /
-  `npf_setup(::GwfSpec)`, device struct `NpfModel{T}` (`NpfModel(backend, T, setup)`, Adapt), `CCOND_*` averaging codes. Tests:
-  npf (parity vs libmf6 CONDSAT).
+  `npf_setup(::GwfSpec)`, device struct `NpfModel{T}` (`NpfModel(backend, T, setup)`, Adapt), `CCOND_*` averaging codes. T6.4: connection
+  normals from `anglex` by cos/sin on DISV/DISU (exact axes on DIS), the DISU ANGLDEGX
+  checks of `prepcheck`/`npf_ar` (`_check_disu_angldegx`). Tests:
+  npf (parity vs libmf6 CONDSAT, also DISV/DISU), disv_disu.
 - **gwf/ic.jl**: IC (gwf-ic.f90 `ic_ar`). `initial_heads` (starting heads per reduced
   node as offsets, Float64 host or device copy in `T`). Tests: sto.
 - **gwf/sto.jl**: confined storage (gwf-sto.f90 `sto_rp`/`sto_fc`/`sto_cq`/`sto_bd`,
@@ -319,14 +333,17 @@ it. Underscore-prefixed helpers are omitted.
 - **testutils.jl**: `for_each_precision`, `write_input`, `input_error_of`.
 - **input_files.jl**: `REFERENCE_DIR`, `in_scope_examples`, `simulation_input_files`,
   `model_package_files`; `parity_examples` (T6.0: Tier 0–2 plus `EXTRA_PARITY_EXAMPLES`,
-  ex-gwf-lgrv-gc/-gr; `MFGPU_TEST_LGRV_GR=0` drops -gr), used by the assembly and run
-  parity tests.
+  ex-gwf-lgrv-gc/-gr; `MFGPU_TEST_LGRV_GR=0` drops -gr; T6.4: plus the Tier 5 examples),
+  used by the assembly and run parity tests; `rad_disu_confined` (T6.4: ex-gwf-rad-disu with
+  ICONVERT 0, written from the reference run at test time).
 - **libmf6_oracle.jl**: libmf6 subprocess oracle. `LIBMF6_ENV`, `libmf6_available`,
-  `run_libmf6_script` (validation/libmf6_connectivity.jl, libmf6_first_solve.jl), `libmf6_connectivity`, `write_dis_simulation` (synthetic DIS sims).
-- **grids.jl**: `_synthetic_coupling_dis`, `_synthetic_passthrough_dis`, `_rel_close`.
+  `run_libmf6_script` (validation/libmf6_connectivity.jl, libmf6_first_solve.jl), `libmf6_connectivity`, `write_dis_simulation` (synthetic DIS sims; DISV/DISU since T6.4).
+- **grids.jl**: `_synthetic_coupling_dis`, `_synthetic_passthrough_dis`, `_rel_close`,
+  `_dis`, `_Lcg`/`_next!`; T6.4: `_dis_as_disv`, `_dis_as_disu` (the DISV/DISU description of
+  a DIS grid, same user node numbers).
 - **run_parity.jl** (T3.4, moved from parity/run_test.jl): `_run_parity(name, rundir)`
   (ModflowGPU vs MF6 output in `rundir`: heads, CBC, listing tables, both presets, GPU vs
-  CPU; returns the numbers per preset; `single_preconditioner` for `:single`, T6.0), `_mf6_iterations`, `_head_difference`,
+  CPU; returns the numbers per preset; `single_preconditioner` for `:single`, T6.0; `single_budget_tol` and list records matched by package, T6.4), `_mf6_iterations`, `_head_difference`,
   `_budget_difference`, `_listing_difference`, `RUN_MF6`. Used by groups run, synthetic.
 - **residual.jl**: `to_test_device`, `flux_residual` (device `flux_residual!` → (rel, rounding
   bound)), `residual_stats`, `host_flux_residual` (the T2.3 host loop, validates the kernel).
