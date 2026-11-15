@@ -249,6 +249,18 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
   - Check whether the mask removes the routing blow-up below (it started on Greenland
     and Arctic cells, where the cells and channels are shortest), and report the
     shortest channel length that remains.
+- Owner decisions (2026-11-15) after the blow-up investigation:
+  - Spin-up: MODFLOW's steady state is reached by running the coupled system for
+    100–200 years, not by a steady-state solve that has to converge first. Report how
+    the heads and the baseflow drift per year, and stop when they level off. Only the
+    1979 forcing is on this machine (`WFDE5_v3.1_5arcmin_land_1979.zarr`): ask the owner
+    whether to repeat 1979 or to use the full record.
+  - River loss is limited to the water present in the channel: MODFLOW must not take
+    more from a river than mGV has there, so the exchange creates no water. Design this
+    in the card (for example no infiltration from a RIV cell on a day when the channel
+    volume is below the potential loss) and report the created water per day, which
+    must be zero.
+  - CHD ring heads: sea level (0 m) is fine for now.
 - From the blow-up investigation (2026-11-15, no code changed; replaces the "likely
   cause" of the T5.5a review bullet above):
   - Cause: mGV's explicit routing (`A_new = max(A + (Q_in − Q_old)·dt/L, 0)`, 600 s
