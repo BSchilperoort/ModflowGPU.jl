@@ -616,3 +616,46 @@ river-loss limit gives the formula's fluxes in both engines (to 3.5e-7 relative)
 loss above 0.999 of the channel volume, except in `:single` (117 record-days above the
 volume in 31 days, 322 m³: the T5.5b review issue). At equal closures 0.01 the engines agree
 to 4.4e-11 m, at 5 to 3.5e-7 m (both 0.51 m from the tight heads after 31 days).
+
+## Time series: ex-gwf-fhb and ts_tas (T6.3)
+
+Time-series values are evaluated on the host in Float64 per time step (TimeSeries.f90
+`GetValue`, TimeArraySeries.f90 `GetAverageValues` over `[totimc, totimc + delt]`) and
+go through the period-data staging pass (multiplier and offsets in Float64, one cast to
+`T`), so they add no Float32 error of their own: a CHD head from a series reaches the
+device as `T(h − r)`, as a constant head does. ex-gwf-fhb (3×10 cells, 20 steps; CHD
+heads and WEL rates from LINEAREND series) replaces the `fhb_const` stand-in of the
+tables above (the T2.x rows are kept as measured then); its reference is the
+tight-relative MF6 run (the tight run does not converge in MF6). test/models/ts_tas
+(5×10 cells, 15 steps; every TS6/TAS6 form, see docs/support_matrix.md) is run with mf6
+at test time.
+
+**Universal residual and oracle** (CPU and ROCm bitwise identical): max |res| / max
+Σ|terms| over all steps, `:single` (rounding bound) and `:double`; libmf6 first solve
+`amat` / `b'`.
+
+| Model | `:single` | `:double` | oracle `:single` amat / b' | oracle `:double` |
+| --- | --- | --- | --- | --- |
+| ex-gwf-fhb | 6.5e-7 (3.5e-6) | 9.5e-11 | 2.0e-8 / 1.2e-8 | 0 / 0 |
+| ts_tas | 6.3e-7 (2.3e-6) | 2.5e-12 | 3.3e-8 / 2.5e-8 | 0 / 0 |
+
+The ex-gwf-fhb `:double` residual (9.5e-11) is MF6's own closure of the tight-relative
+run (RELATIVE_RCLOSE 1e-10). Storage residual test (group sto) on ex-gwf-fhb: STO-SS
+max |Δq| / max(max |q|, total in) 1.5e-12 (`:single`) and 3.0e-21 (`:double`).
+
+**Run parity** (default preconditioner `:mc_ilu0`; CPU, and ROCm with bitwise identical
+heads in every preset). Heads: max |Δh| over all saved steps; CBC: max |Δq| / total in
+over all records; listing beyond the printed rounding / total in; pd: max |percent
+discrepancy|; outer/inner iterations (MF6 ILU0 in brackets).
+
+| Model | preset | max \|Δh\| (m) | CBC | listing | pd | outer/inner (MF6) |
+| --- | --- | --- | --- | --- | --- | --- |
+| ex-gwf-fhb | `:single` | 3.9e-6 | 1.4e-6 | 7.4e-7 | 4.0e-4 % | 40/221 (40/300) |
+| ex-gwf-fhb | `:mixed` | 4.4e-10 | 2.0e-10 | 0 | 4.5e-8 % | 40/259 |
+| ex-gwf-fhb | `:double` | 2.3e-11 | 1.9e-10 | 0 | 5.6e-13 % | 40/220 |
+| ts_tas | `:single` | 3.6e-7 | 3.4e-7 | 8.5e-8 | 2.0e-5 % | 38/347 (38/3126) |
+| ts_tas | `:mixed` | 6.4e-12 | 1.4e-12 | 0 | 2.3e-10 % | 38/507 |
+| ts_tas | `:double` | 3.4e-12 | 1.3e-12 | 0 | 9.1e-14 % | 38/460 |
+
+`:single` vs `:double` final heads: ex-gwf-fhb 3.3e-7 m, ts_tas 3.6e-7 m. The outer
+iteration counts equal MF6's in every preset.
