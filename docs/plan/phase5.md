@@ -239,6 +239,9 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
     baseflow 79.4, capillary rise 0.45, CHD 0.69. The recharge is above usual global
     figures, 23 km³/day circulates river → aquifer → river from year 1, and about 7,000
     channels are drained to the cap every day.
+    Owner (2026-11-15): the recharge is fine. The circulation and the drained channels
+    are questions about the coupling parameterisation (river geometry), not about the
+    GPU engine, and are looked at later; they do not block Milestone B.
   - In `:single` the river-loss limit is exceeded by up to 0.2 % on 1–7 records per day
     (Float32 rounding in `river_bottom`); the device exchange reads a non-finite channel
     volume as "no loss", the host path as "no limit".
