@@ -489,15 +489,16 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
                 "ex-gwf-bcf2ss-p01a" => "NPF6 option REWET", "ex-gwf-bump-p01b" => "NPF6 option REWET",
                 "ex-gwf-nwt-p02b" => "NPF6 option REWET", "ex-gwf-maw-p03a" => "convertible cells",
                 "ex-gwf-maw-p03c" => "convertible cells", "ex-gwf-hanix" => "NPF6 option XT3D",
-                "ex-gwf-whirl" => "NPF6 option XT3D", "ex-gwf-rad-disu" => "DISU6 discretization",
+                "ex-gwf-whirl" => "NPF6 option XT3D", "ex-gwf-rad-disu" => "convertible storage",
                 "ex-gwf-spbc" => "GWF6-GWF6 exchange", "ex-gwf-lgrv-lgr" => "more than one GWF6 model",
                 "ex-gwf-fhb" => "time-series values (TS6)",
             )
             for name in ("bcf2ss-p02a", "bump-p01a", "bump-p01c", "capture", "nwt-p02a", "nwt-p03a", "nwt-p03b", "zaidel")
                 expected["ex-gwf-$name"] = "NEWTON"
             end
-            for name in ("curve-90", "curvilin", "disvmesh", "u1disv", "u1disv-x")
-                expected["ex-gwf-$name"] = "DISV6 discretization"
+            # DISV is supported since T6.4; these two need XT3D (T6.5).
+            for name in ("disvmesh", "u1disv-x")
+                expected["ex-gwf-$name"] = "NPF6 option XT3D"
             end
             for i in 1:4
                 expected["ex-gwf-u1gwfgwf-s$i"] = "more than one GWF6 model"
@@ -508,8 +509,12 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
                         e = unsupported_error_of(() -> load_simulation(simdir))
                         @test startswith(e.msg, "unsupported: " * expected[name])
                     else
-                        # Tier 0-2 without higher features, and the confined Tier 3 size tests.
-                        @test name in ("ex-gwf-toth", "ex-gwf-hanic", "ex-gwf-hanir", "ex-gwf-hwell-a", "ex-gwf-lgrv-gc", "ex-gwf-lgrv-gr")
+                        # Tier 0-2 without higher features, the confined Tier 3 size tests and
+                        # the DISV examples without XT3D (T6.4).
+                        @test name in (
+                            "ex-gwf-toth", "ex-gwf-hanic", "ex-gwf-hanir", "ex-gwf-hwell-a", "ex-gwf-lgrv-gc", "ex-gwf-lgrv-gr",
+                            "ex-gwf-u1disv", "ex-gwf-curve-90", "ex-gwf-curvilin",
+                        )
                         @test load_simulation(simdir) isa SimulationSpec
                     end
                 end

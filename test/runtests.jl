@@ -55,6 +55,7 @@ const TEST_GROUPS = [
     "output" => ["unit/output_test.jl"],
     "simulation_loader" => ["unit/simulation_loader_test.jl"],
     "connectivity" => ["unit/connectivity_test.jl", "parity/connectivity_test.jl"],
+    "disv_disu" => ["unit/disv_disu_test.jl"],
     "npf" => ["unit/npf_test.jl", "parity/npf_test.jl"],
     "boundaries" => ["unit/boundaries_test.jl", "parity/boundaries_test.jl"],
     "sto" => ["unit/sto_test.jl", "parity/sto_test.jl"],

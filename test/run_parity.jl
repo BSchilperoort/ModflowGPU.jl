@@ -51,7 +51,9 @@ function _budget_difference(ours, mf6, tin)
     nrec = 0
     for (i, r) in enumerate(b.records)
         strip(r.text) == "DATA-SPDIS" && continue
-        j = find_budget_records(a; text = strip(r.text), kstp = r.kstp, kper = r.kper)
+        # List records by package too: a model may have two packages of one type (T6.4).
+        pak = r.imeth == 6 ? strip(r.paknam2) : nothing
+        j = find_budget_records(a; text = strip(r.text), kstp = r.kstp, kper = r.kper, paknam2 = pak)
         @test length(j) == 1
         length(j) == 1 || continue
         ra = a.records[only(j)]

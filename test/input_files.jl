@@ -36,7 +36,9 @@ const EXTRA_PARITY_EXAMPLES = ("ex-gwf-lgrv-gc", "ex-gwf-lgrv-gr")
     parity_examples() -> Vector{Pair{String, String}}
 
 `name => simulation directory` of the examples of the assembly and run parity tests:
-the Tier 0–2 examples and `EXTRA_PARITY_EXAMPLES`, sorted by name. `MFGPU_TEST_LGRV_GR=0`
+the Tier 0–2 examples, `EXTRA_PARITY_EXAMPLES` and the Tier 5 (DISV/DISU, T6.4)
+examples, sorted by name. The parity tests skip, with the reason, those that strict
+loading rejects (ex-gwf-rad-disu: convertible storage, T6.1). `MFGPU_TEST_LGRV_GR=0`
 leaves out `ex-gwf-lgrv-gr` (672525 cells).
 """
 function parity_examples()
@@ -48,6 +50,7 @@ function parity_examples()
         name == "ex-gwf-lgrv-gr" && !gr && continue
         push!(out, name => dir)
     end
+    append!(out, in_scope_examples(; tiers = 5:5))
     return sort!(out)
 end
 

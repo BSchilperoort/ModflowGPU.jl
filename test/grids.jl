@@ -1,5 +1,20 @@
 # Synthetic grids and comparison helpers shared by the connectivity and NPF tests.
-using ModflowGPU: DisSpec
+using ModflowGPU: DisSpec, DisvSpec, DisuSpec
+
+"A DIS spec with the given layer bottoms `(ncol, nrow, nlay)` and IDOMAIN."
+function _dis(; delr, delc, top, botm, idomain = ones(Int32, size(botm)))
+    ncol, nrow, nlay = size(botm)
+    return DisSpec(;
+        nlay = Int32(nlay), nrow = Int32(nrow), ncol = Int32(ncol), delr = Float64.(delr), delc = Float64.(delc),
+        top = Float64.(top), botm = Float64.(botm), idomain = Int32.(idomain), file = "test.dis",
+    )
+end
+
+# A small deterministic generator (no Random dependency): values in 0:(m - 1).
+mutable struct _Lcg
+    s::UInt64
+end
+_next!(g::_Lcg, m) = (g.s = g.s * 0x5851f42d4c957f2d + 0x14057b7ef767814f; Int((g.s >> 33) % m))
 
 # Elementwise relative closeness of two arrays of equal length.
 _rel_close(a, b; rtol = 1.0e-14) = length(a) == length(b) && all(abs(x - y) <= rtol * max(abs(x), abs(y)) for (x, y) in zip(a, b))
@@ -49,4 +64,66 @@ function _synthetic_passthrough_dis()
         idomain[j, i, k] = ids[k]
     end
     return DisSpec(; nlay = Int32(nlay), nrow = Int32(nrow), ncol = Int32(ncol), delr, delc, top, botm, idomain)
+end
+
+# The DISV description of a DIS grid (T6.4): vertices at the cell corners, numbered row by
+# row from the top-left corner, cells clockwise from their top-left corner, cell2d number
+# `(i - 1) * ncol + j`, so user node numbers (and IDOMAIN, TOP, BOTM) are those of the DIS
+# grid. Coordinates as Dis.f90 computes the cell centres (row 1 at the top).
+function _dis_as_disv(dis::DisSpec)
+    ncol, nrow, nlay = Int(dis.ncol), Int(dis.nrow), Int(dis.nlay)
+    xv = [0.0; cumsum(dis.delr)]
+    yv = reverse([0.0; cumsum(reverse(dis.delc))])  # yv[1] is the top edge
+    vid(i, j) = Int32((i - 1) * (ncol + 1) + j)       # corner i in 1:nrow+1, j in 1:ncol+1
+    vertices = Matrix{Float64}(undef, 2, (nrow + 1) * (ncol + 1))
+    for i in 1:(nrow + 1), j in 1:(ncol + 1)
+        vertices[:, vid(i, j)] = [xv[j], yv[i]]
+    end
+    ncpl = nrow * ncol
+    cell_center = Matrix{Float64}(undef, 2, ncpl)
+    cell_vertices = Vector{Vector{Int32}}(undef, ncpl)
+    for i in 1:nrow, j in 1:ncol
+        c = (i - 1) * ncol + j
+        cell_center[:, c] = [xv[j] + 0.5 * dis.delr[j], yv[i + 1] + 0.5 * dis.delc[i]]
+        cell_vertices[c] = [vid(i, j), vid(i, j + 1), vid(i + 1, j + 1), vid(i + 1, j)]
+    end
+    return DisvSpec(;
+        nlay = Int32(nlay), ncpl = Int32(ncpl), nvert = Int32(size(vertices, 2)), top = vec(dis.top),
+        botm = reshape(dis.botm, ncpl, nlay), idomain = reshape(dis.idomain, ncpl, nlay), vertices, cell_center,
+        cell_vertices, file = "test.disv",
+    )
+end
+
+# The DISU description of a DIS grid without pass-through cells (T6.4): the connections of
+# the grid with every cell active (from the DIS connectivity, so the same CL12, HWVA and
+# ANGLDEGX), with the grid's IDOMAIN (2 → 1) given to DISU. User node numbers are those of
+# the DIS grid. `vertices = true` adds the DISV vertices and cell centres.
+function _dis_as_disu(dis::DisSpec; vertices::Bool = false, angldegx::Bool = true)
+    all(>=(0), dis.idomain) || throw(ArgumentError("DISU has no pass-through cells"))
+    full = DisSpec(; nlay = dis.nlay, nrow = dis.nrow, ncol = dis.ncol, delr = dis.delr, delc = dis.delc, top = dis.top, botm = dis.botm)
+    c = ModflowGPU.build_connectivity(full)
+    nodes = Int(c.nodes)
+    iac = Int32[c.ia[n + 1] - c.ia[n] for n in 1:nodes]
+    ihc = zeros(Int32, c.nja)
+    cl12 = zeros(c.nja)
+    hwva = zeros(c.nja)
+    ang = zeros(c.nja)
+    for n in 1:nodes, ii in (c.ia[n] + 1):(c.ia[n + 1] - 1)
+        s = c.jas[ii]
+        m = c.ja[ii]
+        ihc[ii] = c.ihc[s]
+        cl12[ii] = m > n ? c.cl1[s] : c.cl2[s]
+        hwva[ii] = c.hwva[s]
+        a = rad2deg(c.anglex[s])
+        ang[ii] = m > n ? a : mod(a + 180.0, 360.0)
+    end
+    disv = vertices ? _dis_as_disv(dis) : nothing
+    return DisuSpec(;
+        nodes = Int32(nodes), nja = c.nja, nvert = vertices ? disv.nvert : Int32(0), top = c.top, bot = c.bot, area = c.area,
+        idomain = Int32[min(d, 1) for d in vec(dis.idomain)], iac, ja = copy(c.ja), ihc, cl12, hwva,
+        angldegx = angldegx ? ang : nothing,
+        vertices = vertices ? disv.vertices : zeros(2, 0),
+        cell_center = vertices ? repeat(disv.cell_center, 1, Int(dis.nlay)) : zeros(2, 0),
+        cell_vertices = vertices ? repeat(disv.cell_vertices, Int(dis.nlay)) : Vector{Int32}[], file = "test.disu",
+    )
 end
