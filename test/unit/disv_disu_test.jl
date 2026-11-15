@@ -5,7 +5,7 @@
 # is host Float64 geometry (no precision loop); the runs use `for_each_precision`. The
 # libmf6 oracle on DISV/DISU grids is in test/parity/connectivity_test.jl.
 using ModflowGPU: DisSpec, DisvSpec, DisuSpec, Connectivity, build_connectivity, npf_setup, build_npf, build_ic,
-    build_sto, build_boundary, build_model, build_tdis, build_ims, build_simulation, build_oc, oc_record,
+    build_sto, build_boundary, build_array_boundary, build_model, build_tdis, build_ims, build_simulation, build_oc, oc_record,
     check_disv_grid, check_disu_grid, disv_anglex, MF6InputError, grid_colors, is_valid_coloring
 
 _disv_err(d) = (
@@ -151,14 +151,27 @@ end
         ghb = act[[15, 25]]
         rch = filter(n -> n <= sz[1] * sz[2], act)
         tdis = build_tdis(; perlen = [1.0, 10.0], nstp = [1, 3], tsmult = [1.0, 1.2])
-        function model(d)
+        riv = act[[30, 31, 32]]
+        drn = act[[40, 41]]
+        ncpl = sz[1] * sz[2]
+        topv = vec(dis.top)
+        # `arrays`: also RCHA and EVTA (READASARRAYS: DIS and DISV only, as in MF6); their
+        # cells in excluded layer-1 cells move to the highest active cell below.
+        function model(d; arrays = false)
             v(a) = d isa DisSpec ? a : vec(a)
             bnd = [
                 build_boundary(:CHD, d; periods = [1 => (; cells = chd, values = [200.0, 201.5, 199.25])], save_flows = true),
                 build_boundary(:WEL, d; periods = [1 => (; cells = wel, values = [-500.0, -250.0]), 2 => (; cells = wel[1:1], values = [-800.0])], save_flows = true),
                 build_boundary(:GHB, d; periods = [1 => (; cells = ghb, values = [198.0 50.0; 202.0 75.0])], save_flows = true),
                 build_boundary(:RCH, d; periods = [1 => (; cells = rch, values = fill(1.0e-4, length(rch)))], save_flows = true),
+                build_boundary(:RIV, d; periods = [1 => (; cells = riv, values = [199.0 30.0 190.0; 199.5 30.0 190.0; 201.0 40.0 195.0])], save_flows = true),
+                build_boundary(:DRN, d; periods = [1 => (; cells = drn, values = [199.0 20.0; 200.5 25.0])], save_flows = true),
+                build_boundary(:EVT, d; periods = [1 => (; cells = rch[1:5], values = [topv[rch[1:5]] fill(2.0e-4, 5) fill(60.0, 5)])], save_flows = true),
             ]
+            if arrays
+                push!(bnd, build_array_boundary(:RCH, d; name = "rcha", periods = [1 => (; recharge = [5.0e-5 + 1.0e-6 * (c % 7) for c in 1:ncpl])], save_flows = true))
+                push!(bnd, build_array_boundary(:EVT, d; name = "evta", periods = [1 => (; surface = topv, rate = fill(1.0e-4, ncpl), depth = 80.0)], save_flows = true))
+            end
             return build_model(
                 "grid"; dis = d, npf = build_npf(d; k = v(k), k33 = v(0.1 .* k), save_flows = true),
                 ic = build_ic(d; strt = v(fill(200.0, sz))), sto = build_sto(d; ss = v(fill(1.0e-5, sz)), periods = [1 => :steady_state, 2 => :transient]),
@@ -167,22 +180,23 @@ end
             )
         end
         ims = build_ims(; outer_dvclose = 1.0e-9, inner_dvclose = 1.0e-10, inner_rclose = 1.0e-9, linear_acceleration = :bicgstab, inner_maximum = 500)
+        jrun(d, p; arrays = false) = mktempdir() do out
+            ModflowGPU.run(build_simulation([model(d; arrays)]; tdis, ims); backend = TEST_BACKEND, precision = p.preset, outdir = out, preconditioner = :jacobi)
+        end
         for_each_precision() do p
-            runs = map((dis, _dis_as_disv(dis), _dis_as_disu(dis))) do d
-                sim = build_simulation([model(d)]; tdis, ims)
-                mktempdir() do out
-                    ModflowGPU.run(sim; backend = TEST_BACKEND, precision = p.preset, outdir = out, preconditioner = :jacobi)
-                end
-            end
-            r0 = runs[1]
-            @test r0.converged
-            for (r, g) in zip(runs[2:3], ("DISV", "DISU"))
-                # Jacobi: the same arithmetic as DIS, so bitwise the same heads and budgets
-                # (the matrices are equal; only the multicolour orderings would differ).
-                @test r.converged && r.heads == r0.heads
+            # Jacobi: the same arithmetic as DIS, so bitwise the same heads and budgets (the
+            # matrices are equal; only the multicolour orderings would differ).
+            for (g, r0, r) in (
+                    ("DISV", jrun(dis, p; arrays = true), jrun(_dis_as_disv(dis), p; arrays = true)),
+                    ("DISU", jrun(dis, p), jrun(_dis_as_disu(dis), p)),
+                )
+                @test r0.converged && r.converged && r.heads == r0.heads
                 @test [ModflowGPU.total_rate_in(b) for b in r.budgets] == [ModflowGPU.total_rate_in(b) for b in r0.budgets]
+                @test [[(t.name, t.rate_in, t.rate_out) for t in b.terms] for b in r.budgets] ==
+                    [[(t.name, t.rate_in, t.rate_out) for t in b.terms] for b in r0.budgets]
                 @test [s.outer.iterations for s in r.steps] == [s.outer.iterations for s in r0.steps]
             end
+            r0 = jrun(dis, p)
             # The default preconditioner (greedy colouring on DISV/DISU, red–black on DIS).
             rv = mktempdir() do out
                 ModflowGPU.run(build_simulation([model(_dis_as_disv(dis))]; tdis, ims); backend = TEST_BACKEND, precision = p.preset, outdir = out)
