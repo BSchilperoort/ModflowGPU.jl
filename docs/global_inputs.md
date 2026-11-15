@@ -100,3 +100,77 @@ the nogl domain), `Clone_05min_oc.*` and `conflayers_oc.nc` (not ModflowCoupling
 No package has two records on one cell (ModflowCoupling builds one record per cell), so the
 device coupling's one-record-per-cell rule (T5.4, `record_map`) holds for these inputs.
 The synthetic `global5m` of T5.5a (6.59 M nodes) is 40 % larger than this model.
+
+## Derived inputs of the global run: north of 60°N masked (T5.5b)
+
+PLAN.md decision 10: Greenland and the Arctic are not modelled; everything with a cell
+centre north of 60°N is masked out in both models. Made on 2026-11-15 with
+`examples/global/make_60N_inputs.jl` of the patched ModflowCoupling (patch 0006), which
+copies each original and changes the copy (nothing that existed under `/home/bart/data`
+was changed):
+
+```sh
+cd reference/Modflow-coupling
+julia --project=examples/mgv_coupling examples/global/make_60N_inputs.jl /home/bart/data/mGV/global_60N
+```
+
+| File under `/home/bart/data/mGV/global_60N/` | From | Change |
+| --- | --- | --- |
+| `vic_global_5min_params_lossless_60N.nc` (1.38 GB) | `vic_global_5min_params_lossless.nc` | `run_cell` = 0 north of 60°N |
+| `modflow/ibound_oc_nogl_60N.nc` | `ibound_oc_nogl.nc` | `ibound` = 0 north of 60°N (no-flow at the cut) |
+| `modflow/landmask_oc_nogl_60N.nc` | `landmask_oc_nogl.nc` | 0 north of 60°N |
+| `modflow/initial_head_gv2p41_5min_nogl_chd0_60N.nc` | `initial_head_gv2p41_5min_nogl.nc` | sea level (0 m) on the 123,983 remaining CHD ring cells, which had no head; NaN north of 60°N |
+
+The configs of the run are `examples/global/global_60N.toml` (MODFLOW; these three files
+by absolute path, the other inputs as in `global.toml`) and `mgv_global_60N.toml` (mGV).
+`run_global.jl` also sets every other MODFLOW input to NaN north of 60°N in memory, so
+that no package has a record there and the orientation audit (bankfull discharge only on
+land) passes.
+
+Not derived, because the models cut them themselves:
+
+- **Routing**: mGV `main` builds its network on the full grid and keeps the active cells;
+  a cell that flows into a removed cell becomes an outlet (`RoutingState`). So
+  `routing_global_5min.nc` is used as it is.
+- **Forcing**: the land-only store holds all 2,288,857 cells; mGV reads the rows of its
+  active cells only (`land_rows`), so the 1979 store is used as it is.
+
+Counts (`make_60N_inputs.jl` output):
+
+| | before | removed north of 60°N | remaining |
+| --- | --- | --- | --- |
+| mGV active cells | 2,288,857 | 575,055 | 1,713,802 |
+| MODFLOW land cells (idomain 1) | 2,188,551 | 474,809 | 1,713,742 |
+| MODFLOW CHD ring cells (idomain 2) | 173,727 | 49,744 | 123,983 |
+
+- Routing links cut: 646 links from cells south of 60°N into removed cells (they become
+  outlets: the northward rivers end at the cut), 598 from removed cells into the remaining
+  domain (the southward rivers lose that inflow).
+- Channel length (as mGV sets it: `cell_dist`, or `sqrt(cell_area)` where that is not
+  positive): shortest 1029 m and 146,207 channels below 3.6 km on the whole domain; south
+  of 60°N the shortest is 4639 m and none is below 3.6 km, the length at which mGV's
+  explicit routing (600 s sub-steps, 6 m/s cap) starts to create water (T5.5b card).
+- The 60 mGV cells south of 60°N without a MODFLOW land cell get no feedback (as before).
+
+**CHD heads at sea level.** The DEM (`dem_ini_oc.nc`, no datum attribute) has zero at
+mean sea level as far as the data show: on the 57,972 land cells next to the CHD ring its
+median is 16.5 m (p05 0.9 m, p25 5.5 m), and 1150 of them (1.98 %, 613 below −5 m) lie below
+0 m, which is what a sea-level datum gives on low coasts (which coasts these are was not
+checked); the lowest land cell is −413.9 m, about the level of the Dead Sea shore. An
+offset datum would move the whole coastal distribution. These 1150 cells are below the ring head by
+construction; that is real (they are below sea level), not an artefact. The provided
+steady head lies below 0 m on 25.7 % of the coastal cells.
+
+**Forcing of the gridded store.** `/media/bart/Data/Work/SWIFT/WFDE5_v3.1_5arcmin.zarr`
+is one zarr v3 store with the seven variables as `(time, lat, lon)` int16 arrays
+(chunks 24 × 240 × 240, Blosc zstd) with CF `scale_factor`, `add_offset` and `_FillValue`
+attributes, 16,802 days (1979-01-01 to 2024-12-31), latitudes −55.958 … 83.958 (the
+parameter grid). mGV `main` (42aebaa) opens it (dimension check, time axis), but its
+gridded reader (`load_block!` for `ZarrForcingVar`) reads the int16 values into Float32
+with `Zarr.readblock!` and applies neither the scale and offset nor the fill value (only
+the land-only reader does): the first 24 days of `prec` come back as raw values
+−32768 … −22161 instead of millimetres. So mGV `main` cannot use this store, and T5.5b
+cycles the land-only 1979 store (the fallback). Using the full record needs either a
+fix in mGV's gridded reader (owner's change; mGV is not patched here) or land-only
+stores of more years (`scripts/convert_forcing_landonly.jl` of mGV; about 3.8 GB per
+year for the masked domain, 175 GB for 1979–2024).
