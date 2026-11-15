@@ -162,8 +162,13 @@ is T2.1/T2.3's.
 - `maxbound` (0 for READASARRAYS), `print_input`, `print_flows`, `save_flows`.
 - `auto_flow_reduce` (WEL; 0 = off), `flow_reduction_length`, `auto_flow_reduce_auxname`,
   `afrcsv_file`; `mover` (MVR, out of scope; always rejected).
-- `ts_files`, `tas_files`, `obs_files`: TS6, TAS6 and OBS6 FILEIN names (not parsed here:
-  T6.3, T6.7). List values given as time-series names are `TsRef`s in the period data.
+- `ts_files`, `tas_files`, `obs_files`: TS6, TAS6 and OBS6 FILEIN names (OBS6 not parsed:
+  T6.7). List values given as time-series names are `TsRef`s in the period data,
+  READASARRAYS arrays given as `TIMEARRAYSERIES name` are in `ArrayPeriod.tas`.
+- `timeseries`: the series of the TS6 files by name (T6.3; a later file's series replaces
+  one of the same name, as MF6's hash table does); `timearrayseries`: the series of the
+  TAS6 files by name (T6.3). Both are evaluated per time step by the boundary framework
+  (`advance_time_series!`).
 """
 Base.@kwdef struct BoundarySpec{Kind}
     name::String
@@ -188,6 +193,8 @@ Base.@kwdef struct BoundarySpec{Kind}
     ts_files::Vector{String} = String[]
     tas_files::Vector{String} = String[]
     obs_files::Vector{String} = String[]
+    timeseries::Dict{Symbol, TimeSeries} = Dict{Symbol, TimeSeries}()
+    timearrayseries::Dict{Symbol, TimeArraySeries} = Dict{Symbol, TimeArraySeries}()
     schema::Union{Nothing, ListSchema} = nothing
     periods::Union{StressPeriods{PeriodList}, StressPeriods{ArrayPeriod}}
     file::String = ""

@@ -53,3 +53,15 @@ function time_steps(tdis::TdisSpec)
     end
     return steps
 end
+
+"""
+    time_step_window(steps::Vector{TimeStep}, i) -> (t0, t1)
+
+The interval of time step `i` of `steps` as MF6's time-series managers use it (`tsmgr_ad`,
+`tasmgr_ad`): `t0 = totimc`, the total time at the end of the previous step (0 for the
+first), and `t1 = t0 + delt` (Float64, host; T6.3).
+"""
+function time_step_window(steps::AbstractVector{TimeStep}, i::Integer)
+    t0 = i == 1 ? 0.0 : steps[i - 1].totim
+    return (t0, t0 + steps[i].delt)
+end

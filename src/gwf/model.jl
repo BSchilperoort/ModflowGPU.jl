@@ -80,18 +80,19 @@ Base.show(io::IO, m::GwfModel{T}) where {T} =
     print(io, "GwfModel{", T, "}(\"", m.spec.name, "\", ", m.conn.nodes, " cells, ", length(m.packages), " stress package(s))")
 
 """
-    apply_period!(m::GwfModel, kper) -> m
+    apply_period!(m::GwfModel, kper; window = nothing) -> m
 
 Start stress period `kper` (`bnd_rp`, `sto_rp`, `chd_rp`), once per period: the period
 data of every stress package (host, Float64, then copied), the storage setting and the
-IBOUND of the constant heads (copied to the device when it changed).
+IBOUND of the constant heads (copied to the device when it changed). `window = (t0, t1)`
+is the first time step of the period, for packages with time-series values (T6.3).
 """
-function apply_period!(m::GwfModel, kper::Integer)
+function apply_period!(m::GwfModel, kper::Integer; window::Union{Nothing, NTuple{2, Float64}} = nothing)
     # The IBOUND of the constant heads depends on the CHD cells only (T4.6: not rebuilt
     # when no CHD package has new cells).
     chd = m.kper == 0
     for pkg in m.packages
-        st = _apply_period!(pkg, kper, m.setup.r, nothing)
+        st = _apply_period!(pkg, kper, m.setup.r, nothing, window)
         chd |= st === :structure && boundary_kind(pkg) === :CHD
     end
     isnothing(m.sto) || apply_period!(m.sto, kper)
@@ -104,6 +105,21 @@ function apply_period!(m::GwfModel, kper::Integer)
         end
     end
     m.kper = kper
+    return m
+end
+
+"""
+    advance_time_series!(m::GwfModel, window) -> m
+
+Evaluate the time series of every stress package for the time step `window = (t0, t1)`
+(`[totimc, totimc + delt]`; `idm_ts_advance` at the end of `Mf6PrepareTimestep`) and send
+the changed `bound` arrays to the device (T6.3). Packages without time series, or already
+evaluated for `window` by `apply_period!`, are skipped.
+"""
+function advance_time_series!(m::GwfModel, window::NTuple{2, Float64})
+    for pkg in m.packages
+        advance_time_series!(pkg, window, m.setup.r)
+    end
     return m
 end
 

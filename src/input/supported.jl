@@ -19,10 +19,10 @@
 # MEMORY_PRINT_OPTION, ...): they are accepted and recorded in the spec, and T2.8
 # decides how much of that printing it reproduces. Output files are accepted and
 # owned by later cards: DIS GRB6 and OC HEAD/BUDGET FILEOUT by T2.8, OBS6 files by T6.7.
-# TS6 files are accepted as references, but values given as time-series names (`TsRef`
-# in list data, TIMEARRAYSERIES in array data) are the `:timeseries` feature: Phase 2
-# cannot evaluate them before T6.3, so strict loading rejects them (fhb loads only with
-# `strict = false`).
+# Time series (T6.3): TS6 files and list values given as time-series names (`TsRef`, in
+# any column whose DFN entry allows a time series, auxiliary variables included), TAS6
+# files (RCHA, EVTA: `TAS6 FILEIN`) and TIMEARRAYSERIES arrays are the `:timeseries`
+# feature, supported since T6.3.
 
 """
     MF6UnsupportedError(file, msg)
@@ -84,9 +84,9 @@ const SUPPORTED_OPTIONS = Dict{Tuple{String, String}, Vector{String}}(
     ("gwf-riv", "OPTIONS") => _STRESS_OPTIONS,
     ("gwf-drn", "OPTIONS") => [_STRESS_OPTIONS; "AUXDEPTHNAME"],  # T2.4: DRN smoothing
     ("gwf-rch", "OPTIONS") => [_STRESS_OPTIONS; "FIXED_CELL"],
-    ("gwf-rcha", "OPTIONS") => [_STRESS_OPTIONS; "FIXED_CELL"; "READASARRAYS"],
+    ("gwf-rcha", "OPTIONS") => [_STRESS_OPTIONS; "FIXED_CELL"; "READASARRAYS"; "TAS6"],  # T6.3: TAS6
     ("gwf-evt", "OPTIONS") => [_STRESS_OPTIONS; "FIXED_CELL"; "SURF_RATE_SPECIFIED"],
-    ("gwf-evta", "OPTIONS") => [_STRESS_OPTIONS; "FIXED_CELL"; "READASARRAYS"],
+    ("gwf-evta", "OPTIONS") => [_STRESS_OPTIONS; "FIXED_CELL"; "READASARRAYS"; "TAS6"],  # T6.3: TAS6
     ("sln-ims", "OPTIONS") => ["PRINT_OPTION", "COMPLEXITY"],
     ("sln-ims", "NONLINEAR") => [
         "OUTER_DVCLOSE", "OUTER_MAXIMUM", "UNDER_RELAXATION", "UNDER_RELAXATION_GAMMA",
@@ -130,12 +130,12 @@ field of `validation/examples.toml`). Features not in the set are rejected:
 - `:multi_model`: more than one GWF model, or more than one solution (T6.6);
 - `:exchange`: GWF6-GWF6 exchanges (T6.6);
 - `:timeseries`: list values given as TS6 time-series names, or TIMEARRAYSERIES arrays
-  (T6.3);
+  (supported since T6.3);
 
-TAS6, ATS6, TVK6, TVS6 and HPC6 files are options (`TAS6 FILEIN ...`) and are rejected
+ATS6, TVK6, TVS6 and HPC6 files are options (`ATS6 FILEIN ...`) and are rejected
 through `SUPPORTED_OPTIONS`.
 """
-const SUPPORTED_FEATURES = Set{Symbol}()
+const SUPPORTED_FEATURES = Set{Symbol}([:timeseries])
 
 """
     check_options(o::OptionSet, dfn_name, ftype, ctx)

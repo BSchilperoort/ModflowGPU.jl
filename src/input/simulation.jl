@@ -418,6 +418,35 @@ function _check_active_list(f::InputFile, sp::StressPeriods{PeriodList}, dis::Ab
     return nothing
 end
 
+# TS6 and TAS6 files of a stress package (T6.3; TimeSeriesManager.f90 `HashBndTimeSeries`:
+# a later series of the same name replaces the earlier one), and every name the period
+# data use must be one of them (`read_value_or_time_series`, `MakeTasLink`).
+function _load_time_series(ld::_Loader, f::InputFile, ts_files, tas_files, periods, g::GridDims)
+    ts = Dict{Symbol, TimeSeries}()
+    for fname in ts_files, s in read_time_series_file(_resolve_path(fname, ld.simdir); simdir = ld.simdir)
+        ts[s.name] = s
+    end
+    tas = Dict{Symbol, TimeArraySeries}()
+    ncpl = prod(g.mshape[2:end])
+    for fname in tas_files
+        s = read_time_array_series_file(_resolve_path(fname, ld.simdir), ncpl; simdir = ld.simdir)
+        tas[s.name] = s
+    end
+    for (k, p) in zip(periods.iper, periods.data)
+        if p isa PeriodList
+            for r in p.ts
+                haskey(ts, r.name) ||
+                    throw(MF6InputError(f.path, 0, "PERIOD $k, record $(r.row): Error in list input. Expected numeric value or time-series name, but found '$(r.name)'."))
+            end
+        else
+            for name in values(p.tas)
+                haskey(tas, name) || throw(MF6InputError(f.path, 0, "PERIOD $k: Error: Time-array series \"$name\" not found."))
+            end
+        end
+    end
+    return ts, tas
+end
+
 function _load_boundary(ld::_Loader, e::PackageEntry, mname, dis::AbstractDisSpec, np::Integer)
     f = _periods_upto(_read_package(ld, e.file, e.ftype, "GWF"), np)
     ctx = "model '$mname'"
@@ -450,6 +479,9 @@ function _load_boundary(ld::_Loader, e::PackageEntry, mname, dis::AbstractDisSpe
         hasts = readasarrays ? any(p -> !isempty(p.tas), periods.data) : any(p -> !isempty(p.ts), periods.data)
         hasts && check_feature(f.path, :timeseries, "time-series values ($(readasarrays ? "TAS6" : "TS6")) in package '$(e.name)' ($ctx)")
     end
+    ts_files = _filein(ld, o, "ts6_filename", "TS6")
+    tas_files = _filein(ld, o, "tas6_filename", "TAS6")
+    timeseries, timearrayseries = _load_time_series(ld, f, ts_files, tas_files, periods, g)
     return BoundarySpec{kind}(;
         name = e.name, readasarrays, auxnames, auxmultname, auxmultcol,
         auxdepthname = option(o, "auxdepthname", ""), boundnames = option(o, "boundnames", false),
@@ -460,8 +492,8 @@ function _load_boundary(ld::_Loader, e::PackageEntry, mname, dis::AbstractDisSpe
         flow_reduction_length = option(o, "flow_reduction_length", false),
         auto_flow_reduce_auxname = option(o, "auto_flow_reduce_auxname", ""),
         afrcsv_file = option(o, "afrcsvfile", ""), mover = false,
-        ts_files = _filein(ld, o, "ts6_filename", "TS6"), tas_files = _filein(ld, o, "tas6_filename", "TAS6"),
-        obs_files = _filein(ld, o, "obs6_filename", "OBS6"), schema, periods, file = _rel(ld, f.path),
+        ts_files, tas_files, obs_files = _filein(ld, o, "obs6_filename", "OBS6"), timeseries, timearrayseries,
+        schema, periods, file = _rel(ld, f.path),
     )
 end
 
