@@ -348,7 +348,14 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
   default `:mc_ilu0`, and switch to `:amg` if they are far above the synthetic ones.
 - Done when: the run completes on the 16 GB GPU.
 
-**T5.6 Global parity and timing against MODFLOW 6 (S)**
+**T5.6 Global parity and timing against MODFLOW 6 (S) (done 2026-11-15)**
+- Result (`benchmark/results/2026-11-15-T5.6.md`): on the real masked model, 31 days,
+  the GPU engine matches MF6 6.3.0 to 4.4e-11 m in heads in `:mixed`/`:double` and
+  2.5e-5 m in `:single`. One day of MODFLOW takes 65 ms on rocm in `:mixed` against
+  3.9 s for serial MF6 at closure 0.01 (about 60×; 25× with MF6 at its production
+  closure 5, where its heads are 0.51 m from the tight ones). Open: the `:single`
+  river-loss rounding (117 record-days, up to 0.73 % over), and heads up to 105 m above
+  the model top in the lower Amazon at year 200.
 - Depends: T5.5b. Added 2026-11-15 at the owner's request: at global size MF6 and
   ModflowGPU were compared only for run time on the synthetic `global5m` (T4.1), never
   for heads and never on the real model.
