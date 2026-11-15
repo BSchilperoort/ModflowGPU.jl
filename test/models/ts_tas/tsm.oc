@@ -1,6 +1,6 @@
 BEGIN options
-  BUDGET  FILEOUT  ex-gwf-fhb.cbc
-  HEAD  FILEOUT  ex-gwf-fhb.hds
+  BUDGET  FILEOUT  tsm.cbc
+  HEAD  FILEOUT  tsm.hds
 END options
 
 BEGIN period  1

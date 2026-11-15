@@ -1,13 +1,15 @@
 # End-to-end parity of `ModflowGPU.run` (T2.8) against MF6 6.8.2 tight-closure runs,
 # PLAN.md section 4:
 #
-# - models: the Tier 0–2 examples that load with `strict = true` and have a tight run in
-#   reference/runs/<example>/tight (ex-gwf-hwell-a, 153164 cells and 60 steps, runs with
+# - models: the Tier 0–2 examples that load with `strict = true`, against their reference
+#   run (`reference_rundir`: reference/runs/<example>/tight, or tight-relative when the
+#   tight run did not converge, e.g. ex-gwf-fhb with its time series since T6.3;
+#   ex-gwf-hwell-a, 153164 cells and 60 steps, runs with
 #   the AMG preconditioner since T4.3, about 15 s on the CPU backend; MFGPU_TEST_HWELL=0
 #   skips it), the confined Tier 3 examples ex-gwf-lgrv-gc and ex-gwf-lgrv-gr (T6.0;
 #   `parity_examples`; -gr has 672525 cells, :single with AMG, MFGPU_TEST_LGRV_GR=0 skips
-#   it), and the synthetic
-#   models test/models/fhb_const and test/models/coupling_rde, run with mf6 at test time;
+#   it), and the synthetic models test/models/ts_tas (T6.3: TS6 and TAS6 input) and
+#   test/models/coupling_rde, run with mf6 at test time;
 # - heads: every saved step of our HDS file (read back with our reader) vs MF6's:
 #   `:double` max |Δh| < max(1e-6 m, 1e-7 × head range), `:single` < 1e-3 m;
 # - budgets: every package list record and FLOW-JA-FACE/STO-SS of our CBC vs MF6's
@@ -25,9 +27,9 @@
 function _run_models(f)
     hwell = get(ENV, "MFGPU_TEST_HWELL", "1") != "0"
     for (name, _) in parity_examples()
-        rundir = joinpath(REFERENCE_DIR, "runs", name, "tight")
-        if !isdir(rundir)
-            @info "Skipping $name in the run parity test: $rundir not found"
+        rundir = reference_rundir(name)
+        if isnothing(rundir)
+            @info "Skipping $name in the run parity test: no converged reference run in $(joinpath(REFERENCE_DIR, "runs", name))"
             continue
         end
         if name == "ex-gwf-hwell-a" && !hwell
@@ -47,7 +49,7 @@ function _run_models(f)
         @info "Skipping the synthetic models in the run parity test: mf6 not found at $RUN_MF6 (set REFERENCE_DIR or MF6)"
         return nothing
     end
-    for name in ("fhb_const", "coupling_rde")
+    for name in ("ts_tas", "coupling_rde")
         mktempdir() do tmp
             rundir = joinpath(tmp, name)
             cp(joinpath(@__DIR__, "..", "models", name), rundir)
