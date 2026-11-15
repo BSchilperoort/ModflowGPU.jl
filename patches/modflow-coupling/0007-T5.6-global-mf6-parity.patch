@@ -1,0 +1,613 @@
+From 8d1e19118ee74ececf0c1e76753daad19ac44845 Mon Sep 17 00:00:00 2001
+From: Bart Schilperoort <modflowgpu@localhost>
+Date: Sun, 15 Nov 2026 15:50:02 +0100
+Subject: [PATCH] T5.6: global parity and timing against MODFLOW 6
+
+examples/global/parity_mf6.jl: record mGV's daily inputs to MODFLOW from the
+year-200 checkpoint (coupled GPU run), replay them to the mf6 and GPU engines
+from the same heads (open loop), timed per stage; parity_compare.jl: per-day
+heads, baseflow and capillary rise against a reference run (T5.3 metric),
+location of the largest differences, budgets, river-loss limit against its
+formula. README section.
+---
+ examples/global/README.md         |  24 +++
+ examples/global/parity_compare.jl | 211 +++++++++++++++++++
+ examples/global/parity_mf6.jl     | 336 ++++++++++++++++++++++++++++++
+ 3 files changed, 571 insertions(+)
+ create mode 100644 examples/global/parity_compare.jl
+ create mode 100644 examples/global/parity_mf6.jl
+
+diff --git a/examples/global/README.md b/examples/global/README.md
+index 70b303f..eaf222d 100644
+--- a/examples/global/README.md
++++ b/examples/global/README.md
+@@ -60,3 +60,27 @@ MGV_BACKEND=rocm julia -t 8 --project=examples/mgv_coupling examples/global/run_
+     <outdir> mode=daily days=365 closure=0.01 resume=<spinup>/checkpoint_y0200
+ julia --project=examples/mgv_coupling examples/global/compare_indus.jl spinup=<spinup>/heads_final.nc
+ ```
++
++## Parity and timing against MODFLOW 6 (ModflowGPU T5.6)
++
++`parity_mf6.jl` compares the mf6 engine and the GPU engine on the real masked model, open
++loop: `mode=record` runs the coupled model (GPU engine, `:mixed`, closure 0.01, river-loss
++limit on) from the year-200 checkpoint and writes what mGV sends to MODFLOW every day
++(discharge, subsurface runoff, channel volume; Float32 on mGV's grid); `mode=replay` runs
++MODFLOW alone (`engine=mf6` or `gpu`, `precision`, `backend`, `closure` = a number or
++`tight`) from the same start heads with those inputs, timed per day in stages (input,
++solve, output), and saves heads, baseflow, capillary rise and RIV flows per day;
++`mode=compare` (`parity_compare.jl`) compares runs per day against a reference run (heads,
++fluxes with the T5.3 metric, where the largest differences are, budgets, the river-loss
++limit against its formula). Results: ModflowGPU `benchmark/results/2026-11-15-T5.6.md`.
++
++```sh
++O=/home/bart/data/mGV/global_60N/runs/T5.6
++MGV_BACKEND=rocm julia -t 8 --project=examples/mgv_coupling examples/global/parity_mf6.jl $O mode=record days=31
++julia -t 8 --project=examples/mgv_coupling examples/global/parity_mf6.jl $O mode=replay engine=mf6 closure=tight
++julia -t 8 --project=examples/mgv_coupling examples/global/parity_mf6.jl $O mode=replay engine=gpu backend=rocm precision=mixed closure=tight
++JULIA_KA_CPU_THREADS=16 julia -t 16 --project=examples/mgv_coupling examples/global/parity_mf6.jl $O mode=replay \
++    engine=gpu backend=cpu precision=mixed closure=0.01 save=0 days=10 tag=cpu_mixed_0.01
++julia -t 8 --project=examples/mgv_coupling examples/global/parity_mf6.jl $O mode=compare ref=mf6_tight \
++    runs=gpu_mixed_tight,gpu_double_tight,gpu_single_tight
++```
+diff --git a/examples/global/parity_compare.jl b/examples/global/parity_compare.jl
+new file mode 100644
+index 0000000..97d12ef
+--- /dev/null
++++ b/examples/global/parity_compare.jl
+@@ -0,0 +1,211 @@
++#= `mode=compare` of parity_mf6.jl (included there; uses its STATIC, BASE, ACTIVE2, LAND, RECORD,
++OUTDIR, OPTS): every run in `runs=` (comma-separated tags) against the reference run `ref=`,
++per day. Writes `<outdir>/compare_<ref>.csv` (per run and day) and prints the summary:
++
++- heads: max |Δh| per layer over the active nodes, its cell (lon, lat), the depth of the
++  reference water table there (top − h of layer 1), the boundary records on that cell,
++  and the 99th percentile of |Δh| over both layers;
++- baseflow and capillary rise: max |Δ| over the land cells / max |reference| over the land
++  cells (the T5.3 metric), and the cell of the max;
++- budgets: per term and day (`days.csv`; the mf6 storage term from its listing);
++- river-loss limit (`riverloss=1`): per engine and day, the RIV records that lose more
++  than 0.999 × the channel volume (recorded inputs), and the RIV flux against the formula
++  (`river_stage`, `river_bottom` in Float64 with the run's own heads).
++=#
++using Printf
++import ModflowGPU
++
++const REF = OPTS["ref"]
++const RUNS = split(OPTS["runs"], ",")
++const PARAMS = build_parameters(STATIC, BASE)
++const NA = length(ACTIVE2)
++const NL = length(LAND)
++const NC = length(STATIC.idomain)
++const NRIV = length(PARAMS.river.cells)
++const LIN = LinearIndices(STATIC.idomain)
++
++# boundary records per 2D cell
++const KIND = let k = fill("", size(STATIC.idomain))
++    for (i, c) in enumerate(PARAMS.river.cells)
++        k[c] *= PARAMS.river.is_river[i] ? "RIV " : "RIV(drain-like) "
++    end
++    foreach(c -> (k[c] *= "DRN "), PARAMS.drain.cells)
++    foreach(c -> (k[c] *= "EVT "), PARAMS.evt_cells)
++    foreach(c -> (k[c] *= "CHD "), PARAMS.chd_cells)
++    k
++end
++# 2D cell and layer of each saved head
++const HCELL = [mod1(u, NC) for u in ACTIVE2]
++const HLAYER = [(u - 1) ÷ NC + 1 for u in ACTIVE2]
++const TOP = vec(PARAMS.top)
++
++readday(path, n, day) = open(io -> (seek(io, (day - 1) * n * 8); read!(io, Vector{Float64}(undef, n))), path)
++ndays(tag) = filesize(joinpath(OUTDIR, tag, "heads.f64")) ÷ (8 * NA)
++where(cell) = (STATIC.lon[CartesianIndices(STATIC.idomain)[cell][1]], STATIC.lat[CartesianIndices(STATIC.idomain)[cell][2]])
++kind(cell) = (k = strip(KIND[cell]); isempty(k) ? "none" : k)
++
++function relmax(x, y)
++    d = abs.(x .- y)
++    i = argmax(d)
++    scale = maximum(abs, y)
++    return (scale > 0 ? d[i] / scale : d[i]), LAND[i], d[i], scale
++end
++
++function compare_heads(tag, out)
++    n = min(ndays(tag), ndays(REF))
++    worst = (; dh = 0.0)
++    for day in 1:n
++        h = readday(joinpath(OUTDIR, tag, "heads.f64"), NA, day)
++        r = readday(joinpath(OUTDIR, REF, "heads.f64"), NA, day)
++        d = abs.(h .- r)
++        res = map(1:2) do l
++            sel = findall(==(l), HLAYER)
++            j = sel[argmax(view(d, sel))]
++            (d[j], HCELL[j])
++        end
++        p99 = quantile(d, 0.99)
++        n_1e4 = count(>(1e-4), d)
++        bf = relmax(readday(joinpath(OUTDIR, tag, "baseflow.f64"), NL, day), readday(joinpath(OUTDIR, REF, "baseflow.f64"), NL, day))
++        cp = relmax(readday(joinpath(OUTDIR, tag, "capillary.f64"), NL, day), readday(joinpath(OUTDIR, REF, "capillary.f64"), NL, day))
++        # reference head of layer 1 at the cell of the largest difference (both layers)
++        l = res[1][1] >= res[2][1] ? 1 : 2
++        cell = res[l][2]
++        j1 = findfirst(u -> u == cell, ACTIVE2)
++        depth = j1 === nothing ? NaN : TOP[cell] - r[j1]
++        lon, lat = where(cell)
++        row = (tag, day, res[1][1], res[2][1], p99, n_1e4, lon, lat, l, depth, kind(cell), bf[1], bf[3], bf[4],
++               where(bf[2])..., kind(bf[2]), cp[1], where(cp[2])...)
++        println(out, join(row, ","))
++        @printf("%-22s day %2d: |Δh| L1 %.2e L2 %.2e (p99 %.1e, %d nodes > 1e-4) at (%.3f, %.3f) L%d depth %.1f m [%s]; baseflow %.2e (%.3g of %.3g m3/s at %.3f, %.3f [%s]); capillary %.2e\n",
++                tag, day, res[1][1], res[2][1], p99, n_1e4, lon, lat, l, depth, kind(cell), bf[1], bf[3], bf[4], where(bf[2])..., kind(bf[2]), cp[1])
++        res[l][1] > worst.dh && (worst = (; dh = res[l][1], day, cell, lon, lat, depth, kind = kind(cell)))
++    end
++    return worst
++end
++
++out = open(joinpath(OUTDIR, "compare_$REF.csv"), "w")
++println(out, "run,day,dh1_max,dh2_max,dh_p99,nodes_dh_gt_1e-4,dh_lon,dh_lat,dh_layer,wt_depth_m,dh_boundary,baseflow_rel,baseflow_abs_m3s,baseflow_scale_m3s,bf_lon,bf_lat,bf_boundary,capillary_rel,cap_lon,cap_lat")
++for tag in RUNS
++    w = compare_heads(tag, out)
++    println("$tag: worst |Δh| $(w.dh) m on day $(get(w, :day, 0)) at $(get(w, :lon, NaN)), $(get(w, :lat, NaN)), depth $(get(w, :depth, NaN)) m [$(get(w, :kind, ""))]")
++end
++close(out)
++
++# ------------------------------------------------------------------------------------
++# budgets
++# ------------------------------------------------------------------------------------
++function read_days(tag)
++    lines = readlines(joinpath(OUTDIR, tag, "days.csv"))
++    hdr = split(lines[1], ",")
++    rows = [split(l, ",") for l in lines[2:end]]
++    return Dict(String(h) => [tryparse(Float64, r[k]) for r in rows] for (k, h) in enumerate(hdr))
++end
++
++"Storage of the mf6 listing (STO-SS in and out per day; the other terms as a check)."
++function listing_terms(tag)
++    lst = joinpath(OUTDIR, tag, "mf6.lst")
++    isfile(lst) || return nothing
++    b = filter(x -> x.title == "VOLUME", ModflowGPU.read_listing_budgets(lst))
++    return Dict(n => ([sum(t.rate_in for t in x.terms if t.name == n; init = 0.0) for x in b],
++                      [sum(t.rate_out for t in x.terms if t.name == n; init = 0.0) for x in b]) for n in BUDGET_NAMES)
++end
++
++function budget_table(tags)
++    data = Dict(t => read_days(t) for t in tags)
++    lst = Dict(t => listing_terms(t) for t in tags)
++    bout = open(joinpath(OUTDIR, "budgets_$REF.csv"), "w")
++    println(bout, "run,day,term,in_m3d,out_m3d,ref_in_m3d,ref_out_m3d,rel_in,rel_out")
++    for t in tags, n in BUDGET_NAMES, w in ("in", "out")
++        v = data[t]["$(n)_$w"]
++        # mf6 storage (no SIMVALS) and CHD from the listing: MF6's CHD SIMVALS hold the net
++        # flow per CHD cell, its budget splits the flows per connection into in and out
++        if lst[t] !== nothing && (all(isnan, v) || n == "CHD")
++            data[t]["$(n)_$w"] = lst[t][n][w == "in" ? 1 : 2]
++            n == "CHD" && (data[t]["CHD_simvals_$w"] = v)
++        end
++    end
++    for t in tags, day in eachindex(data[t]["day"]), n in BUDGET_NAMES
++        a = (data[t]["$(n)_in"][day], data[t]["$(n)_out"][day])
++        r = (data[REF]["$(n)_in"][day], data[REF]["$(n)_out"][day])
++        rel(x, y) = y == 0 ? abs(x - y) : abs(x - y) / abs(y)
++        println(bout, join((t, day, n, a..., r..., rel(a[1], r[1]), rel(a[2], r[2])), ","))
++    end
++    close(bout)
++    println("\nbudgets (m3/day), mean over the days, and max relative difference to $REF over the days:")
++    for n in BUDGET_NAMES, w in ("in", "out")
++        r = data[REF]["$(n)_$w"]
++        @printf("  %-7s %-3s %-14s %.6e\n", n, w, REF, mean(r))
++        for t in tags
++            t == REF && continue
++            v = data[t]["$(n)_$w"]
++            m = length(v) == length(r) ? maximum(i -> r[i] == 0 ? abs(v[i]) : abs(v[i] - r[i]) / abs(r[i]), eachindex(r)) : NaN
++            @printf("  %-7s %-3s %-14s %.6e  max rel diff %.2e\n", n, w, t, mean(v), m)
++        end
++    end
++    # the mf6 SIMVALS sums against its own listing (printed digits)
++    for t in tags
++        lst[t] === nothing && continue
++        for n in ("RCH", "RIV", "DRN", "EVT", "CHD"), (k, w) in enumerate(("in", "out"))
++            s = n == "CHD" ? data[t]["CHD_simvals_$w"] : data[t]["$(n)_$w"]
++            l = lst[t][n][k]
++            m = maximum(i -> l[i] == 0 ? abs(s[i]) : abs(s[i] - l[i]) / abs(l[i]), eachindex(l))
++            @printf("  %s: SIMVALS sum vs listing, %s %s: max rel diff %.1e\n", t, n, w, m)
++        end
++    end
++end
++budget_table(unique([REF; RUNS]))
++
++# ------------------------------------------------------------------------------------
++# river-loss limit: loss against the channel volume and the formula
++# ------------------------------------------------------------------------------------
++function riverloss(tag, map_h, n_vic)
++    r = PARAMS.river
++    rlin = [LIN[c] for c in r.cells]
++    gather(x) = [k > 0 && isfinite(x[k]) ? Float64(x[k]) : 0.0 for k in map_h]
++    head_index = Dict(u => j for (j, u) in enumerate(ACTIVE2))
++    rnode = [get(head_index, u, 0) for u in rlin]   # layer 1 node of each RIV record
++    n = filesize(joinpath(OUTDIR, tag, "riv.f64")) ÷ (8 * NRIV)
++    worst_ratio, worst_formula, nover, nlimited, nlosing, ncreated, created = 0.0, 0.0, 0, 0, 0, 0, 0.0
++    inp = open(joinpath(RECORD, "inputs.f32"))
++    for day in 1:n
++        q = read!(inp, Vector{Float32}(undef, n_vic))
++        read!(inp, Vector{Float32}(undef, n_vic))
++        vol = read!(inp, Vector{Float32}(undef, n_vic))
++        qm = gather(q); vm = gather(vol)
++        flows = readday(joinpath(OUTDIR, tag, "riv.f64"), NRIV, day)
++        h = readday(joinpath(OUTDIR, tag, "heads.f64"), NA, day)
++        for i in 1:NRIV
++            c = rlin[i]
++            stage = MC.river_stage(r, i, qm[c])
++            rbot = MC.river_bottom(stage, r.bottom[i], r.conductance[i], vm[c], 1.0, MC.RIVER_LOSS_FRACTION)
++            rbot > r.bottom[i] && (nlimited += 1)
++            hn = rnode[i] > 0 ? h[rnode[i]] : NaN
++            expected = r.conductance[i] * (stage - max(hn, rbot))
++            scale = max(abs(expected), r.conductance[i] * 1e-6)
++            worst_formula = max(worst_formula, abs(flows[i] - expected) / scale)
++            if flows[i] > 0
++                nlosing += 1
++                ratio = vm[c] > 0 ? flows[i] / vm[c] : Inf
++                ratio > MC.RIVER_LOSS_FRACTION * (1 + 1e-9) && (nover += 1)
++                if flows[i] > vm[c]   # more than the channel holds: water the coupling would create
++                    ncreated += 1
++                    created += flows[i] - vm[c]
++                end
++                worst_ratio = max(worst_ratio, ratio)
++            end
++        end
++    end
++    close(inp)
++    @printf("  %-22s %d days: %d losing record-days, %d with a raised bottom; losses > %.3f × volume (1e-9 relative slack): %d, > volume: %d (%.3g m3 in all); max loss/volume %.7f; max |flux − formula| / max(|formula|, 1e-6·C) %.2e\n",
++            tag, n, nlosing, nlimited, MC.RIVER_LOSS_FRACTION, nover, ncreated, created, worst_ratio, worst_formula)
++end
++
++if get(OPTS, "riverloss", "1") == "1"
++    meta = TOML.parsefile(joinpath(RECORD, "meta.toml"))
++    map_h = Vector{Int32}(undef, meta["n_mf"])
++    read!(joinpath(RECORD, "vic_to_mf.i32"), map_h)
++    println("\nriver-loss limit (fraction $(MC.RIVER_LOSS_FRACTION)):")
++    for tag in unique([REF; RUNS])
++        isfile(joinpath(OUTDIR, tag, "riv.f64")) && riverloss(tag, map_h, meta["n_vic"])
++    end
++end
+diff --git a/examples/global/parity_mf6.jl b/examples/global/parity_mf6.jl
+new file mode 100644
+index 0000000..ad73872
+--- /dev/null
++++ b/examples/global/parity_mf6.jl
+@@ -0,0 +1,336 @@
++#= Global parity and timing against MODFLOW 6 (ModflowGPU T5.6): the real masked global
++model (`global_60N.toml`, the year-200 heads of T5.5b) run by the mf6 engine and the GPU
++engine from the same start, with the same recorded daily inputs (open loop: the coupled
++drift of T5.4 does not enter).
++
++    MGV_BACKEND=rocm julia -t 8 --project=examples/mgv_coupling examples/global/parity_mf6.jl <outdir> mode=record days=31
++    julia -t 8 --project=examples/mgv_coupling examples/global/parity_mf6.jl <outdir> mode=replay engine=mf6 closure=tight tag=mf6_tight
++    julia -t 8 --project=examples/mgv_coupling examples/global/parity_mf6.jl <outdir> mode=replay engine=gpu precision=mixed closure=tight tag=gpu_mixed_tight
++    julia --project=examples/mgv_coupling examples/global/parity_mf6.jl <outdir> mode=compare ref=mf6_tight runs=gpu_mixed_tight,...
++
++Modes (`mode=`):
++
++- `record`: the coupled run of `run_global.jl mode=daily` (mGV and MODFLOW on the GPU,
++  device exchange, river-loss limit on) from `resume=` (default: the year-200 checkpoint of
++  T5.5b) for `days` days, at `precision` (default mixed) and `closure` (default 0.01). Every
++  day it writes what mGV sends to MODFLOW, on mGV's grid as mGV holds it (Float32): the
++  river discharge (m³/s), the subsurface runoff (mm/day, MODFLOW's recharge after the
++  division by 1000) and the channel volume (m³, the river-loss limit), to
++  `<outdir>/record/inputs.f32`, with the cell map (`vic_to_mf.i32`) and the start heads
++  (`heads0.nc`). The MODFLOW outputs of the recorded run are saved as in `replay` (tag
++  `record`), so a replay can be checked against the run its inputs came from.
++- `replay`: MODFLOW alone (`engine` mf6 or gpu; `precision`, `backend` for gpu) from the
++  recorded start heads with the recorded inputs, set through `set_value_device!` with the
++  same cell map, so both engines get the values the coupled run sent (the mf6 engine
++  through the host path of `set_value_device!`, which does the same Float32 division and
++  conversion). `closure`: a number (outer = inner dvclose, INNER_RCLOSE `rclose`, default
++  10) or `tight` (OUTER_DVCLOSE 1e-9, INNER_DVCLOSE 1e-10, INNER_RCLOSE `rclose`, default
++  1e-8, OUTER_MAXIMUM 500, INNER_MAXIMUM 2000, as the T5.3 parity test). Each day is timed
++  in stages (see `DAY_COLS`): input (set the fields, `prepare_time_step`, write the BOUND
++  arrays), solve (`prepare_solve`, the outer iterations, `finalize_solve`), output
++  (`finalize_time_step`: flows, budgets, listing; then the coupling outputs heads, baseflow,
++  capillary rise). Reading the recorded inputs from disk and saving the outputs are not
++  timed. With `save=1` the heads (active nodes, both layers), the baseflow and the
++  capillary rise (land cells) and the RIV flows (per record) of every day go to
++  `<outdir>/<tag>/*.f64`.
++- `compare`: per day and per run against `ref`: max |Δh| per layer, baseflow and capillary
++  rise relative to the domain maximum of the reference (the T5.3 metric), where the
++  largest differences are, and the budgets.
++=#
++const MODE = let a = filter(x -> startswith(x, "mode="), ARGS)
++    isempty(a) ? "replay" : split(only(a), "="; limit = 2)[2]
++end
++using AMDGPU
++include(joinpath(@__DIR__, "..", "mgv_coupling", "coupling.jl"))
++using Statistics, Serialization, NCDatasets, TOML
++
++const OUTDIR = abspath(ARGS[1])
++mkpath(OUTDIR)
++const OPTS = Dict(String(split(a, "="; limit = 2)[1]) => String(split(a, "="; limit = 2)[2]) for a in ARGS[2:end])
++opt(k, d) = get(OPTS, k, string(d))
++const DAYS = parse(Int, opt("days", 31))
++const ENGINE = opt("engine", "gpu")
++const PRECISION = opt("precision", "mixed")
++const BACKEND_NAME = opt("backend", "auto")
++const CLOSURE = opt("closure", MODE == "record" ? "0.01" : "tight")
++const TIGHT = CLOSURE == "tight"
++const RCLOSE = parse(Float64, opt("rclose", TIGHT ? 1e-8 : 10.0))
++const SAVE = opt("save", 1) == "1"
++const RESUME = opt("resume", "/home/bart/data/mGV/global_60N/runs/spinup/checkpoint_y0200")
++const TAG = opt("tag", MODE == "record" ? "record" : "$(ENGINE)_$(ENGINE == "gpu" ? PRECISION * "_" : "")$(CLOSURE)")
++const RECORD = joinpath(OUTDIR, "record")
++const MF_CONFIG = joinpath(@__DIR__, "global_60N.toml")
++const MGV_CONFIG = joinpath(@__DIR__, "mgv_global_60N.toml")
++println("parity_mf6: mode $MODE, ", join(("$k=$v" for (k, v) in sort(collect(OPTS))), " "), ", threads $(Threads.nthreads())")
++flush(stdout)
++
++# ------------------------------------------------------------------------------------
++# MODFLOW inputs (as run_global.jl)
++# ------------------------------------------------------------------------------------
++const BASE = load_config(MF_CONFIG)
++const STATIC = let t0 = time()
++    s = read_static_inputs(BASE)
++    north = repeat(reshape(s.lat .> 60.0, 1, :), length(s.lon), 1)
++    any(s.idomain[north] .> 0) && error("ibound is active north of 60N: use the derived 60N ibound")
++    for f in fieldnames(MC.StaticInputs)
++        x = getfield(s, f)
++        (x isa Matrix{Float64} && size(x) == size(north) && !(f in (:idomain, :landmask))) && (x[north] .= NaN)
++    end
++    println("MODFLOW static inputs read in $(round(time() - t0; digits = 1)) s"); flush(stdout)
++    s
++end
++inputs_with(h) = MC.StaticInputs(; (f => getfield(STATIC, f) for f in fieldnames(MC.StaticInputs) if f != :steady_head)..., steady_head = h)
++read_heads(path) = NCDataset(ds -> Float64.(coalesce.(ds["gwl"][:, :, :], NaN)), path)
++# saved cells: heads on the active nodes of both layers, fluxes on the land cells
++const ACTIVE2 = findall(vec(cat(STATIC.idomain .> 0, STATIC.idomain .> 0; dims = 3)))
++const LAND = findall(vec(STATIC.landmask))
++
++function model_config(engine, days, workdir)
++    sv = MC.SolverSettings(; engine, backend = BACKEND_NAME, precision = engine == "gpu" ? PRECISION : "auto",
++                           outer_dvclose = TIGHT ? 1e-9 : parse(Float64, CLOSURE),
++                           inner_dvclose = TIGHT ? 1e-10 : parse(Float64, CLOSURE), inner_rclose = RCLOSE,
++                           outer_maximum = TIGHT ? 500 : 200, inner_maximum = TIGHT ? 2000 : 500)
++    return Config(BASE; start_date = Date(1979, 1, 1), end_date = Date(1979, 1, 1) + Day(days - 1), period = "day",
++                  work_dir = workdir, output_dir = joinpath(workdir, "output"),
++                  write_monthly_output = false, initial_head_file = "", solver = sv)
++end
++
++# ------------------------------------------------------------------------------------
++# Per-day outputs
++# ------------------------------------------------------------------------------------
++budget_terms(gw) = gw.mf isa MC.ModflowGPU.Simulation ?
++    Dict(t.name => (t.rate_in, t.rate_out) for t in last(gw.mf.budgets).terms) : Dict{String, Tuple{Float64, Float64}}()
++
++"In and out (m³/day, positive) of a package from its SIMVALS (Float64 sums; mf6 engine)."
++function simvals_inout(gw, pkg)
++    v = package_flows(gw, pkg)
++    return (sum(x -> max(x, 0.0), v; init = 0.0), -sum(x -> min(x, 0.0), v; init = 0.0))
++end
++
++const BUDGET_NAMES = ("STO-SS", "CHD", "RCH", "RIV", "DRN", "EVT")
++
++function save_day!(io, gw)
++    h = MC.host_field(gw, :head)
++    write(io.heads, vec(h)[ACTIVE2])
++    write(io.baseflow, vec(MC.host_field(gw, :baseflow))[LAND])
++    write(io.capillary, vec(MC.host_field(gw, :capillary))[LAND])
++    write(io.riv, package_flows(gw, "RIV"))   # m3/day per RIV record, positive into the aquifer
++    return nothing
++end
++open_outputs(dir) = (mkpath(dir); (; heads = open(joinpath(dir, "heads.f64"), "w"), baseflow = open(joinpath(dir, "baseflow.f64"), "w"),
++                                    capillary = open(joinpath(dir, "capillary.f64"), "w"), riv = open(joinpath(dir, "riv.f64"), "w")))
++close_outputs(io) = foreach(close, values(io))
++
++const DAY_COLS = ["day", "t_input_s", "t_solve_s", "t_output_s", "t_total_s", "outer", "inner", "converged",
++                  [b * "_" * w for b in BUDGET_NAMES for w in ("in", "out")]...]
++
++function budget_row(gw)
++    if gw.mf isa MC.ModflowGPU.Simulation
++        b = budget_terms(gw)
++        return [x for n in BUDGET_NAMES for x in get(b, n, (0.0, 0.0))]
++    end
++    # mf6: package terms from SIMVALS (full precision); storage from the listing afterwards
++    return [x for n in BUDGET_NAMES for x in (n == "STO-SS" ? (NaN, NaN) : simvals_inout(gw, n))]
++end
++
++# ------------------------------------------------------------------------------------
++# record: the coupled run, writing what mGV sends to MODFLOW
++# ------------------------------------------------------------------------------------
++function record()
++    mkpath(RECORD)
++    meta = TOML.parsefile(joinpath(RESUME, "meta.toml"))
++    heads = read_heads(joinpath(RESUME, "heads.nc"))
++    cp(joinpath(RESUME, "heads.nc"), joinpath(RECORD, "heads0.nc"); force = true)
++    mgv_st = deserialize(joinpath(RESUME, "mgv_state.jls"))
++    cst = deserialize(joinpath(RESUME, "coupling.jls"))
++    mkpath(normpath(dirname(MGV_CONFIG), TOML.parsefile(MGV_CONFIG)["output"]["dir"]))
++    t = @elapsed vic = BMI.initialize(mGV.Model, MGV_CONFIG)
++    println("mGV initialised in $(round(t; digits = 1)) s; checkpoint after $(meta["years"]) years"); flush(stdout)
++    restore!(vic, mgv_st)
++    mgv_st = nothing; GC.gc()
++    backend = mgv_backend(vic)
++    gw = GroundwaterModel(model_config("gpu", DAYS, joinpath(OUTDIR, "work_record")), inputs_with(heads))
++    c = Coupling(gw, vic; exchange = :device, limit_river_loss = true)
++    for f in ("baseflow", "cpr", "requested_cell", "applied_cell", "created_cell")
++        copyto!(getfield(c, Symbol(f)), cst[f])
++    end
++    open(io -> write(io, Int32.(c.vic_to_mf)), joinpath(RECORD, "vic_to_mf.i32"), "w")
++    open(io -> TOML.print(io, Dict("days" => DAYS, "n_vic" => c.n_vic, "n_mf" => length(c.vic_to_mf), "resume" => RESUME,
++                                   "precision" => PRECISION, "closure" => CLOSURE, "written" => string(now()),
++                                   "order" => "per day: river_discharge m3/s, land_subsurface__runoff mm/day, channel volume m3 (Float32, mGV cells)")),
++         joinpath(RECORD, "meta.toml"), "w")
++    inp = open(joinpath(RECORD, "inputs.f32"), "w")
++    out = open_outputs(joinpath(OUTDIR, TAG))
++    csv = open(joinpath(OUTDIR, TAG, "days.csv"), "w")
++    println(csv, join(["day", "t_mgv_s", "t_mf_s", "outer", "inner", "created_cum_m3", "q_max_m3s", "channel_storage_m3",
++                       [b * "_" * w for b in BUDGET_NAMES for w in ("in", "out")]...], ","))
++    n = c.n_vic
++    for day in 1:DAYS
++        t0 = time_ns()
++        w = BMI.get_value_ptr(vic, "soil__moisture")
++        wmax = BMI.get_value_ptr(vic, "soil__moisture~maximum")
++        add_capillary_rise_kernel!(backend)(w, wmax, c.cpr, n, length(w) ÷ n; ndrange = n)
++        area = BMI.get_value_ptr(vic, "channel_water__area~cross-sectional")
++        q = BMI.get_value_ptr(vic, "channel_water__volume_flow_rate")
++        add_baseflow_kernel!(backend)(area, q, c.requested_cell, c.applied_cell, c.created_cell, c.baseflow, c.cell_length, c.alpha, c.dt; ndrange = n)
++        BMI.update(vic)
++        AMDGPU.synchronize()
++        t1 = time_ns()
++        runoff = BMI.get_value_ptr(vic, "land_subsurface__runoff")
++        set_value_device!(gw, "river_discharge", q; map = c.dev_vic_to_mf)
++        set_value_device!(gw, "groundwater_recharge", runoff; map = c.dev_vic_to_mf, divisor = 1000)
++        channel_volume_kernel!(backend)(c.volume, area, c.cell_length; ndrange = n)
++        set_value_device!(gw, "river_water_volume", c.volume; map = c.dev_vic_to_mf)
++        BMI.update(gw)
++        get_value_device!(c.baseflow, gw, "baseflow_to_routing"; map = c.dev_mf_to_vic)
++        get_value_device!(c.cpr, gw, "capillary_rise"; map = c.dev_mf_to_vic)
++        AMDGPU.synchronize()
++        t2 = time_ns()
++        # what MODFLOW got this day (not timed)
++        write(inp, Array(q)); write(inp, Array(runoff)); write(inp, Array(c.volume))
++        save_day!(out, gw)
++        r = last(gw.mf.results).outer
++        println(csv, join([day, (t1 - t0) / 1e9, (t2 - t1) / 1e9, r.iterations, r.inner, sum(c.created_cell),
++                           mapreduce(x -> isfinite(x) ? x : -Inf32, max, q), sum(x -> Float64(x), c.volume), budget_row(gw)...], ","))
++        flush(csv)
++        @printf("record day %d: mGV %.1f ms, MODFLOW %.1f ms, outer %d inner %d\n", day, (t1 - t0) / 1e6, (t2 - t1) / 1e6, r.iterations, r.inner)
++        flush(stdout)
++    end
++    close(inp); close(csv); close_outputs(out)
++    BMI.finalize(gw)
++    return
++end
++
++"mGV's state from a run_global.jl checkpoint (`restore_mgv_state!` there)."
++function restore!(vic, st)
++    for (k, v) in st
++        startswith(k, "clock.") && continue
++        s, f = Symbol.(split(k, "."))
++        dest = getfield(s === :routing ? vic.routing : getfield(vic, s), f)
++        copyto!(dest, v)
++    end
++    vic.clock.iteration = st["clock.iteration"]
++    vic.clock.time = st["clock.time"]
++    mGV.update_forcing!(vic.clock.time, vic.forcing_readers, vic.forcing_variables)
++    mGV.load_monthly_parameters!(vic.vegetation_parameters, vic.monthly_vegetation_parameters, month(vic.clock.time))
++    return vic
++end
++
++# ------------------------------------------------------------------------------------
++# replay: MODFLOW alone with the recorded inputs, timed in stages
++# ------------------------------------------------------------------------------------
++function replay()
++    meta = TOML.parsefile(joinpath(RECORD, "meta.toml"))
++    DAYS <= meta["days"] || error("only $(meta["days"]) days recorded")
++    n_vic, n_mf = meta["n_vic"], meta["n_mf"]
++    map_h = Vector{Int32}(undef, n_mf)
++    read!(joinpath(RECORD, "vic_to_mf.i32"), map_h)
++    heads = read_heads(joinpath(RECORD, "heads0.nc"))
++    dir = joinpath(OUTDIR, TAG)
++    mkpath(dir)
++    workdir = joinpath(OUTDIR, ENGINE == "mf6" ? "work_mf6" : "work_$TAG")
++    summary = Dict{String, Any}("tag" => TAG, "engine" => ENGINE, "precision" => PRECISION, "backend" => BACKEND_NAME,
++                                "closure" => CLOSURE, "rclose" => RCLOSE, "days" => DAYS, "threads" => Threads.nthreads(),
++                                "JULIA_KA_CPU_THREADS" => get(ENV, "JULIA_KA_CPU_THREADS", ""))
++    t_start = time()
++    t_build = @elapsed gw = GroundwaterModel(model_config(ENGINE, DAYS, workdir), inputs_with(heads))
++    summary["build_s"] = t_build   # mf6: parameters, writing the MF6 input files, libmf6 initialize (reading them)
++    if ENGINE == "mf6"   # the OC file is written last: its mtime ends the writing
++        oc = joinpath(workdir, lowercase(BASE.model_name) * ".oc")
++        summary["write_inputs_end_s"] = mtime(oc) - t_start
++        summary["mf6_input_bytes"] = sum(filesize(joinpath(workdir, f)) for f in readdir(workdir) if isfile(joinpath(workdir, f)))
++    end
++    println("$TAG: model built in $(round(t_build; digits = 1)) s"); flush(stdout)
++    gpu = gw.mf isa MC.ModflowGPU.Simulation
++    dev = MC.device_coupling(gw)
++    kb = dev ? KA.get_backend(gw.dev.h) : nothing
++    sync() = kb === nothing || KA.synchronize(kb)
++    # recorded inputs: host buffers, uploaded to the device for the device coupling (not timed)
++    buf = [Vector{Float32}(undef, n_vic) for _ in 1:3]
++    src = dev ? [KA.allocate(kb, Float32, n_vic) for _ in 1:3] : buf
++    map = dev ? (d = KA.allocate(kb, Int32, n_mf); copyto!(d, map_h); d) : map_h
++    inp = open(joinpath(RECORD, "inputs.f32"), "r")
++    out = SAVE ? open_outputs(dir) : nothing
++    csv = open(joinpath(dir, "days.csv"), "w")
++    println(csv, join(DAY_COLS, ","))
++    rows = []
++    for day in 1:DAYS
++        foreach(b -> read!(inp, b), buf)
++        dev && foreach(((d, h),) -> copyto!(d, h), zip(src, buf))
++        sync()
++        # input: the fields, prepare_time_step, BOUND (as advance!)
++        t0 = time_ns()
++        set_value_device!(gw, "river_discharge", src[1]; map)
++        set_value_device!(gw, "groundwater_recharge", src[2]; map, divisor = 1000)
++        set_value_device!(gw, "river_water_volume", src[3]; map)
++        MC.sync_inputs!(gw)
++        empty!(gw.inputs_set)
++        MC.engine_prepare_time_step(gw.mf)
++        gw.completed == 0 && MC.calibrate_bmi!(gw)
++        MC.apply_stresses!(gw)
++        sync()
++        t1 = time_ns()
++        # solve
++        MC.engine_prepare_solve(gw.mf)
++        converged = false
++        outer = 0
++        for _ in 1:MC.max_outer(gw)
++            converged = MC.engine_solve(gw.mf)
++            outer += 1
++            (converged || MC.engine_diverged(gw.mf)) && break
++        end
++        MC.engine_finalize_solve(gw.mf)
++        sync()
++        t2 = time_ns()
++        # output: flows and budgets, then the coupling outputs
++        MC.engine_finalize_time_step(gw.mf)
++        gw.completed += 1
++        MC.collect_outputs!(gw)
++        sync()
++        t3 = time_ns()
++        inner = -1
++        if gpu
++            r = last(gw.mf.results).outer
++            outer, inner = r.iterations, r.inner
++        end
++        row = [day, (t1 - t0) / 1e9, (t2 - t1) / 1e9, (t3 - t2) / 1e9, (t3 - t0) / 1e9, outer, inner, converged, budget_row(gw)...]
++        push!(rows, row)
++        println(csv, join(row, ",")); flush(csv)
++        SAVE && save_day!(out, gw)
++        @printf("%s day %d: input %.3f s, solve %.3f s, output %.3f s, outer %d inner %d%s\n", TAG, day, row[2], row[3], row[4],
++                outer, inner, converged ? "" : " NOT CONVERGED")
++        flush(stdout)
++        converged || (summary["not_converged_day"] = day; break)
++    end
++    close(inp); close(csv); SAVE && close_outputs(out)
++    col(k) = [r[findfirst(==(k), DAY_COLS)] for r in rows]
++    from = min(3, length(rows))   # medians over the days after the first two
++    for k in ("t_input_s", "t_solve_s", "t_output_s", "t_total_s", "outer", "inner")
++        summary["median_" * k] = median(col(k)[from:end])
++    end
++    summary["outer_total"] = sum(col("outer"))
++    summary["inner_total"] = sum(col("inner"))
++    summary["days_run"] = length(rows)
++    summary["maxrss_gib"] = Sys.maxrss() / 2^30
++    t_fin = @elapsed BMI.finalize(gw)
++    summary["finalize_s"] = t_fin
++    if ENGINE == "mf6"   # keep the listing (budgets, inner iterations), not the 2 GB of input files
++        lst = joinpath(workdir, lowercase(BASE.model_name) * ".lst")
++        isfile(lst) && cp(lst, joinpath(dir, "mf6.lst"); force = true)
++        isfile(joinpath(workdir, "mfsim.lst")) && cp(joinpath(workdir, "mfsim.lst"), joinpath(dir, "mfsim.lst"); force = true)
++    end
++    open(io -> TOML.print(io, summary), joinpath(dir, "summary.toml"), "w")
++    @printf("%s: %d days, median per day %.3f s (input %.3f, solve %.3f, output %.3f), outer %.1f inner %.1f\n", TAG,
++            length(rows), summary["median_t_total_s"], summary["median_t_input_s"], summary["median_t_solve_s"],
++            summary["median_t_output_s"], summary["median_outer"], summary["median_inner"])
++    return
++end
++
++if MODE == "record"
++    record()
++elseif MODE == "replay"
++    replay()
++else
++    include(joinpath(@__DIR__, "parity_compare.jl"))
++end
++println("done")
+-- 
+2.43.0
+
