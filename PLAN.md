@@ -597,6 +597,9 @@ T5.5b. Done up to T5.1; mGV is on KA 0.10 and the global inputs are available.
    the per-engine default in the patched `config.jl`; T5.4 and T5.5a report
    the cost on the 1-year run and at global size, and the value is revisited
    if that cost is far from the Indus one.
+10. **Domain of the global run (2026-11-15):** Greenland and the Arctic are not
+    modelled. For now everything north of 60°N is masked out in both models
+    (T5.5b card).
 
 Still open:
 

@@ -235,9 +235,21 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
   day 2 (mGV alone stays finite), which stopped MODFLOW when it took mGV's discharge
   (T5.5a report, "mGV's routing blows up"). Resolve it (owner decision, mGV is not
   patched here) and check mGV's discharge for finite, plausible values every day.
+- Owner decision (2026-11-15): Greenland and the Arctic are not modelled. For now, mask
+  out everything north of 60°N in both models (575,055 of mGV's 2,288,857 active cells,
+  all 100,306 Greenland cells among them; the parameter grid runs from 56°S to 84°N).
+  - mGV: a derived parameter file with `run_cell` cleared north of 60°N, written next to
+    the original under `/home/bart/data/mGV/` (do not change the original; mGV itself is
+    not patched), with the forcing and routing inputs cut to the same cells.
+  - MODFLOW: clear `ibound` north of 60°N in the config or a derived file, and say what
+    the boundary at the cut is (no-flow unless decided otherwise).
+  - Routing: rivers that cross 60°N are cut. Northward rivers (Ob, Yenisei, Lena,
+    Mackenzie) end in an outlet at the cut; southward ones lose their upstream inflow.
+    Report how many links are cut.
+  - Check whether the mask removes the routing blow-up below (it started on Greenland
+    and Arctic cells, where the cells and channels are shortest), and report the
+    shortest channel length that remains.
 - From the T5.5a report:
-  - Owner decision: mGV has 100,306 Greenland cells with no MODFLOW cell (they get zero
-    feedback); keep them or mask them.
   - Missing values in the chosen files: aqdepth 39.5 %, cprate 10.5 %. Check how
     `build_parameters` fills them.
   - Run the spin-up in `:mixed`: on the real Indus inputs `:single` stops about 0.03 m
