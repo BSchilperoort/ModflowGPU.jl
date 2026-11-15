@@ -299,7 +299,8 @@ function _mf6_case(dir, preset, mf6exe; nsteps, ims)
     tend = (time_ns() - t0) / 1.0e9
     push!(stamps, tend)
     steps = diff(stamps)
-    txt = read(joinpath(dir, "mfsim.lst"), String)
+    lst = joinpath(dir, "mfsim.lst")
+    txt = isfile(lst) ? read(lst, String) : ""
     its = [(parse(Int, m[1]), parse(Int, m[2])) for m in eachmatch(r"(\d+) CALLS TO NUMERICAL SOLUTION IN TIME STEP \d+ STRESS PERIOD \d+\s*\n\s*(\d+) TOTAL ITERATIONS", txt)]
     ok = occursin("Normal termination", txt)
     isempty(its) && push!(its, (0, 0))
@@ -312,6 +313,11 @@ function _mf6_case(dir, preset, mf6exe; nsteps, ims)
 end
 
 function report_mf6(r; io = stdout)
+    if isempty(r.steps) || isempty(r.its)
+        # mf6 failed before its first `Solving` line (T4.7: was a BoundsError).
+        @printf(io, "| %s | %d | mf6 6.8.2 (serial, ILU0) | `:double` | %.2f | – | – | – | – | – | – | – | – | – | – | – | – | – | FAILED (no step solved)\n", r.preset, r.nodes, r.tread)
+        return nothing
+    end
     st = r.steps[1]
     tr = r.steps[2:end]
     ntr = length(tr)
