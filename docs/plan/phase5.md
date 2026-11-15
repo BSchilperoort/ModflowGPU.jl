@@ -249,6 +249,37 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
   - Check whether the mask removes the routing blow-up below (it started on Greenland
     and Arctic cells, where the cells and channels are shortest), and report the
     shortest channel length that remains.
+- From the blow-up investigation (2026-11-15, no code changed; replaces the "likely
+  cause" of the T5.5a review bullet above):
+  - Cause: mGV's explicit routing (`A_new = max(A + (Q_in − Q_old)·dt/L, 0)`, 600 s
+    sub-steps, 6 m/s cap) sends up to 3600·A m³ downstream per sub-step, more than the
+    stored A·L on channels shorter than 3.6 km; the clamp at 0 creates the difference and
+    it multiplies along chains of short cells. Positive baseflow is the trigger (it
+    raises A and the velocity). A constant 0.1 m³/s into every channel of mGV alone, with
+    no MODFLOW, blows up as well.
+  - The 60°N mask removes it: south of 60°N the shortest channel is 4639 m. With the
+    mask the real coupled model stayed finite for 10 days on the GPU and MODFLOW
+    converged in 3–4 outer iterations per day. Without the mask the `_nogl` domain has
+    110,669 channels below 3.6 km and is marginal. If the mask is ever lifted, mGV needs
+    more routing sub-steps (576 per day was stable in a host replica) or an adaptive
+    step; that is the owner's change in mGV.
+  - Cell sizes do not create water with the real inputs (MODFLOW against mGV cell area
+    0.9955–1.0056; recharge volumes agree within 0.06 %). The synthetic `global5m` does
+    over-count recharge at high latitude (its `cell_area` is DELR·DELC).
+  - The models start far from equilibrium. From the provided heads the first feedback is
+    487 km³/day of baseflow, 59 times mGV's whole channel storage (8.2 km³, cold start),
+    up to 3455 m³/s per cell on the Amazon; it falls to 95 km³/day by day 10. Decide how
+    both models are spun up before the daily run (mGV's channels are nearly empty at a
+    cold start), and report baseflow against channel storage per day.
+  - The steady-state spin-up of the real masked model did not converge in 2000 outer
+    iterations at closure 0.01 or 0.1 (`:mc_ilu0`, 1979 mean recharge and discharge of
+    mGV alone, CHD ring at 0 m). This is the first thing to solve in this card (try
+    `:amg`, see the T3.4 bullet).
+  - River losses larger than the water in a channel are applied only partly
+    (`add_baseflow_kernel!`): about 3 km³/day of created water from the provided heads.
+    The coupling changes the channel area without updating Q, which created 3.9e6 m³.
+    Report the created water per day and decide whether MODFLOW's river loss must be
+    limited to the water present.
 - From the T5.5a report:
   - Missing values in the chosen files: aqdepth 39.5 %, cprate 10.5 %. Check how
     `build_parameters` fills them.
