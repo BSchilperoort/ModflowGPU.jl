@@ -24,8 +24,8 @@
             flowja[ii] = zero(T)
         else
             m = ja[ii]
-            c, dr = _connection(condsat, Δr, jas, ibound, n, m, ii)
-            flowja[ii] = c * (h[m] - h[n] + dr)
+            _, _, _, q, _, _ = connection_terms(condsat, Δr, jas, ibound, h, n, m, ii)
+            flowja[ii] = q
         end
     end
 end
@@ -33,13 +33,15 @@ end
 """
     npf_flowja!(flowja, csr::CsrStructure, npf::NpfModel, h, ibound) -> flowja
 
-Connection flows of the offset heads `h` (`npf_cq`, `fc_default_flow`/`hcond`): off-diagonal
-entry `ii` of row `n` gets `condsat·(h'_m − h'_n + Δr_nm)` (flow into `n`; zero when either
-cell is inactive), the diagonal entries are zeroed. Antisymmetric exactly.
+Connection flows of the offset heads `h` (`npf_cq`, `sgwf_npf_qcalc`): off-diagonal
+entry `ii` of row `n` gets `C·(h'_m − h'_n + Δr_nm)` (flow into `n`; zero when either
+cell is inactive), the diagonal entries are zeroed. Antisymmetric exactly. `C` is `condsat`,
+or for convertible cells (T6.1) the conductance from the saturations of the last
+`npf_cf!` and the heads `h` (PERCHED: `C·(bot'_lo − h'_lo)` into the upper cell `lo`).
 """
 function npf_flowja!(flowja, csr::CsrStructure, npf::NpfModel, h, ibound)
     npf_flowja_kernel!(get_backend(flowja), _WG)(
-        flowja, csr.ia, csr.ja, csr.jas, csr.irow, npf.condsat, npf.Δr, h, ibound; ndrange = csr.nja,
+        flowja, csr.ia, csr.ja, csr.jas, csr.irow, _cond_arg(npf), npf.Δr, h, ibound; ndrange = csr.nja,
     )
     return flowja
 end

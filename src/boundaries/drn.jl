@@ -19,15 +19,25 @@ function bound_layout(::BoundaryKind{:DRN}, spec::BoundarySpec)
     return Any[("elev", 1), ("cond", 1), (:aux, iaux)]
 end
 
-# drn_ck: the conductance must not be negative. (The check against the cell bottom applies
-# to convertible cells only, T6.1.)
+# drn_ck: the drain bottom (`get_drain_elevations`) must not be below the bottom of a
+# convertible cell (T6.1), the conductance multiplier and the conductance as given not
+# negative.
 function check_records(::BoundaryKind{:DRN}, pkg, bound, n)
+    errors = String[]
     for i in 1:n
-        cond = bound[2, i]
-        cond < 0 &&
-            throw(MF6InputError(pkg.spec.file, 0, "$(pkg.spec.name): DRN BOUNDARY ($i) CONDUCTANCE ($cond) IS LESS THAN ZERO"))
+        elev, ddrn = bound[1, i], bound[3, i]
+        drnbot = ddrn != 0 ? min(elev + ddrn, elev) : elev
+        if _convertible_cell(pkg, i)
+            bt = _cell_bottom(pkg, i)
+            drnbot < bt && push!(
+                errors,
+                ddrn != 0 ? "SCALED-CONDUCTANCE DRN BOUNDARY ($i) BOTTOM ELEVATION ($drnbot) IS LESS THAN CELL BOTTOM ($bt)" :
+                    "DRN BOUNDARY ($i) ELEVATION ($drnbot) IS LESS THAN CELL BOTTOM ($bt)",
+            )
+        end
+        _check_cond_mult!(errors, "DRN", bound, i, 2)
     end
-    return nothing
+    return _throw_record_errors(pkg, errors)
 end
 
 """

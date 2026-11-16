@@ -138,8 +138,8 @@ function add_terms!(sys::LinearSystem, csr::CsrStructure, pkg::BoundaryPackage)
     return sys
 end
 
-function add_terms!(sys::LinearSystem, csr::CsrStructure, sto::StoragePackage, hold, ibound)
-    add_to_system!(sys.bdiag, sys.brhs, csr.inode, sto, hold, ibound)
+function add_terms!(sys::LinearSystem, csr::CsrStructure, sto::StoragePackage, hold, ibound; h = hold)
+    add_to_system!(sys.bdiag, sys.brhs, csr.inode, sto, hold, ibound; h)
     return sys
 end
 
@@ -166,15 +166,15 @@ end
             s = brhs[n]
             for ii in (id + Int32(1)):i2
                 m = ja[ii]
-                c, dr = _connection(condsat, Δr, jas, ibound, n, m, ii)
-                d -= c
-                s -= c * dr
+                a, dd, sb, _, _, _ = connection_terms(condsat, Δr, jas, ibound, h, n, m, ii)
+                d -= dd
+                s += sb
                 if symmetric && ibound[m] < 0
                     # sln_ls, symmetric matrix: constant-head column to the right-hand side.
-                    s -= c * h[m]
+                    s -= a * h[m]
                     amat[ii] = zero(T)
                 else
-                    amat[ii] = c
+                    amat[ii] = a
                 end
             end
             d += bdiag[n]
@@ -212,7 +212,7 @@ for a symmetric solver.
 function assemble!(sys::LinearSystem, csr::CsrStructure, npf::NpfModel, h, ibound; symmetric::Bool = false)
     backend = get_backend(sys.amat)
     assemble_kernel!(backend, _WG)(
-        sys.amat, sys.rhs, sys.diag, csr.ia, csr.ja, csr.jas, npf.condsat, npf.Δr, sys.bdiag, sys.brhs, h, ibound, symmetric,
+        sys.amat, sys.rhs, sys.diag, csr.ia, csr.ja, csr.jas, _cond_arg(npf), npf.Δr, sys.bdiag, sys.brhs, h, ibound, symmetric,
         eltype(sys)(1.0e-15); ndrange = csr.nodes,
     )
     return sys
@@ -240,8 +240,7 @@ end
             hn = h[n]
             for ii in (ia[n] + Int32(1)):(ia[n + 1] - Int32(1))
                 m = ja[ii]
-                cnm, dr = _connection(condsat, Δr, jas, ibound, n, m, ii)
-                q = cnm * (h[m] - hn + dr)
+                _, _, _, q, cnm, dr = connection_terms(condsat, Δr, jas, ibound, h, n, m, ii)
                 s, c = _sum_add(s, c, -q)
                 sc += abs(q)
                 rb += cnm * (abs(h[m]) + abs(hn) + abs(dr))
@@ -273,7 +272,7 @@ times `eps(T)` bounds the effect of rounding the heads to `T`.
 function flux_residual!(res, sys::LinearSystem, csr::CsrStructure, npf::NpfModel, h, ibound; scale = nothing, bound = nothing)
     backend = get_backend(res)
     flux_residual_kernel!(backend, _WG)(
-        res, scale, bound, csr.ia, csr.ja, csr.jas, npf.condsat, npf.Δr, sys.bdiag, sys.brhs, h, ibound;
+        res, scale, bound, csr.ia, csr.ja, csr.jas, _cond_arg(npf), npf.Δr, sys.bdiag, sys.brhs, h, ibound;
         ndrange = csr.nodes,
     )
     return res
@@ -330,14 +329,24 @@ end
     return d, s
 end
 
-# Storage (`storage_add_kernel!`): `nothing` in a steady-state period.
-@inline _add_storage_terms(n, d, s, ::Nothing, ibound) = (d, s)
-@inline function _add_storage_terms(n, d, s, sto::Tuple, ibound)
+# Storage (`storage_add_kernel!`): `nothing` in a steady-state period, `(rho, hold)` for
+# confined storage, `(rho, hold, conv)` with convertible cells (T6.1, `storage_terms`).
+@inline _add_storage_terms(n, d, s, ::Nothing, ibound, h) = (d, s)
+@inline function _add_storage_terms(n, d, s, sto::NTuple{2, Any}, ibound, h)
     rho, hold = sto
     @inbounds if ibound[n] > 0
         r = rho[n]
         d = d - r
         s = s - r * hold[n]
+    end
+    return d, s
+end
+@inline function _add_storage_terms(n, d, s, sto::NTuple{3, Any}, ibound, h)
+    rho, hold, conv = sto
+    @inbounds if ibound[n] > 0
+        a1, r1, a2, r2 = storage_terms(rho, hold, conv, h, n)
+        d = d + a1 + a2
+        s = s + r1 + r2
     end
     return d, s
 end
@@ -350,7 +359,7 @@ end
     T = eltype(amat)
     @inbounds begin
         bd, br = _add_package_terms(n, zero(T), zero(T), pkgs, h, ibound)
-        bd, br = _add_storage_terms(n, bd, br, sto, ibound)
+        bd, br = _add_storage_terms(n, bd, br, sto, ibound, h)
         if terms
             bdiag[n] = bd
             brhs[n] = br
@@ -367,17 +376,16 @@ end
             hn = h[n]
             for ii in (id + Int32(1)):i2
                 m = ja[ii]
-                c, dr = _connection(condsat, Δr, jas, ibound, n, m, ii)
-                d -= c
-                s -= c * dr
-                q = c * (h[m] - hn + dr)
+                a, dd, sb, q, _, _ = connection_terms(condsat, Δr, jas, ibound, h, n, m, ii)
+                d -= dd
+                s += sb
                 rs, rc = _sum_add(rs, rc, -q)
                 sc += abs(q)
                 if symmetric && ibound[m] < 0
-                    s -= c * h[m]
+                    s -= a * h[m]
                     offdiag && (amat[ii] = zero(T))
                 else
-                    offdiag && (amat[ii] = c)
+                    offdiag && (amat[ii] = a)
                 end
             end
             d += bd
@@ -416,8 +424,8 @@ end
 of `(hcof, rhs, nodeptr, noderec)` per boundary package with records (after its
 `formulate!`), in package order, or (T4.7) of `(BoundaryKind{K}(), bound, area, hcof, rhs,
 nodeptr, noderec)`, whose records are formulated in the same kernel (as `formulate!` of the
-package would, also storing `hcof` and `rhs`; records without a cell are not written); `storage`: `(rho, hold)` in a transient period, otherwise
-`nothing`. `offdiag = false` skips writing the off-diagonal entries of `sys.amat`; valid
+package would, also storing `hcof` and `rhs`; records without a cell are not written); `storage`: `(rho, hold)` in a transient period (`(rho, hold, conv)` with convertible
+storage, T6.1), otherwise `nothing`. `offdiag = false` skips writing the off-diagonal entries of `sys.amat`; valid
 only when they were written by an earlier call with the same `ibound` and `symmetric` (they
 depend on nothing else). `sys.diag` is always written; `terms = false` (T4.7, the solver's
 path: nothing there reads them) skips writing `sys.rhs`, `sys.bdiag` and `sys.brhs`.
@@ -428,7 +436,7 @@ function formulate_system!(
     )
     backend = get_backend(sys.amat)
     formulate_kernel!(backend, _WG)(
-        sys.amat, sys.rhs, sys.diag, sys.bdiag, sys.brhs, res, scale, csr.ia, csr.ja, csr.jas, npf.condsat, npf.Δr, h, ibound,
+        sys.amat, sys.rhs, sys.diag, sys.bdiag, sys.brhs, res, scale, csr.ia, csr.ja, csr.jas, _cond_arg(npf), npf.Δr, h, ibound,
         packages, storage, symmetric, offdiag, terms, eltype(sys)(1.0e-15); ndrange = csr.nodes,
     )
     return sys

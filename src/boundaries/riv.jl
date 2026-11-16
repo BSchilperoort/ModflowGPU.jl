@@ -6,17 +6,21 @@ bound_columns(::BoundaryKind{:RIV}) = ("stage", "cond", "rbot")
 head_columns(::BoundaryKind{:RIV}) = (1, 3)
 mult_column(::BoundaryKind{:RIV}) = 2
 
-# riv_ck: the stage must not be below the river bottom, and the conductance not negative.
-# (The checks against the cell bottom apply to convertible cells only, T6.1.)
+# riv_ck: the stage must not be below the river bottom, the conductance multiplier and the
+# conductance as given not negative, and (convertible cells, T6.1) the river bottom and
+# the stage not below the cell bottom. All errors of a block in one message.
 function check_records(::BoundaryKind{:RIV}, pkg, bound, n)
+    errors = String[]
     for i in 1:n
-        stage, cond, rbot = bound[1, i], bound[2, i], bound[3, i]
-        stage < rbot &&
-            throw(MF6InputError(pkg.spec.file, 0, "$(pkg.spec.name): RIV BOUNDARY ($i) RIVER STAGE ($stage) IS LESS THAN RIVER BOTTOM ($rbot)"))
-        cond < 0 &&
-            throw(MF6InputError(pkg.spec.file, 0, "$(pkg.spec.name): RIV BOUNDARY ($i) CONDUCTANCE ($cond) IS LESS THAN ZERO"))
+        stage, rbot = bound[1, i], bound[3, i]
+        conv = _convertible_cell(pkg, i)
+        bt = conv ? _cell_bottom(pkg, i) : 0.0
+        (conv && rbot < bt) && push!(errors, "RIV BOUNDARY ($i) RIVER BOTTOM ($rbot) IS LESS THAN CELL BOTTOM ($bt)")
+        stage < rbot && push!(errors, "RIV BOUNDARY ($i) RIVER STAGE ($stage) IS LESS THAN RIVER BOTTOM ($rbot)")
+        (conv && stage < bt) && push!(errors, "RIV BOUNDARY ($i) RIVER STAGE ($stage) IS LESS THAN CELL BOTTOM ($bt)")
+        _check_cond_mult!(errors, "RIV", bound, i, 2)
     end
-    return nothing
+    return _throw_record_errors(pkg, errors)
 end
 
 # riv_cf: head above the river bottom: hcof = −C, rhs = −C·stage; at or below it the

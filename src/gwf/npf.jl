@@ -156,7 +156,12 @@ after `source_griddata` and `prepcheck`:
 - `k11`, `k22`, `k33`: K22 and K33 are K where not given (`ik22`, `ik33` false), and
   multiplied by K with K22OVERK/K33OVERK;
 - `angle1`, `angle2`, `angle3`: in radians, `nothing` when not given;
-- `icellavg`: `CCOND_HMEAN`, `CCOND_LMEAN`, `CCOND_AMTLMK` or `CCOND_AMTHMK`.
+- `icellavg`: `CCOND_HMEAN`, `CCOND_LMEAN`, `CCOND_AMTLMK` or `CCOND_AMTHMK`;
+- `thickstart` (T6.1): cells with negative ICELLTYPE under THICKSTRT (`ithickstartflag`),
+  confined (ICELLTYPE 0) with the saturated thickness of the starting head;
+- `sat0` (T6.1): the initial saturation of each cell (`calc_initial_sat`: 1, or
+  `(STRT − bot)/(top − bot)` for `thickstart` cells), used by `calc_condsat`;
+- `wetdry` (T6.1): WETDRY by reduced node with REWET, `nothing` without.
 """
 struct NpfProperties
     icelltype::Vector{Int32}
@@ -169,6 +174,9 @@ struct NpfProperties
     ik22::Bool
     ik33::Bool
     icellavg::Int
+    thickstart::Vector{Bool}
+    sat0::Vector{Float64}
+    wetdry::Union{Nothing, Vector{Float64}}
 end
 
 # gwf-npf.f90 `prepcheck` fmtkerr: "Hydraulic property <name> is <= 0 for cell <cellid> <1PG15.6>".
@@ -196,7 +204,10 @@ The NPF properties by reduced node, after MF6's checks of the NPF input
 `newton = true` the NEWTON option combinations are checked (the model's NEWTON option).
 THICKSTRT (T6.1) and XT3D (T6.5) are an `MF6UnsupportedError`.
 """
-function npf_properties(npf::NpfSpec, dis::AbstractDisSpec, conn::Connectivity; newton::Bool = false)
+function npf_properties(
+        npf::NpfSpec, dis::AbstractDisSpec, conn::Connectivity; newton::Bool = false,
+        strt::Union{Nothing, AbstractVector{<:Real}} = nothing,
+    )
     file = isempty(npf.file) ? "NPF" : npf.file
     g = grid_dims(dis)
     nu = conn.nodeuser
@@ -247,12 +258,38 @@ function npf_properties(npf::NpfSpec, dis::AbstractDisSpec, conn::Connectivity; 
 
     _check_disu_angldegx(npf, dis, ik22)
 
-    npf.thickstrt && unsupported(file, "NPF6 option THICKSTRT (T6.1)")
     npf.xt3d && unsupported(file, "NPF6 option XT3D (T6.5)")
 
-    # gwf-npf.f90 `preprocess_input`: without THICKSTRT, negative ICELLTYPE means 1.
-    icelltype = Int32[npf.icelltype[u] < 0 ? Int32(1) : npf.icelltype[u] for u in nu]
-    return NpfProperties(icelltype, k11, k22, k33, angle1, angle2, angle3, ik22, ik33, _ICELLAVG[npf.cell_averaging])
+    # gwf-npf.f90 `preprocess_input`: without THICKSTRT, negative ICELLTYPE means 1; with
+    # it, such a cell is confined (ICELLTYPE 0) with the saturation of the starting head
+    # (`ithickstartflag`, `calc_initial_sat`: `thksat` of STRT, not clamped), and STRT below
+    # the cell bottom is an error.
+    nodes = Int(conn.nodes)
+    icelltype = Vector{Int32}(undef, nodes)
+    thickstart = falses(nodes)
+    sat0 = ones(nodes)
+    for n in 1:nodes
+        ict = npf.icelltype[nu[n]]
+        if ict < 0 && npf.thickstrt
+            isnothing(strt) && throw(ArgumentError("npf_properties: THICKSTRT needs the starting heads (`strt`)"))
+            s = Float64(strt[nu[n]])
+            topn, botn = conn.top[n], conn.bot[n]
+            if botn > s
+                push!(errors, "Negative cell thickness at cell $(_shape_string(cellid(g, nu[n])))")
+                push!(errors, rstrip(" Initial head, bottom elevation:" * _fortran_1pg(s; w = 13, d = 5) * _fortran_1pg(botn; w = 13, d = 5)))
+            end
+            sat0[n] = s >= topn ? 1.0 : (s - botn) / (topn - botn)
+            thickstart[n] = true
+            icelltype[n] = 0
+        else
+            icelltype[n] = ict < 0 ? Int32(1) : ict
+        end
+    end
+    isempty(errors) || throw(MF6InputError(file, 0, join(errors, "\n")))
+    wetdry = npf.rewet && !isnothing(npf.wetdry) ? npf.wetdry[nu] : nothing
+    return NpfProperties(
+        icelltype, k11, k22, k33, angle1, angle2, angle3, ik22, ik33, _ICELLAVG[npf.cell_averaging], thickstart, sat0, wetdry,
+    )
 end
 
 # gwf-npf.f90 `prepcheck` ("ANGLDEGX not provided ... but K22 was specified"), `npf_ar`
@@ -362,13 +399,22 @@ end
     calc_condsat(p::NpfProperties, conn::Connectivity) -> Vector{Float64}
 
 Saturated conductance per symmetric connection (`njas`, indexed through `jas`) in Float64
-(gwf-npf.f90 `calc_condsat` over all nodes with `upperOnly`, saturation 1): `condmean` of
-the full cell thicknesses for horizontal connections, the series conductance of the two
-half-cell thicknesses for vertical ones, with `hy_eff` in the connection direction.
+(gwf-npf.f90 `calc_condsat` over all nodes with `upperOnly`, with the initial saturations
+`p.sat0`, `calc_initial_sat`): `condmean` of the saturated thicknesses for horizontal
+connections, the series conductance of the two half-cell saturated thicknesses for
+vertical ones (`vcond` with VARIABLECV DEWATERED and heads at the cell bottoms), with
+`hy_eff` in the connection direction.
 """
-function calc_condsat(p::NpfProperties, conn::Connectivity)
+calc_condsat(p::NpfProperties, conn::Connectivity) = _calc_condsat(p, conn)[1]
+
+# `calc_condsat` and the effective conductivities of each symmetric connection: `hyl` of
+# the lower-numbered cell towards the higher, `hyh` the other way (`hy_eff`), as the
+# convertible formulation needs them (T6.1).
+function _calc_condsat(p::NpfProperties, conn::Connectivity)
     condsat = Vector{Float64}(undef, conn.njas)
-    top, bot = conn.top, conn.bot
+    hyl = Vector{Float64}(undef, conn.njas)
+    hyh = Vector{Float64}(undef, conn.njas)
+    top, bot, sat0 = conn.top, conn.bot, p.sat0
     for n in 1:conn.nodes, ii in (conn.ia[n] + 1):(conn.ia[n + 1] - 1)
         m = conn.ja[ii]
         m > n || continue
@@ -377,26 +423,34 @@ function calc_condsat(p::NpfProperties, conn::Connectivity)
         vg = _connection_normal(conn, n, m, ihc, jj)
         hyn = hy_eff(p, n, ihc, vg)
         hym = hy_eff(p, m, ihc, .-vg)
+        hyl[jj], hyh[jj] = hyn, hym
         topn, botn, topm, botm = top[n], bot[n], top[m], bot[m]
+        satn, satm = sat0[n], sat0[m]
         if ihc == 0
-            # GwfConductanceUtils.f90 `vcond`, partially saturated branch with sat = 1.
-            bovk1 = 1.0 * (topn - botn) * 0.5 / hyn
-            bovk2 = 1.0 * (topm - botm) * 0.5 / hym
+            # GwfConductanceUtils.f90 `vcond(1, 1, 1, 1, 0, 1, 1, ...)` with the heads at the
+            # cell bottoms: the partially saturated branch with DEWATERED.
+            if botn > botm
+                satm < 1.0 && (satm = 0.0)
+            else
+                satn < 1.0 && (satn = 0.0)
+            end
+            bovk1 = satn * (topn - botn) * 0.5 / hyn
+            bovk2 = satm * (topm - botm) * 0.5 / hym
             denom = bovk1 + bovk2
             condsat[jj] = denom != 0.0 ? conn.hwva[jj] / denom : 0.0
         else
-            # GwfConductanceUtils.f90 `hcond` → `convertible_standard`, sat = 1.
+            # GwfConductanceUtils.f90 `hcond` → `convertible_standard`.
             if ihc == 2
-                thksatn = staggered_thkfrac(topn, botn, 1.0, topm, botm)
-                thksatm = staggered_thkfrac(topm, botm, 1.0, topn, botn)
+                thksatn = staggered_thkfrac(topn, botn, satn, topm, botm)
+                thksatm = staggered_thkfrac(topm, botm, satm, topn, botn)
             else
-                thksatn = 1.0 * (topn - botn)
-                thksatm = 1.0 * (topm - botm)
+                thksatn = satn * (topn - botn)
+                thksatm = satm * (topm - botm)
             end
             condsat[jj] = condmean(hyn, hym, thksatn, thksatm, conn.cl1[jj], conn.cl2[jj], conn.hwva[jj], p.icellavg)
         end
     end
-    return condsat
+    return condsat, hyl, hyh
 end
 
 """
@@ -409,13 +463,18 @@ Host-side (Float64) result of the NPF setup of one model (`npf_setup`):
 - `r` `(nodes)`: reference heads (`reference_heads` with the ICELLTYPE of `properties`:
   STRT for confined cells, `clamp(STRT, bot, top)` for convertible cells);
 - `Δr` `(njas)`: `r[m] − r[n]` per symmetric connection with `n < m`
-  (`reference_differences`; read a CSR entry with `reference_difference`).
+  (`reference_differences`; read a CSR entry with `reference_difference`);
+- `hyl`, `hyh` `(njas)` (T6.1): the effective K of the lower- and the higher-numbered cell
+  of each symmetric connection towards the other (`hy_eff`), for the convertible
+  formulation.
 """
 struct NpfSetup
     properties::NpfProperties
     condsat::Vector{Float64}
     r::Vector{Float64}
     Δr::Vector{Float64}
+    hyl::Vector{Float64}
+    hyh::Vector{Float64}
 end
 
 """
@@ -427,38 +486,52 @@ NPF properties (with MF6's checks, `npf_properties`), saturated conductances
 a model, all in Float64 on the host.
 """
 npf_setup(model::GwfSpec, conn::Connectivity = build_connectivity(model)) =
-    npf_setup(model.npf, model.ic, model.dis, conn; newton = model.newton)
+    npf_setup(model.npf, model.ic, model.dis, conn; newton = model.newton, iconvert = isnothing(model.sto) ? nothing : model.sto.iconvert)
 
-function npf_setup(npf::NpfSpec, ic::IcSpec, dis::AbstractDisSpec, conn::Connectivity; newton::Bool = false)
-    p = npf_properties(npf, dis, conn; newton)
-    r = reference_heads(conn, ic.strt; icelltype = p.icelltype)
-    return NpfSetup(p, calc_condsat(p, conn), r, reference_differences(conn, r))
+function npf_setup(
+        npf::NpfSpec, ic::IcSpec, dis::AbstractDisSpec, conn::Connectivity; newton::Bool = false,
+        iconvert::Union{Nothing, AbstractVector{<:Integer}} = nothing,
+    )
+    p = npf_properties(npf, dis, conn; newton, strt = ic.strt)
+    # Reference heads (PLAN.md 3.7 rule 1): clamped into the cell for cells whose
+    # saturation is computed (ICELLTYPE /= 0, or STO ICONVERT /= 0), so the offsets of
+    # top and bottom stay within a cell thickness.
+    conv = Int32[(p.icelltype[n] != 0 || (!isnothing(iconvert) && iconvert[conn.nodeuser[n]] != 0)) ? 1 : 0 for n in 1:conn.nodes]
+    r = reference_heads(conn, ic.strt; icelltype = conv)
+    condsat, hyl, hyh = _calc_condsat(p, conn)
+    return NpfSetup(p, condsat, r, reference_differences(conn, r), hyl, hyh)
 end
 
 """
     NpfModel{T}(setup::NpfSetup)
     NpfModel(T, setup::NpfSetup)
 
-The per-connection NPF arrays of a confined model in the engine precision `T`: `condsat`
-and `Δr` `(njas)`, converted from the Float64 host values of `setup` (one rounding each).
+The per-connection NPF arrays of a model in the engine precision `T`: `condsat` and `Δr`
+`(njas)`, converted from the Float64 host values of `setup` (one rounding each), and `cv`:
+`nothing` for a confined model (every ICELLTYPE 0 after THICKSTRT, the constant-conductance
+path), otherwise the `ConvertibleNpf` data of the saturation-dependent conductances (T6.1).
 Host arrays here; `NpfModel(backend, T, setup)` or `adapt` puts them on a device.
 """
-struct NpfModel{T <: AbstractFloat, V <: AbstractVector{T}}
+struct NpfModel{T <: AbstractFloat, V <: AbstractVector{T}, C}
     condsat::V
     Δr::V
+    cv::C
 end
 
-NpfModel{T}(s::NpfSetup) where {T <: AbstractFloat} = NpfModel{T, Vector{T}}(T.(s.condsat), T.(s.Δr))
-NpfModel(::Type{T}, s::NpfSetup) where {T <: AbstractFloat} = NpfModel{T}(s)
+NpfModel{T}(s::NpfSetup; options = nothing, conn = nothing) where {T <: AbstractFloat} =
+    NpfModel(T.(s.condsat), T.(s.Δr), _convertible_npf(Array, T, s, options, conn))
+NpfModel(::Type{T}, s::NpfSetup; kw...) where {T <: AbstractFloat} = NpfModel{T}(s; kw...)
 
 """
-    NpfModel(backend, T, setup::NpfSetup)
+    NpfModel(backend, T, setup::NpfSetup; options = nothing, conn = nothing)
 
-The same on `backend`: `condsat` and `Δr` rounded to `T` on the host, then copied.
+The same on `backend`: `condsat` and `Δr` rounded to `T` on the host, then copied. With
+`options` (the `NpfSpec`) and `conn` given and a cell with ICELLTYPE /= 0, `cv` holds the
+convertible data (`ConvertibleNpf`); otherwise `cv = nothing`.
 """
-function NpfModel(backend::Backend, ::Type{T}, s::NpfSetup) where {T <: AbstractFloat}
-    h = NpfModel{T}(s)
-    return NpfModel(_device_copy(backend, h.condsat), _device_copy(backend, h.Δr))
+function NpfModel(backend::Backend, ::Type{T}, s::NpfSetup; options = nothing, conn = nothing) where {T <: AbstractFloat}
+    dev(x) = _device_copy(backend, x)
+    return NpfModel(dev(T.(s.condsat)), dev(T.(s.Δr)), _convertible_npf(backend, T, s, options, conn))
 end
 
 Adapt.@adapt_structure NpfModel
