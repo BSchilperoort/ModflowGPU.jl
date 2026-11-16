@@ -423,6 +423,12 @@ end
 # data use must be one of them (`read_value_or_time_series`, `MakeTasLink`).
 function _load_time_series(ld::_Loader, f::InputFile, ts_files, tas_files, periods, g::GridDims)
     ts = Dict{Symbol, TimeSeries}()
+    # TimeSeriesManager.f90 `add_tsfile` (T6.1, from the T6.3 merge): a file named twice.
+    seen = Set{String}()
+    for fname in ts_files
+        fname in seen && throw(MF6InputError(f.path, 0, "Found duplicate time-series file name: $fname"))
+        push!(seen, fname)
+    end
     for fname in ts_files, s in read_time_series_file(_resolve_path(fname, ld.simdir); simdir = ld.simdir)
         ts[s.name] = s
     end

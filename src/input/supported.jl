@@ -77,12 +77,15 @@ const SUPPORTED_OPTIONS = Dict{Tuple{String, String}, Vector{String}}(
     ("gwf-disv", "OPTIONS") => ["LENGTH_UNITS", "NOGRB", "GRB6", "XORIGIN", "YORIGIN", "ANGROT", "CRS"],
     ("gwf-disu", "OPTIONS") => ["LENGTH_UNITS", "NOGRB", "GRB6", "XORIGIN", "YORIGIN", "ANGROT", "VERTICAL_OFFSET_TOLERANCE", "CRS"],
     # T2.2: harmonic, LOGARITHMIC, AMT-LMK, AMT-HMK, K22/K33/ANGLE*; T2.8: specific discharge.
-    ("gwf-npf", "OPTIONS") => ["SAVE_FLOWS", "PRINT_FLOWS", "ALTERNATIVE_CELL_AVERAGING", "SAVE_SPECIFIC_DISCHARGE", "K22OVERK", "K33OVERK"],
+    ("gwf-npf", "OPTIONS") => [
+        "SAVE_FLOWS", "PRINT_FLOWS", "ALTERNATIVE_CELL_AVERAGING", "SAVE_SPECIFIC_DISCHARGE", "K22OVERK", "K33OVERK",
+        "THICKSTRT", "VARIABLECV", "DEWATERED", "PERCHED", "REWET", "WETFCT", "IWETIT", "IHDWET",  # T6.1
+    ],
     ("gwf-sto", "OPTIONS") => ["SAVE_FLOWS", "STORAGECOEFFICIENT", "SS_CONFINED_ONLY"],
     ("gwf-ic", "OPTIONS") => String[],
     ("gwf-oc", "OPTIONS") => ["BUDGET", "HEAD"],
     ("gwf-chd", "OPTIONS") => _STRESS_OPTIONS,
-    ("gwf-wel", "OPTIONS") => _STRESS_OPTIONS,
+    ("gwf-wel", "OPTIONS") => [_STRESS_OPTIONS; "AUTO_FLOW_REDUCE"; "FLOW_REDUCTION_LENGTH"; "AUTO_FLOW_REDUCE_AUXNAME"],  # T6.1
     ("gwf-ghb", "OPTIONS") => _STRESS_OPTIONS,
     ("gwf-riv", "OPTIONS") => _STRESS_OPTIONS,
     ("gwf-drn", "OPTIONS") => [_STRESS_OPTIONS; "AUXDEPTHNAME"],  # T2.4: DRN smoothing
@@ -124,11 +127,9 @@ const SUPPORTED_VALUES = Dict{Tuple{String, String}, Vector{String}}(
 
 Model features beyond options accepted with `strict = true` (names as in the `requires`
 field of `validation/examples.toml`). Supported: `:disv`, `:disu` (DISV6 / DISU6 grids,
-T6.4). Features not in the set are rejected:
+T6.4), `:convertible` (NPF ICELLTYPE /= 0 in an active cell) and `:convertible_storage`
+(STO ICONVERT /= 0 with a transient period), T6.1. Features not in the set are rejected:
 
-- `:convertible`: NPF ICELLTYPE /= 0 in an active cell (T6.1);
-- `:convertible_storage`: STO ICONVERT /= 0 in an active cell of a model with a transient
-  period (T6.1);
 - `:newton`: NEWTON in the model name file (T6.2);
 - `:multi_model`: more than one GWF model, or more than one solution (T6.6);
 - `:exchange`: GWF6-GWF6 exchanges (T6.6);
@@ -138,7 +139,7 @@ T6.4). Features not in the set are rejected:
 ATS6, TVK6, TVS6 and HPC6 files are options (`ATS6 FILEIN ...`) and are rejected
 through `SUPPORTED_OPTIONS`.
 """
-const SUPPORTED_FEATURES = Set{Symbol}([:timeseries, :disv, :disu])
+const SUPPORTED_FEATURES = Set{Symbol}([:timeseries, :disv, :disu, :convertible, :convertible_storage])
 
 """
     check_options(o::OptionSet, dfn_name, ftype, ctx)

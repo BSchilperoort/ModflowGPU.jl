@@ -65,6 +65,31 @@ package `*_ck` routine). Throws `MF6InputError`. The default checks nothing.
 """
 check_records(::BoundaryKind, pkg, bound, n) = nothing
 
+# Column `c` of record `i` before the MULTIPLIER, and the multiplier (1 without) of a
+# `BoundSource` (other matrices: the value, 1).
+_unmultiplied(b, c, i) = b[c, i]
+_multiplier(b, i) = 1.0
+
+# Whether the cell of record `i` is convertible (NPF ICELLTYPE /= 0; T6.1, the cell-bottom
+# checks of `riv_ck`, `drn_ck`, `ghb_ck`), and its bottom.
+_convertible_cell(pkg, i) = (nd = pkg.nodelist_host[i]; nd > 0 && !isempty(pkg.icelltype) && pkg.icelltype[nd] != 0)
+_cell_bottom(pkg, i) = pkg.conn.bot[pkg.nodelist_host[i]]
+
+# The conductance checks of `riv_ck`, `drn_ck`, `ghb_ck` (T6.1: MF6 checks the multiplier
+# and the conductance as given separately): pushes MF6's messages to `errors`.
+function _check_cond_mult!(errors, kname, b, i, ccol)
+    mult = _multiplier(b, i)
+    mult < 0 && push!(errors, "$kname BOUNDARY ($i) CONDUCTANCE MULTIPLIER ($mult) IS LESS THAN ZERO")
+    cond = _unmultiplied(b, ccol, i)
+    cond < 0 && push!(errors, "$kname BOUNDARY ($i) CONDUCTANCE ($cond) IS LESS THAN ZERO")
+    return errors
+end
+
+function _throw_record_errors(pkg, errors)
+    isempty(errors) || throw(MF6InputError(pkg.spec.file, 0, "$(pkg.spec.name): " * join(errors, "\n")))
+    return nothing
+end
+
 """
     head_columns(::BoundaryKind) -> Tuple of Int
 
@@ -85,7 +110,7 @@ mult_column(::BoundaryKind) = 1
     check_boundary_spec(spec::BoundarySpec)
 
 Throw `MF6UnsupportedError` for options of a stress package that the engine does not
-support yet (WEL `AUTO_FLOW_REDUCE`, MVR), `MF6InputError` for invalid EVT dimensions
+support yet (WEL `AUTO_FLOW_REDUCE_CSV`, MVR), `MF6InputError` for invalid EVT dimensions
 (NSEG < 1, NSEG > 1 or SURF_RATE_SPECIFIED with READASARRAYS) and `ArgumentError` for
 kinds without a formulation.
 """
@@ -93,8 +118,18 @@ function check_boundary_spec(spec::BoundarySpec{K}) where {K}
     K in (:CHD, :WEL, :RCH, :GHB, :RIV, :DRN, :EVT) ||
         throw(ArgumentError("$(spec.name): boundary package $K has no engine formulation yet"))
     spec.mover && throw(MF6UnsupportedError(spec.file, "unsupported: MOVER option of $(spec.name)"))
-    K === :WEL && spec.auto_flow_reduce != 0 &&
-        throw(MF6UnsupportedError(spec.file, "unsupported: AUTO_FLOW_REDUCE of $(spec.name) (needs convertible cells, T6.1)"))
+    if K === :WEL
+        # gwf-wel.f90 `source_options` (AUTO_FLOW_REDUCE since T6.1; its CSV output is not
+        # supported).
+        isempty(spec.afrcsv_file) ||
+            throw(MF6UnsupportedError(spec.file, "unsupported: AUTO_FLOW_REDUCE_CSV of $(spec.name)"))
+        spec.auto_flow_reduce <= 0 && spec.flow_reduction_length && spec.auto_flow_reduce != 0 && throw(
+            MF6InputError(
+                spec.file, 0,
+                "An AUTO_FLOW_REDUCTION value less than or equal to zero cannot be specified if the FLOW_REDUCTION_LENGTH option is specified.",
+            ),
+        )
+    end
     K === :EVT && _check_evt_spec(spec)
     return nothing
 end
@@ -124,8 +159,10 @@ node→record map on the host), `rrec` / `rrec_for` (the reference `r[nodelist[i
 record, 0 without a cell, for heads of the packages with head-like columns, and the `r` it
 was taken from; `nothing` after the cells change), `tsblock` (T6.3: the working copy of
 the PERIOD block in force when it has time-series values, `nothing` otherwise) and
-`tswindow` (the time step `(t0, t1)` its series values are for). `bound_values(pkg, r)`
-gives the Float64 values of `bound`.
+`tswindow` (the time step `(t0, t1)` its series values are for), `icelltype` (T6.1: NPF
+ICELLTYPE by reduced node for the cell-bottom checks of `*_ck`, empty when not given) and
+`moved` (T6.1: a RCH/EVT record is on another cell than given, `highest_active`).
+`bound_values(pkg, r)` gives the Float64 values of `bound`.
 """
 mutable struct BoundaryPackage{K, T <: AbstractFloat, VI <: AbstractVector{Int32}, VT <: AbstractVector{T}, MT <: AbstractMatrix{T}}
     const spec::BoundarySpec{K}
@@ -155,6 +192,8 @@ mutable struct BoundaryPackage{K, T <: AbstractFloat, VI <: AbstractVector{Int32
     rrec_for::Union{Nothing, Vector{Float64}}
     tsblock::Union{Nothing, PeriodList, ArrayPeriod}
     tswindow::NTuple{2, Float64}
+    const icelltype::Vector{Int32}
+    moved::Bool
 end
 
 # The staging buffer of `bound` on the host, and the result of `pin_memory!` (kept so the
@@ -165,7 +204,10 @@ function _staging_buffer(backend::Backend, ::Type{T}, ncol, maxbound) where {T}
     return staging, pinned
 end
 
-function BoundaryPackage{K, T}(backend::Backend, spec::BoundarySpec{K}, conn::Connectivity, dis::AbstractDisSpec) where {K, T <: AbstractFloat}
+function BoundaryPackage{K, T}(
+        backend::Backend, spec::BoundarySpec{K}, conn::Connectivity, dis::AbstractDisSpec;
+        icelltype::AbstractVector{<:Integer} = Int32[],
+    ) where {K, T <: AbstractFloat}
     check_boundary_spec(spec)
     grid = grid_dims(dis)
     maxbound = spec.readasarrays ? prod(grid.mshape[2:end]) : Int(spec.maxbound)
@@ -180,11 +222,12 @@ function BoundaryPackage{K, T}(backend::Backend, spec::BoundarySpec{K}, conn::Co
         zeros(Int32, maxbound), zeros(Float64, ncol, maxbound), String[], 0, false, staging, pinned,
         zeros(Int32, conn.nodes + 1), zeros(Int32, maxbound),
         zeros(isempty(head_columns(BoundaryKind{K}())) ? 0 : maxbound), nothing, nothing, (NaN, NaN),
+        Vector{Int32}(icelltype), false,
     )
 end
 
-BoundaryPackage(backend::Backend, ::Type{T}, spec::BoundarySpec{K}, conn::Connectivity, dis::AbstractDisSpec) where {K, T} =
-    BoundaryPackage{K, T}(backend, spec, conn, dis)
+BoundaryPackage(backend::Backend, ::Type{T}, spec::BoundarySpec{K}, conn::Connectivity, dis::AbstractDisSpec; kw...) where {K, T} =
+    BoundaryPackage{K, T}(backend, spec, conn, dis; kw...)
 
 # Adapt (e.g. `adapt(backend, pkg)`): the device arrays move; the host period state is
 # copied, so the two packages can take different periods (with a new staging buffer,
@@ -198,7 +241,7 @@ function Adapt.adapt_structure(to, p::BoundaryPackage)
         adapt(to, p.simvals), adapt(to, p.ratein), adapt(to, p.rateout), adapt(to, p.nodeptr), adapt(to, p.noderec),
         p.nbound, p.iblock, copy(p.nodelist_host), copy(p.bound_user), copy(p.boundname), p.bound_version, p.user_stale,
         staging, pinned, copy(p.nodeptr_host), copy(p.noderec_host), copy(p.rrec), p.rrec_for,
-        isnothing(p.tsblock) ? nothing : _ts_working_copy(p.tsblock), p.tswindow,
+        isnothing(p.tsblock) ? nothing : _ts_working_copy(p.tsblock), p.tswindow, p.icelltype, p.moved,
     )
 end
 
@@ -279,6 +322,8 @@ Base.@propagate_inbounds function Base.getindex(b::BoundSource, c::Int, i::Int)
     (b.aux !== nothing && c == b.mcol) && (v *= b.aux[b.imult, i])
     return v
 end
+_unmultiplied(b::BoundSource, c, i) = (k = b.rows[c]; k == 0 ? b.consts[c] : b.mats[c][k, i])
+_multiplier(b::BoundSource, i) = b.aux === nothing ? 1.0 : b.aux[b.imult, i]
 
 # The PERIOD block in force: its working copy with the time-series values of the current
 # step when it has time series (T6.3), else the block itself. Needs `pkg.iblock > 0`.
@@ -665,7 +710,9 @@ function _apply_period!(pkg::BoundaryPackage{K, T}, kper::Integer, r::AbstractVe
         pkg.tsblock = _eval_time_series!(spec, _ts_working_copy(data), window)
         pkg.tswindow = window
     end
-    same = !moves && ib > 0 && pkg.iblock > 0 && _same_cells(spec.periods.data[pkg.iblock], data)
+    # T6.1: not after a block whose records were moved (`highest_active`), whose nodes are
+    # not those of the cells given.
+    same = !moves && !pkg.moved && ib > 0 && pkg.iblock > 0 && _same_cells(spec.periods.data[pkg.iblock], data)
     n = same ? pkg.nbound : isnothing(data) ? 0 : _period_nodes!(pkg, data)
     empty!(pkg.boundname)
     data isa PeriodList && append!(pkg.boundname, data.boundname)
@@ -674,15 +721,47 @@ function _apply_period!(pkg::BoundaryPackage{K, T}, kper::Integer, r::AbstractVe
     pkg.nbound = n
     pkg.user_stale = !isnothing(data)
     check_records(BoundaryKind{K}(), pkg, _bound_source(pkg), n)
-    if moves
-        nodes = pkg.nodelist_host
-        for i in 1:n
-            nodes[i] > 0 && ibound[nodes[i]] == 0 && (nodes[i] = highest_active(pkg.conn, nodes[i], ibound))
-        end
-    end
+    same || (pkg.moved = false)
+    moves && _move_records!(pkg, ibound)
     same || (_upload_structure!(pkg); pkg.rrec_for = nothing)
     _stage_bound!(pkg, r)
     return same ? :values : :structure
+end
+
+# RCH/EVT (`rch_cf`, `evt_cf`): records in a cell with IBOUND 0 move to the highest active
+# cell below; sets `pkg.moved` when one did.
+function _move_records!(pkg::BoundaryPackage, ibound)
+    nodes = pkg.nodelist_host
+    for i in 1:pkg.nbound
+        nd = nodes[i]
+        if nd > 0 && ibound[nd] == 0
+            nodes[i] = highest_active(pkg.conn, nd, ibound)
+            pkg.moved |= nodes[i] != nd
+        end
+    end
+    return pkg
+end
+
+"""
+    move_to_highest_active!(pkg::BoundaryPackage, ibound, r) -> Bool
+
+Re-place the records of a RCH or EVT package without FIXED_CELL after IBOUND changed (T6.1;
+`rch_cf`/`evt_cf` start from the cells given, `nodesontop`, and move a record in a cell with
+IBOUND 0 to the highest active cell below, `highest_active`). When a record changes cell,
+the node list and the node→record map are uploaded and `bound` is restaged (head-like
+columns as offsets from the reference of the new cell). Returns whether a record moved.
+"""
+function move_to_highest_active!(pkg::BoundaryPackage{K}, ibound::AbstractVector{<:Integer}, r::AbstractVector{Float64}) where {K}
+    (K in (:RCH, :EVT) && !pkg.spec.fixed_cell && pkg.nbound > 0 && pkg.iblock > 0) || return false
+    old = pkg.nodelist_host[1:pkg.nbound]
+    _period_nodes!(pkg, _block_data(pkg))
+    pkg.moved = false
+    _move_records!(pkg, ibound)
+    view(pkg.nodelist_host, 1:pkg.nbound) == old && return false
+    _upload_structure!(pkg)
+    pkg.rrec_for = nothing
+    _stage_bound!(pkg, r)
+    return true
 end
 
 """
@@ -738,14 +817,16 @@ function _upload_structure!(pkg::BoundaryPackage)
 end
 
 """
-    boundary_ibound(conn::Connectivity, packages) -> Vector{Int32}
+    boundary_ibound(conn::Connectivity, packages, current = nothing) -> Vector{Int32}
 
 The IBOUND array by reduced node for the boundary kernels: 1 for active cells and −1 for
 constant-head cells (the nodes of the CHD packages among `packages`, `chd_rp`). A cell
-given twice as constant head is an error ("Cell is already a constant head").
+given twice as constant head is an error ("Cell is already a constant head"). With
+`current` (T6.1, the IBOUND in force), its dry cells (0) stay 0 unless they become constant
+heads, and its constant-head cells become active (`chd_rp`).
 """
-function boundary_ibound(conn::Connectivity, packages)
-    ibound = ones(Int32, conn.nodes)
+function boundary_ibound(conn::Connectivity, packages, current::Union{Nothing, AbstractVector{<:Integer}} = nothing)
+    ibound = isnothing(current) ? ones(Int32, conn.nodes) : Int32[c < 0 ? Int32(1) : Int32(c) for c in current]
     for pkg in packages
         boundary_kind(pkg) === :CHD || continue
         for i in 1:pkg.nbound
@@ -792,13 +873,14 @@ end
 
 Compute `hcof` and `rhs` of every record (`bnd_cf` / `*_cf`) from the offset heads `h`,
 the IBOUND array `ibound` (`boundary_ibound`) and the cell areas `area` (device arrays by
-reduced node). Records in constant-head or inactive cells get zeros.
+reduced node). Records in constant-head or inactive cells get zeros. `kind`: the record
+kind (`record_kind`, e.g. WEL with AUTO_FLOW_REDUCE, T6.1).
 """
-function formulate!(pkg::BoundaryPackage{K}, h, ibound, area) where {K}
+function formulate!(pkg::BoundaryPackage{K}, h, ibound, area; kind = BoundaryKind{K}()) where {K}
     pkg.nbound == 0 && return pkg
     backend = get_backend(pkg.hcof)
     boundary_formulate_kernel!(backend, _WG)(
-        pkg.hcof, pkg.rhs, BoundaryKind{K}(), pkg.nodelist, pkg.bound, h, ibound, area; ndrange = pkg.nbound,
+        pkg.hcof, pkg.rhs, kind, pkg.nodelist, pkg.bound, h, ibound, area; ndrange = pkg.nbound,
     )
     return pkg
 end

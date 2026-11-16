@@ -1,0 +1,12 @@
+BEGIN options
+  SAVE_FLOWS
+END options
+
+BEGIN packages
+  DISU6  stg.disu  disu
+  NPF6  stg.npf  npf
+  IC6  stg.ic  ic
+  CHD6  stg.chd  chd
+  WEL6  stg.wel  wel
+  OC6  stg.oc  oc
+END packages

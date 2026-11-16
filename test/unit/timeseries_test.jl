@@ -201,6 +201,10 @@ _ts(method, times, values) = TimeSeries(:S, method, times, values, "test.ts")
             write_input(dir, "g.rch", replace(files["g.rch"], "SERIES r" => "SERIES other"))
             @test occursin("Time-array series \"OTHER\" not found", input_error_of(() -> load_simulation(dir)).msg)
             write_input(dir, "g.rch", files["g.rch"])
+            # T6.1: a TS6 file named twice (TimeSeriesManager.f90 `add_tsfile`).
+            write_input(dir, "g.chd", replace(files["g.chd"], " TS6 FILEIN g.chd.ts\n" => " TS6 FILEIN g.chd.ts\n TS6 FILEIN g.chd.ts\n"))
+            @test occursin("Found duplicate time-series file name: g.chd.ts", input_error_of(() -> load_simulation(dir)).msg)
+            write_input(dir, "g.chd", files["g.chd"])
             # MF6 evaluates a list series at time 0 when it reads the first PERIOD block
             # (read_value_or_time_series): an error for a series that starts later.
             write_input(dir, "g.chd.ts", replace(files["g.chd.ts"], " 0 100\n" => " 5 100\n"))

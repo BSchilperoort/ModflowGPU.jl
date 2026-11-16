@@ -1,0 +1,18 @@
+BEGIN options
+  VARIABLECV  DEWATERED
+  PERCHED
+  REWET  WETFCT  0.5  IWETIT  1  IHDWET  0
+END options
+
+BEGIN griddata
+  icelltype LAYERED
+    CONSTANT  1
+    CONSTANT  1
+  k
+    CONSTANT  5.0
+  k33
+    CONSTANT  0.5
+  wetdry LAYERED
+    CONSTANT  1.0
+    CONSTANT  0.0
+END griddata

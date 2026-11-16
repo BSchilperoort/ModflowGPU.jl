@@ -62,6 +62,7 @@ include("boundaries/evt.jl")
 
 # Assembly and residual (KA kernels)
 include("solver/csr.jl")
+include("gwf/convertible.jl")
 include("solver/precond/precond.jl")
 include("solver/krylov.jl")
 include("solver/precond/amg.jl")

@@ -66,7 +66,9 @@ it. Underscore-prefixed helpers are omitted.
 - **input/supported.jl**: what the engine supports; the loader checks input against it.
   `MF6UnsupportedError`, `SUPPORTED_OPTIONS`, `SUPPORTED_VALUES`, `SUPPORTED_FEATURES`,
   `UNSUPPORTED_PACKAGES` / `UNSUPPORTED_MODELS`, `check_options`, `check_value`,
-  `check_feature` (T6.4: `:disv`, `:disu` supported; DISV/DISU options). Tests: simulation_loader, input_lists.
+  `check_feature` (T6.4: `:disv`, `:disu` supported; DISV/DISU options; T6.1: `:convertible`,
+  `:convertible_storage`, NPF THICKSTRT/VARIABLECV/DEWATERED/PERCHED/REWET, WEL
+  AUTO_FLOW_REDUCE). Tests: simulation_loader, input_lists.
 
 ## Model description (host specs, plain structs)
 
@@ -76,7 +78,7 @@ it. Underscore-prefixed helpers are omitted.
 - **spec/packages.jl**: GWF package specs. `NpfSpec`, `StoSpec` (`is_transient`), `IcSpec`,
   `OcSpec`, `PrintFormat`, `BoundarySpec{Kind}` (T6.3: `timeseries`, `timearrayseries`
   dictionaries by name, read by the loader, `_load_time_series` in input/simulation.jl,
-  which also checks every name the period data use), `BOUNDARY_KINDS`. Tests:
+  which also checks every name the period data use and, T6.1, rejects a TS6 file named twice), `BOUNDARY_KINDS`. Tests:
   simulation_loader, npf, timeseries.
 - **spec/simulation.jl**: simulation-level specs. `TdisSpec` (`nper`), `ImsSpec`
   (`ims_defaults`), `SolutionGroupSpec`, `PackageEntry`, `GwfSpec`, `ExchangeSpec`,
@@ -133,15 +135,28 @@ it. Underscore-prefixed helpers are omitted.
 - **gwf/npf.jl**: NPF, confined: saturated conductance per connection (NPF.f90). Device-safe
   `logmean`, `condmean`, `staggered_thkfrac`; host `hyeff` / `hy_eff` (anisotropic K),
   `NpfProperties` / `npf_properties`, `check_npf_options`, `calc_condsat`, `NpfSetup` /
-  `npf_setup(::GwfSpec)`, device struct `NpfModel{T}` (`NpfModel(backend, T, setup)`, Adapt), `CCOND_*` averaging codes. T6.4: connection
+  `npf_setup(::GwfSpec)`, device struct `NpfModel{T}` (`NpfModel(backend, T, setup)`, Adapt), `CCOND_*` averaging codes. T6.1:
+  THICKSTRT (`NpfProperties.thickstart`, `sat0`, `calc_condsat` with initial saturations), `wetdry`,
+  `NpfSetup.hyl`/`hyh`, reference heads clamped also for STO ICONVERT ≠ 0 cells, `NpfModel.cv`
+  (`nothing` for confined models: the constant-conductance path; `npf_setup(...; options, conn)`). T6.4: connection
   normals from `anglex` by cos/sin on DISV/DISU (exact axes on DIS), the DISU ANGLDEGX
   checks of `prepcheck`/`npf_ar` (`_check_disu_angldegx`). Tests:
   npf (parity vs libmf6 CONDSAT, also DISV/DISU), disv_disu.
+- **gwf/convertible.jl** (T6.1; included after solver/csr.jl): convertible cells and wetting/drying
+  (gwf-npf.f90 `cf_default_flow`, `fc_default_flow`, `sgwf_npf_qcalc`, `sgwf_npf_wetdry`,
+  `rewet_check`, `npf_ad`; GwfConductanceUtils.f90 `hcond`, `vcond`). Device struct
+  `ConvertibleNpf{T}` (offsets `topoff`/`botoff`, `thk`, `sat`, per-connection `hyl`/`hyh`/cl/hwva,
+  `ihcx`; options VARIABLECV, DEWATERED, PERCHED), `thksat`, `connection_terms` (row-kernel terms
+  of one connection for `condsat` or a `ConvertibleNpf`, PERCHED included; used by every
+  assembly/residual/flow kernel), `_cond_arg`, `npf_cf!` (`npf_sat_kernel!`), `WetDry` (state),
+  `npf_rewet_kernel!` (Jacobi passes equal to MF6's sequential loop), `npf_rewet_apply_kernel!`,
+  `npf_dry_kernel!`, `wetdry_device!`, `npf_ad!`. Tests: convertible, assembly, run.
 - **gwf/ic.jl**: IC (gwf-ic.f90 `ic_ar`). `initial_heads` (starting heads per reduced
   node as offsets, Float64 host or device copy in `T`). Tests: sto.
-- **gwf/sto.jl**: confined storage (gwf-sto.f90 `sto_rp`/`sto_fc`/`sto_cq`/`sto_bd`,
-  GwfStorageUtils.f90 `SsCapacity`/`SsTerms`). `storage_capacity`, `check_storage_spec`
-  (rejects convertible cells with a transient period, T6.1, and TVS6), `StoragePackage{T}`
+- **gwf/sto.jl**: storage (gwf-sto.f90 `sto_rp`/`sto_fc`/`sto_cq`/`sto_bd`,
+  GwfStorageUtils.f90 `SsCapacity`/`SsTerms`/`SyTerms`). `storage_capacity`, `check_storage_spec`
+  (rejects TVS6), T6.1: `ConvertibleStorage` (ICONVERT, offsets, `rho2`, SS_CONFINED_ONLY),
+  `storage_saturation`, `storage_terms`, `StoragePackage.conv`/`sc2`/`strgsy` (STO-SY), `StoragePackage{T}`
   (device `rho = sc/delt`, `strgss`; Adapt), `apply_period!` (steady/transient), `set_timestep!`
   (`rho` from Float64 `delt`), `add_to_system!` (diagonal and `b`), `calc_storage_rates!`
   (STO-SS), `add_storage_flowja!`, `storage_budget` (rin/rout, host Float64). Tests: sto
@@ -160,6 +175,11 @@ it. Underscore-prefixed helpers are omitted.
   columns → offsets), `highest_active`, `boundary_ibound` (CHD → IBOUND
   −1), `formulate!` / `formulate_record`, `add_to_system!`, `calc_simvals!`,
   `boundary_kind`. Tests: boundaries.
+  T6.1: `BoundaryPackage.icelltype` (cell-bottom checks of `riv_ck`/`drn_ck`/`ghb_ck`, which
+  also check the raw conductance and the multiplier separately: `_check_cond_mult!`), `moved`
+  (no period fast path after records were moved), `move_to_highest_active!` (RCH/EVT after
+  IBOUND changes, from the cells given), `boundary_ibound(conn, packages, current)` (dry cells
+  stay dry, `chd_rp`), `formulate!(...; kind)`. Tests: convertible, run.
   T3.3: `bound_user` (host values as given, before the multiplier) and `set_bound!` (stepping
   API writes: multiplier + offsets as period data, then copy to the device); tests: stepping.
   T4.6 (period-data path): a block with the cells in force keeps nodes and the node→record
@@ -180,7 +200,9 @@ it. Underscore-prefixed helpers are omitted.
 - **boundaries/chd.jl**: CHD (gwf-chd.f90; see `docs/mf6_notes.md`). `apply_chd_heads!`,
   `calc_chd_rate!`. Tests: boundaries (parity vs MF6 CBC).
 - **boundaries/wel.jl**, **rch.jl**, **ghb.jl**: WEL, RCH (list and RCHA arrays, cell
-  area), GHB formulations (`formulate_record` methods). Tests: boundaries.
+  area), GHB formulations (`formulate_record` methods). Tests: boundaries. T6.1: WEL
+  AUTO_FLOW_REDUCE (`WelAfr` record kind, `sq_saturation`, `record_kind`; tests: run, model
+  test/models/afr), `ghb_ck` (`check_records`).
 - **boundaries/riv.jl**, **drn.jl**, **evt.jl** (T2.4): RIV (`riv_cf`, stage/rbot as
   offsets, `riv_ck`), DRN (`drn_cf` with AUXDEPTHNAME drainage depth, device-safe
   `linear_saturation` = `sQuadraticSaturation` with eps 0), EVT/EVTA (`evt_cf`: NSEG
@@ -286,8 +308,10 @@ it. Underscore-prefixed helpers are omitted.
   NpfModel, LinearSystem, boundary packages, STO, ibound, offset heads `h`/`hold`, `res`,
   `δ`, `flowja`; `offdiag_id` (T4.7, session-unique id of the last off-diagonal write); Adapt, e.g. `adapt(backend, m)`, T3.1), `apply_period!(::GwfModel, kper; window)` (once per period: package period
   data, STO, CHD ibound, rebuilt only when a CHD package has new cells), `advance_time_series!(::GwfModel, window)` (T6.3: every step, in `prepare_time_step`), `start_timestep!` (`rho`, `hold ← h`, CHD heads), `formulate!`
+  (T6.1: `npf_cf!` and new off-diagonals every call for convertible models), `wetdry!` (T6.1:
+  `sgwf_npf_wetdry` per outer iteration, IBOUND to the host, RCH/EVT moves), field `wd`
   (per-package formulation, then `formulate_system!`; off-diagonals rewritten only when
-  `ibound` or `symmetric` changed, field `offdiag`, T4.5), `absolute_heads` (host Float64 `r + h'`). Tests:
+  `ibound` or `symmetric` changed, field `offdiag`, T4.5), `absolute_heads` (host Float64 `r + h'`; HDRY for dry cells, T6.1). Tests:
   picard, run.
 - **solver/underrelax.jl**: `sln_underrelax`. `UnderRelaxation` (SIMPLE, COOLEY host
   scalars, DBD device state), `underrelax!` (`relax_update_kernel!`,
@@ -299,9 +323,11 @@ it. Underscore-prefixed helpers are omitted.
   argmax reduction, the dvclose/rclose used); `OuterState` + `outer_iteration!` (one outer
   iteration, T3.3; `solve_timestep!` loops over it; T5.3/T6.0: in Float32, once a
   correction meets OUTER_DVCLOSE and only the inner test failed, `OuterState.noise_floor`
-  holds INNER_DVCLOSE >= `OuterState.dvfloor` = eps32·max|h'| for the rest of the step).
+  holds INNER_DVCLOSE >= `OuterState.dvfloor` = eps32·max|h'| for the rest of the step;
+  T6.1: `wetdry!` before each formulation, and with convertible cells the Float32 rclose
+  floor is the maximum over the step's iterations).
   Tests: picard, run, stepping.
-- **budget.jl**: `gwf_cq`/`gwf_bd`. `npf_flowja!` (one work item per entry, T4.5), `calc_flows!` (NPF, STO, packages with
+- **budget.jl**: `gwf_cq`/`gwf_bd`. `npf_flowja!` (one work item per entry, T4.5; T6.1 `connection_terms`, STO-SY term), `calc_flows!` (NPF, STO, packages with
   `bnd_cf` + `simvals`, CHD `calc_chd_rate!`, `csr_diagsum`), `BudgetTerm`, `ModelBudget`
   (`total_rate_in`/`_out`, `total_cum_in`/`_out`, `percent_discrepancy`,
   `cum_percent_discrepancy`), `BudgetAccumulator` (Adapt), `model_budget!` (device reductions,
@@ -365,7 +391,9 @@ it. Underscore-prefixed helpers are omitted.
   `model_package_files`; `parity_examples` (T6.0: Tier 0–2 plus `EXTRA_PARITY_EXAMPLES`,
   ex-gwf-lgrv-gc/-gr; `MFGPU_TEST_LGRV_GR=0` drops -gr; T6.4: plus the Tier 5 examples),
   used by the assembly and run parity tests; `reference_rundir(name)` (T6.3: the converged
-  reference run, tight or tight-relative, e.g. ex-gwf-fhb); `rad_disu_confined` (T6.4:
+  reference run, tight or tight-relative, e.g. ex-gwf-fhb; T6.1: `relaxed` only for
+  `RELAXED_REFERENCE_EXAMPLES`); T6.1: the Tier 3 convertible examples in
+  `EXTRA_PARITY_EXAMPLES`; `rad_disu_confined` (T6.4:
   ex-gwf-rad-disu with ICONVERT 0, written from the reference run at test time).
 - **libmf6_oracle.jl**: libmf6 subprocess oracle. `LIBMF6_ENV`, `libmf6_available`,
   `run_libmf6_script` (validation/libmf6_connectivity.jl, libmf6_first_solve.jl), `libmf6_connectivity`, `write_dis_simulation` (synthetic DIS sims; DISV/DISU since T6.4).
@@ -374,13 +402,18 @@ it. Underscore-prefixed helpers are omitted.
   a DIS grid, same user node numbers).
 - **run_parity.jl** (T3.4, moved from parity/run_test.jl): `_run_parity(name, rundir)`
   (ModflowGPU vs MF6 output in `rundir`: heads, CBC, listing tables, both presets, GPU vs
-  CPU; returns the numbers per preset; `single_preconditioner` for `:single`, T6.0; `single_budget_tol` and list records matched by package, T6.4), `_mf6_iterations`, `_head_difference`,
+  CPU; returns the numbers per preset; `single_preconditioner` for `:single`, T6.0; `single_budget_tol` and list records matched by package, T6.4; T6.1: `double_budget_tol`, dry cells compared, `_rounding_bounds` for the `:single` budgets), `_mf6_iterations`, `_head_difference`,
   `_budget_difference`, `_listing_difference`, `RUN_MF6`. Used by groups run, synthetic.
 - **residual.jl**: `to_test_device`, `flux_residual` (device `flux_residual!` → (rel, rounding
   bound)), `residual_stats`, `host_flux_residual` (the T2.3 host loop, validates the kernel).
 - **models/coupling_rde/**: synthetic coupling-like model (2 × 12 × 15, confined, steady +
   transient) with CHD, WEL, RCHA, RIV, DRN, EVT, EVTA; `generate.jl` writes it
   (riv_drn_evt parity test); test/unit/builder_test.jl builds it in memory.
+- **models/wetdry/**, **models/disu_staggered/**, **models/afr/** (T6.1): synthetic models
+  run with mf6 at test time (groups assembly, run): wetting and drying (2×1×12, VARIABLECV
+  DEWATERED, PERCHED, REWET, convertible storage, RCH moving to layer 2), DISU with staggered
+  horizontal connections (IHC 2) and convertible cells, WEL AUTO_FLOW_REDUCE (fraction and
+  FLOW_REDUCTION_LENGTH with AUTO_FLOW_REDUCE_AUXNAME).
 - **models/ts_tas/** (T6.3, replaces models/fhb_const): synthetic time-series model (1×5×10,
   3 transient periods): TS6 LINEAR/STEPWISE/LINEAREND with SFACS, DNODATA and several series
   per file (CHD heads, WEL rate and AUXMULTNAME multiplier, GHB conductance), TAS6 RCHA

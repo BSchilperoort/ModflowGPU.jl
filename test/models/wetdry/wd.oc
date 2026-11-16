@@ -1,0 +1,9 @@
+BEGIN options
+  BUDGET  FILEOUT  wd.cbc
+  HEAD  FILEOUT  wd.hds
+END options
+
+BEGIN period  1
+  SAVE  HEAD  ALL
+  SAVE  BUDGET  ALL
+END period  1

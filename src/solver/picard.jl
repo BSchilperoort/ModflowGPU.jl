@@ -211,14 +211,19 @@ function outer_iteration!(state::OuterState, ps::PicardSolver, m::GwfModel{T}, k
     backend = m.backend
     n = Int(m.conn.nodes)
     it = state.kiter += 1
-    floor_step = it == 1 && st.rclose_floor_factor > 0
+    # Float32 rclose floor: from the first formulation; with convertible cells (T6.1) the
+    # terms change with the saturations, so it is the maximum over the step's iterations.
+    floor_step = (it == 1 || !isnothing(m.wd)) && st.rclose_floor_factor > 0
+    # Wetting and drying of convertible cells (T6.1; `npf_cf` → `sgwf_npf_wetdry`), then
+    # the formulation (the saturations, `npf_cf!`, are computed in `formulate!`).
+    isnothing(m.wd) || @timed_section :assembly wetdry!(m, it)
     @timed_section :assembly formulate!(m; symmetric = st.symmetric, terms = false, scale = floor_step ? ps.scale : nothing)
     if floor_step
         # Float32: the attainable residual, eps(T)·max Σ|terms| (rule 2 rounding).
         smax = @timed_section :outer_reduction _mapreduce!(ps.reducer, backend, _maxscale_term, _MAXSCALE_OPS, n, ps.scale)[1]
         floor = st.rclose_floor_factor * eps(T) * abs(smax)
         rc = st.krylov.icnvgopt == 2 || st.krylov.icnvgopt == 4 ? floor * sqrt(n) : floor
-        state.rclose = max(st.krylov.rclose, rc)
+        state.rclose = max(st.krylov.rclose, rc, it == 1 ? 0.0 : state.rclose)
         k = state.krylov
         state.krylov = state.rclose == k.settings.rclose ? k : _with_settings(k, _with_rclose(st.krylov, state.rclose))
     end

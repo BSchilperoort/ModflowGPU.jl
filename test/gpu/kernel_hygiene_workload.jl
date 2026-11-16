@@ -119,6 +119,30 @@ function workload(dir)
         M.add_terms!(m.sys, m.csr, m.sto, m.hold, m.ibound)
         M.assemble!(m.sys, m.csr, m.npf, m.h, m.ibound; symmetric = true)
     end
+    # Convertible cells (T6.1): wetting and drying, PERCHED, convertible storage, WEL
+    # AUTO_FLOW_REDUCE, staggered DISU connections; and the separate assembly, residual and
+    # storage kernels with a ConvertibleNpf / ConvertibleStorage.
+    for name in ("wetdry", "afr", "disu_staggered")
+        d = joinpath(dir, name)
+        cp(joinpath(MODELS, name), d)
+        chmod(d, 0o755; recursive = true)
+        M.run(d; backend = BACKEND, precision = :single, outdir = joinpath(dir, "out_$name"))
+        csim = M.load_simulation(d)
+        m = M.GwfModel(BACKEND, T, only(csim.models), M.nper(csim.tdis))
+        steps = M.time_steps(csim.tdis)
+        M.apply_period!(m, 1)
+        if length(csim.tdis.perlen) > 1
+            M.apply_period!(m, 2)
+        end
+        M.start_timestep!(m, steps[end].delt)
+        M.formulate!(m)
+        scale = similar(m.res)
+        bound = similar(m.res)
+        M.flux_residual!(m.res, m.sys, m.csr, m.npf, m.h, m.ibound; scale, bound)
+        M.reset_terms!(m.sys)
+        isnothing(m.sto) || M.add_terms!(m.sys, m.csr, m.sto, m.hold, m.ibound; h = m.h)
+        M.assemble!(m.sys, m.csr, m.npf, m.h, m.ibound)
+    end
     # AMG (T4.3) with several levels: fused and generic finest level, CG and BiCGSTAB.
     for method in (:cg, :bicgstab), fine_degree in (0, 1)
         ims = M.ImsSpec(; linear_acceleration = method, outer_dvclose = 1.0e-5, inner_dvclose = 1.0e-6, inner_rclose = 1.0e-4)

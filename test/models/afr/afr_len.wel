@@ -1,0 +1,15 @@
+BEGIN options
+  AUXILIARY  afrlen
+  SAVE_FLOWS
+  AUTO_FLOW_REDUCE  0.4
+  FLOW_REDUCTION_LENGTH
+  AUTO_FLOW_REDUCE_AUXNAME  afrlen
+END options
+
+BEGIN dimensions
+  MAXBOUND  1
+END dimensions
+
+BEGIN period  1
+  1 1 4  -1.0  2.5
+END period  1

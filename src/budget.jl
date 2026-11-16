@@ -3,7 +3,8 @@
 # `calc_flows!` (gwf_cq, then the `csr_diagsum` of gwf_bd), on the device in `T`:
 # 1. `flowja` off-diagonals from the offset heads, `C_nm·(h'_m − h'_n + Δr_nm)` (npf_cq;
 #    positive into cell n, zero when either cell has ibound 0), diagonals zeroed;
-# 2. storage: `strgss = rho·(hold − h)` added to the diagonal (sto_cq);
+# 2. storage: `strgss = rho·(hold − h)` (and for convertible cells the `SsTerms` rate and
+#    the STO-SY rate `strgsy`, T6.1) added to the diagonal (sto_cq);
 # 3. each stress package in MF6's order: `bnd_cf` with the final heads, then `simvals`
 #    (bnd_cq_simrate) added to the diagonal; CHD: `calc_chd_rate` (net rate per cell into
 #    the model, its split over connections to active cells, and the diagonal);
@@ -24,8 +25,8 @@
             flowja[ii] = zero(T)
         else
             m = ja[ii]
-            c, dr = _connection(condsat, Δr, jas, ibound, n, m, ii)
-            flowja[ii] = c * (h[m] - h[n] + dr)
+            _, _, _, q, _, _ = connection_terms(condsat, Δr, jas, ibound, h, n, m, ii)
+            flowja[ii] = q
         end
     end
 end
@@ -33,13 +34,15 @@ end
 """
     npf_flowja!(flowja, csr::CsrStructure, npf::NpfModel, h, ibound) -> flowja
 
-Connection flows of the offset heads `h` (`npf_cq`, `fc_default_flow`/`hcond`): off-diagonal
-entry `ii` of row `n` gets `condsat·(h'_m − h'_n + Δr_nm)` (flow into `n`; zero when either
-cell is inactive), the diagonal entries are zeroed. Antisymmetric exactly.
+Connection flows of the offset heads `h` (`npf_cq`, `sgwf_npf_qcalc`): off-diagonal
+entry `ii` of row `n` gets `C·(h'_m − h'_n + Δr_nm)` (flow into `n`; zero when either
+cell is inactive), the diagonal entries are zeroed. Antisymmetric exactly. `C` is `condsat`,
+or for convertible cells (T6.1) the conductance from the saturations of the last
+`npf_cf!` and the heads `h` (PERCHED: `C·(bot'_lo − h'_lo)` into the upper cell `lo`).
 """
 function npf_flowja!(flowja, csr::CsrStructure, npf::NpfModel, h, ibound)
     npf_flowja_kernel!(get_backend(flowja), _WG)(
-        flowja, csr.ia, csr.ja, csr.jas, csr.irow, npf.condsat, npf.Δr, h, ibound; ndrange = csr.nja,
+        flowja, csr.ia, csr.ja, csr.jas, csr.irow, _cond_arg(npf), npf.Δr, h, ibound; ndrange = csr.nja,
     )
     return flowja
 end
@@ -90,7 +93,7 @@ function calc_flows!(m::GwfModel)
         if boundary_kind(pkg) === :CHD
             calc_chd_rate!(pkg, m.flowja, csr.ia, csr.ja, m.ibound)
         elseif pkg.nbound > 0
-            formulate!(pkg, m.h, m.ibound, m.area)
+            formulate!(pkg, m.h, m.ibound, m.area; kind = record_kind(pkg, m.npf.cv))
             calc_simvals!(pkg, m.h, m.ibound)
             boundary_flowja_kernel!(backend, _WG)(m.flowja, csr.ia, pkg.simvals, pkg.nodeptr, pkg.noderec; ndrange = csr.nodes)
         end
@@ -180,7 +183,7 @@ function budget_text(pkg::BoundaryPackage{K}) where {K}
     return lpad(String(K), 16)
 end
 
-_uses_sy(m::GwfModel) = !isnothing(m.sto) && any(!=(0), m.spec.sto.iconvert)
+_uses_sy(m::GwfModel) = !isnothing(m.sto) && !isnothing(m.sto.conv)
 
 function BudgetAccumulator(m::GwfModel{T}) where {T}
     names = String[]
@@ -218,7 +221,10 @@ function model_budget!(acc::BudgetAccumulator, m::GwfModel, step::TimeStep)
     if !isnothing(m.sto)
         rin, rout, _, _ = _mapreduce!(red, backend, _inout_term, _SUM4, Int(m.conn.nodes), m.sto.strgss)
         push!(rates, (rin, rout))
-        _uses_sy(m) && push!(rates, (0.0, 0.0))
+        if _uses_sy(m)
+            rin, rout, _, _ = _mapreduce!(red, backend, _inout_term, _SUM4, Int(m.conn.nodes), m.sto.strgsy)
+            push!(rates, (rin, rout))
+        end
     end
     for pkg in m.packages
         if pkg.nbound == 0

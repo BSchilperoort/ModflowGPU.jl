@@ -392,14 +392,15 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
         # Not implemented yet: rejected with strict = true, read with strict = false.
         for (changes, msg, check) in (
                 (edit("gwf.npf", "SAVE_SPECIFIC_DISCHARGE", "XT3D"), "unsupported: NPF6 option XT3D (model 'GWF')", s -> s.models[1].npf.xt3d),
-                (edit("gwf.npf", "icelltype\n    CONSTANT 0", "icelltype\n    CONSTANT 1"), "unsupported: convertible cells (NPF6 ICELLTYPE /= 0 in an active cell", s -> all(==(1), s.models[1].npf.icelltype)),
+                # Convertible cells, convertible storage, AUTO_FLOW_REDUCE: supported since T6.1.
+                (edit("gwf.npf", "icelltype\n    CONSTANT 0", "icelltype\n    CONSTANT 1"), nothing, s -> all(==(1), s.models[1].npf.icelltype)),
                 (
                     edit("gwf.sto", "iconvert\n    CONSTANT 0\n", "iconvert\n    CONSTANT 1\n  sy\n    CONSTANT 0.2\n"),
-                    "unsupported: convertible storage", s -> s.models[1].sto.sy == fill(0.2, 24),
+                    nothing, s -> s.models[1].sto.sy == fill(0.2, 24),
                 ),
                 (edit("gwf.nam", "SAVE_FLOWS", "NEWTON UNDER_RELAXATION"), "unsupported: NEWTON (model 'GWF')", s -> s.models[1].newton && s.models[1].newton_under_relaxation),
                 (edit("gwf.oc", "BUDGET FILEOUT gwf.cbc", "BUDGETCSV FILEOUT gwf.csv"), "unsupported: OC6 option BUDGETCSV", s -> s.models[1].oc.budgetcsv_file == "gwf.csv"),
-                (edit("gwf.wel", "BOUNDNAMES", "BOUNDNAMES\n  AUTO_FLOW_REDUCE 0.1"), "unsupported: WEL6 option AUTO_FLOW_REDUCE (package 'WEL_A'", s -> s.models[1].boundaries[1].auto_flow_reduce == 0.1),
+                (edit("gwf.wel", "BOUNDNAMES", "BOUNDNAMES\n  AUTO_FLOW_REDUCE 0.1"), nothing, s -> s.models[1].boundaries[1].auto_flow_reduce == 0.1),
                 (edit("sim.ims", "RELAXATION_FACTOR 0.97", "SCALING_METHOD L2NORM"), "unsupported: IMS6 SCALING_METHOD L2NORM", s -> s.solution_groups[1].solutions[1].scaling_method === :l2norm),
                 (edit("sim.ims", "OUTER_MAXIMUM 20", "BACKTRACKING_NUMBER 5"), nothing, s -> s.solution_groups[1].solutions[1].backtracking_number == 5),
                 # Time series: supported since T6.3.
@@ -421,12 +422,14 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
             end
         end
         # A feature added to SUPPORTED_FEATURES is accepted (how later cards extend the table).
+        # (T6.1: :convertible is in the table; without it the model is rejected.)
         changes = edit("gwf.npf", "icelltype\n    CONSTANT 0", "icelltype\n    CONSTANT 1")
-        push!(SUPPORTED_FEATURES, :convertible)
+        @test load_variant(changes) isa SimulationSpec
+        delete!(SUPPORTED_FEATURES, :convertible)
         try
-            @test load_variant(changes) isa SimulationSpec
+            @test startswith(unsupported_error_of(() -> load_variant(changes)).msg, "unsupported: convertible cells")
         finally
-            delete!(SUPPORTED_FEATURES, :convertible)
+            push!(SUPPORTED_FEATURES, :convertible)
         end
     end
 
@@ -487,11 +490,8 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
         end
         @testset "higher tiers fail with strict = true" begin
             expected = Dict(
-                "ex-gwf-advtidal" => "NPF6 option VARIABLECV", "ex-gwf-twri01" => "NPF6 option VARIABLECV",
-                "ex-gwf-bcf2ss-p01a" => "NPF6 option REWET", "ex-gwf-bump-p01b" => "NPF6 option REWET",
-                "ex-gwf-nwt-p02b" => "NPF6 option REWET", "ex-gwf-maw-p03a" => "convertible cells",
-                "ex-gwf-maw-p03c" => "convertible cells", "ex-gwf-hanix" => "NPF6 option XT3D",
-                "ex-gwf-whirl" => "NPF6 option XT3D", "ex-gwf-rad-disu" => "convertible storage",
+                # T6.1: the convertible examples load (twri01, advtidal, bcf2ss-p01a, ...).
+                "ex-gwf-hanix" => "NPF6 option XT3D", "ex-gwf-whirl" => "NPF6 option XT3D",
                 "ex-gwf-spbc" => "GWF6-GWF6 exchange", "ex-gwf-lgrv-lgr" => "more than one GWF6 model",
             )
             for name in ("bcf2ss-p02a", "bump-p01a", "bump-p01c", "capture", "nwt-p02a", "nwt-p03a", "nwt-p03b", "zaidel")
@@ -515,6 +515,9 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
                         @test name in (
                             "ex-gwf-toth", "ex-gwf-hanic", "ex-gwf-hanir", "ex-gwf-hwell-a", "ex-gwf-fhb", "ex-gwf-lgrv-gc", "ex-gwf-lgrv-gr",
                             "ex-gwf-u1disv", "ex-gwf-curve-90", "ex-gwf-curvilin",
+                            # T6.1: convertible cells
+                            "ex-gwf-advtidal", "ex-gwf-twri01", "ex-gwf-bcf2ss-p01a", "ex-gwf-bump-p01b", "ex-gwf-nwt-p02b",
+                            "ex-gwf-maw-p03a", "ex-gwf-maw-p03c", "ex-gwf-rad-disu",
                         )
                         @test load_simulation(simdir) isa SimulationSpec
                     end

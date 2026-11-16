@@ -53,11 +53,11 @@ Accepted with a different behaviour (logged warnings, not errors):
 | DIS6 | LENGTH_UNITS, NOGRB, GRB6 output, XORIGIN, YORIGIN, ANGROT, CRS; IDOMAIN 0, 1 and −1 (pass-through) | – |
 | DISV6 (T6.4) | as DIS6; VERTICES, CELL2D (vertex lists closed as in MF6); IDOMAIN 0, 1 and −1 (pass-through) | – |
 | DISU6 (T6.4) | as DIS6, plus VERTICAL_OFFSET_TOLERANCE; CONNECTIONDATA IAC, JA, IHC (0, 1, 2), CL12, HWVA, ANGLDEGX (optional); VERTICES, CELL2D (optional); IDOMAIN 0 and 1 (MF6 rejects −1) | READASARRAYS stress input (MF6 rejects it too) |
-| NPF6 | ICELLTYPE 0 (confined), K, K22, K33, ANGLE1–3, K22OVERK, K33OVERK (on DISV/DISU the K ellipse uses the connection angles, `anglex`, T6.4; DISU K22 or SAVE_SPECIFIC_DISCHARGE without ANGLDEGX, or with inconsistent ANGLDEGX, is MF6's error), ALTERNATIVE_CELL_AVERAGING (LOGARITHMIC, AMT-LMK, AMT-HMK; harmonic default), SAVE_FLOWS, PRINT_FLOWS, SAVE_SPECIFIC_DISCHARGE | ICELLTYPE ≠ 0 in an active cell (T6.1, `:convertible`), THICKSTRT (T6.1), VARIABLECV, DEWATERED, PERCHED, REWET / WETDRY (T6.1), XT3D (T6.5), TVK6 (T6.x), other options |
-| STO6 | SS, SY (read), ICONVERT 0, STORAGECOEFFICIENT, SS_CONFINED_ONLY, SAVE_FLOWS, STEADY-STATE / TRANSIENT periods | ICONVERT ≠ 0 with a transient period (T6.1, `:convertible_storage`; also *engine*, `check_storage_spec`), TVS6 (*engine*) |
+| NPF6 | ICELLTYPE 0 (confined) and ≠ 0 (convertible, standard formulation, T6.1), THICKSTRT, VARIABLECV [DEWATERED], PERCHED, REWET (WETFCT, IWETIT, IHDWET) with WETDRY (T6.1), K, K22, K33, ANGLE1–3, K22OVERK, K33OVERK (on DISV/DISU the K ellipse uses the connection angles, `anglex`, T6.4; DISU K22 or SAVE_SPECIFIC_DISCHARGE without ANGLDEGX, or with inconsistent ANGLDEGX, is MF6's error), ALTERNATIVE_CELL_AVERAGING (LOGARITHMIC, AMT-LMK, AMT-HMK; harmonic default), SAVE_FLOWS, PRINT_FLOWS, SAVE_SPECIFIC_DISCHARGE | XT3D (T6.5), HIGHEST_CELL_SATURATION and NEWTON (T6.2), TVK6 (T6.x), other options |
+| STO6 | SS, SY, ICONVERT 0 and ≠ 0 (convertible storage, STO-SY, T6.1), STORAGECOEFFICIENT, SS_CONFINED_ONLY, SAVE_FLOWS, STEADY-STATE / TRANSIENT periods | TVS6 (*engine*) |
 | IC6 | STRT | – |
 | OC6 | HEAD and BUDGET FILEOUT, HEAD PRINT_FORMAT; SAVE / PRINT HEAD / BUDGET with ALL, FIRST, LAST, FREQUENCY, STEPS | BUDGETCSV (and other options) |
-| CHD6, WEL6, GHB6, RIV6, DRN6 (lists) | AUXILIARY, AUXMULTNAME, BOUNDNAMES, PRINT_INPUT, PRINT_FLOWS, SAVE_FLOWS, TS6 / OBS6 FILEIN (see below), MAXBOUND, PERIOD blocks (incl. empty blocks); DRN AUXDEPTHNAME; values given as time-series names in any column MF6 allows, auxiliary variables (also the AUXMULTNAME multiplier) included (T6.3) | MOVER (MVR6 out of scope), WEL AUTO_FLOW_REDUCE (*engine*, T6.1), READARRAYGRID input |
+| CHD6, WEL6, GHB6, RIV6, DRN6 (lists) | AUXILIARY, AUXMULTNAME, BOUNDNAMES, PRINT_INPUT, PRINT_FLOWS, SAVE_FLOWS, TS6 / OBS6 FILEIN (see below), MAXBOUND, PERIOD blocks (incl. empty blocks); DRN AUXDEPTHNAME; values given as time-series names in any column MF6 allows, auxiliary variables (also the AUXMULTNAME multiplier) included (T6.3) | MOVER (MVR6 out of scope), WEL AUTO_FLOW_REDUCE_CSV, READARRAYGRID input; WEL AUTO_FLOW_REDUCE, FLOW_REDUCTION_LENGTH, AUTO_FLOW_REDUCE_AUXNAME are supported (T6.1) |
 | RCH6 (list and READASARRAYS) | as the lists, plus FIXED_CELL, IRCH; READASARRAYS: TAS6 FILEIN and `RECHARGE` / auxiliary `TIMEARRAYSERIES` (T6.3) | – |
 | EVT6 (list and READASARRAYS) | as the lists, plus FIXED_CELL, SURF_RATE_SPECIFIED, NSEG ≥ 1 (PXDP, PETM, PETM0), IEVT; READASARRAYS: TAS6 FILEIN and `RATE` / auxiliary `TIMEARRAYSERIES` (T6.3) | – |
 | OBS6 | the file must exist; it is read by no one | observations are not evaluated or written until T6.7 (accepted, no output) |
@@ -69,7 +69,7 @@ Accepted with a different behaviour (logged warnings, not errors):
 
 | Feature | Status |
 | --- | --- |
-| Formulation | confined (ICELLTYPE 0), Picard outer iterations, flux-form residual, heads as offsets (PLAN.md 3.7) |
+| Formulation | confined (ICELLTYPE 0) and convertible cells with wetting/drying (standard formulation, T6.1; Newton is T6.2), Picard outer iterations, flux-form residual, heads as offsets (PLAN.md 3.7) |
 | Precision presets | `:double`, `:mixed` (T4.4), `:single`, `:auto` (`:mixed` with Float64, else `:single`) |
 | Backends | CPU (KernelAbstractions), ROCm (tested on the RX 7800 XT); CUDA, Metal, oneAPI, OpenCL registered but untested |
 | Output | HDS, CBC (FLOW-JA-FACE, STO-SS, package lists), listing budget tables and PRINT HEAD, in the DIS, DISV (one head record per layer) and DISU (one record) layouts; GRB files are read, not written |
@@ -99,12 +99,20 @@ tight-relative reference run (its tight run does not converge in MF6), `:single`
 LINEAR, STEPWISE and LINEAREND with SFACS, DNODATA, several series per file, a time-series
 AUXMULTNAME multiplier, TS6 GHB conductance, RCHA and EVTA TAS6 arrays and MF6's zeroing
 of a TAS-linked array by a later PERIOD block), run with mf6 at test time. ex-gwf-advtidal
-also uses time series but needs T6.1 (convertible cells, VARIABLECV, PERCHED).
+also uses time series and is validated since T6.1.
 
 T6.4 adds the Tier 5 DISV examples ex-gwf-u1disv (121 cells), ex-gwf-curve-90 (288) and
 ex-gwf-curvilin (864) (CHD, STO steady state, BiCGSTAB), and `rad_disu_confined`
 (ex-gwf-rad-disu, DISU with vertices, 550 cells, transient WEL, with STO ICONVERT 0; built
 from the reference run at test time, AMG preconditioner) in the universal residual test
 and the run parity test, `:single`, `:mixed` and `:double`, CPU and ROCm (docs/precision.md,
-T6.4). ex-gwf-rad-disu itself needs convertible storage (T6.1); ex-gwf-u1disv-x and
-ex-gwf-disvmesh need XT3D (T6.5).
+T6.4). ex-gwf-u1disv-x and ex-gwf-disvmesh need XT3D (T6.5).
+
+T6.1 adds convertible cells: ex-gwf-twri01, ex-gwf-bcf2ss-p01a, ex-gwf-bump-p01b,
+ex-gwf-nwt-p02b (Tier 3), ex-gwf-advtidal, ex-gwf-maw-p03a, ex-gwf-maw-p03c (Tier 2 with
+convertible layers), ex-gwf-rad-disu (DISU, convertible storage; AMG) and the synthetic
+test/models/wetdry, disu_staggered and afr (mf6 at test time), in the universal residual
+test, the libmf6 oracle and the run parity test, `:single`, `:mixed` and `:double`, CPU and
+ROCm (docs/precision.md, T6.1, with two documented per-example criteria). Left out of the
+convertible examples: the Tier 4 examples (NEWTON, T6.2); OBS6 output of advtidal,
+maw-p03c and rad-disu is not written (T6.7).

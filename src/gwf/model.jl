@@ -14,11 +14,16 @@ A GWF model ready to run on a device in precision `T` (state and assembly):
   stale: T4.5, see `formulate!`), `offdiag_id` (T4.7: an id, unique in the session, of
   the last write of the off-diagonal entries by `formulate!`, 0 before; the solver reuses
   preconditioner data while it is unchanged);
-- device: `csr::CsrStructure`, `npf::NpfModel{T}`, `sys::LinearSystem{T}`, `packages`
+- device: `csr::CsrStructure`, `npf::NpfModel{T}` (with `npf.cv`, the convertible data,
+  T6.1), `sys::LinearSystem{T}`, `packages`
   (`BoundaryPackage`s in MF6's order, `GwfSpec.boundaries`), `sto` (`StoragePackage` or
   `nothing`), `area` (cell areas, for RCH/EVT), `ibound`, the offset heads `h` and the
   heads at the start of the step `hold`, the residual `res`, the correction `δ`, `flowja`
-  (`nja`).
+  (`nja`), `wd` (T6.1: the `WetDry` state of a model with convertible cells, else
+  `nothing`).
+
+With convertible cells IBOUND changes during the outer iterations (`wetdry!`: dry cells get
+0); `ibound_host` follows it.
 
     GwfModel(backend, T, spec::GwfSpec, nper)
 """
@@ -43,6 +48,7 @@ mutable struct GwfModel{T <: AbstractFloat, B <: Backend, C <: CsrStructure, N <
     kper::Int
     offdiag::Union{Nothing, Bool}
     offdiag_id::Int
+    const wd::Any
 end
 
 function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) where {T <: AbstractFloat}
@@ -50,19 +56,24 @@ function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) whe
     conn = build_connectivity(spec)
     setup = npf_setup(spec, conn)
     csr = CsrStructure(backend, conn)
-    npf = NpfModel(backend, T, setup)
+    npf = NpfModel(backend, T, setup; options = spec.npf, conn)
     sys = LinearSystem(backend, T, csr)
-    packages = BoundaryPackage[BoundaryPackage(backend, T, b, conn, spec.dis) for b in spec.boundaries]
-    sto = isnothing(spec.sto) ? nothing : StoragePackage(backend, T, spec.sto, conn, nper)
+    packages = BoundaryPackage[BoundaryPackage(backend, T, b, conn, spec.dis; icelltype = setup.properties.icelltype) for b in spec.boundaries]
+    sto = isnothing(spec.sto) ? nothing : StoragePackage(backend, T, spec.sto, conn, nper; r = setup.r)
     z() = KernelAbstractions.zeros(backend, T, conn.nodes)
     ibh = ones(Int32, conn.nodes)
     h = initial_heads(backend, T, spec.ic, conn, setup.r)
     hold = _device_copy(backend, Array(h))
-    return GwfModel(
+    wd = isnothing(npf.cv) ? nothing : WetDry(backend, T, setup.properties, spec.npf, conn.nodes)
+    m = GwfModel(
         spec, backend, conn, setup, csr, npf, sys, packages, sto, _device_copy(backend, T.(conn.area)),
         _device_copy(backend, ibh), ibh, h, hold, z(), z(), KernelAbstractions.zeros(backend, T, conn.nja), 0,
-        nothing, 0,
+        nothing, 0, wd,
     )
+    # `preprocess_input`: `wd(0, hnew)` with the starting heads (IBOUND without the
+    # constant heads, which `chd_rp` sets later).
+    isnothing(wd) || wetdry!(m, 0)
+    return m
 end
 
 # Adapt, e.g. `adapt(backend, m)`: every device array moves (and `backend` becomes the
@@ -73,7 +84,7 @@ function Adapt.adapt_structure(to, m::GwfModel)
         m.spec, get_backend(h), m.conn, m.setup, adapt(to, m.csr), adapt(to, m.npf), adapt(to, m.sys),
         BoundaryPackage[adapt(to, p) for p in m.packages], adapt(to, m.sto), adapt(to, m.area), adapt(to, m.ibound),
         copy(m.ibound_host), h, adapt(to, m.hold), adapt(to, m.res), adapt(to, m.δ), adapt(to, m.flowja), m.kper,
-        nothing, 0,
+        nothing, 0, adapt(to, m.wd),
     )
 end
 
@@ -94,13 +105,18 @@ function apply_period!(m::GwfModel, kper::Integer; window::Union{Nothing, NTuple
     # The IBOUND of the constant heads depends on the CHD cells only (T4.6: not rebuilt
     # when no CHD package has new cells).
     chd = m.kper == 0
+    # RCH/EVT records move to the highest active cell (convertible models only: elsewhere
+    # IBOUND has no zeros, and passing it would turn off the T4.6 fast path).
+    ibmove = isnothing(m.wd) ? nothing : m.ibound_host
     for pkg in m.packages
-        st = _apply_period!(pkg, kper, m.setup.r, nothing, window)
+        st = _apply_period!(pkg, kper, m.setup.r, ibmove, window)
         chd |= st === :structure && boundary_kind(pkg) === :CHD
     end
     isnothing(m.sto) || apply_period!(m.sto, kper)
     if chd
-        ib = boundary_ibound(m.conn, m.packages)
+        # chd_rp: the cells of the previous constant heads become active again, dry cells
+        # stay dry (T6.1), the new constant-head cells get −1.
+        ib = boundary_ibound(m.conn, m.packages, m.ibound_host)
         if ib != m.ibound_host
             m.ibound_host = ib
             copyto!(m.ibound, ib)
@@ -130,11 +146,14 @@ end
     start_timestep!(m::GwfModel, delt) -> m
 
 Start a time step of length `delt` (Float64, host): `rho = SC/delt` (`set_timestep!`),
-`hold ← h` (`gwf_ad`), and the constant heads applied to both (`chd_ad`).
+`hold ← h` (`gwf_ad`; `npf_ad` with REWET: the bottom for dry wettable cells, T6.1), and
+the constant heads applied to both (`chd_ad`).
 """
 function start_timestep!(m::GwfModel, delt::Float64)
     isnothing(m.sto) || set_timestep!(m.sto, delt)
     copyto!(m.hold, m.h)
+    # npf_ad (T6.1): the old head of a dry cell that can rewet is its bottom.
+    isnothing(m.wd) || npf_ad!(m.wd, m.npf.cv, m.hold, m.ibound)
     for pkg in m.packages
         if boundary_kind(pkg) === :CHD
             apply_chd_heads!(m.h, pkg)
@@ -164,19 +183,24 @@ function formulate!(m::GwfModel; symmetric::Bool = false, terms::Bool = true, sc
     # did it in a kernel of its own). Records without a cell keep their `hcof`/`rhs`; no
     # reader uses them (`calc_simvals!` skips them).
     pkgs = Tuple(
-        (BoundaryKind{boundary_kind(p)}(), p.bound, m.area, p.hcof, p.rhs, p.nodeptr, p.noderec)
+        (record_kind(p, m.npf.cv), p.bound, m.area, p.hcof, p.rhs, p.nodeptr, p.noderec)
             for p in m.packages if boundary_kind(p) !== :CHD && p.nbound > 0
     )
     storage = nothing
     if !isnothing(m.sto) && m.sto.transient
         _check_timestep(m.sto)
-        storage = (m.sto.rho, m.hold)
+        storage = isnothing(m.sto.conv) ? (m.sto.rho, m.hold) : (m.sto.rho, m.hold, m.sto.conv)
     end
     # Valid while the off-diagonals depend only on the constant `condsat`, `ibound` and
     # `symmetric`. Whatever changes them must set `m.offdiag = nothing`: `apply_period!`
-    # (IBOUND) does; head-dependent conductances (convertible cells, Newton, T6.x) must
-    # either do so every outer iteration or pass `offdiag = true`. Calling `assemble!` on
-    # `m.sys` directly also leaves `m.offdiag` stale.
+    # (IBOUND) does; with convertible cells (T6.1) the conductances depend on the heads, so
+    # the saturations are recomputed (`npf_cf!`) and the off-diagonals rewritten every time
+    # (a new `offdiag_id`: the preconditioner takes the full setup path). Calling
+    # `assemble!` on `m.sys` directly also leaves `m.offdiag` stale.
+    if !isnothing(m.npf.cv)
+        npf_cf!(m.npf.cv, m.h, m.ibound)
+        m.offdiag = nothing
+    end
     offdiag = m.offdiag !== symmetric
     offdiag && (m.offdiag_id = Threads.atomic_add!(_OFFDIAG_IDS, 1) + 1)
     formulate_system!(m.sys, m.res, m.csr, m.npf, m.h, m.ibound, pkgs, storage; symmetric, offdiag, terms, scale)
@@ -190,4 +214,36 @@ end
 The heads per reduced node on the host in Float64, `r + h'` (PLAN.md section 3.7, rule 1:
 absolute heads exist only on the host).
 """
-absolute_heads(m::GwfModel) = m.setup.r .+ Float64.(Array(m.h))
+function absolute_heads(m::GwfModel)
+    h = m.setup.r .+ Float64.(Array(m.h))
+    if !isnothing(m.wd)
+        # Dry cells (T6.1): HDRY, as MF6 stores in `x` (`sgwf_npf_wetdry`).
+        for n in eachindex(h)
+            m.ibound_host[n] == 0 && (h[n] = HDRY)
+        end
+    end
+    return h
+end
+
+"""
+    wetdry!(m::GwfModel, kiter) -> Bool
+
+Wetting and drying before the formulation of outer iteration `kiter` (`npf_cf` →
+`sgwf_npf_wetdry`; `kiter = 0` once at the start, `preprocess_input`), for a model with
+convertible cells (T6.1; `wetdry_device!`). When IBOUND changed, `ibound_host` is updated,
+the RCH/EVT records move to the highest active cell (`rch_cf`, `evt_cf`), and the
+off-diagonals are marked stale. A constant-head cell going dry is an `MF6InputError`
+("CONSTANT-HEAD CELL WENT DRY -- SIMULATION ABORTED"). Returns whether IBOUND changed.
+"""
+function wetdry!(m::GwfModel, kiter::Integer)
+    isnothing(m.wd) && return false
+    changed, chddry = wetdry_device!(m.wd, m.npf.cv, m.csr, m.npf.Δr, m.h, m.ibound, kiter)
+    chddry && throw(MF6InputError(m.spec.npf.file, 0, "CONSTANT-HEAD CELL WENT DRY -- SIMULATION ABORTED"))
+    changed || return false
+    copyto!(m.ibound_host, m.ibound)
+    m.offdiag = nothing
+    for pkg in m.packages
+        boundary_kind(pkg) in (:RCH, :EVT) && move_to_highest_active!(pkg, m.ibound_host, m.setup.r)
+    end
+    return true
+end

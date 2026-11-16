@@ -242,3 +242,68 @@ src/timing.jl, src/budget.jl, src/output/oc.jl, src/run.jl.
   test/models/ts_tas checks this against mf6.
 - Duplicate series names over the TS6 files of a package: the last one wins (the hash
   table replaces the index).
+
+## Convertible cells, wetting and drying (T6.1)
+
+Standard formulation only (no NEWTON; T6.2). Ported from gwf-npf.f90, gwf-sto.f90,
+GwfConductanceUtils.f90, GwfStorageUtils.f90 and gwf-wel.f90 (6.8.2).
+
+- **Saturation** (`sgwf_npf_thksat`): `(h − bot)/(top − bot)`, 1 at or above the top, and
+  *not* clamped below 0: a cell with `h <= bot` is dried in the same `npf_cf` call before the
+  saturation is used. It is computed per outer iteration in `npf_cf!` (`cf_default_flow`)
+  and kept for the flows (`npf_cq` uses the `sat` of the last formulation with the final
+  heads), as MF6 does.
+- **Conductances** (`hcond`, `vcond`): horizontal `condmean` of `K·sat·thk` of the two cells
+  (staggered DISU connections: `staggered_thkfrac` with the neighbour's elevations moved
+  into the cell's frame by `Δr`); `condsat` when both cells are confined. Vertical
+  `condsat`, or with VARIABLECV (and a convertible cell, and a head below a top) the series
+  conductance of the saturated half-thicknesses, the lower cell full (or, with DEWATERED,
+  a partly saturated lower cell counted as 0). The per-connection inputs (effective K
+  towards the neighbour, `cl1`, `cl2`, `hwva`, whether the lower-numbered cell's bottom is
+  higher) are precomputed on the host; the conductance is computed in the row kernels from
+  them, so the CSR rows `n` and `m` of a connection compute the same value.
+- **PERCHED** (`fc_default_flow`, `sgwf_npf_qcalc`): when the higher-numbered cell of a
+  vertical connection is convertible with its head below its top, the flow is
+  `C·(h_lo − bot_lo)` from the lower-numbered (upper) cell: the matrix entry of row `lo` is
+  0 and its diagonal gets `−C`, so the matrix is not symmetric (MF6 runs CG on it anyway).
+- **THICKSTRT**: negative ICELLTYPE cells become confined with the saturation of STRT
+  (`calc_initial_sat`), which `calc_condsat` uses; STRT below the bottom is MF6's error.
+- **Wetting and drying** (`sgwf_npf_wetdry`) runs at the start of every outer iteration
+  (and once with `kiter = 0` when the model is built, `preprocess_input`, with IBOUND
+  before the constant heads). First rewetting (REWET, `mod(kiter, IWETIT) == 0`): MF6 loops
+  over the nodes in order, and a cell rewetted earlier in the loop (IBOUND 30000) counts as
+  wet for the later ones; the first qualifying neighbour in CSR order sets the new head
+  (IHDWET 0: `bot + WETFCT·(h_m − bot)`, else `bot + WETFCT·|WETDRY|`; horizontal
+  neighbours only for WETDRY > 0). The kernel reproduces this with Jacobi passes (a cell
+  depends only on lower-numbered cells, so the passes converge to the sequential result;
+  usually 1–2 passes, one host synchronisation each). Then every convertible cell with
+  `min(h, top) − bot <= 0` dries (IBOUND 0; a constant-head cell going dry is MF6's error
+  "CONSTANT-HEAD CELL WENT DRY"). MF6 sets the head of a dry cell to HDRY = −1e30 and never
+  reads it; the engine keeps it at the cell bottom (an offset of bounded size, so the
+  Float32 reductions over `|h'|` are unaffected) and writes HDRY to the head file and the
+  host heads. `npf_ad`: at the start of a step the old head of a dry cell that can rewet is
+  its bottom. Cell conversion messages are not written to the listing file.
+- **IBOUND changes**: after a wetting/drying change IBOUND is copied to the host and the RCH
+  and EVT records without FIXED_CELL are re-placed from the cells given (`nodesontop`) on the
+  highest active cell (`rch_cf`, `evt_cf`, `highest_active`); MF6 does this in every
+  `rch_cf`, which gives the same nodes because IBOUND only changes in `sgwf_npf_wetdry`.
+  `chd_rp` at a new period keeps dry cells dry. The off-diagonals of a convertible model
+  are rewritten every outer iteration (a new `offdiag_id`: the MC-ILU0 preconditioner takes
+  the full setup path); confined models keep the constant-`condsat` path.
+- **Storage** (`fc_default_sto`, `SsTerms`, `SyTerms`, `cq_default_sto`): `sn` of the old
+  and new heads with `sQuadraticSaturation(..., SATOMEGA = 0)` (clamped linear), SS terms
+  with the mid-saturation elevations `z`, SS_CONFINED_ONLY. Deviation (same values in exact
+  arithmetic): the SY right-hand sides and rate use `thk·sn = clamp(h, bot, top) − bot`,
+  e.g. the rate `rho2·(clamp(hold) − clamp(h))` instead of `rho2·thk·snold − rho2·thk·snnew`,
+  which cancels catastrophically in Float32 when `sn` is near 1 (ex-gwf-rad-disu: rates
+  quantised to powers of 2 of 4–512 ft³/d).
+- **Boundary checks** (`riv_ck`, `drn_ck`, `ghb_ck`): RIV bottom and stage, the DRN
+  (scaled-conductance) bottom and the GHB head must not be below the bottom of a convertible
+  cell; the conductance as given and the multiplier are checked separately. All errors of a
+  block are reported together. MF6 also repeats `bnd_ck` in every `gwf_ad`; the engine
+  checks when period data are applied (and the stepping API's device writes in
+  `prepare_solve`).
+- **WEL AUTO_FLOW_REDUCE** (`wel_cf`): an extraction in a convertible cell is multiplied by
+  `sQSaturation(bot + f·thk, bot, h)` (f = AUTO_FLOW_REDUCE, ≤ 0 → 0.1, > 1 → 1; with
+  FLOW_REDUCTION_LENGTH `bot + f`; AUTO_FLOW_REDUCE_AUXNAME gives f per record).
+  AUTO_FLOW_REDUCE_CSV is not supported.
