@@ -149,10 +149,12 @@ end
             ncol = Int(dis.ncol)
             for f in ("tsm.chd", "tsm.wel", "tsm.ghb")
                 p = joinpath(dir, f)
-                txt = replace(read(p, String), r"(?m)^(\s+)(\d+) (\d+) (\d+) " => s -> begin
-                    m = match(r"^(\s+)(\d+) (\d+) (\d+) ", s)
-                    "$(m[1])$(m[2]) $((parse(Int, m[3]) - 1) * ncol + parse(Int, m[4])) "
-                end)
+                txt = replace(
+                    read(p, String), r"(?m)^(\s+)(\d+) (\d+) (\d+) " => s -> begin
+                        m = match(r"^(\s+)(\d+) (\d+) (\d+) ", s)
+                        "$(m[1])$(m[2]) $((parse(Int, m[3]) - 1) * ncol + parse(Int, m[4])) "
+                    end
+                )
                 write(p, txt)
             end
             @test only(load_simulation(dir).models).dis isa DisvSpec

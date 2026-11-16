@@ -718,4 +718,5 @@ are within 1.5e-6 ft of MF6 and the percent discrepancy is 9e-6 %, so this is th
 precision of Float32 flows through very large conductances, not of the solution. Use
 `:mixed` where such cell-by-cell flows matter.
 
-ROCm (RX 7800 XT): see the ROCm paragraph below.
+ROCm (RX 7800 XT): every row above is the same on ROCm, with the same iteration counts and
+bitwise the same heads and assembled systems as the CPU backend (max |Δh| = 0).
