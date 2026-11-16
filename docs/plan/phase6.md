@@ -128,7 +128,7 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
   (global matrix across models), `GwfGwfConnection.f90` (interface model).
 - Deliver: several GWF models in one solution, exchanges with `CDIST`, `ANGLDEGX`,
   `IHC`, `XT3D` on the exchange, and a self-exchange (spbc).
-- Done when: Tier 7 examples pass parity. This is the base for T7.1.
+- Done when: Tier 7 examples pass parity.
 
 **T6.7 OBS for GWF heads and flows (S)**
 - Depends: T6.3 for fhb; T6.1 and T6.3 for advtidal; T6.1 and T6.4 for rad-disu

@@ -74,7 +74,7 @@ Accepted with a different behaviour (logged warnings, not errors):
 | Backends | CPU (KernelAbstractions), ROCm (tested on the RX 7800 XT); CUDA, Metal, oneAPI, OpenCL registered but untested |
 | Output | HDS, CBC (FLOW-JA-FACE, STO-SS, package lists), listing budget tables and PRINT HEAD, in the DIS, DISV (one head record per layer) and DISU (one record) layouts; GRB files are read, not written |
 | Stepping | libmf6/XMI-like stepping API and BMI (`get_value_ptr`, `set_value` of X and BOUND), T3.3 |
-| Grid | DIS, DISV and DISU (T6.4; host connectivity in MF6's CSR layout; the multicolour preconditioners colour DISV/DISU greedily, DIS red–black); no longitude wrap (T7.1), no spherical geometry (T7.2) |
+| Grid | DIS, DISV and DISU (T6.4; host connectivity in MF6's CSR layout; the multicolour preconditioners colour DISV/DISU greedily, DIS red–black); no longitude wrap (not planned: T7.1 was dropped), no spherical geometry (T7.2) |
 
 ## Validated models (Milestone A gate)
 

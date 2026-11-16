@@ -28,7 +28,7 @@ accepted only when it reproduces MF6 heads and budgets on MF6 input files
 | **A: coupling feature set** | DIS, NPF (confined), STO, IC, CHD, WEL, RCH, GHB, RIV, DRN, EVT, OC, Picard outer loop, CG/BiCGSTAB, budgets | Everything ModflowCoupling uses (see 1.1) |
 | **B: coupled production runs** | ModflowCoupling with `engine = "gpu"`, mGV and MODFLOW on one GPU, global 5′ steady state + daily transient | The scientific use case |
 | **C: generic MF6 GWF** | Convertible cells, rewetting, Newton, time series, DISV/DISU, XT3D, GWF–GWF exchanges, OBS | Wider use and the MF6 example suite |
-| **D: 30″ resolution (stretch)** | Regional 30″ on one GPU, then global 30″ through multi-GPU domain decomposition | Higher-resolution global modelling (Phase 7) |
+| **D: beyond MF6 parity (stretch)** | Spherical geometry and multi-GPU domain decomposition at 5′ | True cell geometry on the global grid; more than one GPU (Phase 7). The 30″ goals and the longitude wrap were dropped on 2026-11-16 (section 8, decision 11) |
 
 **Out of scope** (document it; do not build): SFR, LAK, MAW, UZF, MVR, CSUB,
 BUY, VSC, API package, GWT, GWE, PRT, and PETSc parallel runs. These are
@@ -80,9 +80,10 @@ CG-compatible boundaries the matrix is symmetric, so preconditioned CG applies.
 - Global 30″ (43200 × 21600 × 2 ≈ 1.9 G cells, ~0.65 G active nodes) needs
   about 190 GiB in `:single` and 300 GiB in `:double` for the model arrays
   alone (`docs/scaling.md`, scaled from `global5m`). That is 12 to 19 cards of
-  16 GB, so it needs multi-GPU (Phase 7). Its 3.9 G CSR entries also exceed
-  `Int32` indices. A regional 30″ model does fit on one card: the Indus at 30″
-  is 2040 × 1800 × 2 ≈ 7.3 M cells, about the size of global 5′.
+  16 GB. Its 3.9 G CSR entries also exceed `Int32` indices. A regional 30″
+  model would fit on one card: the Indus at 30″ is 2040 × 1800 × 2 ≈ 7.3 M
+  cells, about the size of global 5′. 30″ is not a goal for now (section 8,
+  decision 11); the numbers stay here for reference.
 
 ---
 
@@ -502,12 +503,12 @@ marked; their merge commits on `main` hold the card reports.
   - T6.5 XT3D
   - T6.6 Multi-model solutions and GWF–GWF exchanges
   - T6.7 OBS for GWF heads and flows
-- **Phase 7: beyond MF6 parity and 30″ (design notes first; build after Milestone B)**: [docs/plan/phase7.md](docs/plan/phase7.md)
-  - T7.1 Longitude wrap-around for global grids
+- **Phase 7: beyond MF6 parity (build after Milestone B)**: [docs/plan/phase7.md](docs/plan/phase7.md)
+  - T7.1 Longitude wrap-around for global grids (dropped 2026-11-16)
   - T7.2 Spherical geometry
-  - T7.3 Regional 30″ on one GPU
-  - T7.4 30″ design note
-  - T7.5 Multi-GPU domain decomposition
+  - T7.3 Regional 30″ on one GPU (dropped 2026-11-16)
+  - T7.4 30″ design note (dropped 2026-11-16)
+  - T7.5 Multi-GPU domain decomposition (at 5′; includes its own design section)
 
 ---
 
@@ -529,10 +530,10 @@ T3.1 ─┬─ T3.2 → T3.4 → T4.1 ─┬─ T4.2 ─┬→ T4.4 → T4.5 →
       └─ Phase 6, no dependency inside the phase: T6.0, T6.1, T6.2a (backtracking),
          T6.3, T6.4, and the DIS parts of T6.5 (hanix, whirl) and T6.6 (s1, lgrv-lgr, spbc)
            T6.1 → T6.2 (Newton)
-           T6.4 → T6.5 (DISV examples) ; T6.5 → T6.6 (s2–s4) ; T6.6 → T7.1
+           T6.4 → T6.5 (DISV examples) ; T6.5 → T6.6 (s2–s4)
            T6.1 + T6.3 → advtidal (owned by whichever of the two merges last)
            T6.1 + T6.3 + T6.4 → T6.7
-T4.3 + T4.4 → T7.3 → T7.4 → T7.5
+T4.3 + T4.4 → T7.5 ; T6.4 (done) → T7.2 (validation against DISU)
 ```
 
 Critical path to Milestone B: T0.1 → T1.1–T1.4 → T2.1 → T2.3 → T2.4/5 → T2.6 →
@@ -577,6 +578,7 @@ T5.5b. Done up to T5.1; mGV is on KA 0.10 and the global inputs are available.
 3. **Name:** `ModflowGPU.jl`.
 4. **30″:** in scope as a stretch goal (Milestone D): regional 30″ on one GPU
    first (T7.3), then a design note (T7.4) before any multi-GPU work (T7.5).
+   *Superseded 2026-11-16 by decision 11.*
 5. **GPU tests:** only on this machine. CI runs CPU tests and formatting only.
 6. **Git workflow (2026-11-07):** local card branches, an independent review,
    then a local `git merge --no-ff` into `main` with the card report as the
@@ -601,17 +603,18 @@ T5.5b. Done up to T5.1; mGV is on KA 0.10 and the global inputs are available.
 10. **Domain of the global run (2026-11-15):** Greenland and the Arctic are not
     modelled. For now everything north of 60°N is masked out in both models
     (T5.5b card).
+11. **Phase 7 scope (2026-11-16):** the longitude wrap-around (T7.1) is not
+    needed: very little land crosses the date line. The 30″ goals (T7.3, T7.4)
+    are skipped: not relevant for now. Spherical geometry (T7.2) and multi-GPU
+    domain decomposition (T7.5) stay; T7.5 now targets the global 5′ model and
+    carries its own design section (`docs/plan/phase7.md`).
 
 Still open:
 
-- **30″:** where the inputs would come from (synthetic models cover T7.3 until
-  then), and which multi-GPU hardware T7.5 could run on (about 190–300 GiB of
-  device memory, section 1.2).
+- **Multi-GPU hardware:** which machine T7.5's scaling runs could use; this
+  machine has one GPU, so development uses several MPI ranks on it.
 - **Scope of Milestone C:** HFB, GNC, TVK/TVS, ATS, and the output options
   `BUDGETCSV`, `CSV_OUTER_OUTPUT`/`CSV_INNER_OUTPUT` (with the IMS convergence
   tables, open since T3.1) and `SAVE_SPECIFIC_DISCHARGE` (accepted, but
   DATA-SPDIS is not written; open since T2.8) have no card and are not listed
   as out of scope. None of the in-scope examples needs HFB.
-- **Longitude wrap (T7.1):** it waits for all of T6.6, but `ex-gwf-spbc` needs
-  only a self-exchange of one model. A periodic connection in the DIS
-  connectivity would take T7.1 off the Milestone C path.

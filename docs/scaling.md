@@ -105,8 +105,8 @@ and river cells with the area, ×100; the rim with the linear resolution, ×10;
 connections per node kept): 653.6 M nodes, 3.91 G CSR entries. That is 189 GiB in
 `:single` and 300 GiB in `:double`: 12 resp. 19 RX 7800 XTs at 100 % use, or a 192 GB
 MI300X-class card for `:single` only. Also, 3.91 G CSR entries exceed the `Int32`
-index type (`Ti`, 2.1 G): one global 30″ model needs `Int64` row pointers or the domain
-decomposition of T7.5.
+index type (`Ti`, 2.1 G): one global 30″ model would need `Int64` row pointers or a domain
+decomposition. 30″ is not a goal for now (PLAN.md section 8, decision 11).
 
 **Speed (first outer iteration of the steady state, ROCm, CG + Jacobi):** about 290 µs
 per inner iteration at continental, 940 µs (`:single`) / 1470 µs (`:double`) at
