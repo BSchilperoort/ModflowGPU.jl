@@ -483,7 +483,7 @@ marked; their merge commits on `main` hold the card reports.
   - T4.4 `:mixed` preset and production default (done)
   - T4.5 Kernel fusion and matrix formats (done)
   - T4.6 Period-data path (done)
-  - T4.7 Carried-over Phase 4 targets (needed at global size: MODFLOW is 73 % of the coupled day in T5.5a)
+  - T4.7 Carried-over Phase 4 targets (merged 2026-11-16: 2 of 5 targets met; the real global model is not re-timed yet, see the status block)
 - **Phase 5: ModflowCoupling integration and Milestone B**: [docs/plan/phase5.md](docs/plan/phase5.md)
   - T5.0 KernelAbstractions 0.10 as the minimum (done)
   - T5.1 Engine switch in ModflowCoupling (done)
