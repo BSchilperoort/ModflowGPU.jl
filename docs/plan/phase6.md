@@ -33,7 +33,7 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
   and rocm. A failure is fixed in this card if it is a bug in a supported feature, and
   otherwise reported with the missing feature named.
 
-**T6.1 Convertible cells and rewetting (L) ‖**
+**T6.1 Convertible cells and rewetting (L) ‖ (done 2026-11-16)**
 - Depends: no Phase 6 card.
 - Read: `gwf-npf.f90` (`sat`, `THICKSTRT`, `VARIABLECV [DEWATERED]`,
   `PERCHED`, `wd` rewetting: `WETFCT`, `IWETIT`, `IHDWET`), `gwf-sto.f90` (Sy,
@@ -84,6 +84,13 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
   adds. The backtracking part depends on no Phase 6 card: deliver it first on its own
   branch as **T6.2a** (S, ‖). It removes the "backtracking is not applied" warning for
   `COMPLEXITY MODERATE`/`COMPLEX` models, among them the coupling model.
+- From the T6.1 merge (2026-11-16): PERCHED + VARIABLECV DEWATERED gives NaN when a
+  cell sits exactly at its bottom (saturation ~1e-305, so `hwva/(sat·thk/2/K)`
+  overflows); MF6 stays finite on the same input. Add a guard (floor on the
+  saturation or the denominator) and a test. Reproducer (local, not committed):
+  `reference/issues/T6.1-perched-dewatered-nan`. Also: `run(simdir)` writes output
+  next to the inputs by default, which overwrote a reference run once; consider a
+  guard against writing into `REFERENCE_DIR`.
 - Read: `gwf-npf.f90` (`npf_fn`), `gwf-sto.f90` (`sto_fn`), boundary `*_fn`,
   `SmoothingFunctions.f90`, `NumericalSolution.f90` (Newton under-relaxation,
   backtracking, `UNDER_RELAXATION DBD`).
@@ -138,5 +145,13 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
   as CSV like MF6.
 - From the T6.4 merge: `write_simulation` and the BMI grid x/y support DIS only; GRB
   files are read but not written; DATA-SPDIS is not written for any grid.
+- From the T6.1 merge: (1) record checks (`riv_ck` etc.) on time-series values use the
+  average over the period's first step; MF6 uses the value at time 0 in period 1 and
+  the previous step's average later. (2) A package with time series is restaged from
+  the host every step, and `move_to_highest_active!` restages RCH/EVT when IBOUND
+  changes: both overwrite device-only BOUND writes (`device_bound!`); needs a partial
+  restage. (3) The `:single` cell-by-cell budgets of advtidal, maw-p03c and rad-disu
+  are not verified (`docs/precision.md`). (4) Cell-conversion messages are not written
+  to the listing.
 - Done when: observation files of advtidal, fhb and rad-disu match within
   tolerance.
