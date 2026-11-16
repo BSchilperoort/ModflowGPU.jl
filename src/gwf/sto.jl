@@ -77,7 +77,7 @@ Storage (STO6) on the device in precision `T`, after `check_storage_spec`.
 
 Device arrays by reduced node: `rho` (`SsCapacity / delt`, computed in Float64 and cast to
 `T` by `set_timestep!`), `strgss` (STO-SS rate per cell, `calc_storage_rates!`) and
-`strgsy` (STO-SY, zeros without convertible cells); `conv`, a `ConvertibleStorage` when a
+`strgsy` (STO-SY; empty without convertible cells); `conv`, a `ConvertibleStorage` when a
 cell has ICONVERT /= 0 (needs the reference heads `r`), else `nothing`.
 Host fields: `spec`, `conn`, `sc` (`storage_capacity`, Float64), `sc2` (`sy · area`, empty
 without convertible cells), `delt` (time step length of `rho`, 0 before the first
@@ -117,7 +117,9 @@ function StoragePackage{T}(
         )
         sc2 = Float64[sto.sy[conn.nodeuser[n]] * conn.area[n] for n in 1:nodes]  # SyCapacity
     end
-    return StoragePackage(sto, conn, storage_capacity(sto, conn), sc2, z(nodes), z(nodes), z(nodes), conv, 0.0, 0, false)
+    return StoragePackage(
+        sto, conn, storage_capacity(sto, conn), sc2, z(nodes), z(nodes), z(isnothing(conv) ? 0 : nodes), conv, 0.0, 0, false,
+    )
 end
 
 StoragePackage(backend::Backend, ::Type{T}, sto::StoSpec, conn::Connectivity, nper::Integer; kw...) where {T} =
@@ -300,7 +302,7 @@ end
             end
         end
         strgss[n] = q
-        strgsy[n] = qy
+        conv === nothing || (strgsy[n] = qy)
     end
 end
 

@@ -91,7 +91,7 @@ Saturated fraction of a convertible cell, standard formulation (gwf-npf.f90
 # GwfConductanceUtils.f90 with the saturations of the last `npf_cf!`), and whether the
 # flow is the PERCHED flow from `lo` (`fc_default_flow`, `sgwf_npf_qcalc`).
 @inline function _cv_conductance(cv::ConvertibleNpf{T}, ibound, h, lo, hi, j) where {T}
-    @inbounds begin
+    return @inbounds begin
         (ibound[lo] == 0 || ibound[hi] == 0) && return zero(T), false
         ictl = cv.icelltype[lo]
         icth = cv.icelltype[hi]
@@ -157,7 +157,7 @@ upper cell `lo` to `hi` (`fc_default_flow`) the row of `lo` gets `dd = c`, `sb =
 end
 
 @inline function connection_terms(cv::ConvertibleNpf{T}, Δr, jas, ibound, h, n, m, ii) where {T}
-    @inbounds begin
+    return @inbounds begin
         j = jas[ii]
         dr = m > n ? Δr[j] : -Δr[j]
         lo, hi = n < m ? (n, m) : (m, n)

@@ -23,8 +23,10 @@ using ModflowGPU: thksat, storage_saturation, storage_terms, connection_terms, C
 end
 
 # A ConvertibleNpf of two cells and one connection (host arrays).
-function _cv2(T; icelltype = Int32[1, 1], topoff, botoff, sat, condsat, hyl, hyh, cl1 = 50.0, cl2 = 50.0, hwva, ihcx,
-        ivarcv = false, idewatcv = false, iperched = false)
+function _cv2(
+        T; icelltype = Int32[1, 1], topoff, botoff, sat, condsat, hyl, hyh, cl1 = 50.0, cl2 = 50.0, hwva, ihcx,
+        ivarcv = false, idewatcv = false, iperched = false
+    )
     v(x...) = T[x...]
     thk = T.(topoff .- botoff)
     return ConvertibleNpf(
