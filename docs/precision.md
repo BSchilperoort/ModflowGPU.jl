@@ -720,3 +720,13 @@ precision of Float32 flows through very large conductances, not of the solution.
 
 ROCm (RX 7800 XT): every row above is the same on ROCm, with the same iteration counts and
 bitwise the same heads and assembled systems as the CPU backend (max |Δh| = 0).
+
+## Solver performance changes (T4.7)
+
+The T4.7 changes (incremental red–black MC-ILU0 setup, contiguous diagonal, CG direction
+fused into the SpMV, skipped last MC-ILU0 application, scale-free operator rows for
+SCALING_METHOD NONE, single-pass reductions, package records formulated in the row
+kernel) compute the same operations in the same order: heads and outer/inner iteration
+counts are bitwise those of `main` (24ccc38) in `:single`, `:mixed` and `:double`, on CPU
+and rocm (coupling_rde, ts_tas, ex-gwf-u1disv, ex-gwf-curve-90, synthetic tiny/indus; see
+benchmark/results/2026-11-16-T4.7.md). The accuracy numbers in this file are unchanged.

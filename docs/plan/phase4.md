@@ -31,6 +31,19 @@ Carried over to card T4.7 (at the end of this file):
 - Assembly 5.7 ms per outer iteration vs < 4 ms: fewer bytes per entry, or the package
   record kernels fused into the row kernel.
 
+**Status after T4.7 (2026-11-16)**, rocm, MC-ILU0, global5m unless named
+(benchmark/results/2026-11-16-T4.7.md; heads and iterations bitwise unchanged):
+- daily step `:single` 0.086 s (< 0.1 s): **met**; steady + 30 steps 9.61 s `:double`,
+  8.74 s `:mixed` (< 10 s): **met**.
+- daily step `:double` 0.217 s (`:mixed` 0.201 s) vs < 0.2 s: **missed by 8 %**; the
+  preconditioner setup is gone (5.2 → 0.86 ms per outer iteration), what is left is
+  bandwidth-bound assembly, SpMV, MC-ILU0 application and update.
+- indus 74 µs per inner iteration (Jacobi 47 µs) vs < 40 µs: **missed**; one CG
+  iteration is 4 kernels and one synchronisation, ≈ 5 µs host time per launch and ≈ 18 µs
+  to see completion, so < 40 µs needs fewer launches than KA offers (persistent kernels).
+- assembly 4.98 ms per outer iteration (`:single` 3.4 ms) vs < 4 ms: **missed** in
+  `:mixed`/`:double`; needs fewer bytes per entry (`condsat`/`Δr` without `jas`).
+
 **T4.1 Benchmark harness (S)**
 - Depends: T3.4.
 - Deliver: `benchmark/run.jl` running `indus`, `continental`, `global5m`,
