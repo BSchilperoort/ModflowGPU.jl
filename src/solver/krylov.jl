@@ -563,7 +563,7 @@ function KrylovSettings(ims::ImsSpec; preconditioner::Symbol = :auto, precond_op
     pc = ims_preconditioner(ims.preconditioner_levels, ims.relaxation_factor)
     if preconditioner === :auto
         preconditioner = resolve_preconditioner(preconditioner)
-        msg = "IMS preconditioner $(uppercase(String(pc))) is replaced by $preconditioner (multicolour ILU0 in red–black order, the default; see the `preconditioner` option)"
+        msg = "IMS preconditioner $(uppercase(String(pc))) is replaced by $preconditioner (multicolour ILU0: red–black on DIS grids, greedy colouring on DISV and DISU; the default, see the `preconditioner` option)"
         # ILU0 maps to ILU0 in another ordering; MILU0 / ILUT / MILUT lose their options:
         # a warning when those were given explicitly, a message when they come from the
         # COMPLEXITY defaults only (e.g. ILUT of COMPLEXITY COMPLEX). Logged once per session
