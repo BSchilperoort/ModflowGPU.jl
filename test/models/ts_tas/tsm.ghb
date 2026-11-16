@@ -1,0 +1,16 @@
+# Conductance from a LINEAR series with SFAC.
+BEGIN options
+  TS6  FILEIN  tsm.ghb.ts
+END options
+
+BEGIN dimensions
+  MAXBOUND  5
+END dimensions
+
+BEGIN period  1
+  1 1 10 5.0 gcond
+  1 2 10 5.0 gcond
+  1 3 10 5.0 gcond
+  1 4 10 5.0 gcond
+  1 5 10 5.0 gcond
+END period  1

@@ -94,7 +94,7 @@ end
 function _record_aux(pkg::BoundaryPackage)
     naux = length(pkg.spec.auxnames)
     (naux == 0 || pkg.iblock == 0) && return zeros(Float64, naux, pkg.nbound)
-    return Matrix{Float64}(pkg.spec.periods.data[pkg.iblock].auxvar[:, 1:pkg.nbound])
+    return Matrix{Float64}(_block_data(pkg).auxvar[:, 1:pkg.nbound])  # T6.3: with time-series values
 end
 
 """

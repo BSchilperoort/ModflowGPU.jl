@@ -1,18 +1,18 @@
+# Synthetic time-series model (T6.3): TS6 and TAS6 input in the forms ModflowGPU supports.
 BEGIN options
 END options
 
 BEGIN timing
-  TDIS6  ex-gwf-fhb.tdis
+  TDIS6  tsm.tdis
 END timing
 
 BEGIN models
-  gwf6  ex-gwf-fhb.nam  ex-gwf-fhb
+  gwf6  tsm.nam  tsm
 END models
 
 BEGIN exchanges
 END exchanges
 
 BEGIN solutiongroup  1
-  ims6  ex-gwf-fhb.ims  ex-gwf-fhb
+  ims6  tsm.ims  tsm
 END solutiongroup  1
-

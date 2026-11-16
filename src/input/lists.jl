@@ -37,8 +37,9 @@
 #   (LENBOUNDNAME).
 # - Time series: when the OPTIONS block has `TS6 FILEIN`, a word that is not a number in
 #   a column whose DFN entry has `time_series` is a time-series name
-#   (`StructVector.read_token`). It is kept as a `TsRef` and the value is NaN until T6.3
-#   evaluates it. Without TS6 such a word is an error, as in MF6.
+#   (`StructVector.read_token`). It is kept as a `TsRef` and the value is NaN until the
+#   boundary framework evaluates the series per time step (T6.3, `advance_time_series!`).
+#   Without TS6 such a word is an error, as in MF6.
 # - OPEN/CLOSE: a text list file as the first line of the block is a whole-block include
 #   (handled by the block parser, `blocks.jl`). `OPEN/CLOSE fname (BINARY)` must be the
 #   only line of the block; the file holds unformatted stream records: the cellid
@@ -367,7 +368,8 @@ end
 
 A time-series name in list data (or an array of READASARRAYS input): record `row`, row
 `col` of `bound` (or of `auxvar` when `aux`), time series `name` (upper case, as MF6
-compares them). The value in `bound`/`auxvar` is NaN until T6.3 evaluates the series.
+compares them). The value in `bound`/`auxvar` is NaN; the boundary framework writes the
+series value of each time step into its working copy of the block (T6.3).
 """
 struct TsRef
     row::Int32
@@ -681,11 +683,11 @@ previous state are not copied):
 - `auxvar::Matrix{Float64}` `(naux, ncpl)`.
 - `tas::Dict{String, Symbol}`: `TIMEARRAYSERIES` references given in this block, from
   the variable (`"recharge"`, or an auxiliary name in upper case) to the series name
-  (upper case). MF6 links them for the periods of this block only (`tasmanager%reset`
-  in `rp`); in a later block that does not give the variable, the array keeps the last
-  values the series set. Here such an array holds NaN (the state shared from the TAS
-  block), so T6.3 must carry the last interpolated TAS values forward into the
-  following blocks.
+  (upper case). MF6 links them for the periods of this block only, and the next PERIOD
+  block first sets every array linked to a series to zero (`rp` → `reset` →
+  TimeArraySeriesManager.f90 `Reset`), so a later block that does not give the variable
+  has zeros there. In this block the values hold NaN until the boundary framework
+  evaluates the series per time step (T6.3, `advance_time_series!`).
 - `given::Vector{String}`: the variables given in this block (DFN names, or auxiliary
   names), in input order.
 """
@@ -745,12 +747,24 @@ function read_array_periods(f::InputFile, g::GridDims; simdir::AbstractString = 
     blocks = find_blocks(f, "PERIOD")
     iper = Int[]
     data = ArrayPeriod[]
+    prevtas = Dict{String, Symbol}()
     for b in blocks
         push!(iper, block_number(b))
         values = copy(values)  # new Dict; arrays are replaced (not changed) when given
         tas = Dict{String, Symbol}()
         given = String[]
         auxcopied = false
+        # TimeArraySeriesManager.f90 Reset: the arrays the previous block linked to a time-
+        # array series are set to zero before this block is read.
+        for name in keys(prevtas)
+            iaux = findfirst(==(name), o.auxnames)
+            if isnothing(iaux)
+                values[name] = zeros(ncpl)
+            else
+                auxcopied || (auxvar = copy(auxvar); auxcopied = true)
+                auxvar[iaux, :] .= 0.0
+            end
+        end
         lines = b.lines
         k = 1
         while k <= length(lines)
@@ -802,6 +816,7 @@ function read_array_periods(f::InputFile, g::GridDims; simdir::AbstractString = 
             end
         end
         push!(data, ArrayPeriod(layer, values, auxvar, tas, given))
+        prevtas = tas
     end
     return StressPeriods(iper, data)
 end

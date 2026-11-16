@@ -54,6 +54,12 @@ it. Underscore-prefixed helpers are omitted.
   `read_oc_periods` (`OcRecord`), `read_sto_periods`, `read_tdis_perioddata`,
   `read_records`, `ExchangeData` / `read_exchange_data` / `exchange_schema`,
   `write_binary_list`. Tests: input_lists.
+- **input/timeseries.jl** (T6.3): TS6 and TAS6 files and their evaluation on the host in
+  Float64 (TimeSeries.f90, TimeArraySeries.f90). `TimeSeries` / `read_time_series_file`
+  (NAME(S), METHOD(S), SFAC(S), several series per file, DNODATA), `ts_value(s, t0, t1)`
+  (`GetValue`: STEPWISE/LINEAR time-weighted average over the step, LINEAREND value at
+  `t1`), `TimeArraySeries` / `read_time_array_series_file`, `tas_values!` (`GetAverageValues`).
+  Tests: timeseries.
 - **input/options.jl**: OPTIONS / DIMENSIONS / TIMING blocks through the DFN schema.
   `OptionSet`, `read_options`, `option`, `has_option`, `option_line`. Tests:
   simulation_loader.
@@ -68,8 +74,10 @@ it. Underscore-prefixed helpers are omitted.
   `DisvSpec`, `DisuSpec`, `grid_dims`, `nodes_user`, `idomain_user`. Tests:
   simulation_loader, connectivity.
 - **spec/packages.jl**: GWF package specs. `NpfSpec`, `StoSpec` (`is_transient`), `IcSpec`,
-  `OcSpec`, `PrintFormat`, `BoundarySpec{Kind}`, `BOUNDARY_KINDS`. Tests:
-  simulation_loader, npf.
+  `OcSpec`, `PrintFormat`, `BoundarySpec{Kind}` (T6.3: `timeseries`, `timearrayseries`
+  dictionaries by name, read by the loader, `_load_time_series` in input/simulation.jl,
+  which also checks every name the period data use), `BOUNDARY_KINDS`. Tests:
+  simulation_loader, npf, timeseries.
 - **spec/simulation.jl**: simulation-level specs. `TdisSpec` (`nper`), `ImsSpec`
   (`ims_defaults`), `SolutionGroupSpec`, `PackageEntry`, `GwfSpec`, `ExchangeSpec`,
   `SimulationSpec`, `model_spec`. Tests: simulation_loader.
@@ -149,6 +157,12 @@ it. Underscore-prefixed helpers are omitted.
   `bound_user!` fills `bound_user` on demand; `bound_version` counts value changes;
   `bound_values(pkg, r)` (Float64 `bound`, replaces the `bound_host` field). Tests:
   boundaries (fast path vs full application).
+  T6.3 (time series): a PERIOD block with `TsRef`s or TIMEARRAYSERIES is applied through a
+  working copy (`tsblock`, `_ts_working_copy`, `_block_data`) whose linked entries hold the
+  series values of the step (`apply_period!(...; window)`); `advance_time_series!(pkg,
+  window, r)` re-evaluates them per step and restages `bound` (multiplier and offsets in
+  Float64, as period data; after a stepping API write the series replace their columns of
+  `bound_user`); `tswindow`. Tests: timeseries, run, assembly, sto.
 - **boundaries/chd.jl**: CHD (gwf-chd.f90; see `docs/mf6_notes.md`). `apply_chd_heads!`,
   `calc_chd_rate!`. Tests: boundaries (parity vs MF6 CBC).
 - **boundaries/wel.jl**, **rch.jl**, **ghb.jl**: WEL, RCH (list and RCHA arrays, cell
@@ -236,12 +250,13 @@ it. Underscore-prefixed helpers are omitted.
 ## Time stepping, outer iterations, flows and budgets (T2.8)
 
 - **timing.jl**: TDIS on the host (tdis.f90 `tdis_set_timestep`/`tdis_set_delt`).
-  `TimeStep` (kper, kstp, delt, pertim, totim, endofperiod), `time_steps(tdis)`. Tests:
-  picard.
+  `TimeStep` (kper, kstp, delt, pertim, totim, endofperiod), `time_steps(tdis)`,
+  `time_step_window(steps, i)` (T6.3: `(totimc, totimc + delt)` for the time series). Tests:
+  picard, timeseries.
 - **gwf/model.jl**: one model on a device. `GwfModel{T}` (spec, conn, NpfSetup, CSR,
   NpfModel, LinearSystem, boundary packages, STO, ibound, offset heads `h`/`hold`, `res`,
-  `δ`, `flowja`; Adapt, e.g. `adapt(backend, m)`, T3.1), `apply_period!(::GwfModel, kper)` (once per period: package period
-  data, STO, CHD ibound, rebuilt only when a CHD package has new cells), `start_timestep!` (`rho`, `hold ← h`, CHD heads), `formulate!`
+  `δ`, `flowja`; Adapt, e.g. `adapt(backend, m)`, T3.1), `apply_period!(::GwfModel, kper; window)` (once per period: package period
+  data, STO, CHD ibound, rebuilt only when a CHD package has new cells), `advance_time_series!(::GwfModel, window)` (T6.3: every step, in `prepare_time_step`), `start_timestep!` (`rho`, `hold ← h`, CHD heads), `formulate!`
   (per-package formulation, then `formulate_system!`; off-diagonals rewritten only when
   `ibound` or `symmetric` changed, field `offdiag`, T4.5), `absolute_heads` (host Float64 `r + h'`). Tests:
   picard, run.
@@ -291,7 +306,7 @@ it. Underscore-prefixed helpers are omitted.
 - **run.jl** (T2.8): `ModflowGPU.run(simdir or SimulationSpec; backend, precision,
   outdir, closures, write_output, preconditioner, precond_options)` (on the stepping API since T3.3) → `RunResult` (model, precision types, `StepResult`s,
   `ModelBudget`s, final heads, output paths); `ConvergenceError`. One model, one IMS
-  solution. Tests: run (parity vs MF6 on Tier 0, fhb_const, coupling_rde and IMS
+  solution. Tests: run (parity vs MF6 on Tier 0, ex-gwf-fhb, ts_tas, coupling_rde and IMS
   variants; flopy read-back with MFGPU_FLOPY=1). `_write_step` (step output) copies the
   heads to the host only when OC saves or prints them (T5.2).
 
@@ -320,7 +335,8 @@ it. Underscore-prefixed helpers are omitted.
 - **input_files.jl**: `REFERENCE_DIR`, `in_scope_examples`, `simulation_input_files`,
   `model_package_files`; `parity_examples` (T6.0: Tier 0–2 plus `EXTRA_PARITY_EXAMPLES`,
   ex-gwf-lgrv-gc/-gr; `MFGPU_TEST_LGRV_GR=0` drops -gr), used by the assembly and run
-  parity tests.
+  parity tests; `reference_rundir(name)` (T6.3: the converged reference run, tight or
+  tight-relative, e.g. ex-gwf-fhb).
 - **libmf6_oracle.jl**: libmf6 subprocess oracle. `LIBMF6_ENV`, `libmf6_available`,
   `run_libmf6_script` (validation/libmf6_connectivity.jl, libmf6_first_solve.jl), `libmf6_connectivity`, `write_dis_simulation` (synthetic DIS sims).
 - **grids.jl**: `_synthetic_coupling_dis`, `_synthetic_passthrough_dis`, `_rel_close`.
@@ -333,8 +349,11 @@ it. Underscore-prefixed helpers are omitted.
 - **models/coupling_rde/**: synthetic coupling-like model (2 × 12 × 15, confined, steady +
   transient) with CHD, WEL, RCHA, RIV, DRN, EVT, EVTA; `generate.jl` writes it
   (riv_drn_evt parity test); test/unit/builder_test.jl builds it in memory.
-- **models/fhb_const/**: ex-gwf-fhb with the CHD/WEL time series replaced by constants per
-  period (sto parity test).
+- **models/ts_tas/** (T6.3, replaces models/fhb_const): synthetic time-series model (1×5×10,
+  3 transient periods): TS6 LINEAR/STEPWISE/LINEAREND with SFACS, DNODATA and several series
+  per file (CHD heads, WEL rate and AUXMULTNAME multiplier, GHB conductance), TAS6 RCHA
+  (LINEAR, zeroed by a later block) and EVTA (STEPWISE); run with mf6 at test time (groups
+  assembly, run).
 
 ## Benchmarks (`benchmark/`, workspace project)
 

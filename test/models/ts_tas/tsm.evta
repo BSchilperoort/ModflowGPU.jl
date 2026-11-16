@@ -1,0 +1,13 @@
+# ET rate from a STEPWISE time-array series.
+BEGIN options
+  READASARRAYS
+  TAS6  FILEIN  tsm.evt.tas
+END options
+
+BEGIN period  1
+  SURFACE
+    CONSTANT  1.0
+  RATE  TIMEARRAYSERIES  evtrate
+  DEPTH
+    CONSTANT  5.0
+END period  1

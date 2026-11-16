@@ -402,9 +402,11 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
                 (edit("gwf.wel", "BOUNDNAMES", "BOUNDNAMES\n  AUTO_FLOW_REDUCE 0.1"), "unsupported: WEL6 option AUTO_FLOW_REDUCE (package 'WEL_A'", s -> s.models[1].boundaries[1].auto_flow_reduce == 0.1),
                 (edit("sim.ims", "RELAXATION_FACTOR 0.97", "SCALING_METHOD L2NORM"), "unsupported: IMS6 SCALING_METHOD L2NORM", s -> s.solution_groups[1].solutions[1].scaling_method === :l2norm),
                 (edit("sim.ims", "OUTER_MAXIMUM 20", "BACKTRACKING_NUMBER 5"), nothing, s -> s.solution_groups[1].solutions[1].backtracking_number == 5),
+                # Time series: supported since T6.3.
                 (
-                    edit("gwf.wel", "2 2 2 -2.5 well1", "2 2 2 PUMPING well1"), "unsupported: time-series values (TS6) in package 'WEL_A'",
-                    s -> s.models[1].boundaries[1].periods.data[1].ts == [TsRef(1, 1, false, :PUMPING)] && isnan(s.models[1].boundaries[1].periods.data[1].bound[1, 1]),
+                    edit("gwf.wel", "2 2 2 -2.5 well1", "2 2 2 PUMPING well1"), nothing,
+                    s -> s.models[1].boundaries[1].periods.data[1].ts == [TsRef(1, 1, false, :PUMPING)] && isnan(s.models[1].boundaries[1].periods.data[1].bound[1, 1]) &&
+                        s.models[1].boundaries[1].timeseries[:PUMPING].values == [-1.0],
                 ),
                 (edit("sim.tdis", "TIME_UNITS  days", "TIME_UNITS  days\n  START_DATE_TIME 2020-01-01"), nothing, s -> s.tdis.start_date_time == "2020-01-01"),
             )
@@ -447,10 +449,8 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
             npf = s.models[1].npf
             @test npf.k22 == fill(0.01, nodes_user(s.models[1].dis)) && npf.angle1 == zeros(nodes_user(s.models[1].dis))
             @test isnothing(npf.k33) && npf.save_specific_discharge
-            # fhb uses TS6 values: strict loading waits for T6.3.
-            e = unsupported_error_of(() -> load_simulation(examples["ex-gwf-fhb"]))
-            @test startswith(e.msg, "unsupported: time-series values (TS6) in package 'WEL'")
-            s = load_simulation(examples["ex-gwf-fhb"]; strict = false)
+            # fhb uses TS6 values (strict loading since T6.3).
+            s = load_simulation(examples["ex-gwf-fhb"])
             @test s.tdis.perlen == [400.0, 200.0, 400.0] && s.tdis.nstp == Int32[10, 4, 6] && s.tdis.time_units === :days
             m = s.models[1]
             @test [b.name for b in m.boundaries] == ["WEL", "CHD"]
@@ -458,6 +458,8 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
             @test m.obs_files == ["ex-gwf-fhb.obs"]
             chd = m.boundaries[2].periods.data[1]
             @test chd.ts == [TsRef(i, 1, false, :CHDHEAD) for i in 1:3] && all(isnan, chd.bound)
+            ts = m.boundaries[2].timeseries[:CHDHEAD]
+            @test ts.method === :linearend && ts.times == [0.0, 307.0, 791.0, 1000.0] && ts.values == [0.0, 1.0, 5.0, 2.0]
             @test m.sto.storagecoefficient && is_transient(m.sto, 3)
             ims = s.solution_groups[1].solutions[1]
             @test ims.inner_rclose == 1.0e-6 && ims.rclose_option === :strict && ims.outer_dvclose == 1.0e-9
@@ -491,7 +493,6 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
                 "ex-gwf-maw-p03c" => "convertible cells", "ex-gwf-hanix" => "NPF6 option XT3D",
                 "ex-gwf-whirl" => "NPF6 option XT3D", "ex-gwf-rad-disu" => "DISU6 discretization",
                 "ex-gwf-spbc" => "GWF6-GWF6 exchange", "ex-gwf-lgrv-lgr" => "more than one GWF6 model",
-                "ex-gwf-fhb" => "time-series values (TS6)",
             )
             for name in ("bcf2ss-p02a", "bump-p01a", "bump-p01c", "capture", "nwt-p02a", "nwt-p03a", "nwt-p03b", "zaidel")
                 expected["ex-gwf-$name"] = "NEWTON"
@@ -509,7 +510,7 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
                         @test startswith(e.msg, "unsupported: " * expected[name])
                     else
                         # Tier 0-2 without higher features, and the confined Tier 3 size tests.
-                        @test name in ("ex-gwf-toth", "ex-gwf-hanic", "ex-gwf-hanir", "ex-gwf-hwell-a", "ex-gwf-lgrv-gc", "ex-gwf-lgrv-gr")
+                        @test name in ("ex-gwf-toth", "ex-gwf-hanic", "ex-gwf-hanir", "ex-gwf-hwell-a", "ex-gwf-fhb", "ex-gwf-lgrv-gc", "ex-gwf-lgrv-gr")
                         @test load_simulation(simdir) isa SimulationSpec
                     end
                 end

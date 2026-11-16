@@ -216,3 +216,29 @@ src/timing.jl, src/budget.jl, src/output/oc.jl, src/run.jl.
   `cf`; ModflowCoupling (libmf6 via ModflowInterface) uses `BOUND`, which the port keeps.
 - `get_time_step` returns `delt` (libmf6); ModflowInterface's `BMI.get_time_step` calls
   `get_end_time` instead (a wrapper bug), see above.
+
+## Time series (T6.3)
+
+- When: `idm_ts_advance` runs at the end of `Mf6PrepareTimestep` (after `tdis_set_timestep`),
+  so every linked value is the series over `[totimc, totimc + delt]` of the step about to be
+  solved; ModflowGPU evaluates them in `prepare_time_step` (`advance_time_series!`). A
+  stepping API write after `prepare_time_step` overrides them, as in libmf6.
+- STEPWISE and LINEAR give the time-weighted average over the step, LINEAREND the
+  interpolated value at the end. At a step of zero length the value at `t0` is used, and
+  STEPWISE at a record time returns the *previous* record (`get_surrounding_records`
+  stops before a record that `is_close` to the time).
+- A series that starts after `t0` integrates to 0 without an error
+  (`get_latest_preceding_node` finds no record); one that ends before `t1` is an error
+  (the GWF loaders never set `extendToEndOfSimulation`). Exception: `idm_rp` reads the
+  first PERIOD block before `tdis_set_timestep`, and `read_value_or_time_series` assigns
+  `GetValue(totimsav, totim)` = the value at time 0, so a list series without a value at
+  time 0 stops MF6 ("Error getting value at time 0.00"); `apply_period!` checks the same
+  (T6.3 review, checked against mf6). TAS links are not evaluated when made.
+- The multiplier (AUXMULTNAME) is applied on use in MF6 and at staging here; a series in
+  the multiplier column is evaluated like any other auxiliary series.
+- READASARRAYS (IDM `LayerArrayLoadType%rp` → `reset` → TimeArraySeriesManager `Reset`):
+  every new PERIOD block first sets the arrays linked to a time-array series to zero, so a
+  later block that does not give the variable has zero there (not the last series value).
+  test/models/ts_tas checks this against mf6.
+- Duplicate series names over the TS6 files of a package: the last one wins (the hash
+  table replaces the index).

@@ -1,0 +1,16 @@
+BEGIN options
+  SAVE_FLOWS
+END options
+
+BEGIN packages
+  DIS6  tsm.dis  dis
+  NPF6  tsm.npf  npf
+  IC6  tsm.ic  ic
+  STO6  tsm.sto  sto
+  CHD6  tsm.chd  chd
+  WEL6  tsm.wel  wel
+  GHB6  tsm.ghb  ghb
+  RCH6  tsm.rcha  rcha
+  EVT6  tsm.evta  evta
+  OC6  tsm.oc  oc
+END packages

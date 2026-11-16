@@ -1,7 +1,7 @@
-# Residual test with STO, CHD and WEL (T2.5) on ex-gwf-fhb, with the CHD and WEL time
-# series replaced by constants per stress period (test/models/fhb_const; time series
-# arrive with T6.3). The copy is run with mf6 6.8.2 ($REFERENCE_DIR/mf6.8.2_linux/bin/mf6,
-# or $MF6) at tight closures into a temporary directory; skipped without it.
+# Residual test with STO, CHD and WEL (T2.5) on ex-gwf-fhb, against its MF6 6.8.2
+# reference run (`reference_rundir`: tight-relative); skipped without it. Since T6.3 the
+# CHD heads and WEL rates come from the example's time series (LINEAREND), evaluated per
+# time step (T2.5 used a copy with the series replaced by constants, test/models/fhb_const).
 #
 # For every time step (3 periods, 20 steps, all transient) the flux-form residual
 # (`flux_residual`, test/residual.jl) is computed in the engine precision `T` with MF6's
@@ -15,21 +15,17 @@
 using ModflowGPU: load_simulation, build_connectivity, npf_setup, BoundaryPackage, apply_period!, formulate!,
     add_to_system!, apply_chd_heads!, boundary_ibound, StoragePackage, set_timestep!, calc_storage_rates!,
     storage_budget, initial_heads, to_offsets, open_head_file, read_head, open_budget_file, read_budget,
-    find_budget_records
+    find_budget_records, time_steps, time_step_window, advance_time_series!
 
-const FHB_CONST_DIR = joinpath(@__DIR__, "..", "models", "fhb_const")
-const MF6_EXE = get(ENV, "MF6", joinpath(REFERENCE_DIR, "mf6.8.2_linux", "bin", "mf6"))
-
-@testset "Storage residual test (STO, CHD, WEL) on fhb with constant stresses" begin
-    if !isfile(MF6_EXE)
-        @info "Skipping the storage residual test: mf6 not found at $MF6_EXE (set REFERENCE_DIR or MF6)"
+@testset "Storage residual test (STO, CHD, WEL) on ex-gwf-fhb" begin
+    rundir = reference_rundir("ex-gwf-fhb")
+    if isnothing(rundir)
+        @info "Skipping the storage residual test: no reference run of ex-gwf-fhb in $(joinpath(REFERENCE_DIR, "runs"))"
     else
-        mktempdir() do dir
-            cp(FHB_CONST_DIR, joinpath(dir, "fhb"))
-            rundir = joinpath(dir, "fhb")
-            out = read(Cmd(`$MF6_EXE`; dir = rundir), String)
-            @test occursin("Normal termination", out)
-            m = only(load_simulation(rundir).models)
+        let
+            sim = load_simulation(rundir)
+            steps = time_steps(sim.tdis)
+            m = only(sim.models)
             conn = build_connectivity(m)
             s = npf_setup(m, conn)
             hf = open_head_file(joinpath(rundir, "ex-gwf-fhb.hds"))
@@ -58,7 +54,9 @@ const MF6_EXE = get(ENV, "MF6", joinpath(REFERENCE_DIR, "mf6.8.2_linux", "bin", 
                     rec = bf.records[stoidx[k]]
                     @test (hf.steps[k].kstp, hf.steps[k].kper) == (rec.kstp, rec.kper)
                     kper = Int(rec.kper)
-                    foreach(x -> apply_period!(x, kper, s.r), pk)
+                    window = time_step_window(steps, k)
+                    foreach(x -> apply_period!(x, kper, s.r; window), pk)
+                    foreach(x -> advance_time_series!(x, window, s.r), pk)
                     apply_period!(sto, kper)
                     @test sto.transient
                     set_timestep!(sto, rec.delt)
@@ -97,7 +95,7 @@ const MF6_EXE = get(ENV, "MF6", joinpath(REFERENCE_DIR, "mf6.8.2_linux", "bin", 
                     @test berr < (T === Float64 ? 1.0e-10 : 1.0e-4)
                     worst_bud = max(worst_bud, berr)
                 end
-                @info "Storage residual test: fhb (constant stresses), :$(p.preset), $nstep steps: max |res| / max Σ|terms| = $worst (rounding bound $worst_bound); STO-SS max |Δq| / max(max |q|, total in) = $worst_q, budget rel. error $worst_bud"
+                @info "Storage residual test: ex-gwf-fhb, :$(p.preset), $nstep steps: max |res| / max Σ|terms| = $worst (rounding bound $worst_bound); STO-SS max |Δq| / max(max |q|, total in) = $worst_q, budget rel. error $worst_bud"
             end
         end
     end

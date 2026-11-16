@@ -1,4 +1,4 @@
-# Tight closures for the residual test (PLAN.md section 4).
+# Tight closures for the run parity test (PLAN.md section 4).
 BEGIN options
   PRINT_OPTION  SUMMARY
 END options
