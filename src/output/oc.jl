@@ -118,7 +118,11 @@ function write_budget(o::ModelOutput, m::GwfModel, step::TimeStep)
         v = zeros(nu)
         v[m.conn.nodeuser] .= Float64.(Array(m.sto.strgss))
         write_budget_array(io, o.layout, "STO-SS", v; kw...)
-        _uses_sy(m) && write_budget_array(io, o.layout, "STO-SY", zeros(nu); kw...)
+        if _uses_sy(m)
+            v = zeros(nu)
+            v[m.conn.nodeuser] .= Float64.(Array(m.sto.strgsy))
+            write_budget_array(io, o.layout, "STO-SY", v; kw...)
+        end
     end
     if spec.save_flows || spec.npf.save_flows
         write_budget_array(io, "FLOW-JA-FACE", Float64.(Array(m.flowja)); kw..., dims = (Int(m.conn.nja), 1, 1))

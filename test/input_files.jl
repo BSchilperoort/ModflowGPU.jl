@@ -27,15 +27,25 @@ function in_scope_examples(; tiers = 0:7)
 end
 
 """
+Examples whose parity reference may be the `relaxed` MF6 run (validation/run_reference.jl)
+when neither the tight nor the tight-relative run converged (T6.1: explicit per example;
+none needs it today: ex-gwf-advtidal, ex-gwf-maw-p03c, ex-gwf-fhb and ex-gwf-rad-disu use
+tight-relative).
+"""
+const RELAXED_REFERENCE_EXAMPLES = ()
+
+"""
     reference_rundir(name) -> Union{String, Nothing}
 
 The MF6 reference run of example `name` that the parity tests compare with: the first of
-`reference/runs/<name>/{tight, tight-relative, relaxed}` whose `run.toml` has status
-`"ok"` (validation/run_reference.jl, `REFERENCE_ORDER`; ex-gwf-fhb's tight run does not
-converge, its reference is tight-relative), `nothing` when there is none.
+`reference/runs/<name>/{tight, tight-relative}` whose `run.toml` has status `"ok"`
+(validation/run_reference.jl, `REFERENCE_ORDER`; ex-gwf-fhb's tight run does not
+converge, its reference is tight-relative), `relaxed` only for the examples in
+`RELAXED_REFERENCE_EXAMPLES` (T6.1), `nothing` when there is none.
 """
 function reference_rundir(name::AbstractString)
-    for mode in ("tight", "tight-relative", "relaxed")
+    modes = name in RELAXED_REFERENCE_EXAMPLES ? ("tight", "tight-relative", "relaxed") : ("tight", "tight-relative")
+    for mode in modes
         dir = joinpath(REFERENCE_DIR, "runs", name, mode)
         f = joinpath(dir, "run.toml")
         isfile(f) && get(TOML.parsefile(f), "status", "") == "ok" && return dir
@@ -45,10 +55,15 @@ function reference_rundir(name::AbstractString)
 end
 
 """
-Examples outside Tiers 0–2 that the Milestone A engine runs and the parity tests include
-(T6.0): the confined Tier 3 size tests (ICELLTYPE 0, RIV, RCHA, K33OVERK, `requires = []`).
+Examples outside Tiers 0–2 that the engine runs and the parity tests include: the confined
+Tier 3 size tests (T6.0; ICELLTYPE 0, RIV, RCHA, K33OVERK, `requires = []`) and the Tier 3
+examples with convertible cells and rewetting (T6.1).
 """
-const EXTRA_PARITY_EXAMPLES = ("ex-gwf-lgrv-gc", "ex-gwf-lgrv-gr")
+const EXTRA_PARITY_EXAMPLES = (
+    "ex-gwf-lgrv-gc", "ex-gwf-lgrv-gr",
+    # T6.1: convertible cells, wetting and drying (Tier 3).
+    "ex-gwf-twri01", "ex-gwf-bcf2ss-p01a", "ex-gwf-bump-p01b", "ex-gwf-nwt-p02b",
+)
 
 """
     parity_examples() -> Vector{Pair{String, String}}

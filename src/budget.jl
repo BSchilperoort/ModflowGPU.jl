@@ -3,7 +3,8 @@
 # `calc_flows!` (gwf_cq, then the `csr_diagsum` of gwf_bd), on the device in `T`:
 # 1. `flowja` off-diagonals from the offset heads, `C_nm·(h'_m − h'_n + Δr_nm)` (npf_cq;
 #    positive into cell n, zero when either cell has ibound 0), diagonals zeroed;
-# 2. storage: `strgss = rho·(hold − h)` added to the diagonal (sto_cq);
+# 2. storage: `strgss = rho·(hold − h)` (and for convertible cells the `SsTerms` rate and
+#    the STO-SY rate `strgsy`, T6.1) added to the diagonal (sto_cq);
 # 3. each stress package in MF6's order: `bnd_cf` with the final heads, then `simvals`
 #    (bnd_cq_simrate) added to the diagonal; CHD: `calc_chd_rate` (net rate per cell into
 #    the model, its split over connections to active cells, and the diagonal);
@@ -182,7 +183,7 @@ function budget_text(pkg::BoundaryPackage{K}) where {K}
     return lpad(String(K), 16)
 end
 
-_uses_sy(m::GwfModel) = !isnothing(m.sto) && any(!=(0), m.spec.sto.iconvert)
+_uses_sy(m::GwfModel) = !isnothing(m.sto) && !isnothing(m.sto.conv)
 
 function BudgetAccumulator(m::GwfModel{T}) where {T}
     names = String[]
@@ -220,7 +221,10 @@ function model_budget!(acc::BudgetAccumulator, m::GwfModel, step::TimeStep)
     if !isnothing(m.sto)
         rin, rout, _, _ = _mapreduce!(red, backend, _inout_term, _SUM4, Int(m.conn.nodes), m.sto.strgss)
         push!(rates, (rin, rout))
-        _uses_sy(m) && push!(rates, (0.0, 0.0))
+        if _uses_sy(m)
+            rin, rout, _, _ = _mapreduce!(red, backend, _inout_term, _SUM4, Int(m.conn.nodes), m.sto.strgsy)
+            push!(rates, (rin, rout))
+        end
     end
     for pkg in m.packages
         if pkg.nbound == 0

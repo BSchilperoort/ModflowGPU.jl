@@ -537,3 +537,6 @@ end
 Adapt.@adapt_structure NpfModel
 
 Base.eltype(::NpfModel{T}) where {T} = T
+
+# A confined NpfModel from device (or host) arrays.
+NpfModel(condsat::AbstractVector{T}, Δr::AbstractVector{T}) where {T <: AbstractFloat} = NpfModel(condsat, Δr, nothing)

@@ -291,6 +291,140 @@ function _assembly_models(f)
     return nothing
 end
 
+# --- Convertible models (T6.1): the universal residual test and the oracle through
+# `GwfModel` (`formulate!`, which computes the saturations), with MF6's dry cells (HDRY in
+# the head file) as IBOUND 0.
+
+# Whether a model needs the convertible formulation: ICELLTYPE /= 0 or STO ICONVERT /= 0
+# in a reduced node.
+function _is_convertible(m, conn)
+    any(n -> m.npf.icelltype[conn.nodeuser[n]] != 0, 1:conn.nodes) && return true
+    return !isnothing(m.sto) && any(n -> m.sto.iconvert[conn.nodeuser[n]] != 0, 1:conn.nodes)
+end
+
+# Set the model's heads and IBOUND to MF6's absolute heads `habs` (by reduced node; HDRY →
+# dry: IBOUND 0, head at the cell bottom), keeping the constant heads (−1); then move the
+# RCH/EVT records (`wetdry!` does when IBOUND changes).
+function _set_state!(model, habs)
+    conn, r = model.conn, model.setup.r
+    T = eltype(model)
+    ib = copy(model.ibound_host)
+    hoff = zeros(T, conn.nodes)
+    for n in 1:conn.nodes
+        if habs[n] == ModflowGPU.HDRY
+            ib[n] = 0
+            hoff[n] = T(conn.bot[n] - r[n])
+        else
+            ib[n] = ib[n] < 0 ? -1 : 1
+            hoff[n] = T(habs[n] - r[n])
+        end
+    end
+    copyto!(model.h, hoff)
+    if ib != model.ibound_host
+        copyto!(model.ibound_host, ib)
+        copyto!(model.ibound, ib)
+        model.offdiag = nothing
+        for pkg in model.packages
+            ModflowGPU.boundary_kind(pkg) in (:RCH, :EVT) && ModflowGPU.move_to_highest_active!(pkg, model.ibound_host, r)
+        end
+    end
+    return model
+end
+
+# Universal residual criterion per example where MF6's reference heads do not meet 1e-8
+# (docs/precision.md): ex-gwf-maw-p03c's reference is the tight-relative run (INNER_RCLOSE
+# 1e-10 RELATIVE_RCLOSE; the strict tight run does not converge), whose converged heads
+# leave a residual of 2.9e-8 of the row magnitudes; our formulation matches libmf6's first
+# AMAT/RHS to 0 and 6e-17 (the oracle below).
+const UNIVERSAL_TOL = Dict("ex-gwf-maw-p03c" => 1.0e-7)
+
+function _universal_residual_model(name, rundir, m, sim)
+    conn = build_connectivity(m)
+    hds = only(filter(f -> endswith(f, ".hds"), readdir(rundir; join = true)))
+    hf = open_head_file(hds)
+    nstep = length(hf)
+    habs = [vec(read_head(hf, k))[conn.nodeuser] for k in 1:nstep]
+    steps = time_steps(sim.tdis)
+    nper = length(sim.tdis.perlen)
+    symmetric = _symmetric(sim)
+    for_each_precision() do p
+        T = p.T
+        model = ModflowGPU.GwfModel(TEST_BACKEND, T, m, nper)
+        res, scale, bound = (KernelAbstractions.zeros(TEST_BACKEND, T, conn.nodes) for _ in 1:3)
+        worst, worst_bound, fails, ntested = 0.0, 0.0, 0, 0
+        tol = get(UNIVERSAL_TOL, name, 1.0e-8)
+        k = 1
+        prev_known = true  # the model holds the end state of the previous step (or the start)
+        for (istep, st) in enumerate(steps)
+            k > nstep && break
+            window = time_step_window(steps, istep)
+            st.kstp == 1 && apply_period!(model, st.kper; window)
+            ModflowGPU.advance_time_series!(model, window)
+            ModflowGPU.start_timestep!(model, st.delt)
+            saved = (hf.steps[k].kper, hf.steps[k].kstp) == (st.kper, st.kstp)
+            saved || (prev_known = false; continue)
+            # MF6's heads of this step; the old heads are those of the previous step, known
+            # only when it was saved (OC SAVE HEAD LAST: only steps after a saved one).
+            _set_state!(model, habs[k])
+            k += 1
+            if prev_known
+                ModflowGPU.formulate!(model; symmetric, scale)
+                flux_residual!(res, model.sys, model.csr, model.npf, model.h, model.ibound; scale, bound)
+                rel, roundoff = residual_stats(T, res, scale, bound)
+                ok = rel < tol || (T === Float32 && rel <= roundoff)
+                ok || (fails += 1)
+                worst, worst_bound = max(worst, rel), max(worst_bound, roundoff)
+                ntested += 1
+                # The fused residual (`formulate!`) against `flux_residual!`.
+                @test maximum(abs.(Float64.(Array(model.res)) .- Float64.(Array(res)))) <= 4 * eps(T) * maximum(Float64, Array(bound))
+            end
+            prev_known = true
+        end
+        @test fails == 0
+        @test ntested > 0
+        @info "Universal residual test (GwfModel, convertible): $name, :$(p.preset), $(conn.nodes) nodes, $ntested step(s): max |res| / max Σ|terms| = $(round(worst; sigdigits = 3)) (rounding bound $(round(worst_bound; sigdigits = 3))), dry cells in the last step $(count(==(0), model.ibound_host))"
+    end
+    return nothing
+end
+
+# Oracle (convertible models): libmf6's first-solve system against `formulate!` of a
+# GwfModel after `wetdry!(m, 1)`.
+function _oracle_model(name, simdir, m, sim)
+    conn = build_connectivity(m)
+    o = _libmf6_first_solve(simdir)
+    @test o.ia == conn.ia && o.ja == conn.ja
+    symmetric = _symmetric(sim)
+    steps = time_steps(sim.tdis)
+    for_each_precision() do p
+        T = p.T
+        model = ModflowGPU.GwfModel(TEST_BACKEND, T, m, length(sim.tdis.perlen))
+        r = model.setup.r
+        bmf = copy(o.rhs)
+        bscale = abs.(o.rhs)
+        for n in 1:conn.nodes, ii in conn.ia[n]:(conn.ia[n + 1] - 1)
+            t = o.amat[ii] * r[conn.ja[ii]]
+            bmf[n] -= t
+            bscale[n] += abs(t)
+        end
+        window = time_step_window(steps, 1)
+        apply_period!(model, 1; window)
+        ModflowGPU.advance_time_series!(model, window)
+        ModflowGPU.start_timestep!(model, o.delt)
+        ModflowGPU.wetdry!(model, 1)
+        ModflowGPU.formulate!(model; symmetric)
+        KernelAbstractions.synchronize(TEST_BACKEND)
+        act = model.ibound_host .!= 0
+        @test maximum(abs.(r[act] .+ Float64.(Array(model.h))[act] .- o.x0[act]); init = 0.0) <= 4 * eps(T) * maximum(abs, o.x0)
+        ea = maximum(abs.(Float64.(Array(model.sys.amat)) .- o.amat)) / maximum(abs, o.amat)
+        eb = maximum(abs.(Float64.(Array(model.sys.rhs)) .- bmf)[act]) / maximum(bscale)
+        tol = T === Float64 ? 1.0e-12 : 1.0e-6
+        @test ea < tol
+        @test eb < tol
+        @info "Assembly oracle vs libmf6 (first solve, GwfModel): $name, :$(p.preset), symmetric = $symmetric, $(count(==(0), model.ibound_host)) dry cells: amat max |Δ| / max |a| = $(round(ea; sigdigits = 3)), b' max |Δ| / max(|RHS| + Σ|a·r|) = $(round(eb; sigdigits = 3))"
+    end
+    return nothing
+end
+
 @testset "Assembly: universal residual test and libmf6 oracle" begin
     have_libmf6 = libmf6_available()
     have_libmf6 || @info "Skipping the assembly oracle vs libmf6: libmf6 environment not found at $LIBMF6_ENV"
@@ -299,8 +433,13 @@ end
         m = only(sim.models)
         nmodels[] += 1
         @testset "$name" begin
-            _universal_residual(name, rundir, m, sim)
-            have_libmf6 && _oracle(name, inputdir, m, sim)
+            if _is_convertible(m, build_connectivity(m))
+                _universal_residual_model(name, rundir, m, sim)
+                have_libmf6 && _oracle_model(name, inputdir, m, sim)
+            else
+                _universal_residual(name, rundir, m, sim)
+                have_libmf6 && _oracle(name, inputdir, m, sim)
+            end
         end
     end
     @info "Assembly test: $(nmodels[]) model(s)"
