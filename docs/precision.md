@@ -711,7 +711,7 @@ converge in 500 outer iterations; AMG converges in 2 outer iterations per step, 
 ex-gwf-hwell-a.
 
 **`:single` budget criterion loosened for rad_disu_confined** (5e-4 × total in instead of
-1e-4). The conductances next to the wells reach 5.5e7 ft²/d and the offsets 26 ft, so one
+1e-4; replaced in T6.1 by the rounding bound of the cell flows, see below). The conductances next to the wells reach 5.5e7 ft²/d and the offsets 26 ft, so one
 Float32 FLOW-JA-FACE value rounds to C·eps32·(|h'n| + |h'm|) = 81 ft³/d, 2e-2 of the total
 inflow (4000 ft³/d); measured 1.9e-4, growing with the drawdown (steps 23–24). The heads
 are within 1.5e-6 ft of MF6 and the percent discrepancy is 9e-6 %, so this is the
@@ -720,6 +720,105 @@ precision of Float32 flows through very large conductances, not of the solution.
 
 ROCm (RX 7800 XT): every row above is the same on ROCm, with the same iteration counts and
 bitwise the same heads and assembled systems as the CPU backend (max |Δh| = 0).
+
+## Convertible cells, wetting and drying (T6.1)
+
+Models: the Tier 3 examples ex-gwf-twri01 (VARIABLECV DEWATERED, PERCHED, CG, STRICT),
+ex-gwf-bcf2ss-p01a (REWET, RIV, CG), ex-gwf-bump-p01b (REWET, 584 of 2601 cells dry),
+ex-gwf-nwt-p02b (14 layers, REWET IHDWET 1, transient, 11778 of 22400 cells dry); the Tier 2
+examples that need convertible cells, ex-gwf-advtidal (convertible storage, TS6, EVT NSEG
+3, 361 steps), ex-gwf-maw-p03a and -p03c (convertible layer 1); ex-gwf-rad-disu (DISU,
+convertible storage; replaces nothing: `rad_disu_confined` stays); and the synthetic
+models (mf6 run at test time) test/models/wetdry (2×1×12: every layer-1 cell dries in the
+steady period, RCH moves to layer 2, cells rewet in period 3; PERCHED, VARIABLECV
+DEWATERED, convertible storage), test/models/disu_staggered (DISU, IHC 2, convertible) and
+test/models/afr (WEL AUTO_FLOW_REDUCE). References: tight runs, tight-relative for
+advtidal, bcf2ss-p01a, maw-p03c and rad-disu (their tight runs do not converge in MF6).
+
+**Universal residual and oracle** (convertible models through `GwfModel`: MF6's heads and
+dry cells in, `formulate!`; only steps whose previous step is saved, nwt-p02b saves the
+last step of each period: 1 step). `:single` with the rounding bound in parentheses.
+
+| Model | `:single` | `:double` | oracle `:double` amat / b' | oracle `:single` |
+| --- | --- | --- | --- | --- |
+| ex-gwf-twri01 | 5.8e-8 (3.0e-7) | 8.8e-13 | 0 / 0 | 5.4e-8 / 2e-17 |
+| ex-gwf-advtidal (361 steps) | 1.1e-7 (4.4e-7) | 9.3e-13 | 0 / 5e-17 | 1.6e-8 / 4.6e-9 |
+| ex-gwf-bcf2ss-p01a | 4.5e-7 (2.8e-6) | 1.8e-12 | 0 / 0 | 0 / 6e-35 |
+| ex-gwf-bump-p01b | 3.0e-6 (9.8e-6) | 7.2e-11 | 1.2e-16 / 6e-44 | 1.2e-7 / 3e-36 |
+| ex-gwf-nwt-p02b | 1.6e-6 (7.0e-6) | 7.7e-13 | 0 / 7e-42 | 1.2e-8 / 7e-42 |
+| ex-gwf-maw-p03a | 6.6e-6 (1.9e-5) | 1.4e-12 | 0 / 1.9e-17 | 0 / 1.7e-10 |
+| ex-gwf-maw-p03c | 4.4e-5 (2.2e-4) | **2.9e-8** | 0 / 5.8e-17 | 5.0e-8 / 1e-16 |
+| ex-gwf-rad-disu (24 steps) | 4.7e-2 (2.8e-1) | 2.6e-10 | 0 / 9.3e-17 | 3.4e-8 / 1.2e-9 |
+| wetdry (11 steps) | 6.9e-7 (2.3e-6) | 3.6e-12 | 0 / 2.3e-17 | 1.1e-8 / 2.6e-9 |
+| disu_staggered | 9.4e-6 (7.4e-5) | 2.4e-11 | 0 / 4.1e-17 | 3.1e-8 / 4.1e-17 |
+
+**ex-gwf-maw-p03c `:double`: criterion 1e-7 instead of 1e-8** (`UNIVERSAL_TOL`,
+test/parity/assembly_test.jl). Its reference is the tight-relative run (INNER_RCLOSE 1e-10
+RELATIVE_RCLOSE; the strict tight run does not converge), whose heads leave 2.9e-8 of the
+row magnitudes; the formulation agrees with libmf6's first AMAT and RHS to 0 and 6e-17.
+The `:single` residual of rad-disu (4.7e-2) is within its rounding bound: the storage
+coefficients Sy·area/Δt of the first steps (Δt = 5.8e-5 d) multiply offsets of up to
+26 ft.
+
+**Run parity** (CPU; max |Δh| vs MF6; CBC max |Δq| / total in, `:single` beyond the
+rounding bound below; pd = |percent discrepancy|, `:single` beyond the bound in
+parentheses when not 0; listing ≤ 6.0e-6 everywhere; outer/inner, MF6 in parentheses).
+Dry cells (HDRY) are the same as MF6's in every saved step of every preset.
+
+| Model | max \|Δh\| `:single` / `:mixed` / `:double` | CBC | pd | outer/inner `:single`, `:mixed`, `:double` (MF6) |
+| --- | --- | --- | --- | --- |
+| twri01 | 1.19e-5 / 1.42e-8 / 1.42e-8 | 2.7e-9 / 8.1e-12 / 8.1e-12 | 4.7e-7 / 3.4e-10 / 3.4e-10 % | 11/554, 13/926, 13/928 (14/927) |
+| advtidal | 5.97e-4 / 4.66e-10 / 4.66e-10 | 5.9e-7 / 9.2e-12 / 9.2e-12 | 1.9e-2 (0) / 4.9e-10 / 4.9e-10 % | 878/5063, 1110/8952, 1110/8952 (1103/6294) |
+| bcf2ss-p01a | 2.55e-5 / 9.28e-10 / 9.28e-10 | 1.3e-8 / 4.7e-13 / 4.7e-13 | 6.9e-6 / 6.2e-10 / 6.2e-10 % | 26/513, 39/985, 39/981 (39/632) |
+| bump-p01b | 5.67e-6 / 1.89e-9 / 1.89e-9 | 1.6e-7 / 6.7e-11 / 6.7e-11 | 7.4e-4 / 5.8e-9 / 5.8e-9 % | 12/517, 19/1112, 19/1112 (19/5379) |
+| nwt-p02b | 1.98e-5 / 2.93e-10 / 2.92e-10 | – (no CBC) | 4.0e-4 / 1.3e-10 / 1.3e-10 % | 223/11037, 321/38435, 321/38246 (339/226156) |
+| maw-p03a | 3.72e-5 / 2.81e-8 / 2.81e-8 | – (no CBC) | 5.9e-4 / 1.2e-9 / 1.0e-9 % | 4/827, 7/1729, 7/1706 (25/21764) |
+| maw-p03c | 7.78e-6 / 1.72e-9 / 1.72e-9 | 7.7e-5 / 1.2e-7 / 9.7e-8 | 0.60 (0) / 8.9e-5 / 8.9e-5 % | 2/103, 2/228, 2/228 (2/77) |
+| rad-disu (amg) | 2.96e-6 / 2.51e-10 / 2.51e-10 | 6e-16 / **6.0e-6** / **6.0e-6** | 48.5 (0) / 2.5e-9 / 2.5e-9 % | 69/266, 77/441, 77/441 (80/6631) |
+| wetdry | 1.35e-6 / 8.13e-12 / 8.13e-12 | 1.6e-6 / 7.4e-12 / 7.4e-12 | 3.1e-4 / 1.7e-11 / 1.7e-11 % | 40/139, 53/235, 53/235 (54/1137) |
+| disu_staggered | 3.36e-8 / 3.2e-12 / 3.2e-12 | 1.6e-13 / 3.5e-11 / 3.5e-11 | 0 / 1.5e-9 / 1.5e-9 % | 5/15, 7/24, 7/23 (7/49) |
+
+(rad-disu and twri01 heads in feet; MF6's maw-p03c percent discrepancy is 8.9e-5 % too.)
+
+**`:single` budgets: a bound from Float32 rounding of the cell flows** (replaces the 5e-4 ×
+total in of rad_disu_confined, T6.4, which now passes 1e-4 with 9.6e-13 beyond the bound).
+An engine flow is `C·(h'_m − h'_n + Δr)` or `κ·(h'old − h')` (`κ = (Ss·thk + Sy)·area/Δt`)
+from Float32 offsets, so it can differ from MF6's by `C·(4·eps32·(|h'_n| + |h'_m| + |Δr|) +
+|δh_n| + |δh_m|)`, `δh` the difference of the converged heads (tested separately against
+1e-3 m). `_rounding_bounds` (test/run_parity.jl) computes these per FLOW-JA-FACE entry (C
+from MF6's flow and head difference, condsat when MF6's heads are equal; the diagonal, the
+cell's net flow, gets the sum over its connections plus its storage bound) and per STO-SS /
+STO-SY cell; their sum per step bounds the listing terms and the in − out imbalance. The
+criteria (1e-4 × total in, 0.01 %) apply to what is beyond the bound. This matters where
+large coefficients meet small flows: rad-disu (the STO-SY coefficient of the first steps:
+one Float32 offset rounding is thousands of ft³/d against 4000 ft³/d in; raw pd 48.5 %),
+maw-p03c (total inflow 18 m³/d; raw CBC 1.0e-3, pd 0.60 %), advtidal (raw pd 1.9e-2 %).
+Use `:mixed` where such cell-by-cell flows or budgets matter.
+
+**ex-gwf-rad-disu `:double` / `:mixed` budget: criterion 1e-5 instead of 1e-6.** The
+largest difference is the STO-SY rate of cell 21 in step 2 (MF6 0.0241 ft³/d, ours 0):
+with Δt = 9.4e-5 d the coefficient Sy·area/Δt turns the 2.5e-10 ft head difference to
+MF6's tight-relative reference into 6.0e-6 × total in. The heads agree to 2.5e-10 ft.
+
+**Float32 STO-SY.** MF6's `rho2·thk·snold − rho2·thk·snnew` cancels in Float32 when the
+saturations are near 1 (rad-disu: rates quantised to 4, 8, 64, 512 ft³/d); the engine uses
+the equivalent `rho2·(clamp(hold) − clamp(h))` (docs/mf6_notes.md).
+
+**Float32 rclose floor with convertible cells.** The floor `eps32·max Σ|terms|` was taken
+from the first formulation of a step (T2.8). With convertible cells the terms grow as cells
+saturate (twri01: the first iteration's floor was below the attainable residual, and the
+STRICT inner test then failed in every outer iteration while the heads changed by 5e-6 m,
+500 outer iterations); it is now the maximum over the step's iterations for convertible
+models (confined models unchanged).
+
+**Confined models unchanged.** ICELLTYPE 0 models keep the constant-`condsat` kernels
+(`NpfModel.cv === nothing`): the final heads (bits) and the outer/inner iterations of every
+step are identical to main (79b2447) for ex-gwf-hanic, -hanir, -toth, -fhb, -lgrv-gc,
+-curve-90, -curvilin, -u1disv, coupling_rde and ts_tas in `:single`, `:mixed` and
+`:double`, on the CPU backend and on ROCm (60 runs). Synthetic global5m daily step on
+ROCm (benchmark/run.jl, `precond=mc_ilu0 timed=0`): daily step 0.221 → 0.214 s (`:double`), 0.201 → 0.198 s (`:mixed`), 0.091 → 0.084 s (`:single`), the same 8.3/26.1 (5.2/13.0) outer/inner iterations per step and the same peak memory (4.204, 4.007, 2.842 GiB); main and branch measured back to back (benchmark/results/2026-11-16-T6.1.md).
+
+ROCm (RX 7800 XT): every convertible model above passes the same criteria on ROCm, with heads bitwise equal to the CPU backend in all three presets (max |Δh| = 0).
 
 ## Solver performance changes (T4.7)
 

@@ -147,8 +147,11 @@ end
 
         @testset "spec checks" begin
             wel = byname["WEL"]
+            # AUTO_FLOW_REDUCE is supported since T6.1; its CSV output is not.
             afr = typeof(wel)(; (f => getfield(wel, f) for f in fieldnames(typeof(wel)))..., auto_flow_reduce = 0.1)
-            @test_throws MF6UnsupportedError BoundaryPackage(TEST_BACKEND, Float64, afr, conn, m.dis)
+            @test BoundaryPackage(TEST_BACKEND, Float64, afr, conn, m.dis) isa BoundaryPackage
+            afrcsv = typeof(wel)(; (f => getfield(wel, f) for f in fieldnames(typeof(wel)))..., auto_flow_reduce = 0.1, afrcsv_file = "x.csv")
+            @test_throws MF6UnsupportedError BoundaryPackage(TEST_BACKEND, Float64, afrcsv, conn, m.dis)
             # A list record in the IDOMAIN hole (1,3,4) is an error (cellid_to_nlist).
             p2 = wel.periods.data[1]
             hole = typeof(p2)(Int32[(1 - 1) * 35 + (3 - 1) * 7 + 4], p2.bound[:, 1:1], p2.auxvar[:, 1:1], String[], p2.ts)

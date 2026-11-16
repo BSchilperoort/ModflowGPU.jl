@@ -169,15 +169,12 @@ end
             iconv = copy(sto.iconvert)
             iconv[conn.nodeuser[3]] = 1
             conv(periods) = StoSpec(; iconvert = iconv, ss = sto.ss, sy = zeros(length(sto.ss)), periods, file = "x.sto")
-            # Convertible cells with a transient period: T6.1.
-            e = try
-                check_storage_spec(conv(StressPeriods(Int[], Symbol[])), conn, 2)
-                nothing
-            catch err
-                err
-            end
-            @test e isa MF6UnsupportedError && occursin("T6.1", sprint(showerror, e)) && occursin("ICONVERT", sprint(showerror, e))
-            @test_throws MF6UnsupportedError StoragePackage(TEST_BACKEND, Float64, conv(StressPeriods([1, 2], [:steady_state, :transient])), conn, 2)
+            # Convertible cells with a transient period: supported since T6.1 (they need the
+            # reference heads).
+            @test isnothing(check_storage_spec(conv(StressPeriods(Int[], Symbol[])), conn, 2))
+            @test_throws ArgumentError StoragePackage(TEST_BACKEND, Float64, conv(StressPeriods([1, 2], [:steady_state, :transient])), conn, 2)
+            sp = StoragePackage(TEST_BACKEND, Float64, conv(StressPeriods([1, 2], [:steady_state, :transient])), conn, 2; r = zeros(conn.nodes))
+            @test !isnothing(sp.conv) && length(sp.strgsy) == conn.nodes
             # Steady state only: no storage terms, accepted.
             @test isnothing(check_storage_spec(conv(StressPeriods([1, 2], [:steady_state, :transient])), conn, 1))
             # A convertible flag in an IDOMAIN 0 cell does not count.

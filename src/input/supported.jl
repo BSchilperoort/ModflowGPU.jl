@@ -127,11 +127,9 @@ const SUPPORTED_VALUES = Dict{Tuple{String, String}, Vector{String}}(
 
 Model features beyond options accepted with `strict = true` (names as in the `requires`
 field of `validation/examples.toml`). Supported: `:disv`, `:disu` (DISV6 / DISU6 grids,
-T6.4). Features not in the set are rejected:
+T6.4), `:convertible` (NPF ICELLTYPE /= 0 in an active cell) and `:convertible_storage`
+(STO ICONVERT /= 0 with a transient period), T6.1. Features not in the set are rejected:
 
-- `:convertible`: NPF ICELLTYPE /= 0 in an active cell (T6.1);
-- `:convertible_storage`: STO ICONVERT /= 0 in an active cell of a model with a transient
-  period (T6.1);
 - `:newton`: NEWTON in the model name file (T6.2);
 - `:multi_model`: more than one GWF model, or more than one solution (T6.6);
 - `:exchange`: GWF6-GWF6 exchanges (T6.6);
