@@ -56,6 +56,16 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
   block applied with an `ibound` is followed by the same cells without one. The model
   path always passes `ibound = nothing` today; this becomes reachable once IBOUND
   changes.
+- From the T6.3 merge (2026-11-16): this card owns `ex-gwf-advtidal` now. Also:
+  (1) record checks (`riv_ck` etc.) on time-series values use the average over the
+  period's first step, while MF6 uses the value at time 0 in period 1 and the previous
+  step's average later: matters for the cell-bottom checks of this card;
+  (2) `reference_rundir` (test helper) can fall back to the `relaxed` reference run:
+  make that explicit per example before advtidal and maw-p03c use it;
+  (3) a file named twice in TS6 FILEIN is not rejected (MF6: "Found duplicate
+  time-series file name");
+  (4) a package with series is restaged from the host every step, which overwrites
+  device-only BOUND writes (`device_bound!`) to its other columns.
 - Done when: the Tier 3 examples pass parity. `ex-gwf-advtidal` also needs T6.3: it is
   owned by whichever of T6.1 and T6.3 merges last, and the first of the two leaves it
   out.
@@ -77,7 +87,7 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
   of 125 outer iterations, `docs/precision.md`), the warning is gone, and the run
   parity tests still pass. T6.2: the Tier 4 examples pass parity.
 
-**T6.3 Time series and time-array series (M) ‖**
+**T6.3 Time series and time-array series (M) ‖ (done 2026-11-16)**
 - Depends: no Phase 6 card.
 - Read: `src/Utilities/TimeSeries/*.f90`.
 - Deliver: TS6 files (`STEPWISE`, `LINEAR`, `LINEAREND`, `SFAC`) and TAS6,
