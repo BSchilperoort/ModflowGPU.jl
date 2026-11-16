@@ -212,7 +212,7 @@ function outer_iteration!(state::OuterState, ps::PicardSolver, m::GwfModel{T}, k
     n = Int(m.conn.nodes)
     it = state.kiter += 1
     floor_step = it == 1 && st.rclose_floor_factor > 0
-    @timed_section :assembly formulate!(m; symmetric = st.symmetric, scale = floor_step ? ps.scale : nothing)
+    @timed_section :assembly formulate!(m; symmetric = st.symmetric, terms = false, scale = floor_step ? ps.scale : nothing)
     if floor_step
         # Float32: the attainable residual, eps(T)·max Σ|terms| (rule 2 rounding).
         smax = @timed_section :outer_reduction _mapreduce!(ps.reducer, backend, _maxscale_term, _MAXSCALE_OPS, n, ps.scale)[1]
@@ -242,7 +242,7 @@ function outer_iteration!(state::OuterState, ps::PicardSolver, m::GwfModel{T}, k
         k = state.krylov
         kdv == k.settings.dvclose || (state.krylov = _with_settings(k, _with(k.settings; dvclose = kdv)))
     end
-    res = @timed_section :linear_solve solve!(m.δ, state.krylov, m.sys.amat, m.res; kstp)
+    res = @timed_section :linear_solve solve!(m.δ, state.krylov, m.sys.amat, m.res; kstp, diag = m.sys.diag, offdiag_id = m.offdiag_id)
     state.inner += res.iterations
     (hncg, hmax, _, _), lrch = @timed_section :outer_reduction _mapreduce_loc!(ps.reducer, backend, _dxmax_term, _DXMAX_OPS, n, m.δ, m.ibound, m.h)
     state.hncg, state.lrch = hncg, lrch

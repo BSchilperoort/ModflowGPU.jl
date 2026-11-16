@@ -122,8 +122,13 @@ MILU relaxation factor of `:ilu0` (0: ILU0; IMS RELAXATION_FACTOR).
 
 `colors` is a host vector of colours `1:ncolors` per node (`greedy_colors` of the structure
 when `nothing`).
+
+Red–black ILU0 also keeps (T4.7) `dprev` (the diagonal, in `Ts`, of the last setup), `flag`
+(per node: its diagonal changed in the last setup) and `key` (the `offdiag_id` of the last
+full setup, see `solve!`): while the off-diagonal entries stay the same, a setup recomputes
+only the rows whose diagonal changed and the second-colour rows next to them.
 """
-struct MulticolorPreconditioner{VI <: AbstractVector{Int32}, VP <: AbstractVector, C <: CsrStructure} <: AbstractPreconditioner
+struct MulticolorPreconditioner{VI <: AbstractVector{Int32}, VP <: AbstractVector, C <: CsrStructure, VS <: AbstractVector, VF <: AbstractVector{UInt8}} <: AbstractPreconditioner
     csr::C
     ilu::Bool
     cptr::Vector{Int}
@@ -137,6 +142,9 @@ struct MulticolorPreconditioner{VI <: AbstractVector{Int32}, VP <: AbstractVecto
     dinv::VP
     relax::Float64
     ctr::VI
+    dprev::VS
+    flag::VF
+    key::Base.RefValue{Int}
 end
 
 ncolors(P::MulticolorPreconditioner) = length(P.cptr) - 1
@@ -209,7 +217,7 @@ function MulticolorPreconditioner(
     return MulticolorPreconditioner(
         csr, kind === :ilu0, cptr, dev(Int32.(perm)), dev(iperm), dev(cia), dev(cja), dev(cup), dev(csrc),
         KernelAbstractions.zeros(backend, Tp, length(ja)), KernelAbstractions.zeros(backend, Tp, n), Float64(relax),
-        dev(ctr),
+        dev(ctr), KernelAbstractions.zeros(backend, Ts, rb ? n : 0), KernelAbstractions.zeros(backend, UInt8, rb ? n : 0), Ref(0),
     )
 end
 
@@ -233,6 +241,7 @@ end
 Adapt.adapt_structure(to, P::MulticolorPreconditioner) = MulticolorPreconditioner(
     adapt(to, P.csr), P.ilu, copy(P.cptr), adapt(to, P.perm), adapt(to, P.iperm), adapt(to, P.cia), adapt(to, P.cja),
     adapt(to, P.cup), adapt(to, P.csrc), adapt(to, P.vals), adapt(to, P.dinv), P.relax, adapt(to, P.ctr),
+    adapt(to, P.dprev), adapt(to, P.flag), Ref(0),
 )
 
 # --- setup
@@ -306,17 +315,79 @@ end
 # Red–black ILU0, step 1: copy the scaled entries, one work item per entry `ii` of `amat`
 # (coalesced reads, and writes in two streams: with two colours the coloured row is the
 # original row, see the constructor). The diagonal of a first-colour row also gives its pivot.
-@inline function _mc_rb_copy(ii, n1, vals, dinv, iperm, cia, amat, ia, ja, irow, rowfac, colfac)
+@inline function _mc_rb_copy(ii, n1, vals, dinv, dprev, iperm, cia, amat, ia, ja, irow, rowfac, colfac)
     Tp = eltype(vals)
     Ts = eltype(rowfac)
     @inbounds begin
         n = irow[ii]
         i = iperm[n]
         t = ii - ia[n]
-        v = Tp(rowfac[n] * Ts(amat[ii]) * colfac[ja[ii]])
+        a = Ts(amat[ii])
+        v = Tp(rowfac[n] * a * colfac[ja[ii]])
         vals[cia[i] + t] = v
+        t == zero(t) && (dprev[n] = a)
         if i <= n1 && t == zero(t)
             dinv[i] = v != zero(Tp) ? one(Tp) / v : one(Tp)
+        end
+    end
+    return nothing
+end
+
+# Coloured row i (node n) copied from row n of `amat` (as `_mc_rb_copy` does entry by entry).
+@inline function _mc_rb_copy_row(i, n, n1, vals, dinv, cia, amat, ia, ja, rowfac, colfac)
+    Tp = eltype(vals)
+    Ts = eltype(rowfac)
+    @inbounds begin
+        i0 = ia[n]
+        c0 = cia[i]
+        for ii in i0:(ia[n + Int32(1)] - Int32(1))
+            v = Tp(rowfac[n] * Ts(amat[ii]) * colfac[ja[ii]])
+            vals[c0 + (ii - i0)] = v
+            if i <= n1 && ii == i0
+                dinv[i] = v != zero(Tp) ? one(Tp) / v : one(Tp)
+            end
+        end
+    end
+    return nothing
+end
+
+# Bitwise equality of two floats (also tells −0.0 from 0.0, which give other row factors).
+@inline _samebits(a::T, b::T) where {T <: AbstractFloat} = reinterpret(Base.uinttype(T), a) == reinterpret(Base.uinttype(T), b)
+
+# Incremental setup (T4.7), step 1, one work item per node n: `flag[n]` = its diagonal
+# changed since the last setup; a changed first-colour row is copied again (all of it: the
+# row factor changes with the sign of the diagonal). Valid only while the off-diagonal
+# entries and the column factors (scaling none) are those of the last setup.
+@inline function _mc_rb_diag(n, n1, vals, dinv, dprev, flag, iperm, cia, diag, amat, ia, ja, rowfac, colfac)
+    Ts = eltype(rowfac)
+    @inbounds begin
+        d = Ts(diag[n])
+        ch = !_samebits(d, dprev[n])
+        flag[n] = ch ? 0x01 : 0x00
+        if ch
+            dprev[n] = d
+            i = iperm[n]
+            i <= n1 && _mc_rb_copy_row(i, n, n1, vals, dinv, cia, amat, ia, ja, rowfac, colfac)
+        end
+    end
+    return nothing
+end
+
+# Step 2, second-colour row i = off + k: copied and factored again (`_mc_rb_factor`) when its
+# own diagonal or that of a (first-colour) neighbour changed; otherwise its factors stand.
+@inline function _mc_rb_refactor(
+        k, off, n1, vals, dinv, flag, perm, iperm, cia, cja, cup, ctr, amat, ia, ja, rowfac, colfac, relax, milu::Bool,
+    )
+    @inbounds begin
+        i = off + k
+        n = perm[i]
+        redo = flag[n] != 0x00
+        for kk in (cia[i] + Int32(1)):(cup[i] - Int32(1))
+            redo |= flag[cja[kk]] != 0x00
+        end
+        if redo
+            _mc_rb_copy_row(i, n, n1, vals, dinv, cia, amat, ia, ja, rowfac, colfac)
+            _mc_rb_factor(k, off, vals, dinv, perm, iperm, cia, cja, cup, ctr, relax, milu)
         end
     end
     return nothing
@@ -362,6 +433,7 @@ end
 end
 
 function precond_setup!(P::MulticolorPreconditioner, solver, amat)
+    P.key[] = 0
     backend = get_backend(P.vals)
     n = Int(P.csr.nodes)
     nc = ncolors(P)
@@ -371,8 +443,8 @@ function precond_setup!(P::MulticolorPreconditioner, solver, amat)
     if P.ilu && nc == 2
         csr = P.csr
         _map!(
-            backend, _mc_rb_copy, Int(csr.nja), Int32(len(1)), P.vals, P.dinv, P.iperm, P.cia, amat, csr.ia, csr.ja, csr.irow,
-            solver.rowfac, solver.colfac,
+            backend, _mc_rb_copy, Int(csr.nja), Int32(len(1)), P.vals, P.dinv, P.dprev, P.iperm, P.cia, amat, csr.ia, csr.ja,
+            csr.irow, solver.rowfac, solver.colfac,
         )
         _map!(backend, _mc_rb_factor, len(2), off(2), P.vals, P.dinv, P.perm, P.iperm, P.cia, P.cja, P.cup, P.ctr, relax, P.relax != 0)
         return P
@@ -383,6 +455,32 @@ function precond_setup!(P::MulticolorPreconditioner, solver, amat)
             _map!(backend, _mc_ilu_row, len(c), off(c), P.vals, P.dinv, P.iperm, P.cia, P.cja, P.cup, relax)
         end
     end
+    return P
+end
+
+# Red–black ILU0 with an unchanged `offdiag_id` (see `solve!`) and no scaling: the
+# incremental setup, bitwise equal to a full one. Otherwise a full setup, which records the
+# id for the next call.
+function _precond_setup!(P::MulticolorPreconditioner, solver, amat, diag, offdiag_id)
+    rb = P.ilu && ncolors(P) == 2 && !isnothing(diag) && solver.settings.scaling === :none
+    if !(rb && offdiag_id > 0 && P.key[] == offdiag_id)
+        precond_setup!(P, solver, amat)
+        P.key[] = rb ? offdiag_id : 0
+        return P
+    end
+    backend = get_backend(P.vals)
+    csr = P.csr
+    n1 = Int32(P.cptr[2] - 1)
+    n2 = P.cptr[3] - P.cptr[2]
+    relax = eltype(P.vals)(P.relax)
+    _map!(
+        backend, _mc_rb_diag, Int(csr.nodes), n1, P.vals, P.dinv, P.dprev, P.flag, P.iperm, P.cia, diag, amat, csr.ia, csr.ja,
+        solver.rowfac, solver.colfac,
+    )
+    _map!(
+        backend, _mc_rb_refactor, n2, n1, n1, P.vals, P.dinv, P.flag, P.perm, P.iperm, P.cia, P.cja, P.cup, P.ctr, amat, csr.ia,
+        csr.ja, solver.rowfac, solver.colfac, relax, P.relax != 0,
+    )
     return P
 end
 
@@ -439,13 +537,16 @@ end
 
 # The red–black kernels as stage 1 of the reduction of r·z (each returns r_n·z_n for the
 # rows it finishes: the second colour in the forward kernel, the first in the backward one).
-@inline function _mc_forward_dot(::Type{Ta}, k, off, z, src, r, vals, dinv, perm, cia, cja, cup) where {Ta}
+# T4.7: nothing is done when CG has stopped (`stop[4] != 0`, see `_CgStopPost`).
+@inline function _mc_forward_dot(::Type{Ta}, k, off, z, src, r, vals, dinv, perm, cia, cja, cup, stop) where {Ta}
+    @inbounds stop[4] != zero(eltype(stop)) && return _zeros4(Ta)
     _mc_forward(k, off, z, src, r, vals, dinv, perm, cia, cja, cup, true)
     n = @inbounds perm[off + k]
     return (@inbounds(Ta(r[n]) * Ta(z[n])), zero(Ta), zero(Ta), zero(Ta))
 end
 
-@inline function _mc_backward_ilu_dot(::Type{Ta}, k, off, z, y, vals, dinv, perm, cia, cja, cup) where {Ta}
+@inline function _mc_backward_ilu_dot(::Type{Ta}, k, off, z, y, vals, dinv, perm, cia, cja, cup, stop) where {Ta}
+    @inbounds stop[4] != zero(eltype(stop)) && return _zeros4(Ta)
     _mc_backward_ilu(k, off, z, y, vals, dinv, perm, cia, cja, cup)
     n = @inbounds perm[off + k]
     return (@inbounds(Ta(y[n]) * Ta(z[n])), zero(Ta), zero(Ta), zero(Ta))
@@ -458,9 +559,9 @@ function _precond_apply_dot!(z, P::MulticolorPreconditioner, r, red, post, sa, s
     backend = get_backend(z)
     len(c) = P.cptr[c + 1] - P.cptr[c]
     off(c) = Int32(P.cptr[c] - 1)
-    g = _reduce_stage1!(red, backend, 0, _mc_forward_dot, _SUM4, len(2), off(2), z, r, r, P.vals, P.dinv, P.perm, P.cia, P.cja, P.cup)
-    g += _reduce_stage1!(red, backend, g, _mc_backward_ilu_dot, _SUM4, len(1), off(1), z, r, P.vals, P.dinv, P.perm, P.cia, P.cja, P.cup)
-    _finalize_async!(red, backend, _SUM4, g, post, sa, ss)
+    g = _reduce_stage1!(red, backend, 0, _mc_forward_dot, _SUM4, len(2), off(2), z, r, r, P.vals, P.dinv, P.perm, P.cia, P.cja, P.cup, sa)
+    # T4.7: the backward kernel also finalises (`_reduce_last!`)
+    _reduce_last!(red, backend, g, _mc_backward_ilu_dot, _SUM4, len(1), post, sa, ss, off(1), z, r, P.vals, P.dinv, P.perm, P.cia, P.cja, P.cup, sa)
     return true
 end
 

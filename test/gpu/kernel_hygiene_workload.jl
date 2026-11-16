@@ -103,6 +103,11 @@ function workload(dir)
         M.device_dot(m.h, y)
         M.device_maxabs(y)
         M.device_argmaxabs(y)
+        # A reduction split over kernels whose last part is empty: the separate
+        # finalisation (`finalize_reduction_kernel!`, T4.7's fallback of `_reduce_last!`).
+        red = M.Reducer(M.get_backend(y), length(y), M.accumulation_type(M.get_backend(y), eltype(y)))
+        g = M._reduce_stage1!(red, M.get_backend(y), 0, M._dot_term, M._SUM4, length(y), y, y)
+        M._reduce_last!(red, M.get_backend(y), g, M._dot_term, M._SUM4, 0, M._NoPost(), red.out, red.out, y, y)
         scale = similar(m.res)
         bound = similar(m.res)
         M.flux_residual!(m.res, m.sys, m.csr, m.npf, m.h, m.ibound; scale, bound)

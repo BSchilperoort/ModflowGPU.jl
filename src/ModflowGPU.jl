@@ -9,6 +9,7 @@ module ModflowGPU
 using KernelAbstractions: KernelAbstractions, Backend, CPU, get_backend, @kernel, @index, @Const, @localmem, @synchronize
 using Printf: @sprintf, @printf
 using Adapt: Adapt, adapt
+using Atomix: Atomix
 using LinearAlgebra: LinearAlgebra
 
 include("backend_setup.jl")

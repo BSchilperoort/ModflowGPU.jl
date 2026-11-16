@@ -11,7 +11,9 @@ A GWF model ready to run on a device in precision `T` (state and assembly):
   `r` and differences, Float64), `ibound_host` (1 active, −1 constant head), `kper`
   (stress period applied last, 0 before the first), `offdiag` (the `symmetric` setting
   the off-diagonal entries of `sys.amat` were last assembled for, `nothing` when they are
-  stale: T4.5, see `formulate!`);
+  stale: T4.5, see `formulate!`), `offdiag_id` (T4.7: an id, unique in the session, of
+  the last write of the off-diagonal entries by `formulate!`, 0 before; the solver reuses
+  preconditioner data while it is unchanged);
 - device: `csr::CsrStructure`, `npf::NpfModel{T}`, `sys::LinearSystem{T}`, `packages`
   (`BoundaryPackage`s in MF6's order, `GwfSpec.boundaries`), `sto` (`StoragePackage` or
   `nothing`), `area` (cell areas, for RCH/EVT), `ibound`, the offset heads `h` and the
@@ -40,6 +42,7 @@ mutable struct GwfModel{T <: AbstractFloat, B <: Backend, C <: CsrStructure, N <
     const flowja::V
     kper::Int
     offdiag::Union{Nothing, Bool}
+    offdiag_id::Int
 end
 
 function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) where {T <: AbstractFloat}
@@ -58,7 +61,7 @@ function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) whe
     return GwfModel(
         spec, backend, conn, setup, csr, npf, sys, packages, sto, _device_copy(backend, T.(conn.area)),
         _device_copy(backend, ibh), ibh, h, hold, z(), z(), KernelAbstractions.zeros(backend, T, conn.nja), 0,
-        nothing,
+        nothing, 0,
     )
 end
 
@@ -70,7 +73,7 @@ function Adapt.adapt_structure(to, m::GwfModel)
         m.spec, get_backend(h), m.conn, m.setup, adapt(to, m.csr), adapt(to, m.npf), adapt(to, m.sys),
         BoundaryPackage[adapt(to, p) for p in m.packages], adapt(to, m.sto), adapt(to, m.area), adapt(to, m.ibound),
         copy(m.ibound_host), h, adapt(to, m.hold), adapt(to, m.res), adapt(to, m.δ), adapt(to, m.flowja), m.kper,
-        nothing,
+        nothing, 0,
     )
 end
 
@@ -141,22 +144,29 @@ function start_timestep!(m::GwfModel, delt::Float64)
     return m
 end
 
+# Ids of the writes of off-diagonal entries (`GwfModel.offdiag_id`), unique per session.
+const _OFFDIAG_IDS = Threads.Atomic{Int}(0)
+
 """
-    formulate!(m::GwfModel; symmetric = false, scale = nothing) -> m
+    formulate!(m::GwfModel; symmetric = false, terms = true, scale = nothing) -> m
 
 Formulate and assemble the system of an outer iteration from the current offset heads
 (`bnd_cf`/`bnd_fc` of every stress package except CHD, `sto_fc`, `npf_fc`, `sln_ls`), then
 the flux-form residual `m.res` (PLAN.md section 3.7, rule 2; with `scale`, also the
-row sums `Σ |terms|`, see `flux_residual!`). Device work only: one formulation kernel per
-package, then `formulate_system!` (T4.5), which rewrites the off-diagonal entries of the
+row sums `Σ |terms|`, see `flux_residual!`). Device work only: `formulate_system!` (T4.5;
+since T4.7 it also formulates the package records), which rewrites the off-diagonal entries of the
 matrix only when `ibound` or `symmetric` changed since they were last written.
+`terms = false` (the outer iterations, T4.7) leaves `sys.rhs`, `sys.bdiag` and `sys.brhs`
+unwritten (see `formulate_system!`).
 """
-function formulate!(m::GwfModel; symmetric::Bool = false, scale = nothing)
-    for pkg in m.packages
-        boundary_kind(pkg) === :CHD && continue
-        formulate!(pkg, m.h, m.ibound, m.area)
-    end
-    pkgs = Tuple((p.hcof, p.rhs, p.nodeptr, p.noderec) for p in m.packages if boundary_kind(p) !== :CHD && p.nbound > 0)
+function formulate!(m::GwfModel; symmetric::Bool = false, terms::Bool = true, scale = nothing)
+    # The package records are formulated in the row kernel (T4.7; `formulate!` per package
+    # did it in a kernel of its own). Records without a cell keep their `hcof`/`rhs`; no
+    # reader uses them (`calc_simvals!` skips them).
+    pkgs = Tuple(
+        (BoundaryKind{boundary_kind(p)}(), p.bound, m.area, p.hcof, p.rhs, p.nodeptr, p.noderec)
+            for p in m.packages if boundary_kind(p) !== :CHD && p.nbound > 0
+    )
     storage = nothing
     if !isnothing(m.sto) && m.sto.transient
         _check_timestep(m.sto)
@@ -168,7 +178,8 @@ function formulate!(m::GwfModel; symmetric::Bool = false, scale = nothing)
     # either do so every outer iteration or pass `offdiag = true`. Calling `assemble!` on
     # `m.sys` directly also leaves `m.offdiag` stale.
     offdiag = m.offdiag !== symmetric
-    formulate_system!(m.sys, m.res, m.csr, m.npf, m.h, m.ibound, pkgs, storage; symmetric, offdiag, scale)
+    offdiag && (m.offdiag_id = Threads.atomic_add!(_OFFDIAG_IDS, 1) + 1)
+    formulate_system!(m.sys, m.res, m.csr, m.npf, m.h, m.ibound, pkgs, storage; symmetric, offdiag, terms, scale)
     m.offdiag = symmetric
     return m
 end

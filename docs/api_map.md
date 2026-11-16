@@ -204,6 +204,11 @@ it. Underscore-prefixed helpers are omitted.
   boundary/storage terms, assembly and residual in one pass, bitwise as the separate
   kernels; `offdiag = false` skips the off-diagonal writes), `CsrStructure.irow` (row of
   each entry, for entry-parallel kernels); tests: picard, run, stepping.
+  T4.7: `LinearSystem.diag` (contiguous copy of the diagonal, written by `assemble!` and
+  `formulate_system!`); `formulate_system!` keywords `terms = false` (no `rhs`/`bdiag`/`brhs`
+  writes, the solver path) and package tuples `(kind, bound, area, hcof, rhs, nodeptr,
+  noderec)` whose records are formulated in the row kernel (`_package_terms`); tests:
+  assembly.
 
 ## Linear solvers
 
@@ -222,6 +227,13 @@ it. Underscore-prefixed helpers are omitted.
   (`_SetRho`, `_AlphaPost`, `_OmegaPost`: rho, alpha, omega kept on the device in `sa`/`ss`),
   so CG and BiCGSTAB synchronise once per iteration (`KrylovSolver` fields `reducer2`,
   `reducer3`, `sa`, `ss`).
+  T4.7: `solve!(...; diag, offdiag_id)` (setup from the contiguous diagonal; incremental
+  preconditioner setup while `offdiag_id` is unchanged, `_precond_setup!` hook);
+  single-pass reductions `mapreduce_last_kernel!` / `_reduce_last!` (the last work group
+  finalises, atomic counter `Reducer.count`); `_NoScale` / `_op_factors` (SCALING_METHOD
+  NONE: operator rows without reading `rowfac`/`colfac`); CG: direction fused into the
+  SpMV (`_dir_apply_dot`, direction vectors `p`/`phat`), device convergence test
+  `_CgStopPost` (`sa[4]`) so MC-ILU0 skips the last application.
   `_ArgMaxAbsOp` as the first op also returns the first index of the largest magnitude,
   `_mapreduce_loc!`; results land in host-mapped memory where `host_mapped_zeros` allows).
   Adapt rules on `KrylovSolver` and `Reducer` (a new one on the target). IMS mapping in
@@ -247,7 +259,10 @@ it. Underscore-prefixed helpers are omitted.
   in `Tp`, per-colour kernels for the ILU0 factorisation and the sweeps; option `relax`,
   MILU), `ncolors`. Red–black ILU0 (T4.5): entry-parallel copy `_mc_rb_copy`, pivots
   `_mc_rb_factor` through the transpose positions `ctr`, `r·z` fused into the two apply
-  kernels (`_precond_apply_dot!`). Tests: krylov.
+  kernels (`_precond_apply_dot!`). T4.7: incremental red–black setup (`_precond_setup!`
+  method, `_mc_rb_diag`, `_mc_rb_refactor`; fields `dprev`, `flag`, `key`): only rows whose
+  diagonal changed and their second-colour neighbours are refactored, bitwise equal to a
+  full setup. Tests: krylov.
 - **solver/precond/amg.jl** (T4.3): smoothed-aggregation AMG. `AMGOptions`,
   `AMGPreconditioner` (host Float64 setup: `_strength`, `_aggregate`, `_tentative`,
   `_smoother_matrix`, threaded `_spgemm`, `_build_hierarchy`; device `AMGLevel`s in `Tp`),
@@ -269,7 +284,7 @@ it. Underscore-prefixed helpers are omitted.
   picard, timeseries.
 - **gwf/model.jl**: one model on a device. `GwfModel{T}` (spec, conn, NpfSetup, CSR,
   NpfModel, LinearSystem, boundary packages, STO, ibound, offset heads `h`/`hold`, `res`,
-  `δ`, `flowja`; Adapt, e.g. `adapt(backend, m)`, T3.1), `apply_period!(::GwfModel, kper; window)` (once per period: package period
+  `δ`, `flowja`; `offdiag_id` (T4.7, session-unique id of the last off-diagonal write); Adapt, e.g. `adapt(backend, m)`, T3.1), `apply_period!(::GwfModel, kper; window)` (once per period: package period
   data, STO, CHD ibound, rebuilt only when a CHD package has new cells), `advance_time_series!(::GwfModel, window)` (T6.3: every step, in `prepare_time_step`), `start_timestep!` (`rho`, `hold ← h`, CHD heads), `formulate!`
   (per-package formulation, then `formulate_system!`; off-diagonals rewritten only when
   `ibound` or `symmetric` changed, field `offdiag`, T4.5), `absolute_heads` (host Float64 `r + h'`). Tests:

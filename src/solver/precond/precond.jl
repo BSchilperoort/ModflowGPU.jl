@@ -73,6 +73,11 @@ function precond_setup! end
 """
 function precond_apply! end
 
+# `precond_setup!` with what `solve!` knows of the matrix (T4.7): `diag` (contiguous diagonal
+# of `amat` or `nothing`) and `offdiag_id` (> 0: the off-diagonal entries are those of the
+# last call with the same id; see `solve!`). Preconditioners that can use them add methods.
+_precond_setup!(P::AbstractPreconditioner, solver, amat, diag, offdiag_id) = precond_setup!(P, solver, amat)
+
 # `z = M⁻¹·r`, and `r·z` (Float64 where the backend has it) when the preconditioner fuses
 # it into its last kernel (with `reducer`), else `nothing` (the solver then reduces).
 # z = M⁻¹·r, and when the preconditioner fuses it, r·z into `reducer` (stage 1 and the

@@ -7,7 +7,7 @@
 # fresh process under `AMDGPU.@device_code_llvm`, twice:
 #
 # - `float64acc`: the `:single` preset as it runs on ROCm. The reductions accumulate in
-#   `Ta = Float64` by design (rule 4), so only `mapreduce_kernel!`,
+#   `Ta = Float64` by design (rule 4), so only `mapreduce_kernel!`, `mapreduce_last_kernel!`,
 #   `finalize_reduction_kernel!` and AMG's Galerkin products (`galerkin_kernel!`,
 #   `galerkin_store_kernel!`) are exempt.
 # - `float32acc`: the backend reports no Float64 (as Metal does), so `Ta = Float32`, and
@@ -16,7 +16,7 @@
 # Every kernel the package defines (`gpu_*` functions of ModflowGPU) must be compiled by
 # the workload, so a new kernel cannot escape the test: add work for it to the workload.
 
-const HYGIENE_EXEMPT = ("mapreduce_kernel!", "finalize_reduction_kernel!", "galerkin_kernel!", "galerkin_store_kernel!")
+const HYGIENE_EXEMPT = ("mapreduce_kernel!", "mapreduce_last_kernel!", "finalize_reduction_kernel!", "galerkin_kernel!", "galerkin_store_kernel!")
 
 function _hygiene_pass(pass)
     out = tempname()
