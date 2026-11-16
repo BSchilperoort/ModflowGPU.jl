@@ -151,10 +151,10 @@ end
             # :single budgets (T6.1): differences beyond the Float32 rounding of the cell
             # flows and the head difference (`_rounding_bounds`, test/run_parity.jl) must be
             # below 1e-4 × total in; this replaces the 5e-4 of rad_disu_confined (T6.4).
-            # ex-gwf-rad-disu in :double/:mixed: STO-SY of the outer cells in the first steps
-            # (Sy·area/delt up to ~1e9 ft²/d, heads at the cell top) turns the 2.5e-10 ft head
-            # difference to MF6's tight-relative reference into 6.0e-6 × total in; criterion
-            # 1e-5 there (docs/precision.md).
+            # ex-gwf-rad-disu in :double/:mixed: STO-SY of cell 21 in step 2 (Sy·area/delt is
+            # large: Δt = 9.4e-5 d; heads at the cell top) turns the 2.5e-10 ft head difference
+            # to MF6's tight-relative reference into 6.0e-6 × total in; criterion 1e-5 there
+            # (docs/precision.md).
             dbt = name == "ex-gwf-rad-disu" ? 1.0e-5 : 1.0e-6
             _run_parity(name, rundir; preconditioner = pc, single_preconditioner = spc, double_budget_tol = dbt)
         end
