@@ -427,6 +427,9 @@ function _load_time_series(ld::_Loader, f::InputFile, ts_files, tas_files, perio
         ts[s.name] = s
     end
     tas = Dict{Symbol, TimeArraySeries}()
+    # TimeArraySeries.f90 read_next_array: DIS and DISV only (MODEL_SHAPE of length 2 or 3).
+    (isempty(tas_files) || length(g.mshape) >= 2) ||
+        throw(MF6InputError(f.path, 0, "Time array series is not supported for selected discretization type."))
     ncpl = prod(g.mshape[2:end])
     for fname in tas_files
         s = read_time_array_series_file(_resolve_path(fname, ld.simdir), ncpl; simdir = ld.simdir)

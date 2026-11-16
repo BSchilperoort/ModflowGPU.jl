@@ -200,6 +200,15 @@ _ts(method, times, values) = TimeSeries(:S, method, times, values, "test.ts")
             write_input(dir, "g.chd", files["g.chd"])
             write_input(dir, "g.rch", replace(files["g.rch"], "SERIES r" => "SERIES other"))
             @test occursin("Time-array series \"OTHER\" not found", input_error_of(() -> load_simulation(dir)).msg)
+            write_input(dir, "g.rch", files["g.rch"])
+            # MF6 evaluates a list series at time 0 when it reads the first PERIOD block
+            # (read_value_or_time_series): an error for a series that starts later.
+            write_input(dir, "g.chd.ts", replace(files["g.chd.ts"], " 0 100\n" => " 5 100\n"))
+            m = only(load_simulation(dir).models)
+            conn = build_connectivity(m)
+            spec = only(filter(b -> ModflowGPU.boundary_kind(b) === :CHD, m.boundaries))
+            chd = BoundaryPackage(TEST_BACKEND, Float64, spec, conn, m.dis)
+            @test_throws MF6InputError apply_period!(chd, 1, zeros(conn.nodes); window = (0.0, 5.0))
         end
     end
 

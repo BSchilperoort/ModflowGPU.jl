@@ -22,7 +22,9 @@
 #   interpolated value at the end of the step, `t1`.
 # - Times are compared with `is_close` (relative 100·eps) where MF6 does.
 # - A series that starts after `t0` integrates to 0 (MF6 finds no preceding record and
-#   returns 0; no error). A series that ends before `t1` is an error (MF6 does not
+#   returns 0; no error), except at time 0: MF6 first evaluates a list series at time 0
+#   when it reads the first PERIOD block, an error without a value there (`apply_period!`).
+#   A series that ends before `t1` is an error (MF6 does not
 #   extend a series to the end of the simulation unless asked, and the GWF list and array
 #   loaders never ask).
 # MF6 reads the records lazily and drops those before the step (AUTODEALLOCATE); here a
@@ -309,6 +311,9 @@ when `t1 == t0`), LINEAREND the interpolated value at `t1` (`get_value_at_time`)
 """
 function ts_value(s::TimeSeries, t0::Real, t1::Real; extend::Bool = false)
     time0, time1 = Float64(t0), Float64(t1)
+    # A series whose values are all DNODATA has no records (MF6: get_latest_preceding_node,
+    # "probable programming error").
+    isempty(s.times) && _ts_error(s, "time series \"$(s.name)\" has no records (every value is DNODATA)")
     s.method === :linearend && return _ts_value_at(s, time1, extend)
     timediff = time1 - time0
     timediff > 0 || return _ts_value_at(s, time0, extend)

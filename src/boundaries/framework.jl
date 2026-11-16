@@ -656,6 +656,12 @@ function _apply_period!(pkg::BoundaryPackage{K, T}, kper::Integer, r::AbstractVe
     if !isnothing(data) && _has_time_series(data)
         isnothing(window) &&
             throw(ArgumentError("apply_period!: $(spec.name) has time-series values in period $kper: give the time step as `window = (t0, t1)`"))
+        # MF6 reads list values in `idm_rp`, before `tdis_set_timestep`: a linked element
+        # first gets `GetValue(totimsav, totim)` (read_value_or_time_series), at the first
+        # step `get_value_at_time(0)`, an error for a series without a value at time 0.
+        if data isa PeriodList && window[1] == 0.0
+            foreach(r -> ts_value(_series(spec, r.name, spec.timeseries), 0.0, 0.0), data.ts)
+        end
         pkg.tsblock = _eval_time_series!(spec, _ts_working_copy(data), window)
         pkg.tswindow = window
     end
