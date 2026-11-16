@@ -40,8 +40,10 @@ Accepted with a different behaviour (logged warnings, not errors):
   `:auto` (default: `:mc_ilu0`, T4.4; logged as a message for ILU0, a warning for the
   others), `:jacobi`, `:chebyshev`, `:mc_sgs`, `:mc_ilu0` (multicolour ILU0, T4.2), `:amg` (smoothed-aggregation AMG, T4.3), with `precond_options`
   (docs/mf6_notes.md). RED_BLACK_ORDERING is accepted (it only affects MF6's ILU).
-- Backtracking (BACKTRACKING_* and COMPLEXITY COMPLEX's implicit backtracking): accepted,
-  not applied, with a warning (T6.2).
+- Backtracking (BACKTRACKING_NUMBER, _TOLERANCE, _REDUCTION_FACTOR, _RESIDUAL_LIMIT and
+  COMPLEXITY COMPLEX's implicit backtracking): supported (T6.2a, `sln_backtracking`), on
+  DIS, DISV and DISU, confined and convertible cells (with wetting and drying), in every
+  precision preset. Not with Newton (T6.2).
 - `:single`: closures below the Float32 floors (`FLOAT32_CLOSURES`, docs/precision.md) are
   raised, with an info message.
 
