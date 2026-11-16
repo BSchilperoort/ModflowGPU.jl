@@ -5,7 +5,7 @@ using ModflowGPU: MF6InputError, read_input_file, find_blocks, dis_dims, disv_di
     nbound, read_list_block, read_list_periods, write_binary_list, StressPeriods,
     period_block, period_data, ArrayPeriod, array_nodes, read_array_periods, read_sto_periods,
     OcRecord, read_oc_periods, read_records, read_tdis_perioddata, read_period_data,
-    ExchangeData, read_exchange_data, find_block
+    ExchangeData, read_exchange_data, find_block, keyword
 
 "Write package `name` (DFN `dfn`) with `text` into `dir` and read it."
 pkg(dir, name, dfn, text) = read_input_file(write_input(dir, name, text); dfn, simdir = dir)

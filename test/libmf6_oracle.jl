@@ -87,13 +87,77 @@ function _write_internal(io, name, a)
     return nothing
 end
 
+_grid_ftype(::ModflowGPU.DisSpec) = "DIS6"
+_grid_ftype(::ModflowGPU.DisvSpec) = "DISV6"
+_grid_ftype(::ModflowGPU.DisuSpec) = "DISU6"
+
+function _write_grid(io, dis::ModflowGPU.DisSpec)
+    println(io, "BEGIN options\n  LENGTH_UNITS  meters\nEND options")
+    println(io, "BEGIN dimensions\n  NLAY  $(dis.nlay)\n  NROW  $(dis.nrow)\n  NCOL  $(dis.ncol)\nEND dimensions")
+    println(io, "BEGIN griddata")
+    _write_internal(io, "delr", dis.delr)
+    _write_internal(io, "delc", dis.delc)
+    _write_internal(io, "top", dis.top)
+    _write_internal(io, "botm", dis.botm)
+    _write_internal(io, "idomain", dis.idomain)
+    println(io, "END griddata")
+    return nothing
+end
+
+# VERTICES and CELL2D blocks (DISV, DISU with vertices).
+function _write_vertices(io, dis)
+    println(io, "BEGIN vertices")
+    for v in 1:size(dis.vertices, 2)
+        println(io, "  ", v, " ", _mf6_real(dis.vertices[1, v]), " ", _mf6_real(dis.vertices[2, v]))
+    end
+    println(io, "END vertices\nBEGIN cell2d")
+    for (c, iv) in enumerate(dis.cell_vertices)
+        println(io, "  ", c, " ", _mf6_real(dis.cell_center[1, c]), " ", _mf6_real(dis.cell_center[2, c]), " ", length(iv), " ", join(iv, " "))
+    end
+    println(io, "END cell2d")
+    return nothing
+end
+
+function _write_grid(io, dis::ModflowGPU.DisvSpec)
+    println(io, "BEGIN options\n  LENGTH_UNITS  meters\nEND options")
+    println(io, "BEGIN dimensions\n  NLAY  $(dis.nlay)\n  NCPL  $(dis.ncpl)\n  NVERT  $(dis.nvert)\nEND dimensions")
+    println(io, "BEGIN griddata")
+    _write_internal(io, "top", dis.top)
+    _write_internal(io, "botm", dis.botm)
+    _write_internal(io, "idomain", dis.idomain)
+    println(io, "END griddata")
+    _write_vertices(io, dis)
+    return nothing
+end
+
+function _write_grid(io, dis::ModflowGPU.DisuSpec)
+    println(io, "BEGIN options\n  LENGTH_UNITS  meters\nEND options")
+    println(io, "BEGIN dimensions\n  NODES  $(dis.nodes)\n  NJA  $(dis.nja)\n  NVERT  $(dis.nvert)\nEND dimensions")
+    println(io, "BEGIN griddata")
+    _write_internal(io, "top", dis.top)
+    _write_internal(io, "bot", dis.bot)
+    _write_internal(io, "area", dis.area)
+    _write_internal(io, "idomain", dis.idomain)
+    println(io, "END griddata\nBEGIN connectiondata")
+    _write_internal(io, "iac", dis.iac)
+    _write_internal(io, "ja", dis.ja)
+    _write_internal(io, "ihc", dis.ihc)
+    _write_internal(io, "cl12", dis.cl12)
+    _write_internal(io, "hwva", dis.hwva)
+    isnothing(dis.angldegx) || _write_internal(io, "angldegx", dis.angldegx)
+    println(io, "END connectiondata")
+    dis.nvert > 0 && _write_vertices(io, dis)
+    return nothing
+end
+
 """
-    write_dis_simulation(dir, dis::ModflowGPU.DisSpec; name = "synth", npf_options = String[],
+    write_dis_simulation(dir, dis; name = "synth", npf_options = String[],
                          npf_arrays = Dict("icelltype" => 0, "k" => 1.0), strt = 0.0)
 
-Write a one-model MF6 simulation on the grid `dis` to `dir`: mfsim.nam, TDIS (one
-steady period), IMS, and a GWF model with DIS (INTERNAL arrays, reals written so that
-they read back exactly), NPF and IC. No boundary packages: enough for libmf6 to
+Write a one-model MF6 simulation on the grid `dis` (a `DisSpec`, `DisvSpec` or
+`DisuSpec`; the file is `<name>.dis` for all three) to `dir`: mfsim.nam, TDIS (one
+steady period), IMS, and a GWF model with the grid (INTERNAL arrays, reals written so
+that they read back exactly), NPF and IC. No boundary packages: enough for libmf6 to
 initialise, not to solve.
 
 NPF: `npf_options` are lines of the OPTIONS block (`"ALTERNATIVE_CELL_AVERAGING
@@ -156,23 +220,13 @@ function write_dis_simulation(
         BEGIN options
         END options
         BEGIN packages
-          DIS6  $name.dis  dis
+          $(_grid_ftype(dis))  $name.dis  dis
           NPF6  $name.npf  npf
           IC6  $name.ic  ic
         END packages
         """,
     )
-    open(joinpath(dir, "$name.dis"), "w") do io
-        println(io, "BEGIN options\n  LENGTH_UNITS  meters\nEND options")
-        println(io, "BEGIN dimensions\n  NLAY  $(dis.nlay)\n  NROW  $(dis.nrow)\n  NCOL  $(dis.ncol)\nEND dimensions")
-        println(io, "BEGIN griddata")
-        _write_internal(io, "delr", dis.delr)
-        _write_internal(io, "delc", dis.delc)
-        _write_internal(io, "top", dis.top)
-        _write_internal(io, "botm", dis.botm)
-        _write_internal(io, "idomain", dis.idomain)
-        println(io, "END griddata")
-    end
+    open(io -> _write_grid(io, dis), joinpath(dir, "$name.dis"), "w")
     _write_value(io, key, v) = v isa AbstractArray ? _write_internal(io, key, v) :
         println(io, "  ", key, "\n    CONSTANT  ", v isa Integer ? string(v) : _mf6_real(v))
     open(joinpath(dir, "$name.npf"), "w") do io

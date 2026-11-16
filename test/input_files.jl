@@ -27,6 +27,24 @@ function in_scope_examples(; tiers = 0:7)
 end
 
 """
+    reference_rundir(name) -> Union{String, Nothing}
+
+The MF6 reference run of example `name` that the parity tests compare with: the first of
+`reference/runs/<name>/{tight, tight-relative, relaxed}` whose `run.toml` has status
+`"ok"` (validation/run_reference.jl, `REFERENCE_ORDER`; ex-gwf-fhb's tight run does not
+converge, its reference is tight-relative), `nothing` when there is none.
+"""
+function reference_rundir(name::AbstractString)
+    for mode in ("tight", "tight-relative", "relaxed")
+        dir = joinpath(REFERENCE_DIR, "runs", name, mode)
+        f = joinpath(dir, "run.toml")
+        isfile(f) && get(TOML.parsefile(f), "status", "") == "ok" && return dir
+    end
+    tight = joinpath(REFERENCE_DIR, "runs", name, "tight")
+    return isdir(tight) && !isfile(joinpath(tight, "run.toml")) ? tight : nothing
+end
+
+"""
 Examples outside Tiers 0–2 that the Milestone A engine runs and the parity tests include
 (T6.0): the confined Tier 3 size tests (ICELLTYPE 0, RIV, RCHA, K33OVERK, `requires = []`).
 """
@@ -36,7 +54,9 @@ const EXTRA_PARITY_EXAMPLES = ("ex-gwf-lgrv-gc", "ex-gwf-lgrv-gr")
     parity_examples() -> Vector{Pair{String, String}}
 
 `name => simulation directory` of the examples of the assembly and run parity tests:
-the Tier 0–2 examples and `EXTRA_PARITY_EXAMPLES`, sorted by name. `MFGPU_TEST_LGRV_GR=0`
+the Tier 0–2 examples, `EXTRA_PARITY_EXAMPLES` and the Tier 5 (DISV/DISU, T6.4)
+examples, sorted by name. The parity tests skip, with the reason, those that strict
+loading rejects (ex-gwf-rad-disu: convertible storage, T6.1). `MFGPU_TEST_LGRV_GR=0`
 leaves out `ex-gwf-lgrv-gr` (672525 cells).
 """
 function parity_examples()
@@ -48,7 +68,34 @@ function parity_examples()
         name == "ex-gwf-lgrv-gr" && !gr && continue
         push!(out, name => dir)
     end
+    append!(out, in_scope_examples(; tiers = 5:5))
     return sort!(out)
+end
+
+"""
+    rad_disu_confined(dir) -> Bool
+
+Write `rad_disu_confined` to `dir` (T6.4): the tight-closure inputs of `ex-gwf-rad-disu`
+(reference/runs/ex-gwf-rad-disu/tight-relative: INNER_RCLOSE 1e-10 RELATIVE_RCLOSE, with
+which MF6 converges; DISU with vertices, 550 cells, transient WEL) with
+STO ICONVERT 0, the only feature of the example that needs another card (convertible
+storage, T6.1), so that DISU runs against MF6 (run at test time). Returns `false` when
+the reference run is missing.
+"""
+function rad_disu_confined(dir::AbstractString)
+    src = joinpath(REFERENCE_DIR, "runs", "ex-gwf-rad-disu", "tight-relative")
+    isdir(src) || return false
+    mkpath(dir)
+    for f in readdir(src)
+        any(e -> endswith(f, e), (".hds", ".cbc", ".lst", ".txt", ".toml", ".grb", ".csv")) && continue
+        cp(joinpath(src, f), joinpath(dir, f))
+    end
+    sto = joinpath(dir, "ex-gwf-rad-disu.sto")
+    txt = read(sto, String)
+    new = replace(txt, r"iconvert\s*\n\s*CONSTANT\s+1" => "iconvert\n    CONSTANT  0")
+    new != txt || error("rad_disu_confined: ICONVERT not found in $sto")
+    write(sto, new)
+    return true
 end
 
 """

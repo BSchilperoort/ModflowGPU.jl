@@ -616,3 +616,107 @@ river-loss limit gives the formula's fluxes in both engines (to 3.5e-7 relative)
 loss above 0.999 of the channel volume, except in `:single` (117 record-days above the
 volume in 31 days, 322 m³: the T5.5b review issue). At equal closures 0.01 the engines agree
 to 4.4e-11 m, at 5 to 3.5e-7 m (both 0.51 m from the tight heads after 31 days).
+
+## Time series: ex-gwf-fhb and ts_tas (T6.3)
+
+Time-series values are evaluated on the host in Float64 per time step (TimeSeries.f90
+`GetValue`, TimeArraySeries.f90 `GetAverageValues` over `[totimc, totimc + delt]`) and
+go through the period-data staging pass (multiplier and offsets in Float64, one cast to
+`T`), so they add no Float32 error of their own: a CHD head from a series reaches the
+device as `T(h − r)`, as a constant head does. ex-gwf-fhb (3×10 cells, 20 steps; CHD
+heads and WEL rates from LINEAREND series) replaces the `fhb_const` stand-in of the
+tables above (the T2.x rows are kept as measured then); its reference is the
+tight-relative MF6 run (the tight run does not converge in MF6). test/models/ts_tas
+(5×10 cells, 15 steps; every TS6/TAS6 form, see docs/support_matrix.md) is run with mf6
+at test time.
+
+**Universal residual and oracle** (CPU and ROCm bitwise identical): max |res| / max
+Σ|terms| over all steps, `:single` (rounding bound) and `:double`; libmf6 first solve
+`amat` / `b'`.
+
+| Model | `:single` | `:double` | oracle `:single` amat / b' | oracle `:double` |
+| --- | --- | --- | --- | --- |
+| ex-gwf-fhb | 6.5e-7 (3.5e-6) | 9.5e-11 | 2.0e-8 / 1.2e-8 | 0 / 0 |
+| ts_tas | 6.3e-7 (2.3e-6) | 2.5e-12 | 3.3e-8 / 2.5e-8 | 0 / 0 |
+
+The ex-gwf-fhb `:double` residual (9.5e-11) is MF6's own closure of the tight-relative
+run (RELATIVE_RCLOSE 1e-10). Storage residual test (group sto) on ex-gwf-fhb: STO-SS
+max |Δq| / max(max |q|, total in) 1.5e-12 (`:single`) and 3.0e-21 (`:double`).
+
+**Run parity** (default preconditioner `:mc_ilu0`; CPU, and ROCm with bitwise identical
+heads in every preset). Heads: max |Δh| over all saved steps; CBC: max |Δq| / total in
+over all records; listing beyond the printed rounding / total in; pd: max |percent
+discrepancy|; outer/inner iterations (MF6 ILU0 in brackets).
+
+| Model | preset | max \|Δh\| (m) | CBC | listing | pd | outer/inner (MF6) |
+| --- | --- | --- | --- | --- | --- | --- |
+| ex-gwf-fhb | `:single` | 3.9e-6 | 1.4e-6 | 7.4e-7 | 4.0e-4 % | 40/221 (40/300) |
+| ex-gwf-fhb | `:mixed` | 4.4e-10 | 2.0e-10 | 0 | 4.5e-8 % | 40/259 |
+| ex-gwf-fhb | `:double` | 2.3e-11 | 1.9e-10 | 0 | 5.6e-13 % | 40/220 |
+| ts_tas | `:single` | 3.6e-7 | 3.4e-7 | 8.5e-8 | 2.0e-5 % | 38/347 (38/3126) |
+| ts_tas | `:mixed` | 6.4e-12 | 1.4e-12 | 0 | 2.3e-10 % | 38/507 |
+| ts_tas | `:double` | 3.4e-12 | 1.3e-12 | 0 | 9.1e-14 % | 38/460 |
+
+`:single` vs `:double` final heads: ex-gwf-fhb 3.3e-7 m, ts_tas 3.6e-7 m. The outer
+iteration counts equal MF6's in every preset.
+
+## DISV and DISU: the Tier 5 examples and rad_disu_confined (T6.4)
+
+Models: the DISV examples ex-gwf-u1disv (121 cells, BiCGSTAB, STRICT rclose),
+ex-gwf-curve-90 (288) and ex-gwf-curvilin (864) (steady state, CHD, COMPLEXITY COMPLEX);
+`rad_disu_confined` (ex-gwf-rad-disu with STO ICONVERT 0: DISU with vertices, 550 cells,
+24 transient steps with TSMULT 1.62, five wells and no fixed heads; from MF6's
+tight-relative reference inputs, mf6 run at test time); and test/models/ts_tas written as
+DISV (TS6 and TAS6 on a vertex grid; test/unit/disv_disu_test.jl).
+
+**Connectivity and conductances** against libmf6 6.8.2: IA, JA, JAS, ISYM, IHC and the
+user-node IA/JA of the `.grb` files exact; CL1, CL2, HWVA, AREA, TOP, BOT, XC, YC and
+CONDSAT bitwise equal on all four examples; ANGLEX within 1 ulp (2.2e-16, libm `atan2`).
+Synthetic DISV/DISU grids with K22/ANGLE1–3 (the K ellipse in the connection direction
+`anglex`): CONDSAT within 4.1e-16. The DISV and DISU descriptions of DIS grids give the
+same connectivity and conductances as DIS, and with the Jacobi preconditioner bitwise the
+same heads and budgets in every preset.
+
+**Universal residual and oracle** (CPU and ROCm alike): max |res| / max Σ|terms|,
+`:single` (rounding bound) and `:double`; libmf6 first solve, `amat` / `b'`.
+
+| Model | `:single` | `:double` | oracle `:double` | oracle `:single` |
+| --- | --- | --- | --- | --- |
+| ex-gwf-u1disv | 3.26e-7 (2.34e-6) | 4.32e-13 | 0 / 0 | 2.7e-10 / 0 |
+| ex-gwf-curve-90 | 1.08e-6 (8.61e-6) | 1.01e-10 | 0 / 1.1e-16 | 8.6e-8 / 8.1e-9 |
+| ex-gwf-curvilin | 2.59e-6 (1.50e-5) | 7.35e-10 | 0 / 1.3e-16 | 8.4e-8 / 7.7e-9 |
+| rad_disu_confined | 4.6e-4 (9.8e-2) | 9.06e-10 | 0 / 1.1e-16 | 3.4e-8 / 1.1e-16 |
+
+The `:double` residuals of curvilin and rad_disu_confined (7e-10, 9e-10) are MF6's
+closure: its heads are within 1e-9 m per iteration, not exact.
+
+**Run parity** (max |Δh| vs MF6; CBC max |Δq| / total in; pd = |percent discrepancy|;
+listing ≤ 1e-7 everywhere; default preconditioner except rad_disu_confined):
+
+| Model, preset | max \|Δh\| | CBC | pd | outer/inner (MF6) |
+| --- | --- | --- | --- | --- |
+| u1disv `:single` / `:mixed` / `:double` | 1.45e-7 / 1.56e-12 / 1.6e-12 | 1.1e-7 / 5.6e-13 / 5.9e-13 | 4.4e-5 / 5.3e-10 / 5.1e-10 % | 2/14, 2/17, 2/17 (2/16) |
+| curve-90 | 4.48e-6 / 3.77e-10 / 3.8e-10 | 2.0e-7 / 1.3e-11 / 1.3e-11 | 2.5e-4 / 4.6e-11 / 1.4e-10 % | 4/37, 2/33, 2/33 (2/18) |
+| curvilin | 9.36e-6 / 1.47e-8 / 1.44e-8 | 1.3e-6 / 1.5e-9 / 1.5e-9 | 5.9e-4 / 1.7e-8 / 4.5e-8 % | 3/202, 3/83, 2/80 (2/36) |
+| rad_disu_confined (amg) | 1.49e-6 / 6.17e-9 / 6.17e-9 | 1.9e-4 / 9.8e-10 / 9.8e-10 | 9.0e-6 / 1.0e-9 / 4.3e-10 % | 124/28256, 48/316, 48/324 (53/922) |
+| ts_tas as DISV | 3.57e-7 / 6.41e-12 / 3.42e-12 | 3.4e-7 / 1.4e-12 / 1.3e-12 | 2.0e-5 / 2.3e-10 / 9.1e-14 % | 38/347, 38/507, 38/460 (38/3126) |
+
+(heads in the model's length unit: rad_disu_confined is in feet.)
+
+**rad_disu_confined needs AMG.** The late steps (Δt up to 3.8 d) of this radial grid
+without fixed heads are nearly singular: with the default MC-ILU0 (greedy colouring)
+BiCGSTAB, `:double` stalls at corrections of 1e-8–1e-7 ft from step 21 on and does not
+converge in 500 outer iterations; AMG converges in 2 outer iterations per step, as MF6
+(ILUT, COMPLEXITY COMPLEX) does. The run parity test uses `:amg` for it, like
+ex-gwf-hwell-a.
+
+**`:single` budget criterion loosened for rad_disu_confined** (5e-4 × total in instead of
+1e-4). The conductances next to the wells reach 5.5e7 ft²/d and the offsets 26 ft, so one
+Float32 FLOW-JA-FACE value rounds to C·eps32·(|h'n| + |h'm|) = 81 ft³/d, 2e-2 of the total
+inflow (4000 ft³/d); measured 1.9e-4, growing with the drawdown (steps 23–24). The heads
+are within 1.5e-6 ft of MF6 and the percent discrepancy is 9e-6 %, so this is the
+precision of Float32 flows through very large conductances, not of the solution. Use
+`:mixed` where such cell-by-cell flows matter.
+
+ROCm (RX 7800 XT): every row above is the same on ROCm, with the same iteration counts and
+bitwise the same heads and assembled systems as the CPU backend (max |Δh| = 0).

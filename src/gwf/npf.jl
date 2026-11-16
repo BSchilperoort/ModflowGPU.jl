@@ -24,7 +24,6 @@
 # - `preprocess_input`'s conversion to no-flow of cells with K = 0 (prepcheck already
 #   rejects K <= 0), its negative-thickness check (`check_dis_grid`), wetting and drying
 #   (T6.1), and the Newton bottom-node search (T6.2);
-# - the DISU ANGLDEGX checks of `prepcheck`/`npf_ar` (DISU is T6.4; DIS always has angles);
 # - XT3D (T6.5; MF6 does not compute condsat with XT3D) and THICKSTRT (T6.1) are rejected
 #   with an `MF6UnsupportedError`;
 # - VSC/TVK modifications of K (out of scope / T6.x).
@@ -246,12 +245,37 @@ function npf_properties(npf::NpfSpec, dis::AbstractDisSpec, conn::Connectivity; 
 
     check_npf_options(npf; newton)
 
+    _check_disu_angldegx(npf, dis, ik22)
+
     npf.thickstrt && unsupported(file, "NPF6 option THICKSTRT (T6.1)")
     npf.xt3d && unsupported(file, "NPF6 option XT3D (T6.5)")
 
     # gwf-npf.f90 `preprocess_input`: without THICKSTRT, negative ICELLTYPE means 1.
     icelltype = Int32[npf.icelltype[u] < 0 ? Int32(1) : npf.icelltype[u] for u in nu]
     return NpfProperties(icelltype, k11, k22, k33, angle1, angle2, angle3, ik22, ik33, _ICELLAVG[npf.cell_averaging])
+end
+
+# gwf-npf.f90 `prepcheck` ("ANGLDEGX not provided ... but K22 was specified"), `npf_ar`
+# (inconsistent ANGLDEGX with XT3D, K22 or SAVE_SPECIFIC_DISCHARGE) and `calc_spdis`
+# (ANGLDEGX required for specific discharge): only DISU grids can lack ANGLDEGX.
+_check_disu_angldegx(::NpfSpec, ::AbstractDisSpec, ::Bool) = nothing
+function _check_disu_angldegx(npf::NpfSpec, dis::DisuSpec, ik22::Bool)
+    file = isempty(npf.file) ? "NPF" : npf.file
+    if isnothing(dis.angldegx)
+        ik22 && throw(MF6InputError(file, 0, "Error.  ANGLDEGX not provided in discretization file, but K22 was specified. "))
+        npf.save_specific_discharge && throw(
+            MF6InputError(file, 0, "Error.  ANGLDEGX not provided in discretization file.  ANGLDEGX required for calculation of specific discharge."),
+        )
+    elseif npf.xt3d || ik22 || npf.save_specific_discharge
+        nerr = disu_angldegx_errors(dis; warn = false)
+        nerr > 0 && throw(
+            MF6InputError(
+                isempty(dis.file) ? "DISU" : dis.file, 0,
+                "ANGLDEGX values in the DISU Package are inconsistent for $nerr cell faces (see the warnings written after the DISU Package input in the model listing file). ANGLDEGX must be correct because it is required input for the NPF Package when XT3D, K22, or SAVE_SPECIFIC_DISCHARGE is specified.",
+            ),
+        )
+    end
+    return nothing
 end
 
 """
@@ -284,17 +308,19 @@ function check_npf_options(npf::NpfSpec; newton::Bool = false)
 end
 
 # Unit vector from reduced node `n` towards its neighbour across symmetric connection `jj`
-# (Dis.f90 `connection_normal`): vertical ±z (+1 when the neighbour `m` is above, i.e.
-# `m < n`); horizontal from `anglex`, the angle of the normal pointing from the lower- to
-# the higher-numbered node, negated when `m < n`. The two DIS directions (right: 0,
-# front: 3π/2) are exact (Dis.f90 sets the components to exactly 0 and ±1); other angles
-# (DISV, T6.4) use cos/sin.
+# (Dis.f90, Disv.f90, Disu.f90 `connection_normal`): vertical ±z (+1 when the neighbour `m`
+# is above, i.e. `m < n`); horizontal from `anglex`, the angle of the normal pointing from
+# the lower- to the higher-numbered node, negated when `m < n`. On a DIS grid the two
+# directions (right: 0, front: 3π/2) are exact (Dis.f90 sets the components to exactly 0
+# and ±1); DISV and DISU use cos/sin of the angle, as MF6 does (T6.4).
 @inline function _connection_normal(conn::Connectivity, n::Integer, m::Integer, ihc::Integer, jj::Integer)
     if ihc == 0
         return (0.0, 0.0, m < n ? 1.0 : -1.0)
     end
     a = conn.anglex[jj]
-    x, y = if a == 0.0
+    x, y = if conn.grid !== :dis
+        (cos(a), sin(a))
+    elseif a == 0.0
         (1.0, 0.0)
     elseif a == 3.0 / 2.0 * Float64(pi)  # Connections.f90 `disconnections`, front
         (0.0, -1.0)

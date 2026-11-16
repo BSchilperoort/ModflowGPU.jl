@@ -1,6 +1,6 @@
 # Residual test with RIV, DRN and EVT (T2.4), PLAN.md section 4:
 #
-# 1. ex-gwf-fhb with constant stresses (test/models/fhb_const) is covered by the sto group
+# 1. ex-gwf-fhb (with its time series since T6.3) is covered by the sto group
 #    (it has no RIV, DRN or EVT).
 # 2. test/models/coupling_rde: a small synthetic coupling-like model (2 layers, 12 x 15,
 #    IDOMAIN 0 corners and a layer-1 hole, variable DELR/DELC, confined) with CHD, WEL,

@@ -54,13 +54,19 @@ it. Underscore-prefixed helpers are omitted.
   `read_oc_periods` (`OcRecord`), `read_sto_periods`, `read_tdis_perioddata`,
   `read_records`, `ExchangeData` / `read_exchange_data` / `exchange_schema`,
   `write_binary_list`. Tests: input_lists.
+- **input/timeseries.jl** (T6.3): TS6 and TAS6 files and their evaluation on the host in
+  Float64 (TimeSeries.f90, TimeArraySeries.f90). `TimeSeries` / `read_time_series_file`
+  (NAME(S), METHOD(S), SFAC(S), several series per file, DNODATA), `ts_value(s, t0, t1)`
+  (`GetValue`: STEPWISE/LINEAR time-weighted average over the step, LINEAREND value at
+  `t1`), `TimeArraySeries` / `read_time_array_series_file`, `tas_values!` (`GetAverageValues`).
+  Tests: timeseries.
 - **input/options.jl**: OPTIONS / DIMENSIONS / TIMING blocks through the DFN schema.
   `OptionSet`, `read_options`, `option`, `has_option`, `option_line`. Tests:
   simulation_loader.
 - **input/supported.jl**: what the engine supports; the loader checks input against it.
   `MF6UnsupportedError`, `SUPPORTED_OPTIONS`, `SUPPORTED_VALUES`, `SUPPORTED_FEATURES`,
   `UNSUPPORTED_PACKAGES` / `UNSUPPORTED_MODELS`, `check_options`, `check_value`,
-  `check_feature`. Tests: simulation_loader, input_lists.
+  `check_feature` (T6.4: `:disv`, `:disu` supported; DISV/DISU options). Tests: simulation_loader, input_lists.
 
 ## Model description (host specs, plain structs)
 
@@ -68,8 +74,10 @@ it. Underscore-prefixed helpers are omitted.
   `DisvSpec`, `DisuSpec`, `grid_dims`, `nodes_user`, `idomain_user`. Tests:
   simulation_loader, connectivity.
 - **spec/packages.jl**: GWF package specs. `NpfSpec`, `StoSpec` (`is_transient`), `IcSpec`,
-  `OcSpec`, `PrintFormat`, `BoundarySpec{Kind}`, `BOUNDARY_KINDS`. Tests:
-  simulation_loader, npf.
+  `OcSpec`, `PrintFormat`, `BoundarySpec{Kind}` (T6.3: `timeseries`, `timearrayseries`
+  dictionaries by name, read by the loader, `_load_time_series` in input/simulation.jl,
+  which also checks every name the period data use), `BOUNDARY_KINDS`. Tests:
+  simulation_loader, npf, timeseries.
 - **spec/simulation.jl**: simulation-level specs. `TdisSpec` (`nper`), `ImsSpec`
   (`ims_defaults`), `SolutionGroupSpec`, `PackageEntry`, `GwfSpec`, `ExchangeSpec`,
   `SimulationSpec`, `model_spec`. Tests: simulation_loader.
@@ -82,11 +90,23 @@ it. Underscore-prefixed helpers are omitted.
 
 - **discretization/connectivity.jl**: MF6 CSR connectivity layout (PLAN.md 3.3).
   `Connectivity` (ia/ja/jas/isym/ihc, cl1/cl2/hwva/anglex, top/bot/area/xc/yc, reduced
-  numbering), `build_connectivity`, `reduced_numbering`, `fill_isym!`, `fill_jas!`,
+  numbering; T6.4: `grid` = `:dis`/`:disv`/`:disu`, xc/yc empty for DISU without vertices),
+  `build_connectivity`, `reduced_numbering`, `fill_isym!`, `fill_jas!`,
   `iajausr`, `getjaindex`, `connection_lengths`. Tests: connectivity.
 - **discretization/dis.jl**: DIS → `Connectivity` (Dis.f90): `build_connectivity(::DisSpec)`
   with IDOMAIN 0 / pass-through cells, `check_dis_grid`. Tests: connectivity (parity vs
   libmf6 and `.grb`).
+- **discretization/disv.jl** (T6.4): DISV → `Connectivity` (Disv.f90 `grid_finalize`,
+  `connect`, `define_cellverts`; Connections.f90 `disvconnections`/`vertexconnect`;
+  DisvGeom.f90 `cprops`, `shared_edge`, `anglex`): `build_connectivity(::DisvSpec)`,
+  `check_disv_grid` (MF6 messages; returns the cell2d areas), `disv_anglex`;
+  `_cell_vertex_csr` (closed vertex lists, the GRB IAVERT/JAVERT). Tests: disv_disu,
+  connectivity (libmf6 oracle, `.grb`), npf (CONDSAT oracle).
+- **discretization/disu.jl** (T6.4): DISU → `Connectivity` (Disu.f90 `disu_ck`,
+  `grid_finalize`, `disu_face_normal`; Connections.f90 `disuconnections`, `con_finalize`):
+  `build_connectivity(::DisuSpec)` (reduced grids: rows sorted, input arrays compressed),
+  `check_disu_grid`, `disu_angldegx_errors` (MF6's `nangldegxerr` and warnings), `DNODATA`.
+  Tests: disv_disu, connectivity, npf.
 
 ## In-memory models and the MF6 writer (host, T3.2)
 
@@ -113,8 +133,10 @@ it. Underscore-prefixed helpers are omitted.
 - **gwf/npf.jl**: NPF, confined: saturated conductance per connection (NPF.f90). Device-safe
   `logmean`, `condmean`, `staggered_thkfrac`; host `hyeff` / `hy_eff` (anisotropic K),
   `NpfProperties` / `npf_properties`, `check_npf_options`, `calc_condsat`, `NpfSetup` /
-  `npf_setup(::GwfSpec)`, device struct `NpfModel{T}` (`NpfModel(backend, T, setup)`, Adapt), `CCOND_*` averaging codes. Tests:
-  npf (parity vs libmf6 CONDSAT).
+  `npf_setup(::GwfSpec)`, device struct `NpfModel{T}` (`NpfModel(backend, T, setup)`, Adapt), `CCOND_*` averaging codes. T6.4: connection
+  normals from `anglex` by cos/sin on DISV/DISU (exact axes on DIS), the DISU ANGLDEGX
+  checks of `prepcheck`/`npf_ar` (`_check_disu_angldegx`). Tests:
+  npf (parity vs libmf6 CONDSAT, also DISV/DISU), disv_disu.
 - **gwf/ic.jl**: IC (gwf-ic.f90 `ic_ar`). `initial_heads` (starting heads per reduced
   node as offsets, Float64 host or device copy in `T`). Tests: sto.
 - **gwf/sto.jl**: confined storage (gwf-sto.f90 `sto_rp`/`sto_fc`/`sto_cq`/`sto_bd`,
@@ -149,6 +171,12 @@ it. Underscore-prefixed helpers are omitted.
   `bound_user!` fills `bound_user` on demand; `bound_version` counts value changes;
   `bound_values(pkg, r)` (Float64 `bound`, replaces the `bound_host` field). Tests:
   boundaries (fast path vs full application).
+  T6.3 (time series): a PERIOD block with `TsRef`s or TIMEARRAYSERIES is applied through a
+  working copy (`tsblock`, `_ts_working_copy`, `_block_data`) whose linked entries hold the
+  series values of the step (`apply_period!(...; window)`); `advance_time_series!(pkg,
+  window, r)` re-evaluates them per step and restages `bound` (multiplier and offsets in
+  Float64, as period data; after a stepping API write the series replace their columns of
+  `bound_user`); `tswindow`. Tests: timeseries, run, assembly, sto.
 - **boundaries/chd.jl**: CHD (gwf-chd.f90; see `docs/mf6_notes.md`). `apply_chd_heads!`,
   `calc_chd_rate!`. Tests: boundaries (parity vs MF6 CBC).
 - **boundaries/wel.jl**, **rch.jl**, **ghb.jl**: WEL, RCH (list and RCHA arrays, cell
@@ -251,12 +279,13 @@ it. Underscore-prefixed helpers are omitted.
 ## Time stepping, outer iterations, flows and budgets (T2.8)
 
 - **timing.jl**: TDIS on the host (tdis.f90 `tdis_set_timestep`/`tdis_set_delt`).
-  `TimeStep` (kper, kstp, delt, pertim, totim, endofperiod), `time_steps(tdis)`. Tests:
-  picard.
+  `TimeStep` (kper, kstp, delt, pertim, totim, endofperiod), `time_steps(tdis)`,
+  `time_step_window(steps, i)` (T6.3: `(totimc, totimc + delt)` for the time series). Tests:
+  picard, timeseries.
 - **gwf/model.jl**: one model on a device. `GwfModel{T}` (spec, conn, NpfSetup, CSR,
   NpfModel, LinearSystem, boundary packages, STO, ibound, offset heads `h`/`hold`, `res`,
-  `δ`, `flowja`; `offdiag_id` (T4.7, session-unique id of the last off-diagonal write); Adapt, e.g. `adapt(backend, m)`, T3.1), `apply_period!(::GwfModel, kper)` (once per period: package period
-  data, STO, CHD ibound, rebuilt only when a CHD package has new cells), `start_timestep!` (`rho`, `hold ← h`, CHD heads), `formulate!`
+  `δ`, `flowja`; `offdiag_id` (T4.7, session-unique id of the last off-diagonal write); Adapt, e.g. `adapt(backend, m)`, T3.1), `apply_period!(::GwfModel, kper; window)` (once per period: package period
+  data, STO, CHD ibound, rebuilt only when a CHD package has new cells), `advance_time_series!(::GwfModel, window)` (T6.3: every step, in `prepare_time_step`), `start_timestep!` (`rho`, `hold ← h`, CHD heads), `formulate!`
   (per-package formulation, then `formulate_system!`; off-diagonals rewritten only when
   `ibound` or `symmetric` changed, field `offdiag`, T4.5), `absolute_heads` (host Float64 `r + h'`). Tests:
   picard, run.
@@ -306,7 +335,7 @@ it. Underscore-prefixed helpers are omitted.
 - **run.jl** (T2.8): `ModflowGPU.run(simdir or SimulationSpec; backend, precision,
   outdir, closures, write_output, preconditioner, precond_options)` (on the stepping API since T3.3) → `RunResult` (model, precision types, `StepResult`s,
   `ModelBudget`s, final heads, output paths); `ConvergenceError`. One model, one IMS
-  solution. Tests: run (parity vs MF6 on Tier 0, fhb_const, coupling_rde and IMS
+  solution. Tests: run (parity vs MF6 on Tier 0, ex-gwf-fhb, ts_tas, coupling_rde and IMS
   variants; flopy read-back with MFGPU_FLOPY=1). `_write_step` (step output) copies the
   heads to the host only when OC saves or prints them (T5.2).
 
@@ -334,22 +363,29 @@ it. Underscore-prefixed helpers are omitted.
 - **testutils.jl**: `for_each_precision`, `write_input`, `input_error_of`.
 - **input_files.jl**: `REFERENCE_DIR`, `in_scope_examples`, `simulation_input_files`,
   `model_package_files`; `parity_examples` (T6.0: Tier 0–2 plus `EXTRA_PARITY_EXAMPLES`,
-  ex-gwf-lgrv-gc/-gr; `MFGPU_TEST_LGRV_GR=0` drops -gr), used by the assembly and run
-  parity tests.
+  ex-gwf-lgrv-gc/-gr; `MFGPU_TEST_LGRV_GR=0` drops -gr; T6.4: plus the Tier 5 examples),
+  used by the assembly and run parity tests; `reference_rundir(name)` (T6.3: the converged
+  reference run, tight or tight-relative, e.g. ex-gwf-fhb); `rad_disu_confined` (T6.4:
+  ex-gwf-rad-disu with ICONVERT 0, written from the reference run at test time).
 - **libmf6_oracle.jl**: libmf6 subprocess oracle. `LIBMF6_ENV`, `libmf6_available`,
-  `run_libmf6_script` (validation/libmf6_connectivity.jl, libmf6_first_solve.jl), `libmf6_connectivity`, `write_dis_simulation` (synthetic DIS sims).
-- **grids.jl**: `_synthetic_coupling_dis`, `_synthetic_passthrough_dis`, `_rel_close`.
+  `run_libmf6_script` (validation/libmf6_connectivity.jl, libmf6_first_solve.jl), `libmf6_connectivity`, `write_dis_simulation` (synthetic DIS sims; DISV/DISU since T6.4).
+- **grids.jl**: `_synthetic_coupling_dis`, `_synthetic_passthrough_dis`, `_rel_close`,
+  `_dis`, `_Lcg`/`_next!`; T6.4: `_dis_as_disv`, `_dis_as_disu` (the DISV/DISU description of
+  a DIS grid, same user node numbers).
 - **run_parity.jl** (T3.4, moved from parity/run_test.jl): `_run_parity(name, rundir)`
   (ModflowGPU vs MF6 output in `rundir`: heads, CBC, listing tables, both presets, GPU vs
-  CPU; returns the numbers per preset; `single_preconditioner` for `:single`, T6.0), `_mf6_iterations`, `_head_difference`,
+  CPU; returns the numbers per preset; `single_preconditioner` for `:single`, T6.0; `single_budget_tol` and list records matched by package, T6.4), `_mf6_iterations`, `_head_difference`,
   `_budget_difference`, `_listing_difference`, `RUN_MF6`. Used by groups run, synthetic.
 - **residual.jl**: `to_test_device`, `flux_residual` (device `flux_residual!` → (rel, rounding
   bound)), `residual_stats`, `host_flux_residual` (the T2.3 host loop, validates the kernel).
 - **models/coupling_rde/**: synthetic coupling-like model (2 × 12 × 15, confined, steady +
   transient) with CHD, WEL, RCHA, RIV, DRN, EVT, EVTA; `generate.jl` writes it
   (riv_drn_evt parity test); test/unit/builder_test.jl builds it in memory.
-- **models/fhb_const/**: ex-gwf-fhb with the CHD/WEL time series replaced by constants per
-  period (sto parity test).
+- **models/ts_tas/** (T6.3, replaces models/fhb_const): synthetic time-series model (1×5×10,
+  3 transient periods): TS6 LINEAR/STEPWISE/LINEAREND with SFACS, DNODATA and several series
+  per file (CHD heads, WEL rate and AUXMULTNAME multiplier, GHB conductance), TAS6 RCHA
+  (LINEAR, zeroed by a later block) and EVTA (STEPWISE); run with mf6 at test time (groups
+  assembly, run).
 
 ## Benchmarks (`benchmark/`, workspace project)
 

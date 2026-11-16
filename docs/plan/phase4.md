@@ -137,6 +137,8 @@ Carried over to card T4.7 (at the end of this file):
      - T4.6: `:single` period data at 9.1 ms has little margin (single-thread Float32
        cast of RCH, ~4 ms); mirrors compare the whole array per push (~1–2 ms for RIV
        on `global5m`; gone where T5.2 writes device arrays).
+     - T6.4: the once-per-session info message in `krylov.jl` says "red–black" also
+       for DISV/DISU models, which use greedy colouring.
      - T4.1: `report_mf6` throws a BoundsError if mf6 fails before any `Solving` line.
 - Done when: `benchmark/run.jl` shows each target met, or the reason why not is
   documented in the status block; the parity groups pass on CPU and rocm in all presets.

@@ -17,8 +17,18 @@
 # `hcof·h' − rhs` equals MF6's `hcof·h − rhs`. The MULTIPLIER auxiliary variable
 # (`AUXMULTNAME`) is applied on the host in Float64 at the same time, before the offset
 # (MF6 multiplies on use, e.g. `head_mult`, `cond_mult`; the values are the same because
-# time series are not supported yet: T6.3 must re-apply both when a series updates a
-# value).
+# both are re-applied whenever a value changes: new period data, a stepping API write, or
+# a time series).
+#
+# Time series (T6.3, PLAN.md 3.7: host, Float64). A PERIOD block with time-series values
+# (`TsRef`s of a list, TIMEARRAYSERIES arrays) is applied through a working copy of the
+# block (`tsblock`) whose linked entries hold the series values of the current time step
+# (`ts_value`, `tas_values!` over `[totimc, totimc + delt]`, TimeSeriesManager.f90
+# `tsmgr_ad`, TimeArraySeriesManager.f90 `tasmgr_ad`). `advance_time_series!` re-evaluates
+# them at every time step and sends `bound` to the device through the same staging pass
+# as period data (multiplier and offsets in Float64, one cast, one copy), so a MULTIPLIER
+# given as a time series and head-like series (CHD head, RIV stage, ...) are handled as
+# any other period data.
 
 """
     BoundaryKind{K}
@@ -112,8 +122,10 @@ it with `bound_user!`), `staging` (`(ncol, maxbound)` in `T`: the values copied 
 with `pin_memory!`, whose result is kept in `pinned`), `nodeptr_host` / `noderec_host` (the
 node→record map on the host), `rrec` / `rrec_for` (the reference `r[nodelist[i]]` per
 record, 0 without a cell, for heads of the packages with head-like columns, and the `r` it
-was taken from; `nothing` after the cells change). `bound_values(pkg, r)` gives the
-Float64 values of `bound`.
+was taken from; `nothing` after the cells change), `tsblock` (T6.3: the working copy of
+the PERIOD block in force when it has time-series values, `nothing` otherwise) and
+`tswindow` (the time step `(t0, t1)` its series values are for). `bound_values(pkg, r)`
+gives the Float64 values of `bound`.
 """
 mutable struct BoundaryPackage{K, T <: AbstractFloat, VI <: AbstractVector{Int32}, VT <: AbstractVector{T}, MT <: AbstractMatrix{T}}
     const spec::BoundarySpec{K}
@@ -141,6 +153,8 @@ mutable struct BoundaryPackage{K, T <: AbstractFloat, VI <: AbstractVector{Int32
     const noderec_host::Vector{Int32}
     const rrec::Vector{Float64}
     rrec_for::Union{Nothing, Vector{Float64}}
+    tsblock::Union{Nothing, PeriodList, ArrayPeriod}
+    tswindow::NTuple{2, Float64}
 end
 
 # The staging buffer of `bound` on the host, and the result of `pin_memory!` (kept so the
@@ -165,7 +179,7 @@ function BoundaryPackage{K, T}(backend::Backend, spec::BoundarySpec{K}, conn::Co
         zt(nchd), zt(nchd), KernelAbstractions.ones(backend, Int32, conn.nodes + 1), zi(maxbound), 0, 0,
         zeros(Int32, maxbound), zeros(Float64, ncol, maxbound), String[], 0, false, staging, pinned,
         zeros(Int32, conn.nodes + 1), zeros(Int32, maxbound),
-        zeros(isempty(head_columns(BoundaryKind{K}())) ? 0 : maxbound), nothing,
+        zeros(isempty(head_columns(BoundaryKind{K}())) ? 0 : maxbound), nothing, nothing, (NaN, NaN),
     )
 end
 
@@ -184,6 +198,7 @@ function Adapt.adapt_structure(to, p::BoundaryPackage)
         adapt(to, p.simvals), adapt(to, p.ratein), adapt(to, p.rateout), adapt(to, p.nodeptr), adapt(to, p.noderec),
         p.nbound, p.iblock, copy(p.nodelist_host), copy(p.bound_user), copy(p.boundname), p.bound_version, p.user_stale,
         staging, pinned, copy(p.nodeptr_host), copy(p.noderec_host), copy(p.rrec), p.rrec_for,
+        isnothing(p.tsblock) ? nothing : _ts_working_copy(p.tsblock), p.tswindow,
     )
 end
 
@@ -265,11 +280,15 @@ Base.@propagate_inbounds function Base.getindex(b::BoundSource, c::Int, i::Int)
     return v
 end
 
+# The PERIOD block in force: its working copy with the time-series values of the current
+# step when it has time series (T6.3), else the block itself. Needs `pkg.iblock > 0`.
+_block_data(pkg::BoundaryPackage) = isnothing(pkg.tsblock) ? pkg.spec.periods.data[pkg.iblock] : pkg.tsblock
+
 # The MULTIPLIER aux values of the PERIOD block in force (`(naux, n)`), or `nothing`.
 function _mult_aux(pkg::BoundaryPackage)
     imult = Int(pkg.spec.auxmultcol)
     (imult > 0 && pkg.iblock > 0) || return nothing
-    return pkg.spec.periods.data[pkg.iblock].auxvar::Matrix{Float64}
+    return _block_data(pkg).auxvar::Matrix{Float64}
 end
 
 # A `BoundSource` for the values of `pkg` (`mult`: with the multiplier): from the PERIOD
@@ -283,7 +302,7 @@ function _bound_source(pkg::BoundaryPackage{K}; mult::Bool = true) where {K}
         return BoundSource(fill(pkg.bound_user, ncol), collect(1:ncol), zeros(ncol), size(pkg.bound_user, 2), aux, imult, mcol)
     end
     spec = pkg.spec
-    data = spec.periods.data[pkg.iblock]
+    data = _block_data(pkg)
     mats = Vector{Matrix{Float64}}(undef, ncol)
     rows = zeros(Int, ncol)
     consts = zeros(ncol)
@@ -330,16 +349,130 @@ function _fill_user!(user, b::BoundSource)
     return user
 end
 
-# Time-series input is rejected until T6.3.
-function _check_period_ts(spec::BoundarySpec, data)
-    if data isa ArrayPeriod
-        isempty(data.tas) ||
-            throw(MF6UnsupportedError(spec.file, "unsupported: TIMEARRAYSERIES in $(spec.name) (time series arrive with T6.3)"))
-    else
-        isempty(data.ts) ||
-            throw(MF6UnsupportedError(spec.file, "unsupported: time series $(first(data.ts).name) in $(spec.name) (time series arrive with T6.3)"))
+# ---------------------------------------------------------------------------------------
+# Time series (T6.3)
+# ---------------------------------------------------------------------------------------
+
+_has_time_series(p::PeriodList) = !isempty(p.ts)
+_has_time_series(a::ArrayPeriod) = !isempty(a.tas)
+
+# A copy of a PERIOD block whose time-series entries can be written: the value matrices
+# (and arrays) that hold linked entries are copied, the rest is shared with the spec.
+function _ts_working_copy(p::PeriodList)
+    aux = any(r -> r.aux, p.ts)
+    return PeriodList(p.nodeu, copy(p.bound), aux ? copy(p.auxvar) : p.auxvar, p.boundname, p.ts)
+end
+
+function _ts_working_copy(a::ArrayPeriod)
+    values = copy(a.values)
+    aux = false
+    for name in keys(a.tas)
+        haskey(values, name) ? (values[name] = copy(values[name])) : (aux = true)
+    end
+    return ArrayPeriod(a.layer, values, aux ? copy(a.auxvar) : a.auxvar, a.tas, a.given)
+end
+
+function _series(spec::BoundarySpec, name::Symbol, d::Dict)
+    s = get(d, name, nothing)
+    isnothing(s) && throw(MF6InputError(spec.file, 0, "$(spec.name): time series \"$name\" not found in the TS6/TAS6 files of the package"))
+    return s
+end
+
+# Write the series values for the step `(t0, t1)` into the working copy (tsmgr_ad: every
+# link gets `GetValue(totimc, totimc + delt)`; tasmgr_ad: `GetAverageValues`).
+function _eval_time_series!(spec::BoundarySpec, p::PeriodList, (t0, t1))
+    for r in p.ts
+        v = ts_value(_series(spec, r.name, spec.timeseries), t0, t1)
+        (r.aux ? p.auxvar : p.bound)[r.col, r.row] = v
+    end
+    return p
+end
+
+function _eval_time_series!(spec::BoundarySpec, a::ArrayPeriod, (t0, t1))
+    for (name, tname) in a.tas
+        s = _series(spec, tname, spec.timearrayseries)
+        if haskey(a.values, name)
+            tas_values!(a.values[name], s, t0, t1)
+        else
+            iaux = findfirst(==(name), spec.auxnames)
+            tas_values!(view(a.auxvar, iaux, :), s, t0, t1)
+        end
+    end
+    return a
+end
+
+# The column of `bound` (and `bound_user`) that holds list row `row` of `bound` (`aux =
+# false`) or of `auxvar` (`aux = true`), or the array `name`; 0 when none does.
+function _user_column(pkg::BoundaryPackage{K}, aux::Bool, row::Integer) where {K}
+    for (c, src) in enumerate(bound_layout(BoundaryKind{K}(), pkg.spec))
+        src isa Float64 && continue
+        if src[1] === :aux
+            aux && src[2] == row && return c
+        elseif !aux
+            col = list_column(pkg.spec.schema, src[1])
+            !isnothing(col) && col.first + src[2] - 1 == row && return c
+        end
+    end
+    return 0
+end
+
+function _user_column(pkg::BoundaryPackage{K}, name::AbstractString) where {K}
+    iaux = findfirst(==(name), pkg.spec.auxnames)
+    for (c, src) in enumerate(bound_layout(BoundaryKind{K}(), pkg.spec))
+        src isa Float64 && continue
+        if isnothing(iaux)
+            src[1] == name && return c
+        else
+            src[1] === :aux && src[2] == iaux && return c
+        end
+    end
+    return 0
+end
+
+# After a stepping API write (`bound_user` in force, not stale): the time-series entries
+# overwrite the written values of their columns, as MF6's time-series links overwrite
+# their elements at every time step.
+function _ts_to_user!(pkg::BoundaryPackage, p::PeriodList)
+    for r in p.ts
+        c = _user_column(pkg, r.aux, r.col)
+        c > 0 && (pkg.bound_user[c, r.row] = (r.aux ? p.auxvar : p.bound)[r.col, r.row])
     end
     return nothing
+end
+
+function _ts_to_user!(pkg::BoundaryPackage, a::ArrayPeriod)
+    for name in keys(a.tas)
+        c = _user_column(pkg, name)
+        c > 0 || continue
+        iaux = findfirst(==(name), pkg.spec.auxnames)
+        src = isnothing(iaux) ? a.values[name] : view(a.auxvar, iaux, :)
+        for i in 1:pkg.nbound
+            pkg.bound_user[c, i] = src[i]
+        end
+    end
+    return nothing
+end
+
+"""
+    advance_time_series!(pkg::BoundaryPackage, window, r) -> Bool
+
+Evaluate the time series of the PERIOD block in force for the time step `window = (t0,
+t1)` (`[totimc, totimc + delt]`, Float64; TimeSeriesManager.f90 `tsmgr_ad`,
+TimeArraySeriesManager.f90 `tasmgr_ad`) and send `bound` to the device (multiplier and
+offsets from `r` in Float64, as period data; T6.3). Returns `false` (nothing done) when the
+block has no time series or was already evaluated for `window`. Records are not checked
+(MF6 checks in `bnd_rp` only). After a stepping API write, the series entries replace the
+written values of their columns.
+"""
+function advance_time_series!(pkg::BoundaryPackage, window::NTuple{2, Float64}, r::AbstractVector{Float64})
+    blk = pkg.tsblock
+    (isnothing(blk) || pkg.tswindow == window) && return false
+    _eval_time_series!(pkg.spec, blk, window)
+    pkg.tswindow = window
+    pkg.user_stale || _ts_to_user!(pkg, blk)
+    pkg.bound_version += 1
+    _stage_bound!(pkg, r)
+    return true
 end
 
 # Whether two PERIOD blocks of a package give the same cells (user nodes; array input: the
@@ -476,7 +609,7 @@ function _stage_records!(staging, b::BoundSource, hcols, rrec, n)
 end
 
 """
-    apply_period!(pkg::BoundaryPackage, kper, r; ibound = nothing) -> Bool
+    apply_period!(pkg::BoundaryPackage, kper, r; ibound = nothing, window = nothing) -> Bool
 
 Apply the period data of stress period `kper` (`bnd_rp`): the last PERIOD block with
 number `<= kper` (no block yet: no records). When that block is already in force nothing
@@ -496,23 +629,42 @@ moves and the node→record map carry over and only `bound` is copied (T4.6); th
 are still checked. This fast path is not taken for RCH and EVT without FIXED_CELL when an
 `ibound` is given. `bound_user` is filled from the block on demand (`bound_user!`).
 
-Time-series values (`TsRef`, TIMEARRAYSERIES) are rejected (`MF6UnsupportedError`) until
-T6.3.
+A block with time-series values (`TsRef`s, TIMEARRAYSERIES; T6.3) is applied through a
+working copy whose linked entries hold the series values for the time step `window =
+(t0, t1)` (required then; an `ArgumentError` without it), before the checks; later steps
+of the periods it is in force update them with `advance_time_series!`.
 """
-function apply_period!(pkg::BoundaryPackage, kper::Integer, r::AbstractVector{Float64}; ibound::Union{Nothing, AbstractVector{<:Integer}} = nothing)
-    return _apply_period!(pkg, kper, r, ibound) !== :unchanged
+function apply_period!(
+        pkg::BoundaryPackage, kper::Integer, r::AbstractVector{Float64};
+        ibound::Union{Nothing, AbstractVector{<:Integer}} = nothing, window::Union{Nothing, NTuple{2, Float64}} = nothing,
+    )
+    return _apply_period!(pkg, kper, r, ibound, window) !== :unchanged
 end
 
 # `apply_period!`; returns `:unchanged` (block in force), `:values` (same cells, new
 # values) or `:structure` (new cells: nodes and the node→record map rebuilt).
-function _apply_period!(pkg::BoundaryPackage{K, T}, kper::Integer, r::AbstractVector{Float64}, ibound) where {K, T}
+function _apply_period!(pkg::BoundaryPackage{K, T}, kper::Integer, r::AbstractVector{Float64}, ibound, window = nothing) where {K, T}
     length(r) == pkg.conn.nodes || throw(ArgumentError("apply_period!: length(r) = $(length(r)), expected $(pkg.conn.nodes)"))
     ib = period_block(pkg.spec.periods, kper)
     ib == pkg.iblock && return :unchanged
     spec = pkg.spec
     moves = K in (:RCH, :EVT) && !spec.fixed_cell && !isnothing(ibound)
     data = ib == 0 ? nothing : spec.periods.data[ib]
-    isnothing(data) || _check_period_ts(spec, data)
+    # Time series (T6.3): a working copy of the block with the values of this time step.
+    pkg.tsblock = nothing
+    pkg.tswindow = (NaN, NaN)
+    if !isnothing(data) && _has_time_series(data)
+        isnothing(window) &&
+            throw(ArgumentError("apply_period!: $(spec.name) has time-series values in period $kper: give the time step as `window = (t0, t1)`"))
+        # MF6 reads list values in `idm_rp`, before `tdis_set_timestep`: a linked element
+        # first gets `GetValue(totimsav, totim)` (read_value_or_time_series), at the first
+        # step `get_value_at_time(0)`, an error for a series without a value at time 0.
+        if data isa PeriodList && window[1] == 0.0
+            foreach(r -> ts_value(_series(spec, r.name, spec.timeseries), 0.0, 0.0), data.ts)
+        end
+        pkg.tsblock = _eval_time_series!(spec, _ts_working_copy(data), window)
+        pkg.tswindow = window
+    end
     same = !moves && ib > 0 && pkg.iblock > 0 && _same_cells(spec.periods.data[pkg.iblock], data)
     n = same ? pkg.nbound : isnothing(data) ? 0 : _period_nodes!(pkg, data)
     empty!(pkg.boundname)

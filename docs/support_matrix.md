@@ -1,4 +1,4 @@
-# Support matrix (Milestone A)
+# Support matrix (Milestone A, and Phase 6 cards as they merge)
 
 What ModflowGPU runs at Milestone A (end of Phase 3), derived from the checks in the code,
 not from the plan: the strict-loading tables in `src/input/supported.jl`
@@ -50,16 +50,19 @@ Accepted with a different behaviour (logged warnings, not errors):
 | Package | Supported | Rejected (card) |
 | --- | --- | --- |
 | Name file | LIST, PRINT_INPUT, PRINT_FLOWS, SAVE_FLOWS | NEWTON (T6.2, `:newton`; also *engine*, `GwfModel`), UNDER_RELAXATION (Newton) |
-| DIS6 | LENGTH_UNITS, NOGRB, GRB6 output, XORIGIN, YORIGIN, ANGROT, CRS; IDOMAIN 0, 1 and −1 (pass-through) | DISV6, DISU6 (T6.4, `:disv`/`:disu`; also *engine*, connectivity) |
-| NPF6 | ICELLTYPE 0 (confined), K, K22, K33, ANGLE1–3, K22OVERK, K33OVERK, ALTERNATIVE_CELL_AVERAGING (LOGARITHMIC, AMT-LMK, AMT-HMK; harmonic default), SAVE_FLOWS, PRINT_FLOWS, SAVE_SPECIFIC_DISCHARGE | ICELLTYPE ≠ 0 in an active cell (T6.1, `:convertible`), THICKSTRT (T6.1), VARIABLECV, DEWATERED, PERCHED, REWET / WETDRY (T6.1), XT3D (T6.5), TVK6 (T6.x), other options |
+| DIS6 | LENGTH_UNITS, NOGRB, GRB6 output, XORIGIN, YORIGIN, ANGROT, CRS; IDOMAIN 0, 1 and −1 (pass-through) | – |
+| DISV6 (T6.4) | as DIS6; VERTICES, CELL2D (vertex lists closed as in MF6); IDOMAIN 0, 1 and −1 (pass-through) | – |
+| DISU6 (T6.4) | as DIS6, plus VERTICAL_OFFSET_TOLERANCE; CONNECTIONDATA IAC, JA, IHC (0, 1, 2), CL12, HWVA, ANGLDEGX (optional); VERTICES, CELL2D (optional); IDOMAIN 0 and 1 (MF6 rejects −1) | READASARRAYS stress input (MF6 rejects it too) |
+| NPF6 | ICELLTYPE 0 (confined), K, K22, K33, ANGLE1–3, K22OVERK, K33OVERK (on DISV/DISU the K ellipse uses the connection angles, `anglex`, T6.4; DISU K22 or SAVE_SPECIFIC_DISCHARGE without ANGLDEGX, or with inconsistent ANGLDEGX, is MF6's error), ALTERNATIVE_CELL_AVERAGING (LOGARITHMIC, AMT-LMK, AMT-HMK; harmonic default), SAVE_FLOWS, PRINT_FLOWS, SAVE_SPECIFIC_DISCHARGE | ICELLTYPE ≠ 0 in an active cell (T6.1, `:convertible`), THICKSTRT (T6.1), VARIABLECV, DEWATERED, PERCHED, REWET / WETDRY (T6.1), XT3D (T6.5), TVK6 (T6.x), other options |
 | STO6 | SS, SY (read), ICONVERT 0, STORAGECOEFFICIENT, SS_CONFINED_ONLY, SAVE_FLOWS, STEADY-STATE / TRANSIENT periods | ICONVERT ≠ 0 with a transient period (T6.1, `:convertible_storage`; also *engine*, `check_storage_spec`), TVS6 (*engine*) |
 | IC6 | STRT | – |
 | OC6 | HEAD and BUDGET FILEOUT, HEAD PRINT_FORMAT; SAVE / PRINT HEAD / BUDGET with ALL, FIRST, LAST, FREQUENCY, STEPS | BUDGETCSV (and other options) |
-| CHD6, WEL6, GHB6, RIV6, DRN6 (lists) | AUXILIARY, AUXMULTNAME, BOUNDNAMES, PRINT_INPUT, PRINT_FLOWS, SAVE_FLOWS, TS6 / OBS6 FILEIN (see below), MAXBOUND, PERIOD blocks (incl. empty blocks); DRN AUXDEPTHNAME | MOVER (MVR6 out of scope), WEL AUTO_FLOW_REDUCE (*engine*, T6.1), values given as time-series names (T6.3, `:timeseries`), READARRAYGRID input |
-| RCH6 (list and READASARRAYS) | as the lists, plus FIXED_CELL, IRCH | TIMEARRAYSERIES / TAS6 values (T6.3) |
-| EVT6 (list and READASARRAYS) | as the lists, plus FIXED_CELL, SURF_RATE_SPECIFIED, NSEG ≥ 1 (PXDP, PETM, PETM0), IEVT | TIMEARRAYSERIES / TAS6 values (T6.3) |
+| CHD6, WEL6, GHB6, RIV6, DRN6 (lists) | AUXILIARY, AUXMULTNAME, BOUNDNAMES, PRINT_INPUT, PRINT_FLOWS, SAVE_FLOWS, TS6 / OBS6 FILEIN (see below), MAXBOUND, PERIOD blocks (incl. empty blocks); DRN AUXDEPTHNAME; values given as time-series names in any column MF6 allows, auxiliary variables (also the AUXMULTNAME multiplier) included (T6.3) | MOVER (MVR6 out of scope), WEL AUTO_FLOW_REDUCE (*engine*, T6.1), READARRAYGRID input |
+| RCH6 (list and READASARRAYS) | as the lists, plus FIXED_CELL, IRCH; READASARRAYS: TAS6 FILEIN and `RECHARGE` / auxiliary `TIMEARRAYSERIES` (T6.3) | – |
+| EVT6 (list and READASARRAYS) | as the lists, plus FIXED_CELL, SURF_RATE_SPECIFIED, NSEG ≥ 1 (PXDP, PETM, PETM0), IEVT; READASARRAYS: TAS6 FILEIN and `RATE` / auxiliary `TIMEARRAYSERIES` (T6.3) | – |
 | OBS6 | the file must exist; it is read by no one | observations are not evaluated or written until T6.7 (accepted, no output) |
-| TS6, TAS6 | FILEIN references are accepted | values that use them (T6.3) |
+| TS6 (T6.3) | ATTRIBUTES NAME(S), METHOD(S) STEPWISE / LINEAR / LINEAREND, SFAC(S), AUTODEALLOCATE (no effect); several series per file and several files per package; DNODATA values; evaluated per time step on the host in Float64 (time-weighted average over the step, LINEAREND the value at its end) | a series that ends before a step ends (MF6's error; no extension to the end of the simulation) |
+| TAS6 (T6.3) | ATTRIBUTES NAME, METHOD STEPWISE / LINEAR, SFAC, AUTODEALLOCATE; one `TIME` block per array (CONSTANT, INTERNAL, OPEN/CLOSE, FACTOR); evaluated per time step on the host in Float64 (time-weighted average) | DISU grids (MF6 does not support them either) |
 | Always rejected | – | SFR6, LAK6, MAW6, UZF6, MVR6, CSUB6, BUY6, VSC6, API6 (out of scope), GNC6, HFB6 (not in the plan) |
 
 ## Engine features
@@ -69,16 +72,16 @@ Accepted with a different behaviour (logged warnings, not errors):
 | Formulation | confined (ICELLTYPE 0), Picard outer iterations, flux-form residual, heads as offsets (PLAN.md 3.7) |
 | Precision presets | `:double`, `:mixed` (T4.4), `:single`, `:auto` (`:mixed` with Float64, else `:single`) |
 | Backends | CPU (KernelAbstractions), ROCm (tested on the RX 7800 XT); CUDA, Metal, oneAPI, OpenCL registered but untested |
-| Output | HDS, CBC (FLOW-JA-FACE, STO-SS, package lists), listing budget tables and PRINT HEAD, DIS GRB |
+| Output | HDS, CBC (FLOW-JA-FACE, STO-SS, package lists), listing budget tables and PRINT HEAD, in the DIS, DISV (one head record per layer) and DISU (one record) layouts; GRB files are read, not written |
 | Stepping | libmf6/XMI-like stepping API and BMI (`get_value_ptr`, `set_value` of X and BOUND), T3.3 |
-| Grid | DIS only; no longitude wrap (T7.1), no spherical geometry (T7.2) |
+| Grid | DIS, DISV and DISU (T6.4; host connectivity in MF6's CSR layout; the multicolour preconditioners colour DISV/DISU greedily, DIS red–black); no longitude wrap (T7.1), no spherical geometry (T7.2) |
 
 ## Validated models (Milestone A gate)
 
 Parity against mf6 6.8.2 in both presets on the CPU backend and on ROCm (tolerances of
 PLAN.md section 4; numbers in docs/precision.md and docs/scaling.md): Tier 0
-(ex-gwf-toth, ex-gwf-hanic, ex-gwf-hanir), Tier 2 (fhb_const; ex-gwf-hwell-a only in
-`:double`, opt-in), and Tier 1, the synthetic coupling models (test/models/coupling_rde
+(ex-gwf-toth, ex-gwf-hanic, ex-gwf-hanir), Tier 2 (ex-gwf-fhb since T6.3, which replaced the
+`fhb_const` stand-in; ex-gwf-hwell-a only in `:double`, opt-in), and Tier 1, the synthetic coupling models (test/models/coupling_rde
 and benchmark/synthetic.jl `tiny` and `indus`). The Tier 3–7 examples load with
 `strict = false` only.
 
@@ -88,3 +91,20 @@ K33OVERK, IMS CG with STRICT rclose): ex-gwf-lgrv-gc (9×61×49) and ex-gwf-lgrv
 test and the run parity test, `:single`, `:mixed` and `:double`, CPU and ROCm. Default
 preconditioner, except ex-gwf-lgrv-gr in `:single`, which runs with `:amg`: with
 `:mc_ilu0` the Float32 solve does not converge (docs/precision.md, T6.0).
+
+T6.3 adds time series: ex-gwf-fhb (CHD heads and WEL rates from LINEAREND series) in the
+universal residual test, the storage residual test and the run parity test against its
+tight-relative reference run (its tight run does not converge in MF6), `:single`,
+`:mixed` and `:double`, CPU and ROCm; and the synthetic model test/models/ts_tas (TS6
+LINEAR, STEPWISE and LINEAREND with SFACS, DNODATA, several series per file, a time-series
+AUXMULTNAME multiplier, TS6 GHB conductance, RCHA and EVTA TAS6 arrays and MF6's zeroing
+of a TAS-linked array by a later PERIOD block), run with mf6 at test time. ex-gwf-advtidal
+also uses time series but needs T6.1 (convertible cells, VARIABLECV, PERCHED).
+
+T6.4 adds the Tier 5 DISV examples ex-gwf-u1disv (121 cells), ex-gwf-curve-90 (288) and
+ex-gwf-curvilin (864) (CHD, STO steady state, BiCGSTAB), and `rad_disu_confined`
+(ex-gwf-rad-disu, DISU with vertices, 550 cells, transient WEL, with STO ICONVERT 0; built
+from the reference run at test time, AMG preconditioner) in the universal residual test
+and the run parity test, `:single`, `:mixed` and `:double`, CPU and ROCm (docs/precision.md,
+T6.4). ex-gwf-rad-disu itself needs convertible storage (T6.1); ex-gwf-u1disv-x and
+ex-gwf-disvmesh need XT3D (T6.5).

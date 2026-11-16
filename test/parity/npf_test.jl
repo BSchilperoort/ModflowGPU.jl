@@ -1,9 +1,11 @@
 # NPF oracle (T2.2): `npf_setup` against libmf6 6.8.2's `<MODEL>/NPF/CONDSAT` (and K11,
 # K22, K33, ANGLE1/2/3, ICELLTYPE, IC/STRT) after initialisation, within 1e-14 relative,
 # on ex-gwf-toth, ex-gwf-hanic, ex-gwf-hanir, ex-gwf-twri01 (convertible layer 1: condsat
-# is still the full-thickness conductance) and synthetic grids (the coupling-like and
-# pass-through grids of test/parity/connectivity_test.jl) with heterogeneous K, K22, K33,
-# all four averaging methods, K22OVERK/K33OVERK and ANGLE1/2/3. Then the conversion to the
+# is still the full-thickness conductance), the DISV examples ex-gwf-u1disv,
+# ex-gwf-curve-90, ex-gwf-curvilin (T6.4) and synthetic grids (the coupling-like and
+# pass-through grids of test/parity/connectivity_test.jl, as DIS, DISV and DISU, T6.4) with
+# heterogeneous K, K22, K33, all four averaging methods, K22OVERK/K33OVERK and ANGLE1/2/3
+# (on DISV/DISU the K ellipse uses the connection angles `anglex`). Then the conversion to the
 # engine precision (`NpfModel{T}`) for every preset. libmf6 runs in a subprocess
 # (test/libmf6_oracle.jl); skips with a message when reference/ or the libmf6 environment is
 # missing.
@@ -85,7 +87,7 @@ end
         @info "Skipping the libmf6 NPF oracle: libmf6 environment $LIBMF6_ENV not found (validation/fetch_reference.sh, validation/setup_libmf6_envs.sh)"
     else
         setups = Pair{String, NpfSetup}[]
-        @testset "$name" for name in ("ex-gwf-toth", "ex-gwf-hanic", "ex-gwf-hanir", "ex-gwf-twri01")
+        @testset "$name" for name in ("ex-gwf-toth", "ex-gwf-hanic", "ex-gwf-hanir", "ex-gwf-twri01", "ex-gwf-u1disv", "ex-gwf-curve-90", "ex-gwf-curvilin")
             simdir = joinpath(exdir, name)
             if !isdir(simdir)
                 @info "Skipping the NPF oracle on $name: $simdir not found"
@@ -96,13 +98,24 @@ end
             @info "NPF CONDSAT vs libmf6 6.8.2: $name, $(length(s.condsat)) connections, max relative difference $err"
             push!(setups, name => s)
         end
-        @testset "synthetic $glabel: $label" for (glabel, dis) in (
-                    ("coupling-like", _synthetic_coupling_dis()), ("pass-through", _synthetic_passthrough_dis()),
+        # T6.4: the grids also as DISV (and without pass-through cells as DISU with vertices),
+        # the arrays in that grid's shape (same user node order).
+        asdisv(dis) = (_dis_as_disv(dis), a -> a isa AbstractArray ? reshape(a, :, size(a, 3)) : a)
+        asdisu(dis) = (_dis_as_disu(dis; vertices = true), a -> a isa AbstractArray ? vec(a) : a)
+        @testset "synthetic $glabel: $label" for (glabel, dis, conv) in (
+                    ("coupling-like", _synthetic_coupling_dis(), d -> (d, identity)),
+                    ("pass-through", _synthetic_passthrough_dis(), d -> (d, identity)),
+                    ("coupling-like DISV", _synthetic_coupling_dis(), asdisv), ("pass-through DISV", _synthetic_passthrough_dis(), asdisv),
+                    ("coupling-like DISU", _synthetic_coupling_dis(), asdisu),
                 ),
                 (label, opts, arrays) in first(_npf_synthetic_cases(dis))
 
+            grid, shape = conv(dis)
             mktempdir() do dir
-                write_dis_simulation(dir, dis; name = "synth", npf_options = opts, npf_arrays = arrays, strt = last(_npf_synthetic_cases(dis)))
+                write_dis_simulation(
+                    dir, grid; name = "synth", npf_options = opts, npf_arrays = Dict{String, Any}(k => shape(v) for (k, v) in arrays),
+                    strt = shape(last(_npf_synthetic_cases(dis))),
+                )
                 m = only(load_simulation(dir; strict = false).models)
                 s, err = _check_libmf6_npf(m, libmf6_connectivity(dir)["SYNTH"])
                 @info "NPF CONDSAT vs libmf6 6.8.2: synthetic $glabel ($label), $(length(s.condsat)) connections, max relative difference $err"

@@ -51,7 +51,9 @@ function _budget_difference(ours, mf6, tin)
     nrec = 0
     for (i, r) in enumerate(b.records)
         strip(r.text) == "DATA-SPDIS" && continue
-        j = find_budget_records(a; text = strip(r.text), kstp = r.kstp, kper = r.kper)
+        # List records by package too: a model may have two packages of one type (T6.4).
+        pak = r.imeth == 6 ? strip(r.paknam2) : nothing
+        j = find_budget_records(a; text = strip(r.text), kstp = r.kstp, kper = r.kper, paknam2 = pak)
         @test length(j) == 1
         length(j) == 1 || continue
         ra = a.records[only(j)]
@@ -100,10 +102,11 @@ end
 # Runs both presets on TEST_BACKEND (and on a GPU backend also on the CPU backend) and
 # returns per preset (; dh, dq, dl, pd, outer, inner, time, mf6_outer, mf6_inner,
 # backend_vs_cpu), plus :single_vs_double. `single_preconditioner` replaces `preconditioner`
-# in `:single` (T6.0: ex-gwf-lgrv-gr).
+# in `:single` (T6.0: ex-gwf-lgrv-gr). `single_budget_tol` replaces the `:single` budget
+# criterion 1e-4 × total in (T6.4: rad_disu_confined, docs/precision.md).
 function _run_parity(
         name, rundir; preconditioner::Symbol = RUN_PRECONDITIONER, precond_options::NamedTuple = (;),
-        single_preconditioner::Symbol = preconditioner,
+        single_preconditioner::Symbol = preconditioner, single_budget_tol::Float64 = 1.0e-4,
     )
     sim = load_simulation(rundir)
     m = only(sim.models)
@@ -128,7 +131,7 @@ function _run_parity(
             hdtol = p.T === Float64 ? max(1.0e-6, 1.0e-7 * range) : 1.0e-3
             @test dh < hdtol
             tin = Dict((b.kstp, b.kper) => ModflowGPU.total_rate_in(b) for b in r.budgets)
-            btol = p.T === Float64 ? 1.0e-6 : 1.0e-4
+            btol = p.T === Float64 ? 1.0e-6 : single_budget_tol
             dq, nrec = isempty(mf6_cbc) ? (0.0, 0) : _budget_difference(r.budget_file, mf6_cbc, tin)
             @test dq < btol
             dl, ntab, nmf6 = _listing_difference(r.listing_file, mf6_lst)

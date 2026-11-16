@@ -1,0 +1,6 @@
+BEGIN griddata
+  icelltype
+    CONSTANT  0
+  k
+    CONSTANT  20.0
+END griddata
