@@ -52,6 +52,7 @@ const TEST_GROUPS = [
     "input_examples" => ["unit/input_examples_test.jl"],
     "input_arrays" => ["unit/input_arrays_test.jl"],
     "input_lists" => ["unit/input_lists_test.jl"],
+    "timeseries" => ["unit/timeseries_test.jl"],
     "output" => ["unit/output_test.jl"],
     "simulation_loader" => ["unit/simulation_loader_test.jl"],
     "connectivity" => ["unit/connectivity_test.jl", "parity/connectivity_test.jl"],

@@ -27,6 +27,24 @@ function in_scope_examples(; tiers = 0:7)
 end
 
 """
+    reference_rundir(name) -> Union{String, Nothing}
+
+The MF6 reference run of example `name` that the parity tests compare with: the first of
+`reference/runs/<name>/{tight, tight-relative, relaxed}` whose `run.toml` has status
+`"ok"` (validation/run_reference.jl, `REFERENCE_ORDER`; ex-gwf-fhb's tight run does not
+converge, its reference is tight-relative), `nothing` when there is none.
+"""
+function reference_rundir(name::AbstractString)
+    for mode in ("tight", "tight-relative", "relaxed")
+        dir = joinpath(REFERENCE_DIR, "runs", name, mode)
+        f = joinpath(dir, "run.toml")
+        isfile(f) && get(TOML.parsefile(f), "status", "") == "ok" && return dir
+    end
+    tight = joinpath(REFERENCE_DIR, "runs", name, "tight")
+    return isdir(tight) && !isfile(joinpath(tight, "run.toml")) ? tight : nothing
+end
+
+"""
 Examples outside Tiers 0–2 that the Milestone A engine runs and the parity tests include
 (T6.0): the confined Tier 3 size tests (ICELLTYPE 0, RIV, RCHA, K33OVERK, `requires = []`).
 """

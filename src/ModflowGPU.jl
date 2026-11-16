@@ -21,6 +21,7 @@ include("input/dfn/schema.jl")
 include("input/blocks.jl")
 include("input/arrays.jl")
 include("input/lists.jl")
+include("input/timeseries.jl")
 include("input/options.jl")
 include("input/supported.jl")
 

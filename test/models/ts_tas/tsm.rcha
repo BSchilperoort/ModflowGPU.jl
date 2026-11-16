@@ -1,0 +1,15 @@
+# Recharge from a LINEAR time-array series in periods 1 and 2 (no block in period 2); the
+# period 3 block gives only IRCH, so MF6 sets the recharge linked to the series to zero.
+BEGIN options
+  READASARRAYS
+  TAS6  FILEIN  tsm.rch.tas
+END options
+
+BEGIN period  1
+  RECHARGE  TIMEARRAYSERIES  rchtas
+END period  1
+
+BEGIN period  3
+  IRCH
+    CONSTANT  1
+END period  3

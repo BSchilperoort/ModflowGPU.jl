@@ -6,10 +6,9 @@ BEGIN griddata
   iconvert
     CONSTANT  0
   ss
-    CONSTANT  1.00000000E-06
+    CONSTANT  1.0e-4
 END griddata
 
 BEGIN period  1
   TRANSIENT
 END period  1
-

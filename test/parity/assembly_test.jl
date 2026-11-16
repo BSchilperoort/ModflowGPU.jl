@@ -2,8 +2,9 @@
 #
 # 1. Universal residual test. On every Tier 0–2 example that loads with `strict = true`
 #    and the confined Tier 3 examples ex-gwf-lgrv-gc and -gr (T6.0, `parity_examples`)
-#    (MF6 6.8.2 tight-closure runs in reference/runs/<example>/tight; the others are
-#    skipped with the reason) and on the synthetic models test/models/fhb_const and
+#    (MF6 6.8.2 reference runs, `reference_rundir`: tight, or tight-relative when tight did
+#    not converge; the others are skipped with the reason) and on the synthetic models
+#    test/models/ts_tas (T6.3, time series evaluated per step) and
 #    test/models/coupling_rde (run with mf6 at test time), the Tier 5 DISV examples and
 #    rad_disu_confined (T6.4, DISU; run with mf6 at test time), for every saved time step: MF6's
 #    heads, converted to offsets in Float64 before the cast to `T`, go through the device
@@ -26,7 +27,7 @@
 using ModflowGPU: load_simulation, build_connectivity, npf_setup, BoundaryPackage, apply_period!, formulate!,
     apply_chd_heads!, boundary_ibound, StoragePackage, set_timestep!, initial_heads, to_offsets, open_head_file,
     read_head, CsrStructure, LinearSystem, NpfModel, assemble!, flux_residual!, reset_terms!, add_terms!,
-    MF6UnsupportedError, backend_name
+    MF6UnsupportedError, backend_name, time_steps, time_step_window, advance_time_series!
 
 const ASM_MF6 = get(ENV, "MF6", joinpath(REFERENCE_DIR, "mf6.8.2_linux", "bin", "mf6"))
 
@@ -70,8 +71,10 @@ function _asm_case(T, m, conn, s, nper; backend = TEST_BACKEND)
 end
 
 # Formulate period `kper`, step length `delt`; returns (h, ibound host) with the device h.
-function _formulate!(c::_AsmCase{T}, conn, s, kper, delt, hoff, holdoff) where {T}
-    foreach(x -> apply_period!(x, kper, s.r), c.pk)
+# `window`: the time step `(t0, t1)` for time series (T6.3; `time_step_window`).
+function _formulate!(c::_AsmCase{T}, conn, s, kper, delt, hoff, holdoff; window = nothing) where {T}
+    foreach(x -> apply_period!(x, kper, s.r; window), c.pk)
+    isnothing(window) || foreach(x -> advance_time_series!(x, window, s.r), c.pk)
     if !isnothing(c.sto)
         apply_period!(c.sto, kper)
         set_timestep!(c.sto, delt)
@@ -119,6 +122,7 @@ function _universal_residual(name, rundir, m, sim)
     hoff = [to_offsets(s.r, x) for x in habs]
     h0 = initial_heads(m.ic, conn, s.r)
     symmetric = _symmetric(sim)
+    steps = time_steps(sim.tdis)
     for_each_precision() do p
         T = p.T
         c = _asm_case(T, m, conn, s, length(sim.tdis.perlen))
@@ -133,7 +137,8 @@ function _universal_residual(name, rundir, m, sim)
             st = hf.steps[k]
             delt = _step_lengths(sim.tdis, st.kper)[st.kstp]
             prev = k == 1 ? h0 : hoff[k - 1]
-            h, ibh, hold = _formulate!(c, conn, s, Int(st.kper), delt, hoff[k], prev)
+            istep = findfirst(x -> (x.kper, x.kstp) == (st.kper, st.kstp), steps)
+            h, ibh, hold = _formulate!(c, conn, s, Int(st.kper), delt, hoff[k], prev; window = time_step_window(steps, istep))
             flux_residual!(res, c.sys, c.csr, c.npf, h, c.ib; scale, bound)
             assemble!(c.sys, c.csr, c.npf, h, c.ib; symmetric)
             pkgs = Tuple((x.hcof, x.rhs, x.nodeptr, x.noderec) for x in c.pk if ModflowGPU.boundary_kind(x) !== :CHD && x.nbound > 0)
@@ -201,7 +206,8 @@ function _oracle(name, simdir, m, sim)
     for_each_precision() do p
         T = p.T
         c = _asm_case(T, m, conn, s, length(sim.tdis.perlen))
-        h, ibh = _formulate!(c, conn, s, 1, o.delt, h0, h0)
+        window = time_step_window(time_steps(sim.tdis), 1)
+        h, ibh = _formulate!(c, conn, s, 1, o.delt, h0, h0; window)
         assemble!(c.sys, c.csr, c.npf, h, c.ib; symmetric)
         KernelAbstractions.synchronize(TEST_BACKEND)
         # The starting heads (with the constant heads) are MF6's.
@@ -214,7 +220,7 @@ function _oracle(name, simdir, m, sim)
         if !(TEST_BACKEND isa CPU)
             # The same formulation on the CPU backend (PLAN.md section 4, backends).
             cc = _asm_case(T, m, conn, s, length(sim.tdis.perlen); backend = CPU())
-            hc, _ = _formulate!(cc, conn, s, 1, o.delt, h0, h0)
+            hc, _ = _formulate!(cc, conn, s, 1, o.delt, h0, h0; window)
             assemble!(cc.sys, cc.csr, cc.npf, hc, cc.ib; symmetric)
             rg, rc, sg = (zeros(T, conn.nodes) for _ in 1:3)
             resg = KernelAbstractions.zeros(TEST_BACKEND, T, conn.nodes)
@@ -235,9 +241,9 @@ end
 # The models of parts 1 and 2: (name, directory with MF6 heads, input directory for libmf6).
 function _assembly_models(f)
     for (name, _) in parity_examples()
-        rundir = joinpath(REFERENCE_DIR, "runs", name, "tight")
-        if !isdir(rundir)
-            @info "Skipping $name in the assembly test: $rundir not found"
+        rundir = reference_rundir(name)
+        if isnothing(rundir)
+            @info "Skipping $name in the assembly test: no converged reference run in $(joinpath(REFERENCE_DIR, "runs", name))"
             continue
         end
         sim = try
@@ -253,7 +259,7 @@ function _assembly_models(f)
         @info "Skipping the synthetic models in the assembly test: mf6 not found at $ASM_MF6 (set REFERENCE_DIR or MF6)"
         return nothing
     end
-    for (name, dir) in (("fhb_const", joinpath(@__DIR__, "..", "models", "fhb_const")), ("coupling_rde", joinpath(@__DIR__, "..", "models", "coupling_rde")))
+    for (name, dir) in (("ts_tas", joinpath(@__DIR__, "..", "models", "ts_tas")), ("coupling_rde", joinpath(@__DIR__, "..", "models", "coupling_rde")))
         mktempdir() do tmp
             rundir = joinpath(tmp, name)
             cp(dir, rundir)

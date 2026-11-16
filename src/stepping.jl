@@ -182,7 +182,10 @@ function prepare_time_step(s::Simulation, dt::Real = 0.0)
     _push_mirrors!(s)
     s.istep += 1
     step = s.steps[s.istep]
-    step.kstp == 1 && @timed_section :period_data apply_period!(s.model, step.kper)
+    window = time_step_window(s.steps, s.istep)
+    step.kstp == 1 && @timed_section :period_data apply_period!(s.model, step.kper; window)
+    # Time series (T6.3): `idm_ts_advance` after `tdis_set_timestep`.
+    @timed_section :period_data advance_time_series!(s.model, window)
     s.stage = :prepared_time_step
     _pull_mirrors!(s)
     return s

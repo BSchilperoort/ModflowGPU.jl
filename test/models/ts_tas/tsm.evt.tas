@@ -1,0 +1,20 @@
+BEGIN attributes
+  NAME  evtrate
+  METHOD  stepwise
+END attributes
+
+BEGIN time 0.0
+  CONSTANT  2.0e-4
+END time
+
+BEGIN time 120.0
+  CONSTANT  5.0e-4
+END time
+
+BEGIN time 450.0
+  CONSTANT  1.0e-4
+END time
+
+BEGIN time 1000.0
+  CONSTANT  0.0
+END time

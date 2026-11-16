@@ -6,7 +6,7 @@
 # libmf6 oracle on DISV/DISU grids is in test/parity/connectivity_test.jl.
 using ModflowGPU: DisSpec, DisvSpec, DisuSpec, Connectivity, build_connectivity, npf_setup, build_npf, build_ic,
     build_sto, build_boundary, build_array_boundary, build_model, build_tdis, build_ims, build_simulation, build_oc, oc_record,
-    check_disv_grid, check_disu_grid, disv_anglex, MF6InputError, grid_colors, is_valid_coloring
+    check_disv_grid, check_disu_grid, disv_anglex, MF6InputError, grid_colors, is_valid_coloring, load_simulation
 
 _disv_err(d) = (
     try
@@ -132,6 +132,44 @@ end
             err
         end
         @test e isa MF6InputError && occursin("ANGLDEGX not provided in discretization file, but K22 was specified", e.msg)
+    end
+
+    @testset "time series and TAS6 on DISV (test/models/ts_tas as DISV)" begin
+        # ts_tas (T6.3: TS6 on CHD/WEL/GHB, TAS6 on RCHA/EVTA) with its 1×5×10 grid written
+        # as DISV and the cellids as (layer, cell2d): bitwise the same run as DIS (Jacobi),
+        # and parity against mf6 when it is available.
+        src = joinpath(@__DIR__, "..", "models", "ts_tas")
+        dis = only(load_simulation(src).models).dis
+        mktempdir() do tmp
+            dir = joinpath(tmp, "ts_tas_disv")
+            cp(src, dir)
+            open(io -> _write_grid(io, _dis_as_disv(dis)), joinpath(dir, "tsm.dis"), "w")
+            nam = joinpath(dir, "tsm.nam")
+            write(nam, replace(read(nam, String), "DIS6  tsm.dis" => "DISV6  tsm.dis"))
+            ncol = Int(dis.ncol)
+            for f in ("tsm.chd", "tsm.wel", "tsm.ghb")
+                p = joinpath(dir, f)
+                txt = replace(read(p, String), r"(?m)^(\s+)(\d+) (\d+) (\d+) " => s -> begin
+                    m = match(r"^(\s+)(\d+) (\d+) (\d+) ", s)
+                    "$(m[1])$(m[2]) $((parse(Int, m[3]) - 1) * ncol + parse(Int, m[4])) "
+                end)
+                write(p, txt)
+            end
+            @test only(load_simulation(dir).models).dis isa DisvSpec
+            for_each_precision() do p
+                r0 = ModflowGPU.run(src; backend = TEST_BACKEND, precision = p.preset, write_output = false, preconditioner = :jacobi)
+                r = ModflowGPU.run(dir; backend = TEST_BACKEND, precision = p.preset, write_output = false, preconditioner = :jacobi)
+                @test r.converged && r0.converged && r.heads == r0.heads
+                @test [ModflowGPU.total_rate_in(b) for b in r.budgets] == [ModflowGPU.total_rate_in(b) for b in r0.budgets]
+            end
+            if isfile(RUN_MF6)
+                out = read(Cmd(`$RUN_MF6`; dir), String)
+                @test occursin("Normal termination", out)
+                _run_parity("ts_tas as DISV", dir)
+            else
+                @info "Skipping ts_tas as DISV vs mf6: mf6 not found at $RUN_MF6"
+            end
+        end
     end
 
     @testset "colouring of a DISV grid" begin

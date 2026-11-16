@@ -57,11 +57,12 @@ Accepted with a different behaviour (logged warnings, not errors):
 | STO6 | SS, SY (read), ICONVERT 0, STORAGECOEFFICIENT, SS_CONFINED_ONLY, SAVE_FLOWS, STEADY-STATE / TRANSIENT periods | ICONVERT ≠ 0 with a transient period (T6.1, `:convertible_storage`; also *engine*, `check_storage_spec`), TVS6 (*engine*) |
 | IC6 | STRT | – |
 | OC6 | HEAD and BUDGET FILEOUT, HEAD PRINT_FORMAT; SAVE / PRINT HEAD / BUDGET with ALL, FIRST, LAST, FREQUENCY, STEPS | BUDGETCSV (and other options) |
-| CHD6, WEL6, GHB6, RIV6, DRN6 (lists) | AUXILIARY, AUXMULTNAME, BOUNDNAMES, PRINT_INPUT, PRINT_FLOWS, SAVE_FLOWS, TS6 / OBS6 FILEIN (see below), MAXBOUND, PERIOD blocks (incl. empty blocks); DRN AUXDEPTHNAME | MOVER (MVR6 out of scope), WEL AUTO_FLOW_REDUCE (*engine*, T6.1), values given as time-series names (T6.3, `:timeseries`), READARRAYGRID input |
-| RCH6 (list and READASARRAYS) | as the lists, plus FIXED_CELL, IRCH | TIMEARRAYSERIES / TAS6 values (T6.3) |
-| EVT6 (list and READASARRAYS) | as the lists, plus FIXED_CELL, SURF_RATE_SPECIFIED, NSEG ≥ 1 (PXDP, PETM, PETM0), IEVT | TIMEARRAYSERIES / TAS6 values (T6.3) |
+| CHD6, WEL6, GHB6, RIV6, DRN6 (lists) | AUXILIARY, AUXMULTNAME, BOUNDNAMES, PRINT_INPUT, PRINT_FLOWS, SAVE_FLOWS, TS6 / OBS6 FILEIN (see below), MAXBOUND, PERIOD blocks (incl. empty blocks); DRN AUXDEPTHNAME; values given as time-series names in any column MF6 allows, auxiliary variables (also the AUXMULTNAME multiplier) included (T6.3) | MOVER (MVR6 out of scope), WEL AUTO_FLOW_REDUCE (*engine*, T6.1), READARRAYGRID input |
+| RCH6 (list and READASARRAYS) | as the lists, plus FIXED_CELL, IRCH; READASARRAYS: TAS6 FILEIN and `RECHARGE` / auxiliary `TIMEARRAYSERIES` (T6.3) | – |
+| EVT6 (list and READASARRAYS) | as the lists, plus FIXED_CELL, SURF_RATE_SPECIFIED, NSEG ≥ 1 (PXDP, PETM, PETM0), IEVT; READASARRAYS: TAS6 FILEIN and `RATE` / auxiliary `TIMEARRAYSERIES` (T6.3) | – |
 | OBS6 | the file must exist; it is read by no one | observations are not evaluated or written until T6.7 (accepted, no output) |
-| TS6, TAS6 | FILEIN references are accepted | values that use them (T6.3) |
+| TS6 (T6.3) | ATTRIBUTES NAME(S), METHOD(S) STEPWISE / LINEAR / LINEAREND, SFAC(S), AUTODEALLOCATE (no effect); several series per file and several files per package; DNODATA values; evaluated per time step on the host in Float64 (time-weighted average over the step, LINEAREND the value at its end) | a series that ends before a step ends (MF6's error; no extension to the end of the simulation) |
+| TAS6 (T6.3) | ATTRIBUTES NAME, METHOD STEPWISE / LINEAR, SFAC, AUTODEALLOCATE; one `TIME` block per array (CONSTANT, INTERNAL, OPEN/CLOSE, FACTOR); evaluated per time step on the host in Float64 (time-weighted average) | DISU grids (MF6 does not support them either) |
 | Always rejected | – | SFR6, LAK6, MAW6, UZF6, MVR6, CSUB6, BUY6, VSC6, API6 (out of scope), GNC6, HFB6 (not in the plan) |
 
 ## Engine features
@@ -79,8 +80,8 @@ Accepted with a different behaviour (logged warnings, not errors):
 
 Parity against mf6 6.8.2 in both presets on the CPU backend and on ROCm (tolerances of
 PLAN.md section 4; numbers in docs/precision.md and docs/scaling.md): Tier 0
-(ex-gwf-toth, ex-gwf-hanic, ex-gwf-hanir), Tier 2 (fhb_const; ex-gwf-hwell-a only in
-`:double`, opt-in), and Tier 1, the synthetic coupling models (test/models/coupling_rde
+(ex-gwf-toth, ex-gwf-hanic, ex-gwf-hanir), Tier 2 (ex-gwf-fhb since T6.3, which replaced the
+`fhb_const` stand-in; ex-gwf-hwell-a only in `:double`, opt-in), and Tier 1, the synthetic coupling models (test/models/coupling_rde
 and benchmark/synthetic.jl `tiny` and `indus`). The Tier 3–7 examples load with
 `strict = false` only.
 
@@ -90,6 +91,15 @@ K33OVERK, IMS CG with STRICT rclose): ex-gwf-lgrv-gc (9×61×49) and ex-gwf-lgrv
 test and the run parity test, `:single`, `:mixed` and `:double`, CPU and ROCm. Default
 preconditioner, except ex-gwf-lgrv-gr in `:single`, which runs with `:amg`: with
 `:mc_ilu0` the Float32 solve does not converge (docs/precision.md, T6.0).
+
+T6.3 adds time series: ex-gwf-fhb (CHD heads and WEL rates from LINEAREND series) in the
+universal residual test, the storage residual test and the run parity test against its
+tight-relative reference run (its tight run does not converge in MF6), `:single`,
+`:mixed` and `:double`, CPU and ROCm; and the synthetic model test/models/ts_tas (TS6
+LINEAR, STEPWISE and LINEAREND with SFACS, DNODATA, several series per file, a time-series
+AUXMULTNAME multiplier, TS6 GHB conductance, RCHA and EVTA TAS6 arrays and MF6's zeroing
+of a TAS-linked array by a later PERIOD block), run with mf6 at test time. ex-gwf-advtidal
+also uses time series but needs T6.1 (convertible cells, VARIABLECV, PERCHED).
 
 T6.4 adds the Tier 5 DISV examples ex-gwf-u1disv (121 cells), ex-gwf-curve-90 (288) and
 ex-gwf-curvilin (864) (CHD, STO steady state, BiCGSTAB), and `rad_disu_confined`
