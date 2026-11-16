@@ -252,9 +252,8 @@ end
     @test_logs (:warn, r"HIGHEST_CELL_SATURATION option cannot be used when NEWTON option in not specified") setup(; highest_cell_saturation = true)
     @test_logs setup(; perched = true, variablecv = true, dewatered = true)
 
-    # Not implemented yet.
-    e = _err(() -> setup(; thickstrt = true))
-    @test e isa MF6UnsupportedError && occursin("THICKSTRT", e.msg)
+    # THICKSTRT is supported since T6.1 (test/unit/convertible_test.jl). Not implemented yet:
+    @test setup(; thickstrt = true) isa ModflowGPU.NpfSetup
     e = _err(() -> setup(; xt3d = true))
     @test e isa MF6UnsupportedError && occursin("XT3D", e.msg)
     @test_throws ArgumentError setup(; k22 = [1.0])
