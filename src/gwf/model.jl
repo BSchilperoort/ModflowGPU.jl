@@ -183,7 +183,7 @@ function formulate!(m::GwfModel; symmetric::Bool = false, terms::Bool = true, sc
     # did it in a kernel of its own). Records without a cell keep their `hcof`/`rhs`; no
     # reader uses them (`calc_simvals!` skips them).
     pkgs = Tuple(
-        (BoundaryKind{boundary_kind(p)}(), p.bound, m.area, p.hcof, p.rhs, p.nodeptr, p.noderec)
+        (record_kind(p, m.npf.cv), p.bound, m.area, p.hcof, p.rhs, p.nodeptr, p.noderec)
             for p in m.packages if boundary_kind(p) !== :CHD && p.nbound > 0
     )
     storage = nothing

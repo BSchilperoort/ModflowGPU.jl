@@ -308,7 +308,7 @@ end
     return d, s
 end
 
-@inline function _package_terms(n, d, s, pkg::Tuple{BoundaryKind, Vararg}, h, ibound)
+@inline function _package_terms(n, d, s, pkg::NTuple{7, Any}, h, ibound)
     kind, bound, area, hcof, rhs, nodeptr, noderec = pkg
     Th = eltype(hcof)
     @inbounds begin

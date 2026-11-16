@@ -110,7 +110,7 @@ mult_column(::BoundaryKind) = 1
     check_boundary_spec(spec::BoundarySpec)
 
 Throw `MF6UnsupportedError` for options of a stress package that the engine does not
-support yet (WEL `AUTO_FLOW_REDUCE`, MVR), `MF6InputError` for invalid EVT dimensions
+support yet (WEL `AUTO_FLOW_REDUCE_CSV`, MVR), `MF6InputError` for invalid EVT dimensions
 (NSEG < 1, NSEG > 1 or SURF_RATE_SPECIFIED with READASARRAYS) and `ArgumentError` for
 kinds without a formulation.
 """
@@ -118,8 +118,18 @@ function check_boundary_spec(spec::BoundarySpec{K}) where {K}
     K in (:CHD, :WEL, :RCH, :GHB, :RIV, :DRN, :EVT) ||
         throw(ArgumentError("$(spec.name): boundary package $K has no engine formulation yet"))
     spec.mover && throw(MF6UnsupportedError(spec.file, "unsupported: MOVER option of $(spec.name)"))
-    K === :WEL && spec.auto_flow_reduce != 0 &&
-        throw(MF6UnsupportedError(spec.file, "unsupported: AUTO_FLOW_REDUCE of $(spec.name) (needs convertible cells, T6.1)"))
+    if K === :WEL
+        # gwf-wel.f90 `source_options` (AUTO_FLOW_REDUCE since T6.1; its CSV output is not
+        # supported).
+        isempty(spec.afrcsv_file) ||
+            throw(MF6UnsupportedError(spec.file, "unsupported: AUTO_FLOW_REDUCE_CSV of $(spec.name)"))
+        spec.auto_flow_reduce <= 0 && spec.flow_reduction_length && spec.auto_flow_reduce != 0 && throw(
+            MF6InputError(
+                spec.file, 0,
+                "An AUTO_FLOW_REDUCTION value less than or equal to zero cannot be specified if the FLOW_REDUCTION_LENGTH option is specified.",
+            ),
+        )
+    end
     K === :EVT && _check_evt_spec(spec)
     return nothing
 end
@@ -863,13 +873,14 @@ end
 
 Compute `hcof` and `rhs` of every record (`bnd_cf` / `*_cf`) from the offset heads `h`,
 the IBOUND array `ibound` (`boundary_ibound`) and the cell areas `area` (device arrays by
-reduced node). Records in constant-head or inactive cells get zeros.
+reduced node). Records in constant-head or inactive cells get zeros. `kind`: the record
+kind (`record_kind`, e.g. WEL with AUTO_FLOW_REDUCE, T6.1).
 """
-function formulate!(pkg::BoundaryPackage{K}, h, ibound, area) where {K}
+function formulate!(pkg::BoundaryPackage{K}, h, ibound, area; kind = BoundaryKind{K}()) where {K}
     pkg.nbound == 0 && return pkg
     backend = get_backend(pkg.hcof)
     boundary_formulate_kernel!(backend, _WG)(
-        pkg.hcof, pkg.rhs, BoundaryKind{K}(), pkg.nodelist, pkg.bound, h, ibound, area; ndrange = pkg.nbound,
+        pkg.hcof, pkg.rhs, kind, pkg.nodelist, pkg.bound, h, ibound, area; ndrange = pkg.nbound,
     )
     return pkg
 end

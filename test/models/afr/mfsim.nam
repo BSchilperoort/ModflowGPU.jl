@@ -1,0 +1,18 @@
+# Synthetic WEL AUTO_FLOW_REDUCE model (T6.1): a fraction of the cell thickness, and a length from an auxiliary variable (FLOW_REDUCTION_LENGTH, AUTO_FLOW_REDUCE_AUXNAME).
+BEGIN options
+END options
+
+BEGIN timing
+  TDIS6  afr.tdis
+END timing
+
+BEGIN models
+  gwf6  afr.nam  afr
+END models
+
+BEGIN exchanges
+END exchanges
+
+BEGIN solutiongroup  1
+  ims6  afr.ims  afr
+END solutiongroup  1

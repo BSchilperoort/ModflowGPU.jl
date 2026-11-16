@@ -52,7 +52,7 @@ function _run_models(f)
         @info "Skipping the synthetic models in the run parity test: mf6 not found at $RUN_MF6 (set REFERENCE_DIR or MF6)"
         return nothing
     end
-    for name in ("ts_tas", "coupling_rde", "wetdry", "disu_staggered")
+    for name in ("ts_tas", "coupling_rde", "wetdry", "disu_staggered", "afr")
         mktempdir() do tmp
             rundir = joinpath(tmp, name)
             cp(joinpath(@__DIR__, "..", "models", name), rundir)

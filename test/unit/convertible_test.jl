@@ -150,10 +150,24 @@ end
         for_each_precision() do p
             m = GwfModel(TEST_BACKEND, p.T, only(sim.models), 1)
             @test !isnothing(m.npf.cv) && !isnothing(m.wd)
+            # Head-dependent conductances: the off-diagonals are rewritten at every
+            # formulation, with a new id (the preconditioner then takes the full setup).
+            ModflowGPU.apply_period!(m, 1)
+            ModflowGPU.start_timestep!(m, 1.0)
+            ModflowGPU.formulate!(m)
+            id1 = m.offdiag_id
+            ModflowGPU.formulate!(m)
+            @test m.offdiag_id > id1
         end
     end
     # A confined model keeps the constant-conductance path (no ConvertibleNpf, no WetDry).
     mc = joinpath(@__DIR__, "..", "models", "coupling_rde")
     m = GwfModel(TEST_BACKEND, Float64, only(load_simulation(mc).models), 3)
     @test isnothing(m.npf.cv) && isnothing(m.wd)
+    ModflowGPU.apply_period!(m, 1)
+    ModflowGPU.start_timestep!(m, 1.0)
+    ModflowGPU.formulate!(m)
+    id1 = m.offdiag_id
+    ModflowGPU.formulate!(m)
+    @test m.offdiag_id == id1
 end
