@@ -52,7 +52,7 @@ function _run_models(f)
         @info "Skipping the synthetic models in the run parity test: mf6 not found at $RUN_MF6 (set REFERENCE_DIR or MF6)"
         return nothing
     end
-    for name in ("ts_tas", "coupling_rde")
+    for name in ("ts_tas", "coupling_rde", "wetdry", "disu_staggered")
         mktempdir() do tmp
             rundir = joinpath(tmp, name)
             cp(joinpath(@__DIR__, "..", "models", name), rundir)
@@ -142,18 +142,21 @@ end
             # rad_disu_confined (T6.4): radial DISU grid without fixed heads, nearly singular
             # in the late (long) steps; MC-ILU0 BiCGSTAB stalls near 1e-8 m from step 21 on,
             # AMG converges in 2 outer iterations per step, as MF6 with ILUT does.
-            hwell_amg = name in ("ex-gwf-hwell-a", "rad_disu_confined") && default_pc
+            hwell_amg = name in ("ex-gwf-hwell-a", "rad_disu_confined", "ex-gwf-rad-disu") && default_pc
             pc = hwell_amg ? :amg : RUN_PRECONDITIONER
             # ex-gwf-lgrv-gr in :single: Float32 CG with MC-ILU0 stops 6.1e-3 m from the exact
             # heads (the correction solves converge too slowly on this badly conditioned steady
             # state); with AMG 6.7e-6 m (T6.0, docs/precision.md).
             spc = name == "ex-gwf-lgrv-gr" && default_pc ? :amg : pc
-            # rad_disu_confined in :single (T6.4): the FLOW-JA-FACE flows next to the wells have
-            # conductances up to 5.5e7 ft²/d and offsets up to 26 ft, so one Float32 flow
-            # rounds to C·eps32·(|h'n| + |h'm|) = 2e-2 × total in; measured 1.9e-4 (heads
-            # 1.5e-6 m). The budget criterion is 5e-4 × total in there (docs/precision.md).
-            sbt = name == "rad_disu_confined" ? 5.0e-4 : 1.0e-4
-            _run_parity(name, rundir; preconditioner = pc, single_preconditioner = spc, single_budget_tol = sbt)
+            # :single budgets (T6.1): differences beyond the Float32 rounding of the cell
+            # flows and the head difference (`_rounding_bounds`, test/run_parity.jl) must be
+            # below 1e-4 × total in; this replaces the 5e-4 of rad_disu_confined (T6.4).
+            # ex-gwf-rad-disu in :double/:mixed: STO-SY of the outer cells in the first steps
+            # (Sy·area/delt up to ~1e9 ft²/d, heads at the cell top) turns the 2.5e-10 ft head
+            # difference to MF6's tight-relative reference into 6.0e-6 × total in; criterion
+            # 1e-5 there (docs/precision.md).
+            dbt = name == "ex-gwf-rad-disu" ? 1.0e-5 : 1.0e-6
+            _run_parity(name, rundir; preconditioner = pc, single_preconditioner = spc, double_budget_tol = dbt)
         end
     end
     @info "Run parity test: $(nmodels[]) model(s)"

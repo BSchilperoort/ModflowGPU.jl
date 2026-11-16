@@ -1,0 +1,18 @@
+# Synthetic wetting and drying model (T6.1): convertible cells, VARIABLECV DEWATERED, PERCHED, REWET, convertible storage, RCH moving to the highest active cell.
+BEGIN options
+END options
+
+BEGIN timing
+  TDIS6  wd.tdis
+END timing
+
+BEGIN models
+  gwf6  wd.nam  wd
+END models
+
+BEGIN exchanges
+END exchanges
+
+BEGIN solutiongroup  1
+  ims6  wd.ims  wd
+END solutiongroup  1

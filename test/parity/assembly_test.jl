@@ -267,7 +267,8 @@ function _assembly_models(f)
         @info "Skipping the synthetic models in the assembly test: mf6 not found at $ASM_MF6 (set REFERENCE_DIR or MF6)"
         return nothing
     end
-    for (name, dir) in (("ts_tas", joinpath(@__DIR__, "..", "models", "ts_tas")), ("coupling_rde", joinpath(@__DIR__, "..", "models", "coupling_rde")))
+    for name in ("ts_tas", "coupling_rde", "wetdry", "disu_staggered")
+        dir = joinpath(@__DIR__, "..", "models", name)
         mktempdir() do tmp
             rundir = joinpath(tmp, name)
             cp(dir, rundir)

@@ -1,0 +1,18 @@
+# Synthetic DISU model (T6.1): staggered horizontal connections (IHC 2) between a full-thickness cell and two stacked cells, convertible cells.
+BEGIN options
+END options
+
+BEGIN timing
+  TDIS6  stg.tdis
+END timing
+
+BEGIN models
+  gwf6  stg.nam  stg
+END models
+
+BEGIN exchanges
+END exchanges
+
+BEGIN solutiongroup  1
+  ims6  stg.ims  stg
+END solutiongroup  1

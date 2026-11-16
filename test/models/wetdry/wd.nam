@@ -1,0 +1,14 @@
+BEGIN options
+  SAVE_FLOWS
+END options
+
+BEGIN packages
+  DIS6  wd.dis  dis
+  NPF6  wd.npf  npf
+  IC6  wd.ic  ic
+  STO6  wd.sto  sto
+  CHD6  wd.chd  chd
+  RCH6  wd.rch  rch
+  WEL6  wd.wel  wel
+  OC6  wd.oc  oc
+END packages

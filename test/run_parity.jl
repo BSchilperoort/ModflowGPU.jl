@@ -26,7 +26,8 @@ end
 
 _only_file(dir, ext) = (f = filter(x -> endswith(x, ext), readdir(dir; join = true)); length(f) == 1 ? only(f) : "")
 
-# Max |Δh| over all saved steps (the files must hold the same steps) and the head range.
+# Max |Δh| over all saved steps (the files must hold the same steps) and the head range;
+# dry cells (HDRY, T6.1) must be the same and are left out of both.
 function _head_difference(ours, mf6)
     a, b = open_head_file(ours), open_head_file(mf6)
     @test length(a) == length(b)
@@ -35,20 +36,96 @@ function _head_difference(ours, mf6)
     d, lo, hi = 0.0, Inf, -Inf
     for k in 1:min(length(a), length(b))
         ha, hb = vec(read_head(a, k)), vec(read_head(b, k))
-        act = hb .!= 1.0e30
-        @test (ha .== 1.0e30) == .!act
-        d = max(d, maximum(abs.(ha[act] .- hb[act])))
-        lo, hi = min(lo, minimum(hb[act])), max(hi, maximum(hb[act]))
+        act = (hb .!= 1.0e30) .& (hb .!= -1.0e30)
+        @test (ha .== 1.0e30) == (hb .== 1.0e30)
+        @test (ha .== -1.0e30) == (hb .== -1.0e30)
+        d = max(d, maximum(abs.(ha[act] .- hb[act]); init = 0.0))
+        any(act) && ((lo, hi) = (min(lo, minimum(hb[act])), max(hi, maximum(hb[act]))))
     end
     return d, hi - lo
 end
 
+# --- `:single` budget bound from Float32 rounding of the cell flows (T6.1, docs/precision.md)
+#
+# A flow of the engine is `q = C·(h'_m − h'_n + Δr)` (storage: `κ·(h'old − h')`, `κ = rho1 +
+# rho2`) from offset heads rounded to Float32, so it differs from MF6's by up to
+# `C·(eps32·(|h'_n| + |h'_m| + |Δr|) + |δh_n| + |δh_m|)`, where `δh` is the difference
+# between the converged heads (the Float32 closures, checked separately against 1e-3 m).
+# With large conductances or storage coefficients (rad-disu: C up to 5.5e7 ft²/d and
+# Sy·area/delt in the first steps; maw-p03c: total inflow 18 m³/d) this exceeds 1e-4 ×
+# total in although the heads agree to 1e-5 m. `_rounding_bounds` gives these bounds per
+# FLOW-JA-FACE entry and STO-SS/STO-SY cell (C from MF6's flow and head difference, or
+# condsat when MF6's heads are equal; 4 × eps32 for the rounding), and per step their sum
+# `total` (the bound of a listing term and of the in − out imbalance).
+function _rounding_bounds(rundir, ours_hds, mf6_hds)
+    sim = load_simulation(rundir)
+    m = only(sim.models)
+    conn = ModflowGPU.build_connectivity(m)
+    s = ModflowGPU.npf_setup(m, conn)
+    a, b = open_head_file(ours_hds), open_head_file(mf6_hds)
+    ε = 4 * eps(Float32)
+    heads = Dict{Tuple{Int, Int}, Tuple{Vector{Float64}, Vector{Float64}}}()
+    keys_ = Tuple{Int, Int}[]
+    for k in 1:min(length(a), length(b))
+        st = b.steps[k]
+        key = (Int(st.kstp), Int(st.kper))
+        heads[key] = (vec(read_head(a, k))[conn.nodeuser], vec(read_head(b, k))[conn.nodeuser])
+        push!(keys_, key)
+    end
+    sto = m.sto
+    # storage bound by user node for step `key`, time step length `delt`
+    function storage_bound(key, delt, nu)
+        (isnothing(sto) || !haskey(heads, key)) && return nothing
+        ho, hm = heads[key]
+        i = findfirst(==(key), keys_)
+        hoold, hmold = (isnothing(i) || i == 1) ? (nothing, nothing) : heads[keys_[i - 1]]
+        bnd = zeros(nu)
+        for n in 1:conn.nodes
+            hm[n] == -1.0e30 && continue
+            u = conn.nodeuser[n]
+            thk = sto.storagecoefficient ? 1.0 : conn.top[n] - conn.bot[n]
+            κ = (sto.ss[u] * thk + (sto.iconvert[u] != 0 && !isnothing(sto.sy) ? sto.sy[u] : 0.0)) * conn.area[n] / delt
+            old = !isnothing(hmold) && hmold[n] != -1.0e30
+            hold = old ? hmold[n] : hm[n]
+            dold = old ? abs(hoold[n] - hmold[n]) : 0.0
+            bnd[u] = κ * (ε * (abs(hm[n] - s.r[n]) + abs(hold - s.r[n])) + abs(ho[n] - hm[n]) + dold)
+        end
+        return bnd
+    end
+    # flowja bound of step `key` with MF6's flows `q` (nja); the diagonal (the cell's net
+    # flow) also gets the cell's storage bound (`delt`: the step length)
+    function flowja_bound(key, q, delt)
+        haskey(heads, key) || return nothing
+        ho, hm = heads[key]
+        bnd = zeros(conn.nja)
+        for n in 1:conn.nodes, ii in (conn.ia[n] + 1):(conn.ia[n + 1] - 1)
+            mm = conn.ja[ii]
+            (hm[n] == -1.0e30 || hm[mm] == -1.0e30) && continue
+            dh = hm[mm] - hm[n]
+            C = dh != 0 ? abs(q[ii] / dh) : s.condsat[conn.jas[ii]]
+            dr = s.r[mm] - s.r[n]
+            bnd[ii] = C * (ε * (abs(hm[n] - s.r[n]) + abs(hm[mm] - s.r[mm]) + abs(dr)) + abs(ho[n] - hm[n]) + abs(ho[mm] - hm[mm]))
+        end
+        sb = storage_bound(key, delt, Int(conn.nodesuser))
+        for n in 1:conn.nodes  # diagonal: the cell's net flow
+            bnd[conn.ia[n]] = sum(bnd[ii] for ii in (conn.ia[n] + 1):(conn.ia[n + 1] - 1); init = 0.0) +
+                (isnothing(sb) ? 0.0 : sb[conn.nodeuser[n]])
+        end
+        return bnd
+    end
+    return (; flowja_bound, storage_bound, idiag = conn.ia[1:conn.nodes])
+end
+
 # Max |Δq| over the MF6 budget records that we write (all but DATA-SPDIS), per step
-# relative to that step's total inflow `tin[(kstp, kper)]`.
-function _budget_difference(ours, mf6, tin)
+# relative to that step's total inflow `tin[(kstp, kper)]`. With `bounds`
+# (`_rounding_bounds`, `:single`, T6.1) the FLOW-JA-FACE, STO-SS and STO-SY values are
+# compared after subtracting their bounds, and the per-step sums of those bounds are
+# returned as well (the allowance of the listing terms and the percent discrepancy).
+function _budget_difference(ours, mf6, tin; bounds = nothing)
     a, b = open_budget_file(ours), open_budget_file(mf6)
     worst = 0.0
     nrec = 0
+    btot = Dict{Tuple{Int, Int}, Float64}()
     for (i, r) in enumerate(b.records)
         strip(r.text) == "DATA-SPDIS" && continue
         # List records by package too: a model may have two packages of one type (T6.4).
@@ -72,15 +149,33 @@ function _budget_difference(ours, mf6, tin)
         @test length(va) == length(vb)
         isempty(vb) && continue
         nrec += 1
-        worst = max(worst, maximum(abs.(va .- vb)) / tin[(r.kstp, r.kper)])
+        d = abs.(va .- vb)
+        if !isnothing(bounds)
+            key = (Int(r.kstp), Int(r.kper))
+            t = strip(r.text)
+            tolv = t == "FLOW-JA-FACE" ? bounds.flowja_bound(key, vb, r.delt) :
+                t in ("STO-SS", "STO-SY") ? bounds.storage_bound(key, r.delt, length(vb)) : nothing
+            if !isnothing(tolv)
+                d = max.(d .- tolv, 0.0)
+                # FLOW-JA-FACE: each connection once (the diagonals hold the cell sums,
+                # with storage, which the STO records add).
+                if t == "FLOW-JA-FACE"
+                    off = sum(tolv) - sum(tolv[ii] for ii in bounds.idiag)
+                    btot[key] = get(btot, key, 0.0) + off / 2
+                else
+                    btot[key] = get(btot, key, 0.0) + sum(tolv)
+                end
+            end
+        end
+        worst = max(worst, maximum(d) / tin[(r.kstp, r.kper)])
     end
-    return worst, nrec
+    return worst, nrec, btot
 end
 
 # Listing-table comparison: max over terms of (|Δ| − 2·rounding) / total in.
 _listing_round(v) = (v != 0 && (abs(v) < 0.1 || abs(v) >= 9.99999e11)) ? 5.0e-5 * abs(v) : 5.0e-5
 
-function _listing_difference(ours, mf6)
+function _listing_difference(ours, mf6; extra = Dict{Tuple{Int, Int}, Float64}())
     ta, tb = read_listing_budgets(ours), read_listing_budgets(mf6)
     worst = 0.0
     ntab = 0
@@ -93,7 +188,8 @@ function _listing_difference(ours, mf6)
         length(a.terms) == length(b.terms) || continue
         for (x, y) in zip(a.terms, b.terms), f in (:rate_in, :rate_out)
             v, w = getfield(x, f), getfield(y, f)
-            worst = max(worst, max(abs(v - w) - _listing_round(v) - _listing_round(w), 0.0) / b.total_rate_in)
+            ex = get(extra, (Int(b.kstp), Int(b.kper)), 0.0)
+            worst = max(worst, max(abs(v - w) - _listing_round(v) - _listing_round(w) - ex, 0.0) / b.total_rate_in)
         end
     end
     return worst, ntab, length(tb)
@@ -107,6 +203,7 @@ end
 function _run_parity(
         name, rundir; preconditioner::Symbol = RUN_PRECONDITIONER, precond_options::NamedTuple = (;),
         single_preconditioner::Symbol = preconditioner, single_budget_tol::Float64 = 1.0e-4,
+        double_budget_tol::Float64 = 1.0e-6,
     )
     sim = load_simulation(rundir)
     m = only(sim.models)
@@ -131,17 +228,22 @@ function _run_parity(
             hdtol = p.T === Float64 ? max(1.0e-6, 1.0e-7 * range) : 1.0e-3
             @test dh < hdtol
             tin = Dict((b.kstp, b.kper) => ModflowGPU.total_rate_in(b) for b in r.budgets)
-            btol = p.T === Float64 ? 1.0e-6 : single_budget_tol
-            dq, nrec = isempty(mf6_cbc) ? (0.0, 0) : _budget_difference(r.budget_file, mf6_cbc, tin)
+            btol = p.T === Float64 ? double_budget_tol : single_budget_tol
+            # `:single` (T6.1): budget differences beyond the Float32 rounding of the flows
+            # and the head difference (`_rounding_bounds`).
+            rb = p.T === Float32 && !isempty(mf6_cbc) ? _rounding_bounds(rundir, r.head_file, mf6_hds) : nothing
+            dq, nrec, btot = isempty(mf6_cbc) ? (0.0, 0, Dict{Tuple{Int, Int}, Float64}()) : _budget_difference(r.budget_file, mf6_cbc, tin; bounds = rb)
             @test dq < btol
-            dl, ntab, nmf6 = _listing_difference(r.listing_file, mf6_lst)
+            dl, ntab, nmf6 = _listing_difference(r.listing_file, mf6_lst; extra = btot)
             @test dl < btol
             @test ntab == nmf6
+            # Percent discrepancy beyond the bound of the in − out imbalance (`:single`).
+            pdx = maximum(b -> max(abs(ModflowGPU.percent_discrepancy(b)) - 100 * get(btot, (b.kstp, b.kper), 0.0) / ModflowGPU.total_rate_in(b), 0.0), r.budgets)
             pd = maximum(b -> abs(ModflowGPU.percent_discrepancy(b)), r.budgets)
-            p.T === Float32 && @test pd < 0.01
+            p.T === Float32 && @test pdx < 0.01
             outer = sum(s -> s.outer.iterations, r.steps)
             inner = sum(s -> s.outer.inner, r.steps)
-            @info "Run parity: $name, :$(p.preset), $(backend_name(TEST_BACKEND)) ($pcname), $nsteps step(s), $(round(t; digits = 1)) s: max |Δh| = $(round(dh; sigdigits = 3)) m (tol $(round(hdtol; sigdigits = 2))), CBC max |Δq| / total in = $(round(dq; sigdigits = 3)) ($nrec records), listing $(round(dl; sigdigits = 3)) ($ntab tables), max |percent discrepancy| = $(round(pd; sigdigits = 3)); outer/inner iterations $outer/$inner (MF6 $mf6_outer/$mf6_inner)"
+            @info "Run parity: $name, :$(p.preset), $(backend_name(TEST_BACKEND)) ($pcname), $nsteps step(s), $(round(t; digits = 1)) s: max |Δh| = $(round(dh; sigdigits = 3)) m (tol $(round(hdtol; sigdigits = 2))), CBC max |Δq| / total in = $(round(dq; sigdigits = 3)) ($nrec records), listing $(round(dl; sigdigits = 3)) ($ntab tables), max |percent discrepancy| = $(round(pd; sigdigits = 3))$(p.T === Float32 ? " (beyond the rounding bound $(round(pdx; sigdigits = 3)))" : ""); outer/inner iterations $outer/$inner (MF6 $mf6_outer/$mf6_inner)"
             stats[p.preset] = (; dh, dq, dl, pd, outer, inner, time = t, mf6_outer, mf6_inner, backend_vs_cpu = NaN)
             if !(TEST_BACKEND isa CPU)
                 rc = ModflowGPU.run(rundir; backend = CPU(), precision = p.preset, write_output = false, pc...)

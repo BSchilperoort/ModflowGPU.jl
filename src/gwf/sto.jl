@@ -222,19 +222,22 @@ end
                 aterm = zero(T)
             end
         end
-        # SyTerms (rho2old = rho2)
+        # SyTerms (rho2old = rho2), with `thk·sn = clamp(h, bot, top) − bot` (T6.1: MF6's
+        # `rho2·thk·snold − rho2·bot` etc. cancel in Float32 when sn is near 1; the same terms
+        # from the clamped old head do not).
         rho2 = cs.rho2[n]
+        hoc = clamp(ho, bt, tp)
         if snnew < one(T)
             if snnew > zero(T)
                 ya = -rho2
-                yr = -rho2 * tthk * snold - rho2 * bt
+                yr = -rho2 * hoc
             else
                 ya = zero(T)
-                yr = tthk * (zero(T) - rho2 * snold)
+                yr = -rho2 * (hoc - bt)
             end
         else
             ya = zero(T)
-            yr = tthk * (rho2 * snnew - rho2 * snold)
+            yr = rho2 * (tp - hoc)
         end
         return aterm, rhsterm, ya, yr
     end
@@ -290,12 +293,10 @@ end
             else
                 a1, r1, _, _ = storage_terms(rho, hold, conv, hnew, n)
                 q = a1 * hnew[n] - r1
-                # SyTerms rate: rho2·thk·snold − rho2·thk·snnew
-                tp, bt, tthk = conv.topoff[n], conv.botoff[n], conv.thk[n]
-                rho2 = conv.rho2[n]
-                snold = storage_saturation(hold[n], tp, bt, tthk)
-                snnew = storage_saturation(hnew[n], tp, bt, tthk)
-                qy = rho2 * tthk * snold - rho2 * tthk * snnew
+                # SyTerms rate: rho2·thk·snold − rho2·thk·snnew, as rho2·(clamp(hold) − clamp(h))
+                # (the same, without the cancellation near sn = 1 in Float32; T6.1).
+                tp, bt = conv.topoff[n], conv.botoff[n]
+                qy = conv.rho2[n] * (clamp(hold[n], bt, tp) - clamp(hnew[n], bt, tp))
             end
         end
         strgss[n] = q

@@ -60,6 +60,7 @@ const TEST_GROUPS = [
     "npf" => ["unit/npf_test.jl", "parity/npf_test.jl"],
     "boundaries" => ["unit/boundaries_test.jl", "parity/boundaries_test.jl"],
     "sto" => ["unit/sto_test.jl", "parity/sto_test.jl"],
+    "convertible" => ["unit/convertible_test.jl"],
     "riv_drn_evt" => ["unit/riv_drn_evt_test.jl", "parity/riv_drn_evt_test.jl"],
     "assembly" => ["parity/assembly_test.jl"],
     "krylov" => ["unit/krylov_test.jl", "unit/precond_test.jl"],
