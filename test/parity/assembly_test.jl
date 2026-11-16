@@ -5,7 +5,8 @@
 #    (MF6 6.8.2 reference runs, `reference_rundir`: tight, or tight-relative when tight did
 #    not converge; the others are skipped with the reason) and on the synthetic models
 #    test/models/ts_tas (T6.3, time series evaluated per step) and
-#    test/models/coupling_rde (run with mf6 at test time), for every saved time step: MF6's
+#    test/models/coupling_rde (run with mf6 at test time), the Tier 5 DISV examples and
+#    rad_disu_confined (T6.4, DISU; run with mf6 at test time), for every saved time step: MF6's
 #    heads, converted to offsets in Float64 before the cast to `T`, go through the device
 #    formulation (boundary formulate/add kernels, storage, `assemble!`) and the flux-form
 #    residual kernel `flux_residual!`. Criterion: max |res| / max Σ|terms| < 1e-8, or in
@@ -267,6 +268,17 @@ function _assembly_models(f)
             # libmf6 gets a clean copy of the inputs.
             f(name, rundir, load_simulation(rundir; strict = true), dir)
         end
+    end
+    # DISU against MF6 (T6.4): ex-gwf-rad-disu with confined storage.
+    mktempdir() do tmp
+        rundir, inputdir = joinpath(tmp, "rad_disu_confined"), joinpath(tmp, "inputs")
+        if !(rad_disu_confined(rundir) && rad_disu_confined(inputdir))
+            @info "Skipping rad_disu_confined in the assembly test: reference/runs/ex-gwf-rad-disu not found"
+            return nothing
+        end
+        out = read(Cmd(`$ASM_MF6`; dir = rundir), String)
+        @test occursin("Normal termination", out)
+        f("rad_disu_confined", rundir, load_simulation(rundir; strict = true), inputdir)
     end
     return nothing
 end

@@ -5,20 +5,7 @@
 using ModflowGPU: DisSpec, DisvSpec, Connectivity, build_connectivity, check_dis_grid, reduced_numbering, iajausr,
     getjaindex, connection_lengths, MF6InputError, MF6UnsupportedError
 
-"A DIS spec with the given layer bottoms `(ncol, nrow, nlay)` and IDOMAIN."
-function _dis(; delr, delc, top, botm, idomain = ones(Int32, size(botm)))
-    ncol, nrow, nlay = size(botm)
-    return DisSpec(;
-        nlay = Int32(nlay), nrow = Int32(nrow), ncol = Int32(ncol), delr = Float64.(delr), delc = Float64.(delc),
-        top = Float64.(top), botm = Float64.(botm), idomain = Int32.(idomain), file = "test.dis",
-    )
-end
-
-# A small deterministic generator (no Random dependency): values in 0:(m - 1).
-mutable struct _Lcg
-    s::UInt64
-end
-_next!(g::_Lcg, m) = (g.s = g.s * 0x5851f42d4c957f2d + 0x14057b7ef767814f; Int((g.s >> 33) % m))
+# `_dis` and the generator `_Lcg` / `_next!` are in test/grids.jl.
 
 # Connections of a DIS grid from their definition (MF6 IO guide, DIS): horizontal neighbours
 # with IDOMAIN > 0 in the same layer; vertically the first cell with IDOMAIN ≠ < 0 below,
@@ -213,11 +200,6 @@ end
         e = err(d0)
         @test e isa MF6InputError && e.file == "DIS" && e.msg == "NLAY was not specified or was specified incorrectly."
         @test_throws ArgumentError check_dis_grid(_dis(; delr = [1], delc = [1], top, botm))
-        # DISV and DISU are T6.4
-        disv = DisvSpec(;
-            nlay = Int32(1), ncpl = Int32(1), nvert = Int32(3), top = [1.0], botm = zeros(1, 1),
-            vertices = [0.0 1.0 0.0; 0.0 0.0 1.0], cell_center = fill(0.3, 2, 1), cell_vertices = [Int32[1, 2, 3]],
-        )
-        @test_throws MF6UnsupportedError build_connectivity(disv)
+        # DISV and DISU (T6.4): test/unit/disv_disu_test.jl
     end
 end

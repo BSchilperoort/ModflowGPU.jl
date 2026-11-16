@@ -227,6 +227,6 @@ function build_connectivity(dis::DisSpec)
 
     return Connectivity(
         Int32(nodes), Int32(nodesuser), Int32(nja), Int32(njas), nodeuser, nodereduced,
-        ia, ja, isym, jas, ihc, cl1, cl2, hwva, anglex, top, bot, area, xc, yc,
+        ia, ja, isym, jas, ihc, cl1, cl2, hwva, anglex, top, bot, area, xc, yc, :dis,
     )
 end

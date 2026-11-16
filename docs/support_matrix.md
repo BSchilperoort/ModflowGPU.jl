@@ -1,4 +1,4 @@
-# Support matrix (Milestone A)
+# Support matrix (Milestone A, and Phase 6 cards as they merge)
 
 What ModflowGPU runs at Milestone A (end of Phase 3), derived from the checks in the code,
 not from the plan: the strict-loading tables in `src/input/supported.jl`
@@ -50,8 +50,10 @@ Accepted with a different behaviour (logged warnings, not errors):
 | Package | Supported | Rejected (card) |
 | --- | --- | --- |
 | Name file | LIST, PRINT_INPUT, PRINT_FLOWS, SAVE_FLOWS | NEWTON (T6.2, `:newton`; also *engine*, `GwfModel`), UNDER_RELAXATION (Newton) |
-| DIS6 | LENGTH_UNITS, NOGRB, GRB6 output, XORIGIN, YORIGIN, ANGROT, CRS; IDOMAIN 0, 1 and −1 (pass-through) | DISV6, DISU6 (T6.4, `:disv`/`:disu`; also *engine*, connectivity) |
-| NPF6 | ICELLTYPE 0 (confined), K, K22, K33, ANGLE1–3, K22OVERK, K33OVERK, ALTERNATIVE_CELL_AVERAGING (LOGARITHMIC, AMT-LMK, AMT-HMK; harmonic default), SAVE_FLOWS, PRINT_FLOWS, SAVE_SPECIFIC_DISCHARGE | ICELLTYPE ≠ 0 in an active cell (T6.1, `:convertible`), THICKSTRT (T6.1), VARIABLECV, DEWATERED, PERCHED, REWET / WETDRY (T6.1), XT3D (T6.5), TVK6 (T6.x), other options |
+| DIS6 | LENGTH_UNITS, NOGRB, GRB6 output, XORIGIN, YORIGIN, ANGROT, CRS; IDOMAIN 0, 1 and −1 (pass-through) | – |
+| DISV6 (T6.4) | as DIS6; VERTICES, CELL2D (vertex lists closed as in MF6); IDOMAIN 0, 1 and −1 (pass-through) | – |
+| DISU6 (T6.4) | as DIS6, plus VERTICAL_OFFSET_TOLERANCE; CONNECTIONDATA IAC, JA, IHC (0, 1, 2), CL12, HWVA, ANGLDEGX (optional); VERTICES, CELL2D (optional); IDOMAIN 0 and 1 (MF6 rejects −1) | READASARRAYS stress input (MF6 rejects it too) |
+| NPF6 | ICELLTYPE 0 (confined), K, K22, K33, ANGLE1–3, K22OVERK, K33OVERK (on DISV/DISU the K ellipse uses the connection angles, `anglex`, T6.4; DISU K22 or SAVE_SPECIFIC_DISCHARGE without ANGLDEGX, or with inconsistent ANGLDEGX, is MF6's error), ALTERNATIVE_CELL_AVERAGING (LOGARITHMIC, AMT-LMK, AMT-HMK; harmonic default), SAVE_FLOWS, PRINT_FLOWS, SAVE_SPECIFIC_DISCHARGE | ICELLTYPE ≠ 0 in an active cell (T6.1, `:convertible`), THICKSTRT (T6.1), VARIABLECV, DEWATERED, PERCHED, REWET / WETDRY (T6.1), XT3D (T6.5), TVK6 (T6.x), other options |
 | STO6 | SS, SY (read), ICONVERT 0, STORAGECOEFFICIENT, SS_CONFINED_ONLY, SAVE_FLOWS, STEADY-STATE / TRANSIENT periods | ICONVERT ≠ 0 with a transient period (T6.1, `:convertible_storage`; also *engine*, `check_storage_spec`), TVS6 (*engine*) |
 | IC6 | STRT | – |
 | OC6 | HEAD and BUDGET FILEOUT, HEAD PRINT_FORMAT; SAVE / PRINT HEAD / BUDGET with ALL, FIRST, LAST, FREQUENCY, STEPS | BUDGETCSV (and other options) |
@@ -70,9 +72,9 @@ Accepted with a different behaviour (logged warnings, not errors):
 | Formulation | confined (ICELLTYPE 0), Picard outer iterations, flux-form residual, heads as offsets (PLAN.md 3.7) |
 | Precision presets | `:double`, `:mixed` (T4.4), `:single`, `:auto` (`:mixed` with Float64, else `:single`) |
 | Backends | CPU (KernelAbstractions), ROCm (tested on the RX 7800 XT); CUDA, Metal, oneAPI, OpenCL registered but untested |
-| Output | HDS, CBC (FLOW-JA-FACE, STO-SS, package lists), listing budget tables and PRINT HEAD, DIS GRB |
+| Output | HDS, CBC (FLOW-JA-FACE, STO-SS, package lists), listing budget tables and PRINT HEAD, in the DIS, DISV (one head record per layer) and DISU (one record) layouts; GRB files are read, not written |
 | Stepping | libmf6/XMI-like stepping API and BMI (`get_value_ptr`, `set_value` of X and BOUND), T3.3 |
-| Grid | DIS only; no longitude wrap (T7.1), no spherical geometry (T7.2) |
+| Grid | DIS, DISV and DISU (T6.4; host connectivity in MF6's CSR layout; the multicolour preconditioners colour DISV/DISU greedily, DIS red–black); no longitude wrap (T7.1), no spherical geometry (T7.2) |
 
 ## Validated models (Milestone A gate)
 
@@ -98,3 +100,11 @@ LINEAR, STEPWISE and LINEAREND with SFACS, DNODATA, several series per file, a t
 AUXMULTNAME multiplier, TS6 GHB conductance, RCHA and EVTA TAS6 arrays and MF6's zeroing
 of a TAS-linked array by a later PERIOD block), run with mf6 at test time. ex-gwf-advtidal
 also uses time series but needs T6.1 (convertible cells, VARIABLECV, PERCHED).
+
+T6.4 adds the Tier 5 DISV examples ex-gwf-u1disv (121 cells), ex-gwf-curve-90 (288) and
+ex-gwf-curvilin (864) (CHD, STO steady state, BiCGSTAB), and `rad_disu_confined`
+(ex-gwf-rad-disu, DISU with vertices, 550 cells, transient WEL, with STO ICONVERT 0; built
+from the reference run at test time, AMG preconditioner) in the universal residual test
+and the run parity test, `:single`, `:mixed` and `:double`, CPU and ROCm (docs/precision.md,
+T6.4). ex-gwf-rad-disu itself needs convertible storage (T6.1); ex-gwf-u1disv-x and
+ex-gwf-disvmesh need XT3D (T6.5).

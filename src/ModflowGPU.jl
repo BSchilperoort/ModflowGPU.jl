@@ -36,6 +36,8 @@ include("input/simulation.jl")
 # Discretization and connectivity (host only)
 include("discretization/connectivity.jl")
 include("discretization/dis.jl")
+include("discretization/disv.jl")
+include("discretization/disu.jl")
 
 # In-memory model construction and the MF6 input writer (host, T3.2)
 include("builder.jl")
