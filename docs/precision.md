@@ -162,8 +162,9 @@ correction solves stalled at |r| ~ 1e-8 and hit INNER_MAXIMUM every outer iterat
 (hanir `:double` 16/14402, coupling_rde 226/215792; MF6's own 107439 inner iterations on
 coupling_rde show the same stall). Columns other than `:single` vs `:double` were
 re-measured after that change. COMPLEXITY COMPLEX enables backtracking, which MF6
-used in 3 of 125 outer iterations; ModflowGPU warns and does not backtrack (T6.2), and the
-converged heads agree as above. In `:single` the outer loop stops at the Float32 floors,
+used in 3 of 125 outer iterations; the row above was measured before T6.2a, when
+ModflowGPU did not backtrack (since T6.2a it backtracks in the same 3 iterations, see
+"Backtracking (T6.2a)" below). In `:single` the outer loop stops at the Float32 floors,
 hence fewer outer iterations than MF6.
 
 **ex-gwf-hwell-a** (153164 cells, 60 steps, BiCGSTAB; part of the run parity test with
