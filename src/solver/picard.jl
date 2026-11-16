@@ -285,7 +285,7 @@ function outer_iteration!(state::OuterState, ps::PicardSolver, m::GwfModel{T}, k
     end
     state.converged = res.converged && abs(hncg) <= state.dvclose
     # MF6's `xtemp` (the heads before this iteration's update) for the next backtracking.
-    st.ims.backtracking_number > 0 && !state.converged && copyto!(ps.hprev, m.h)
+    st.ims.backtracking_number > 0 && !state.converged && save_hprev!(ps.hprev, m.h, m.ibound)
     @timed_section :underrelax underrelax!(ps.ur, m.h, m.δ, m.ibound, it, hncg; converged = state.converged)
     return state.converged
 end

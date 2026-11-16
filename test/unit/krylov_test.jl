@@ -234,8 +234,7 @@ _tight(T, method; kw...) = KrylovSettings(;
         # ILUT of COMPLEXITY COMPLEX with RELAXATION_FACTOR 0 given (ModflowCoupling): a message.
         ims = ImsSpec(; complexity = :complex, preconditioner_levels = 5, relaxation_factor = 0.0, given = ["COMPLEXITY", "RELAXATION_FACTOR"])
         @test_logs (:info, r"ILUT is replaced by mc_ilu0") KrylovSettings(ims)
-        # Logged once per session (maxlog = 1), also the backtracking warning (T5.2), but
-        # per message (T5.4): another preconditioner, or the replacement of another model's
+        # Logged once per session (maxlog = 1), but per message (T5.4): another preconditioner, or the replacement of another model's
         # preconditioner by an explicit one, is still logged once.
         logger = Test.TestLogger(; respect_maxlog = true)
         Base.CoreLogging.with_logger(logger) do
@@ -253,7 +252,8 @@ _tight(T, method; kw...) = KrylovSettings(;
         @test count(r -> occursin("MILU0 is replaced", r.message), logger.logs) == 1
         @test count(r -> occursin("ModflowGPU preconditioner amg", r.message), logger.logs) == 1
         @test count(r -> occursin("ModflowGPU preconditioner jacobi", r.message), logger.logs) == 1
-        @test count(r -> occursin("backtracking is not implemented", r.message), logger.logs) == 1
+        # Backtracking is implemented since T6.2a: no warning.
+        @test !any(r -> occursin("backtracking", r.message), logger.logs)
         ims = ImsSpec(; rclose_option = :l2norm_relative, scaling_method = :diagonal, reordering_method = :rcm)
         st = @test_logs (:info,) (:info, r"REORDERING_METHOD RCM") KrylovSettings(ims)
         @test st.icnvgopt == 4 && st.scaling === :diagonal

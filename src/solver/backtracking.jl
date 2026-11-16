@@ -34,6 +34,28 @@ struct BacktrackRecord
     resout::Float64
 end
 
+# MF6's `xtemp ← x` before the solve (`sln_ls`). A dry cell (IBOUND 0, T6.1) has `x = HDRY`
+# in MF6, while ModflowGPU keeps its head at the bottom; `hprev` stores HDRY for it, so that
+# a cell rewetted in the next iteration is backtracked as in MF6: its change is ~1e30
+# (always above OUTER_DVCLOSE) and the reduced head, ≈ 0.9·HDRY, dries it again in the
+# next `wetdry!`.
+@kernel function save_hprev_kernel!(hprev, @Const(h), @Const(ibound), hdry)
+    n = @index(Global)
+    @inbounds hprev[n] = ibound[n] == Int32(0) ? hdry : h[n]
+end
+
+"""
+    save_hprev!(hprev, h, ibound)
+
+The offset heads at the start of the next outer iteration's update (`xtemp`), with HDRY
+for dry cells (see `save_hprev_kernel!`).
+"""
+function save_hprev!(hprev, h, ibound)
+    backend = get_backend(h)
+    save_hprev_kernel!(backend, _WG)(hprev, h, ibound, eltype(hprev)(HDRY); ndrange = length(h))
+    return hprev
+end
+
 @kernel function backtrack_update_kernel!(h, @Const(hprev), @Const(ibound), breduc)
     n = @index(Global)
     @inbounds if ibound[n] > 0

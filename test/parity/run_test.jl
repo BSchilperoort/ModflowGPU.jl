@@ -76,8 +76,8 @@ function _run_models(f)
 end
 
 # IMS variants of coupling_rde for the under-relaxation (sln_underrelax) and COMPLEXITY
-# presets: (name, OPTIONS lines, NONLINEAR lines). COMPLEX enables backtracking, which is
-# not implemented (T6.2): the run warns, and the converged heads must still agree.
+# presets: (name, OPTIONS lines, NONLINEAR lines). COMPLEX enables backtracking (T6.2a):
+# ModflowGPU must backtrack in the same outer iterations as MF6.
 const _UR_VARIANTS = [
     ("simple", "", "UNDER_RELAXATION SIMPLE\n  UNDER_RELAXATION_GAMMA 0.8"),
     ("cooley", "", "UNDER_RELAXATION COOLEY\n  UNDER_RELAXATION_GAMMA 0.5"),
@@ -117,14 +117,8 @@ end
                 write(joinpath(rundir, "rde.ims"), _ur_ims(opts, nonlin))
                 out = read(Cmd(`$RUN_MF6`; dir = rundir), String)
                 @test occursin("Normal termination", out)
-                lst = read(joinpath(rundir, "mfsim.lst"), String)
-                if name == "complex"
-                    # Outer table rows "Backtracking <kiter> <flag> <count> ...": flag 1 = backtracked.
-                    bt = [parse(Int, x[1]) for x in eachmatch(r"\n\s*Backtracking\s+\d+\s+(\d+)", lst)]
-                    @info "coupling_rde, COMPLEXITY COMPLEX: MF6 backtracking checks $(length(bt)), backtracked in $(count(==(1), bt)) outer iteration(s); ModflowGPU does not backtrack (T6.2)"
-                end
                 @testset "coupling_rde, $name" begin
-                    _run_parity("coupling_rde ($name)", rundir)
+                    _run_parity("coupling_rde ($name)", rundir; backtracking = name == "complex")
                 end
             end
         end
