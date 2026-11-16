@@ -229,7 +229,11 @@ src/timing.jl, src/budget.jl, src/output/oc.jl, src/run.jl.
   stops before a record that `is_close` to the time).
 - A series that starts after `t0` integrates to 0 without an error
   (`get_latest_preceding_node` finds no record); one that ends before `t1` is an error
-  (the GWF loaders never set `extendToEndOfSimulation`).
+  (the GWF loaders never set `extendToEndOfSimulation`). Exception: `idm_rp` reads the
+  first PERIOD block before `tdis_set_timestep`, and `read_value_or_time_series` assigns
+  `GetValue(totimsav, totim)` = the value at time 0, so a list series without a value at
+  time 0 stops MF6 ("Error getting value at time 0.00"); `apply_period!` checks the same
+  (T6.3 review, checked against mf6). TAS links are not evaluated when made.
 - The multiplier (AUXMULTNAME) is applied on use in MF6 and at staging here; a series in
   the multiplier column is evaluated like any other auxiliary series.
 - READASARRAYS (IDM `LayerArrayLoadType%rp` → `reset` → TimeArraySeriesManager `Reset`):
