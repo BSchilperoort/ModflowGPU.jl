@@ -203,7 +203,7 @@ end
 function _run_parity(
         name, rundir; preconditioner::Symbol = RUN_PRECONDITIONER, precond_options::NamedTuple = (;),
         single_preconditioner::Symbol = preconditioner, single_budget_tol::Float64 = 1.0e-4,
-        double_budget_tol::Float64 = 1.0e-6,
+        double_budget_tol::Float64 = 1.0e-6, single_rounding_bound::Bool = false,
     )
     sim = load_simulation(rundir)
     m = only(sim.models)
@@ -229,9 +229,10 @@ function _run_parity(
             @test dh < hdtol
             tin = Dict((b.kstp, b.kper) => ModflowGPU.total_rate_in(b) for b in r.budgets)
             btol = p.T === Float64 ? double_budget_tol : single_budget_tol
-            # `:single` (T6.1): budget differences beyond the Float32 rounding of the flows
-            # and the head difference (`_rounding_bounds`).
-            rb = p.T === Float32 && !isempty(mf6_cbc) ? _rounding_bounds(rundir, r.head_file, mf6_hds) : nothing
+            # `:single` with `single_rounding_bound` (T6.1, named models only): budget
+            # differences beyond the Float32 rounding of the flows and the head difference
+            # (`_rounding_bounds`); otherwise the raw differences.
+            rb = p.T === Float32 && single_rounding_bound && !isempty(mf6_cbc) ? _rounding_bounds(rundir, r.head_file, mf6_hds) : nothing
             dq, nrec, btot = isempty(mf6_cbc) ? (0.0, 0, Dict{Tuple{Int, Int}, Float64}()) : _budget_difference(r.budget_file, mf6_cbc, tin; bounds = rb)
             @test dq < btol
             dl, ntab, nmf6 = _listing_difference(r.listing_file, mf6_lst; extra = btot)

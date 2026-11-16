@@ -789,7 +789,13 @@ from Float32 offsets, so it can differ from MF6's by `C·(4·eps32·(|h'_n| + |h
 from MF6's flow and head difference, condsat when MF6's heads are equal; the diagonal, the
 cell's net flow, gets the sum over its connections plus its storage bound) and per STO-SS /
 STO-SY cell; their sum per step bounds the listing terms and the in − out imbalance. The
-criteria (1e-4 × total in, 0.01 %) apply to what is beyond the bound. This matters where
+criteria (1e-4 × total in, 0.01 %) apply to what is beyond the bound, for rad_disu_confined,
+ex-gwf-rad-disu, ex-gwf-maw-p03c and ex-gwf-advtidal only (`single_rounding_bound`,
+test/parity/run_test.jl); every other model keeps the raw criteria (reviewer, T6.1). The
+bound contains the measured head difference, so it checks that the flows agree with the
+heads, not the budget itself: the per-step sum allows a percent discrepancy of up to 47 %
+(advtidal), 3400 % (maw-p03c) and 6e5 % (rad-disu), i.e. **the `:single` budgets of these
+three models are not verified**. This matters where
 large coefficients meet small flows: rad-disu (the STO-SY coefficient of the first steps:
 one Float32 offset rounding is thousands of ft³/d against 4000 ft³/d in; raw pd 48.5 %),
 maw-p03c (total inflow 18 m³/d; raw CBC 1.0e-3, pd 0.60 %), advtidal (raw pd 1.9e-2 %).
