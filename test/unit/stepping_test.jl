@@ -213,10 +213,14 @@ _budget_rates(b) = [(t.name, t.package, t.rate_in, t.rate_out, t.cum_in, t.cum_o
             @test_throws ArgumentError get_value_ptr(s, "RDE/X"; device = true)
 
             # BMI: time, grid, variables, update until the end.
-            b = BMI.initialize(Simulation, joinpath(STEPPING_MODEL, "mfsim.nam"); kw...)
+            # (T8.9: settings from a configuration file; test/unit/bmi_test.jl checks the rest.)
+            cfg = joinpath(mktempdir(), "bmi.toml")
+            write(cfg, "simulation = \"$(escape_string(abspath(STEPPING_MODEL)))\"\nbackend = \"$TEST_BACKEND_NAME\"\nprecision = \"$(p.preset)\"\nwrite_output = false\n")
+            b = BMI.initialize(Simulation, cfg)
             @test BMI.get_time_units(b) == "days"
             @test BMI.get_grid_rank(b, 1) == 3 && BMI.get_grid_shape(b, 1, zeros(Int, 3)) == [2, 12, 15]
-            @test BMI.get_grid_size(b, 1) == 360 && BMI.get_var_grid(b, "RDE/X") == 1
+            # 337 of 360 cells active: the heads are on grid 2 (the model nodes)
+            @test BMI.get_grid_size(b, 1) == 360 && BMI.get_var_grid(b, "RDE/X") == 2 && BMI.get_grid_size(b, 2) == 337
             @test BMI.get_var_type(b, "RDE/X") == "Float64" && BMI.get_var_type(b, "RDE/RIV/NODELIST") == "Int32"
             @test BMI.get_var_nbytes(b, "RDE/RIV/BOUND") == 3 * 12 * 8
             @test "RDE/RIV/BOUND" in BMI.get_input_var_names(b) && !("RDE/RIV/SIMVALS" in BMI.get_input_var_names(b))

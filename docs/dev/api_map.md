@@ -399,9 +399,15 @@ it. Underscore-prefixed helpers are omitted.
   (T8.5: "addresses documented" checks that `var_addresses` of a model with every stress
   package matches the address table of `docs/src/coupling/stepping.md`; a new address
   needs a row there).
-- **bmi.jl** (T3.3): BasicModelInterface methods on `Simulation` (`BMI.initialize`,
-  `update`, `update_until`, time, variables, `get_value(_ptr)`, `set_value(_at_indices)`,
-  grid 1 = model grid). Tests: stepping.
+- **bmi.jl** (T3.3, T8.9): BasicModelInterface methods on `Simulation`, all 41 functions
+  of the spec. `BMI.initialize(Simulation, config_file)` (no keywords; `_bmi_config`
+  reads the TOML configuration file, or takes a directory / mfsim.nam with defaults),
+  `update`, `update_until` (step ends only), time, variables (`_bmi_units`: UDUNITS from
+  LENGTH_UNITS / TIME_UNITS; `_bmi_var_grid`), getters returning `dest`, grids
+  (`_bmi_grid`: 0 scalar, 1 model grid, 2 model nodes as points, 1 + 2i / 2 + 2i package
+  records / BOUND as vectors; coordinates with XORIGIN, YORIGIN, ANGROT; unstructured
+  faces and edges from the DISV/DISU vertices), `_bmi_unsupported` (the ArgumentError of
+  unsupported functions). Tests: bmi (conformance on DIS, DISV, DISU), stepping.
 
 ## Test helpers (`test/`, always loaded)
 
@@ -429,7 +435,7 @@ it. Underscore-prefixed helpers are omitted.
   transient) with CHD, WEL, RCHA, RIV, DRN, EVT, EVTA; `generate.jl` writes it
   (riv_drn_evt parity test); test/unit/builder_test.jl builds it in memory.
 - **models/wetdry/**, **models/disu_staggered/**, **models/afr/** (T6.1): synthetic models
-  run with mf6 at test time (groups assembly, run): wetting and drying (2×1×12, VARIABLECV
+  run with mf6 at test time (groups assembly, run; disu_staggered also bmi): wetting and drying (2×1×12, VARIABLECV
   DEWATERED, PERCHED, REWET, convertible storage, RCH moving to layer 2), DISU with staggered
   horizontal connections (IHC 2) and convertible cells, WEL AUTO_FLOW_REDUCE (fraction and
   FLOW_REDUCTION_LENGTH with AUTO_FLOW_REDUCE_AUXNAME).
