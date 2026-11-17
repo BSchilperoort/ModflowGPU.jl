@@ -2,6 +2,7 @@
 # Set LINKCHECK=true to check external links (CI does; it needs network access).
 # deploydocs does nothing outside CI.
 using Documenter
+using Literate
 using ModflowGPU
 
 # Tables of the MODFLOW 6 compatibility pages (Main.CompatTables, used by their @eval blocks).
@@ -11,6 +12,28 @@ include(joinpath(@__DIR__, "compat_tables.jl"))
 # benchmark/results/); written to docs/src/assets/ (gitignored).
 include(joinpath(@__DIR__, "performance_figures.jl"))
 PerformanceFigures.make_figures(joinpath(@__DIR__, "src", "assets"))
+
+# The example gallery: examples/*.jl (Literate scripts) become docs/src/examples/*.md
+# (gitignored), whose code Documenter runs. They download the MODFLOW 6 examples and mf6
+# (docs/ExampleTools.jl; set MFGPU_GALLERY_ARCHIVES to use local copies) and run both
+# programs on the CPU.
+include(joinpath(@__DIR__, "ExampleTools.jl"))
+const GALLERY = [
+    "ex-gwf-toth.jl" => "Tóth: flow systems in a basin",
+    "ex-gwf-hani.jl" => "Horizontal anisotropy",
+    "ex-gwf-fhb.jl" => "Time-series boundaries",
+    "ex-gwf-twri01.jl" => "TWRI: layered aquifers",
+    "ex-gwf-lgrv-gc.jl" => "Valley aquifer with a river",
+    "synthetic-coupling.jl" => "Coupling-type model, step by step",
+]
+gallery_pages = Any["Overview" => "examples.md"]
+let outdir = joinpath(@__DIR__, "src", "examples")
+    rm(outdir; recursive = true, force = true)
+    for (script, title) in GALLERY
+        Literate.markdown(joinpath(dirname(@__DIR__), "examples", script), outdir; documenter = true, credit = false)
+        push!(gallery_pages, title => joinpath("examples", replace(script, ".jl" => ".md")))
+    end
+end
 
 DocMeta.setdocmeta!(ModflowGPU, :DocTestSetup, :(using ModflowGPU); recursive = true)
 
@@ -38,6 +61,7 @@ makedocs(;
             "Stepping API" => "coupling/stepping.md",
             "BMI" => "coupling/bmi.md",
         ],
+        "Examples" => gallery_pages,
         "Performance" => "performance.md",
         "API reference" => [
             "Overview" => "api/index.md",
