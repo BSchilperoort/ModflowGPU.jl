@@ -33,3 +33,12 @@ julia --project=docs docs/make.jl
 The site is written to `docs/build/`. Warnings fail the build. A change that alters what
 users see (a new package or option, a changed keyword, a new address) should update the
 matching page under `docs/src/` in the same change.
+
+The build also makes the [example gallery](examples.md): `docs/make.jl` turns the
+[Literate](https://fredrikekre.github.io/Literate.jl/stable/) scripts in `examples/` into
+pages, and Documenter runs them. They download `mf6examples.zip` and the mf6 6.8.2 Linux
+binary (pinned sha256 in `docs/ExampleTools.jl`) into `docs/.cache` (gitignored; CI keeps
+the downloads between runs). To use copies you already have, set
+`MFGPU_GALLERY_ARCHIVES` to a folder that holds them, for example the `reference/archives`
+folder made by `validation/fetch_reference.sh`. The build takes about 2.5 minutes on one
+CPU thread and 2.6 GB of memory.
