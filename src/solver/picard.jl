@@ -73,7 +73,7 @@ function PicardSettings(
     ) where {T <: AbstractFloat}
     get_c(k, default) = (isnothing(closures) || !haskey(closures, k)) ? default : getfield(closures, k)
     if ims.backtracking_number > 0
-        msg = "IMS BACKTRACKING_NUMBER = $(ims.backtracking_number) (COMPLEXITY $(uppercase(String(ims.complexity))) or given): backtracking is not implemented until T6.2; outer iterations may differ from MF6"
+        msg = "IMS BACKTRACKING_NUMBER = $(ims.backtracking_number) (COMPLEXITY $(uppercase(String(ims.complexity))) or given): backtracking is not implemented yet; outer iterations may differ from MF6"
         @warn msg ims.file maxlog = 1 _id = _log_id(msg)
     end
     ims.under_relaxation in (:none, :simple, :cooley, :dbd) || throw(ArgumentError("unknown IMS UNDER_RELAXATION $(ims.under_relaxation)"))
