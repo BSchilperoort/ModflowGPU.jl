@@ -141,9 +141,12 @@ evapotranspiration on every land cell, `benchmark/results/2026-11-08-T4.4.md`):
 | `:amg` | 0.69 GiB | 0.65 GiB | 0.46 GiB |
 | `:jacobi` | 0.46 GiB | 0.45 GiB | 0.29 GiB |
 
-Later solver changes added about 0.02 GiB per million cells (0.15 GiB on that model). As a
-rule of thumb, plan for about 0.6 GiB per million cells in `:mixed` and 0.4 GiB in
-`:single`. The synthetic global model uses 3.6 GiB in `:mixed`, a quarter of a 16 GB card.
+Later solver changes added about 0.06 GiB per million cells: with the default
+preconditioner the same model now peaks at 4.2 GiB in `:double`, 4.0 GiB in `:mixed` and
+2.8 GiB in `:single` (`benchmark/results/2026-11-16-T6.1.md`), 0.64, 0.61 and 0.43 GiB per
+million cells. As a rule of thumb, plan for about 0.65 GiB per million cells in `:mixed`
+and 0.45 GiB in `:single`; in `:mixed` the synthetic global model uses a quarter of a
+16 GB card.
 Models with more connections per cell (DISV, DISU) or many more boundary records need more.
 
 ## Sharing the GPU with another model
@@ -191,7 +194,7 @@ The GPU has no Float64 (Apple GPUs, some Intel GPUs and OpenCL devices), so `:do
 The GPU package throws an out-of-memory error when the model does not fit. Check the
 [memory](@ref "Memory") table above, then:
 
-- use `precision = :single` (about a third less memory), or `preconditioner = :jacobi`;
+- use `precision = :single` (about 30 % less memory), or `preconditioner = :jacobi`;
 - call [`finalize_simulation`](@ref) on simulations you no longer need, and close other
   programs that use the GPU;
 - run on the CPU (`backend = select_backend("cpu")`), which is slower but limited only by

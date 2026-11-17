@@ -248,7 +248,7 @@ model. Change them only for a reason:
 
 | If ... | then use | because |
 | --- | --- | --- |
-| you want the fastest transient run and can accept heads about 1e-4 m less accurate | `precision = :single` | about 2.5 times faster than `:mixed` on a 6.6 million cell model, a third less memory |
+| you want the fastest transient run and can accept heads about 1e-4 m less accurate | `precision = :single` | about 2.5 times faster than `:mixed` on a 6.6 million cell model, about 30 % less memory |
 | the GPU has no Float64 (Apple, some Intel) | the default (`:auto` gives `:single`) | `:double` and `:mixed` cannot run there |
 | you run a long steady state (spin-up) | the default `:mixed`, not `:single` | in `:single` such steady states can stop centimetres short of the solution |
 | a time step does not converge (`ConvergenceError`), especially in `:single` | `preconditioner = :amg`, or `:mixed` | AMG converges on badly conditioned steady states where `:mc_ilu0` does not |
@@ -326,9 +326,10 @@ What these messages mean:
 - **The preconditioner.** IMS's ILU0, MILU0 and ILUT (set by PRECONDITIONER_LEVELS,
   RELAXATION_FACTOR or COMPLEXITY) are replaced by the `preconditioner` option, because
   they do not run in parallel. This changes the number of inner iterations, not the
-  converged heads. It is an `Info` for ILU0 and for preconditioners that come from
-  COMPLEXITY alone, and a `Warning` when you set RELAXATION_FACTOR or
-  PRECONDITIONER_LEVELS yourself, because their values are not used: for example
+  converged heads. With the default `preconditioner = :auto` it is an `Info` for ILU0
+  and for preconditioners that come from COMPLEXITY alone, and a `Warning` when you set
+  RELAXATION_FACTOR or PRECONDITIONER_LEVELS yourself, because their values are not
+  used (when you choose `preconditioner` yourself it is always an `Info`): for example
   `IMS preconditioner MILU0 is replaced by mc_ilu0 (...)`. Pass
   `precond_options = (; relax = 0.97)` to use MILU relaxation with `:mc_ilu0`.
 - **Backtracking** (BACKTRACKING_NUMBER > 0, also set by COMPLEXITY COMPLEX) is not
