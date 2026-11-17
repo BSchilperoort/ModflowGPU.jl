@@ -1,6 +1,6 @@
 # Phase 7: beyond MF6 parity (build after Milestone B)
 
-Task cards for this phase of [PLAN.md](../../PLAN.md). Read PLAN.md sections 1–4 and 6 for the goals, conventions, architecture and validation rules these cards refer to.
+Task cards for this phase of [PLAN.md](../../../PLAN.md). Read PLAN.md sections 1–4 and 6 for the goals, conventions, architecture and validation rules these cards refer to.
 
 Size: S ≈ < 1 day of agent work, M ≈ 1–3 days, L ≈ > 3 days.
 `‖` marks cards that can run in parallel with their siblings.
@@ -23,7 +23,7 @@ T6.4).
 
 **T7.3 Regional 30″ on one GPU: dropped (2026-11-16).** 30″ is not relevant for now.
 The `regional30s` and `global30s` synthetic sizes (T3.4) and the 30″ memory estimate
-in `docs/scaling.md` stay as they are, for reference.
+in `docs/dev/scaling.md` stay as they are, for reference.
 
 **T7.4 30″ design note: dropped (2026-11-16).** The design questions that multi-GPU
 needs at 5′ (partitioning, communication volume, coupling with mGV) move into T7.5.

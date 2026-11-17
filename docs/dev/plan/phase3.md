@@ -1,6 +1,6 @@
 # Phase 3: GPU execution and Milestone A
 
-Task cards for this phase of [PLAN.md](../../PLAN.md). Read PLAN.md sections 1–4 and 6 for the goals, conventions, architecture and validation rules these cards refer to.
+Task cards for this phase of [PLAN.md](../../../PLAN.md). Read PLAN.md sections 1–4 and 6 for the goals, conventions, architecture and validation rules these cards refer to.
 
 Size: S ≈ < 1 day of agent work, M ≈ 1–3 days, L ≈ > 3 days.
 `‖` marks cards that can run in parallel with their siblings.
@@ -59,4 +59,4 @@ Size: S ≈ < 1 day of agent work, M ≈ 1–3 days, L ≈ > 3 days.
   `global30s` reports its estimated memory per preset.
 
 **Milestone A gate:** T3.1–T3.4 merged; parity on Tier 0–2 + synthetic models
-on CPU and rocm; `docs/support_matrix.md` lists supported packages/options.
+on CPU and rocm; `docs/dev/support_matrix.md` lists supported packages/options.

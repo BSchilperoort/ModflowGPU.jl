@@ -12,7 +12,7 @@
 #
 # plus `index.toml` with the lengths, the time step length `delt` (TDIS/DELT) and the model names.
 # AMAT and RHS after the solve hold the system that iteration assembled, after the
-# adjustments of `sln_ls` (docs/reference_tooling.md, section 3); parity runs use no IMS
+# adjustments of `sln_ls` (docs/dev/reference_tooling.md, section 3); parity runs use no IMS
 # scaling.
 #
 #   julia --project=reference/julia-env/mf6.8.2 validation/libmf6_first_solve.jl <simdir> <outdir>

@@ -1,4 +1,4 @@
-From 8d1e19118ee74ececf0c1e76753daad19ac44845 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Bart Schilperoort <modflowgpu@localhost>
 Date: Sun, 15 Nov 2026 15:50:02 +0100
 Subject: [PATCH] T5.6: global parity and timing against MODFLOW 6
@@ -18,7 +18,7 @@ formula. README section.
  create mode 100644 examples/global/parity_mf6.jl
 
 diff --git a/examples/global/README.md b/examples/global/README.md
-index 70b303f..eaf222d 100644
+index c45a5a2..d2b742a 100644
 --- a/examples/global/README.md
 +++ b/examples/global/README.md
 @@ -60,3 +60,27 @@ MGV_BACKEND=rocm julia -t 8 --project=examples/mgv_coupling examples/global/run_
@@ -608,6 +608,3 @@ index 0000000..ad73872
 +    include(joinpath(@__DIR__, "parity_compare.jl"))
 +end
 +println("done")
--- 
-2.43.0
-

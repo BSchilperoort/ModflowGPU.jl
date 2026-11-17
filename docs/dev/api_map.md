@@ -197,7 +197,7 @@ it. Underscore-prefixed helpers are omitted.
   window, r)` re-evaluates them per step and restages `bound` (multiplier and offsets in
   Float64, as period data; after a stepping API write the series replace their columns of
   `bound_user`); `tswindow`. Tests: timeseries, run, assembly, sto.
-- **boundaries/chd.jl**: CHD (gwf-chd.f90; see `docs/mf6_notes.md`). `apply_chd_heads!`,
+- **boundaries/chd.jl**: CHD (gwf-chd.f90; see `docs/dev/mf6_notes.md`). `apply_chd_heads!`,
   `calc_chd_rate!`. Tests: boundaries (parity vs MF6 CBC).
 - **boundaries/wel.jl**, **rch.jl**, **ghb.jl**: WEL, RCH (list and RCHA arrays, cell
   area), GHB formulations (`formulate_record` methods). Tests: boundaries. T6.1: WEL
@@ -259,7 +259,7 @@ it. Underscore-prefixed helpers are omitted.
   `_ArgMaxAbsOp` as the first op also returns the first index of the largest magnitude,
   `_mapreduce_loc!`; results land in host-mapped memory where `host_mapped_zeros` allows).
   Adapt rules on `KrylovSolver` and `Reducer` (a new one on the target). IMS mapping in
-  docs/mf6_notes.md, accuracy and timing in docs/precision.md. Tests: krylov.
+  docs/dev/mf6_notes.md, accuracy and timing in docs/dev/precision.md. Tests: krylov.
   `KrylovSettings` has `preconditioner` and `precond_options`, `KrylovSolver` a `precond`
   field. Non-Jacobi preconditioners run through `precond_apply!` between non-fused kernels
   (`_cg_init_nf`, `_cg_update_nf`, `_bcgs_direction_nf`, `_bcgs_half_nf`; section
@@ -430,7 +430,7 @@ it. Underscore-prefixed helpers are omitted.
   RIV, DRN, EVT, RCH, STO; steady + 12 daily periods, `ntransient`; `output = :none` = OC without records for mf6), `synthetic_ims` (`:parity`,
   `:production`), `write_synthetic`, `synthetic_counts` / `scaled_counts`, device memory
   `device_bytes` / `memory_coefficients` / `estimate_device_bytes`, `synthetic_main`
-  (benchmark driver). Tests: synthetic (unit + parity vs mf6). Results: docs/scaling.md.
+  (benchmark driver). Tests: synthetic (unit + parity vs mf6). Results: docs/dev/scaling.md.
 - **hardware.jl** (T0.4): hardware baseline (stream, SpMV, dot, atomics).
 - **run.jl** (T4.1): benchmark harness: indus / continental / global5m, steady state + 30
   daily steps (`synthetic_simulation(...; ntransient)`), on a backend in `:double` and

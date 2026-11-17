@@ -8,7 +8,7 @@
 # Which libmf6 is loaded is decided by the Julia environment, not by this script:
 # the environments made by `validation/setup_libmf6_envs.sh` use either Modflow6_jll's
 # own 6.3.0 library or the 6.8.2 release library through a `libmf6_path` preference
-# (see docs/reference_tooling.md).
+# (see docs/dev/reference_tooling.md).
 #
 # Usage:
 #   julia --project=<env> validation/libmf6_probe.jl <example dir> <output dir>

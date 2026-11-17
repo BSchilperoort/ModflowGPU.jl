@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Create two throwaway Julia environments for driving libmf6 through ModflowInterface.jl
-# (task card T0.2, docs/reference_tooling.md):
+# (task card T0.2, docs/dev/reference_tooling.md):
 #
 #   $REFERENCE_DIR/julia-env/mf6.3.0   Modflow6_jll 6.3.0 with its own libmf6 (as ModflowCoupling)
 #   $REFERENCE_DIR/julia-env/mf6.8.2   same packages, but Modflow6_jll's `libmf6_path` and

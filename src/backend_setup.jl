@@ -184,7 +184,7 @@ A zeroed host vector `host` of `n` values of type `T` and a device array `device
 aliases its memory (kernels write the host memory directly), or `nothing` when the
 backend cannot map host memory (callers then copy with `copyto!`). Used for the small
 results of device reductions, which the host reads after every reduction: on ROCm this
-saves the device-to-host copy (~30 µs on the RX 7800 XT, docs/precision.md). Extension
+saves the device-to-host copy (~30 µs on the RX 7800 XT, docs/dev/precision.md). Extension
 hook: the CPU backend returns the same `Array` twice, ROCm a registered host array;
 other backends return `nothing` unless their extension adds a method.
 """

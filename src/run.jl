@@ -62,7 +62,7 @@ after its output, unless the simulation has the CONTINUE option.
 in place of the ILU0/MILU0/ILUT of IMS: `:auto` (the default, `DEFAULT_PRECONDITIONER` =
 `:mc_ilu0`), `:jacobi`, `:chebyshev`, `:mc_sgs`, `:mc_ilu0` or `:amg` (`PRECONDITIONERS`). `precond_options` is a NamedTuple of keywords
 for its constructor (see `build_preconditioner`; for `:amg` those of `AMGOptions`). See
-`KrylovSettings` and docs/mf6_notes.md (IMS linear solver mapping).
+`KrylovSettings` and docs/dev/mf6_notes.md (IMS linear solver mapping).
 """
 function run(
         simdir::AbstractString; backend::Backend = CPU(), precision::Symbol = :auto, outdir::AbstractString = simdir,

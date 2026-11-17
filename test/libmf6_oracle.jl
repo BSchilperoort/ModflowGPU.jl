@@ -1,7 +1,7 @@
 # libmf6 as a test oracle, and a writer for small MF6 simulations made in tests.
 #
 # libmf6 runs in a subprocess in its own Julia environment (validation/setup_libmf6_envs.sh,
-# docs/reference_tooling.md), so ModflowInterface and Modflow6_jll are not test
+# docs/dev/reference_tooling.md), so ModflowInterface and Modflow6_jll are not test
 # dependencies and one libmf6 instance runs per process. The subprocess runs a script of
 # validation/ (e.g. libmf6_connectivity.jl) that initialises the simulation and dumps
 # arrays to raw files, which the test reads back. Expects `REFERENCE_DIR` (input_files.jl).

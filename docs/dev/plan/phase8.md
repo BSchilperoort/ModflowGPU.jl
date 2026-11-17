@@ -1,6 +1,6 @@
 # Phase 8: user documentation
 
-Task cards for this phase of [PLAN.md](../../PLAN.md). Read PLAN.md sections 1–4 and 6 for the goals, conventions, architecture and validation rules these cards refer to.
+Task cards for this phase of [PLAN.md](../../../PLAN.md). Read PLAN.md sections 1–4 and 6 for the goals, conventions, architecture and validation rules these cards refer to.
 
 Size: S ≈ < 1 day of agent work, M ≈ 1–3 days, L ≈ > 3 days.
 `‖` marks cards that can run in parallel with their siblings.
@@ -76,7 +76,7 @@ examples/               # T8.6: Literate scripts, runnable on their own
 **T8.0 Move the developer notes to `docs/dev/` (S)**
 - Depends: none. Do it before T8.1, and when no other card branch is open, because it
   touches paths that every card uses.
-- Move with `git mv`: `docs/*.md` → `docs/dev/*.md`, and `docs/plan/` →
+- Move with `git mv`: `docs/*.md` → `docs/dev/*.md`, and `docs/dev/plan/` →
   `docs/dev/plan/`.
 - Update every reference to the old paths: `PLAN.md`, the phase files, `CLAUDE.md`,
   `README.md`, `aidecl.yaml`, `.gitignore`, comments in `src/`, `test/`, `validation/`
@@ -88,7 +88,7 @@ examples/               # T8.6: Literate scripts, runnable on their own
   the patch through `scripts/apply_coupling_patches.sh` and `git format-patch` (CLAUDE.md);
   never edit a `.patch` file by hand.
 - Old merge commit messages keep the old paths; that is fine. The orchestrator updates
-  the agent memory notes that point at `docs/plan/`.
+  the agent memory notes that point at `docs/dev/plan/`.
 - Done when: `grep` finds no reference to an old path outside `reference/`,
   `graphify-out/` and git history; every relative Markdown link in `docs/dev/`,
   `PLAN.md`, `README.md` and `CLAUDE.md` resolves (check with a small script); the CPU
@@ -169,12 +169,12 @@ examples/               # T8.6: Literate scripts, runnable on their own
   2. read heads and budgets back (the readers from T8.2, and FloPy for Python users,
      since the files are MF6 binary files);
   3. the options: `backend`, `precision`, `preconditioner`, `precond_options`, with a
-     "which one should I pick" table taken from `docs/precision.md` and the benchmark
+     "which one should I pick" table taken from `docs/dev/precision.md` and the benchmark
      results;
   4. what happens with unsupported input (`MF6UnsupportedError`, the `strict` flag), and
      with IMS options that are replaced (preconditioner, backtracking: logged warnings).
 - `gpu.md`: precision presets and what they mean for accuracy; memory per million cells
-  per preset (`docs/scaling.md`); running on a shared GPU (next to mGV); troubleshooting
+  per preset (`docs/dev/scaling.md`); running on a shared GPU (next to mGV); troubleshooting
   (no Float64 on Metal or some Intel GPUs, out-of-memory, the first run being slow
   because of compilation, `allowscalar` errors).
 - Done when: every code block runs in the doctests or is marked as needing a GPU, and a
@@ -197,7 +197,7 @@ examples/               # T8.6: Literate scripts, runnable on their own
   - Acceptance limits per preset and backend (CPU–GPU within 1e-10 relative in
     `:double`, 1e-4 m in heads in `:single`; the MF6 parity limits from section 4), and
     why `:single` and `:mixed` differ (Float32 rounding, closure floors,
-    `docs/precision.md`) in plain terms.
+    `docs/dev/precision.md`) in plain terms.
   - A parity table: one row per validated example (MF6 examples, synthetic coupling
     models, Indus) with grid size, packages, max |Δh|, max budget difference, presets and
     backends tested. A script `docs/parity/collect.jl` runs the parity comparisons
@@ -209,13 +209,13 @@ examples/               # T8.6: Literate scripts, runnable on their own
   - "Check it yourself": run mf6 and ModflowGPU on the same directory and compare with
     the readers.
 - `compatibility/differences.md`: behaviour that differs from mf6 on purpose, written
-  for users from `docs/mf6_notes.md` and the "accepted with a different behaviour" list
-  of `docs/support_matrix.md`: preconditioner replacement, backtracking not applied,
+  for users from `docs/dev/mf6_notes.md` and the "accepted with a different behaviour" list
+  of `docs/dev/support_matrix.md`: preconditioner replacement, backtracking not applied,
   Float32 closure floors, files that are not written (`DATA-SPDIS`, CSV outputs),
   listing-file differences, iteration counts that differ.
 - Done when: the package tables are generated in the build, the parity table covers
   every example that passes in `test/parity/`, and every difference listed in
-  `docs/mf6_notes.md` that a user can observe appears on `differences.md`.
+  `docs/dev/mf6_notes.md` that a user can observe appears on `differences.md`.
 
 **T8.5 Stepping API and BMI guide (M) ‖**
 - Depends: T8.1 (T8.2 for the cross-references).
@@ -293,7 +293,7 @@ examples/               # T8.6: Literate scripts, runnable on their own
   cross-over point with the CPU backend), time per time step and per outer iteration on
   the synthetic models and the global 5′ run, memory use per preset, the effect of the
   preconditioner choice, and the hardware the numbers were measured on. Source:
-  `benchmark/results/`, `docs/scaling.md`, the T4.7 and T5.6 reports. Figures are made
+  `benchmark/results/`, `docs/dev/scaling.md`, the T4.7 and T5.6 reports. Figures are made
   from committed result files by a script in `docs/`, not re-run in CI.
 - Done when: every number on the page cites the result file it comes from, with the
   date and hardware.

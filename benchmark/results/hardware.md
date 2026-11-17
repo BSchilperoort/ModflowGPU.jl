@@ -25,7 +25,7 @@ The rocm run was repeated: medians agreed within 1% (SpMV 1 M Float32 within 8%)
 | CPU backend | KA 0.10: `CPU()` = `POCLBackend`, `JULIA_KA_CPU_THREADS=8`, `julia -t 8`; arrays from `KA.allocate` are `Array` |
 
 The script also runs on KA 0.9.45 + AMDGPU 2.8.0 (the mGV combination, see
-`docs/compat.md`). The native KA 0.9 CPU backend (`-t 8`) gives the same triad and SpMV
+`docs/dev/compat.md`). The native KA 0.9 CPU backend (`-t 8`) gives the same triad and SpMV
 numbers as POCL within 6%; only the broadcast triad is slower (26 GB/s, single-threaded).
 
 ## 1. Stream triad `a = b + s*c`, 256 MB per array

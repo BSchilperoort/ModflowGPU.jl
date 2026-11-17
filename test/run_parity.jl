@@ -45,7 +45,7 @@ function _head_difference(ours, mf6)
     return d, hi - lo
 end
 
-# --- `:single` budget bound from Float32 rounding of the cell flows (T6.1, docs/precision.md)
+# --- `:single` budget bound from Float32 rounding of the cell flows (T6.1, docs/dev/precision.md)
 #
 # A flow of the engine is `q = C·(h'_m − h'_n + Δr)` (storage: `κ·(h'old − h')`, `κ = rho1 +
 # rho2`) from offset heads rounded to Float32, so it differs from MF6's by up to
@@ -199,7 +199,7 @@ end
 # returns per preset (; dh, dq, dl, pd, outer, inner, time, mf6_outer, mf6_inner,
 # backend_vs_cpu), plus :single_vs_double. `single_preconditioner` replaces `preconditioner`
 # in `:single` (T6.0: ex-gwf-lgrv-gr). `single_budget_tol` replaces the `:single` budget
-# criterion 1e-4 × total in (T6.4: rad_disu_confined, docs/precision.md).
+# criterion 1e-4 × total in (T6.4: rad_disu_confined, docs/dev/precision.md).
 function _run_parity(
         name, rundir; preconditioner::Symbol = RUN_PRECONDITIONER, precond_options::NamedTuple = (;),
         single_preconditioner::Symbol = preconditioner, single_budget_tol::Float64 = 1.0e-4,
