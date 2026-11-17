@@ -164,7 +164,7 @@ _budget(r) = max(r["max_budget_cbc"], r["max_budget_listing"])
 
 function _time(row, b)
     haskey(row["results"], b) || return "–"
-    return @sprintf("%.1f", row["results"][b]["mixed"]["wall_time"])
+    return @sprintf("%.2f", row["results"][b]["mixed"]["wall_time"])
 end
 
 """
