@@ -44,7 +44,7 @@ Pkg.add(url = "https://github.com/BSchilperoort/ModflowGPU.jl")
 ```
 
 This downloads ModflowGPU and its dependencies and writes `Project.toml` and
-`Manifest.toml` in the folder. The first time takes a few minutes, because Julia also
+`Manifest.toml` in the folder. The first time takes one to a few minutes, because Julia also
 precompiles the packages. Start Julia with `julia --project=.` in that folder from then on.
 
 To get a newer version of ModflowGPU later, run `Pkg.update("ModflowGPU")`.
