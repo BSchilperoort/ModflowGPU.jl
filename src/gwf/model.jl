@@ -52,7 +52,7 @@ mutable struct GwfModel{T <: AbstractFloat, B <: Backend, C <: CsrStructure, N <
 end
 
 function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) where {T <: AbstractFloat}
-    spec.newton && throw(MF6UnsupportedError(spec.file, "unsupported: NEWTON in model $(spec.name) (Newton-Raphson arrives with T6.1)"))
+    spec.newton && throw(MF6UnsupportedError(spec.file, "unsupported: NEWTON in model $(spec.name) (Newton-Raphson is not supported yet)"))
     conn = build_connectivity(spec)
     setup = npf_setup(spec, conn)
     csr = CsrStructure(backend, conn)

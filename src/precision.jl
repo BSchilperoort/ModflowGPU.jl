@@ -46,7 +46,7 @@ Krylov solver (`Ts`) and the preconditioner (`Tp`):
 tolerances hold) and stores every preconditioner's data (Jacobi `minv`, Chebyshev and
 multicolour operator copies and factors, the AMG hierarchy) in Float32. It is the
 `:auto` default on backends with Float64 because it is as accurate as `:double` and 10–20 %
-faster with less memory (measured in docs/dev/precision.md, T4.4).
+faster with less memory (measured in docs/dev/precision.md).
 
 The result is a `NamedTuple`, so `T, Ts, Tp = resolve_precision(backend, preset)` works.
 Requesting `:double` or `:mixed` on a backend without Float64 support throws an error.

@@ -189,7 +189,7 @@ function initialize(
         precond_options::NamedTuple = (;),
     )
     (length(sim.models) == 1 && isempty(sim.exchanges)) ||
-        throw(MF6UnsupportedError(sim.simdir, "unsupported: $(length(sim.models)) models and $(length(sim.exchanges)) exchanges (multi-model simulations arrive in T6.6)"))
+        throw(MF6UnsupportedError(sim.simdir, "unsupported: $(length(sim.models)) models and $(length(sim.exchanges)) exchanges (only one model is supported)"))
     spec = only(sim.models)
     ims = only(only(sim.solution_groups).solutions)
     T, Ts, Tp = resolve_precision(backend, precision)
@@ -392,7 +392,7 @@ end
 End a simulation started with [`initialize`](@ref) (libmf6's `finalize`): close the
 output files and, with `free` (the default), release the device memory of the model now
 ([`ModflowGPU.free_device_arrays!`](@ref)) rather than when the garbage collector runs.
-This matters when another model on the same GPU allocates next (T5.4).
+This matters when another model on the same GPU allocates next.
 
 Afterwards the simulation cannot be stepped, and with `free = true` not read either
 ([`get_value`](@ref) and [`get_value_ptr`](@ref) throw); device arrays obtained before
