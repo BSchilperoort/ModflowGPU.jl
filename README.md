@@ -1,5 +1,6 @@
 # ModflowGPU.jl
 
+[![Docs (dev)](https://img.shields.io/badge/docs-dev-blue.svg)](https://bschilperoort.github.io/ModflowGPU.jl/dev/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![AI Declaration Format](https://img.shields.io/badge/AI_Declaration_Format-validated-blue)](aidecl.yaml)
 
@@ -12,8 +13,9 @@ MODFLOW 6 to [mGV](https://github.com/SWIFT-WUR/mGV) through BMI for basin-to-gl
 models. MODFLOW 6 is the reference: every feature is accepted only when it reproduces MF6 heads and
 budgets.
 
-**Status:** under development, not yet registered. Supported now: DIS, confined NPF, STO, IC, CHD,
-WEL, RCH, GHB, RIV, DRN, EVT, OC, the Picard outer loop with CG/BiCGSTAB, and budgets. See
+**Status:** under development, not yet registered. Supported now: DIS, DISV, DISU, NPF
+(confined and convertible), STO, IC, CHD, WEL, RCH, GHB, RIV, DRN, EVT, OC, time series, the Picard
+outer loop with CG/BiCGSTAB, and budgets. See
 [docs/dev/support_matrix.md](docs/dev/support_matrix.md) for details and [PLAN.md](PLAN.md) for the roadmap.
 
 ## Installation
@@ -46,27 +48,22 @@ using AMDGPU, ModflowGPU   # omit the GPU package to run on the CPU
 
 backend = ModflowGPU.select_backend("auto")   # first working GPU, else CPU
 result = ModflowGPU.run("path/to/simulation"; backend)
-
 result.converged
-result.heads         # final heads per active cell (Float64)
 ```
 
 `run` reads `mfsim.nam` and writes the head, budget and listing files that the OC package asks
-for. Useful options:
-
-- `precision`: `:auto` (default), `:double`, `:mixed` or `:single`. `:auto` picks `:mixed` (Float64
-  state, Float32 preconditioner) on backends with Float64 support, otherwise `:single`.
-- `preconditioner`: `:auto` (default, multicolour ILU0), `:jacobi`, `:amg`, and others.
-
-For coupled models, `ModflowGPU.initialize` and the BMI-style stepping API run one time step at a
-time. ModflowCoupling uses this API.
+for. Options (`precision`, `preconditioner`) and the stepping API for coupled models are
+described in the [documentation](https://bschilperoort.github.io/ModflowGPU.jl/dev/).
 
 ## Documentation
 
-- [docs/dev/support_matrix.md](docs/dev/support_matrix.md): supported MF6 packages and options
-- [docs/dev/mf6_notes.md](docs/dev/mf6_notes.md): how MF6 behaviour is mapped, and where it differs
-- [docs/dev/precision.md](docs/dev/precision.md): precision presets and accuracy
-- [docs/dev/scaling.md](docs/dev/scaling.md) and [benchmark/results/](benchmark/results/): performance
+The manual is at <https://bschilperoort.github.io/ModflowGPU.jl/dev/>. Pages that are not
+written yet are covered by the developer notes in [docs/dev/](docs/dev/):
+
+- [support_matrix.md](docs/dev/support_matrix.md): supported MF6 packages and options
+- [mf6_notes.md](docs/dev/mf6_notes.md): how MF6 behaviour is mapped, and where it differs
+- [precision.md](docs/dev/precision.md): precision presets and accuracy
+- [scaling.md](docs/dev/scaling.md) and [benchmark/results/](benchmark/results/): performance
 
 ## Development
 

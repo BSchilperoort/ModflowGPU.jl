@@ -1,0 +1,36 @@
+name: Documentation
+
+# CPU only. Builds the manual on every push to main and on pull requests; deploys to the
+# gh-pages branch on main only (deploydocs in docs/make.jl, push_preview = false).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  actions: write
+  contents: write
+  statuses: write
+
+jobs:
+  docs:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v3
+      - name: Install dependencies
+        run: julia --project=docs -e 'using Pkg; Pkg.instantiate()'
+      - name: Build and deploy
+        run: julia --project=docs docs/make.jl
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LINKCHECK: 'true'

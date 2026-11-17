@@ -101,6 +101,7 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
 - Done when: T6.2a: the coupling_rde COMPLEX run backtracks where MF6 does (MF6: in 3
   of 125 outer iterations, `docs/dev/precision.md`), the warning is gone, and the run
   parity tests still pass. T6.2: the Tier 4 examples pass parity.
+- Docs: update `docs/src/compatibility/packages.md` (Newton options) and `compatibility/differences.md` (remove the backtracking note); unlocks gallery pages `ex-gwf-bcf2ss-p02a`, `ex-gwf-bump-p01a`, `ex-gwf-bump-p01c`, `ex-gwf-capture`, `ex-gwf-nwt-p02a`, `-p03a`, `-p03b`, `ex-gwf-zaidel` (T8.7).
 
 **T6.3 Time series and time-array series (M) ‖ (done 2026-11-16)**
 - Depends: no Phase 6 card.
@@ -126,6 +127,7 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
 - Deliver: the extended connection stencil (CSR with neighbours of neighbours,
   `XT3D` and `RHS` options), formulated per cell in a kernel.
 - Done when: Tier 6 examples pass parity.
+- Docs: update `docs/src/compatibility/packages.md` (XT3D, RHS option); unlocks gallery pages `ex-gwf-hanix`, `ex-gwf-whirl`, `ex-gwf-disvmesh`, `ex-gwf-u1disv-x` (T8.7).
 
 **T6.6 Multi-model solutions and GWF–GWF exchanges (L)**
 - Depends: T6.5 for `ex-gwf-u1gwfgwf-s2`, `-s3` and `-s4` (XT3D in NPF or on the
@@ -136,6 +138,7 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
 - Deliver: several GWF models in one solution, exchanges with `CDIST`, `ANGLDEGX`,
   `IHC`, `XT3D` on the exchange, and a self-exchange (spbc).
 - Done when: Tier 7 examples pass parity.
+- Docs: update `docs/src/compatibility/packages.md` (multi-model solutions, GWF-GWF exchanges) and `docs/src/coupling/stepping.md` (addresses of several models); unlocks gallery pages `ex-gwf-lgrv-lgr`, `ex-gwf-spbc`, `ex-gwf-u1gwfgwf-s1` to `-s4` (T8.7).
 
 **T6.7 OBS for GWF heads and flows (S)**
 - Depends: T6.3 for fhb; T6.1 and T6.3 for advtidal; T6.1 and T6.4 for rad-disu
@@ -155,3 +158,4 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
   to the listing.
 - Done when: observation files of advtidal, fhb and rad-disu match within
   tolerance.
+- Docs: update `docs/src/compatibility/packages.md` (OBS) and `docs/src/getting_started.md` (CSV observation output); unlocks the observation output on the gallery pages `ex-gwf-fhb` (T8.6) and `ex-gwf-advtidal`, `ex-gwf-rad-disu` (T8.7).
