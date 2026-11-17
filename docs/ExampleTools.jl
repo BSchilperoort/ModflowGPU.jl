@@ -23,7 +23,7 @@ using Printf: @sprintf
 using SHA: sha256
 using TOML: TOML
 
-export example_run, mf6_run, run_modflowgpu, compare_with_mf6, comparison_table, parity_row,
+export example_run, mf6_run, quietly, cache_dir, repo_path, run_modflowgpu, compare_with_mf6, comparison_table, parity_row,
     DisGrid, read_dis_grid, node, cell_of, layer_values, specific_discharge, budget_cells,
     map_heatmap!, map_contour!, map_grid!, map_cells!, map_vectors!, section_heatmap!, section_grid!,
     section_contour!, budget_bars, difference_map, save_figure, intformat, expformat, BC_COLORS, mask_inactive
@@ -58,6 +58,9 @@ const ARCHIVES = (
         file = "mf$(MF6_VERSION)_linux.zip", subdir = "mf$(MF6_VERSION)_linux",
     ),
 )
+
+"A path in the ModflowGPU repository."
+repo_path(parts...) = joinpath(ROOT, parts...)
 
 "The cache directory of the gallery: `MFGPU_GALLERY_CACHE`, default `docs/.cache`."
 cache_dir() = mkpath(abspath(get(ENV, "MFGPU_GALLERY_CACHE", joinpath(DOCS, ".cache"))))
@@ -139,6 +142,9 @@ function example_input(name::AbstractString)
     rm(joinpath(root, ".x-" * name); recursive = true)
     return dest
 end
+
+"Call `f()` with Info messages hidden (warnings are still shown)."
+quietly(f) = Logging.with_logger(f, Logging.ConsoleLogger(stderr, Logging.Warn))
 
 # --- Runs ------------------------------------------------------------------------------
 
@@ -294,14 +300,15 @@ each a `(; cmp, time)` with `cmp` from [`compare_with_mf6`](@ref) and `time` the
 time of the run in this build) the largest head and budget differences against mf6, next
 to the values of the parity table (row `parity_name` of docs/src/assets/parity.toml, CPU
 backend), and the wall times on the CPU (this build) and on the GPU (parity table, ROCm).
+`unit` is the length unit of the model.
 Throws if a difference of this build exceeds the acceptance limits of the parity tests
 (the head limit is relative to the head range where the parity tests make it so).
 """
-function comparison_table(parity_name::AbstractString, stats; dh_limit_double = LIMITS.double.dh)
+function comparison_table(parity_name::AbstractString, stats; unit = "m", dh_limit_double = LIMITS.double.dh)
     row = parity_row(parity_name)
     res = row["results"]
     io = IOBuffer()
-    println(io, "| Preset | max \\|Δh\\| (m), this build | max \\|Δh\\| (m), parity table | Budget, this build | Budget, parity table | CPU time, this build (s) | GPU time, parity table (s) |")
+    println(io, "| Preset | max \\|Δh\\| ($unit), this build | max \\|Δh\\| ($unit), parity table | Budget, this build | Budget, parity table | CPU time, this build (s) | GPU time, parity table (s) |")
     println(io, "| :-- | --: | --: | --: | --: | --: | --: |")
     for p in (:double, :single)
         s = stats[p]
@@ -315,6 +322,8 @@ function comparison_table(parity_name::AbstractString, stats; dh_limit_double = 
             _e(max(cpu["max_budget_cbc"], cpu["max_budget_listing"])), " | ", @sprintf("%.2f", s.time), " | ", gpu, " |",
         )
     end
+    println(io)
+    println(io, "Budget: the largest difference of a budget-file flow or a listing-table rate, relative to the total inflow of its time step.")
     return Markdown.parse(String(take!(io)))
 end
 
@@ -481,15 +490,11 @@ end
 function map_vectors!(ax, g::DisGrid, qx, qy; normalize = true, color = RGBf(0.75, 0.75, 0.75), lengthscale = 0.8, kwargs...)
     pts = vec([Point2f(g.xc[c], g.yc[r]) for c in 1:g.ncol, r in 1:g.nrow])
     d = minimum([g.delr; g.delc]) * lengthscale
-    dirs = vec(
-        [
-            begin
-                    v = Vec2f(qx[c, r], qy[c, r])
-                    s = sqrt(sum(abs2, v))
-                    normalize ? (s > 0 ? v / s * d : Vec2f(0, 0)) : v
-                end for c in 1:g.ncol, r in 1:g.nrow
-        ]
-    )
+    function arrow(v)
+        s = sqrt(sum(abs2, v))
+        return normalize ? (s > 0 ? v / s * d : Vec2f(0, 0)) : v
+    end
+    dirs = vec([arrow(Vec2f(qx[c, r], qy[c, r])) for c in 1:g.ncol, r in 1:g.nrow])
     return arrows2d!(ax, pts, dirs; color, align = :center, shaftwidth = 1, tipwidth = 5, tiplength = 5, kwargs...)
 end
 
@@ -561,7 +566,7 @@ Bars of the rates in and out of each budget term of the ModflowGPU budgets
 b2]`), side by side per term: inflows up, outflows down.
 """
 function budget_bars(budgets; title = "", size = (640, 360), unit = "")
-    names = [t.name == t.package || isempty(t.package) ? t.name : "$(t.name) ($(t.package))" for t in last(first(budgets)).terms]
+    names = [t.name for t in last(first(budgets)).terms]
     fig = Figure(; size)
     ax = Axis(fig[1, 1]; xticks = (1:length(names), names), ylabel = "Rate$(isempty(unit) ? "" : " ($unit)")", title, xticklabelrotation = length(names) > 4 ? π / 6 : 0.0)
     nb = length(budgets)
@@ -598,16 +603,24 @@ function difference_map(g::DisGrid, panels; layer = 1, size = (420 * length(pane
     return fig
 end
 
+"A PNG file shown as an image (on a page: only `image/png`, no HTML representation)."
+struct PNGFile
+    path::String
+end
+Base.show(io::IO, ::MIME"image/png", f::PNGFile) = write(io, read(f.path))
+
 """
-    save_figure(fig, name) -> fig
+    save_figure(fig, name) -> PNGFile
 
 Write `fig` as `<name>.png` into the figure folder of the cache (`<cache>/figures`), so a
-script run on its own leaves its figures there, and return `fig` (displayed on the page).
+script run on its own leaves its figures there, and return the file, which a page shows
+as the figure.
 """
 function save_figure(fig, name)
     resize_to_layout!(fig)
-    save(joinpath(mkpath(joinpath(cache_dir(), "figures")), name * ".png"), fig; px_per_unit = 2)
-    return fig
+    path = joinpath(mkpath(joinpath(cache_dir(), "figures")), name * ".png")
+    save(path, fig; px_per_unit = 2)
+    return PNGFile(path)
 end
 
 end # module ExampleTools

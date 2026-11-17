@@ -20,7 +20,7 @@
 # released `mf6examples.zip`, sets the tight closures of the [parity tests](@ref
 # "Comparing results") in the IMS file, and runs MODFLOW 6.8.2.
 
-isdefined(Main, :ExampleTools) || include(joinpath(@__DIR__, "..", "docs", "ExampleTools.jl")) #hide
+isdefined(Main, :ExampleTools) || Base.include(Main, joinpath(@__DIR__, "..", "docs", "ExampleTools.jl")) #hide
 using Main.ExampleTools #hide
 using ModflowGPU, CairoMakie
 CairoMakie.activate!(; type = "png") #hide
@@ -115,4 +115,4 @@ save_figure(fig, "ex-gwf-twri01-difference")
 # for the first run of the session; GPU: the parity table, AMD Radeon RX 7800 XT).
 
 stats = Dict(p => (; cmp = compare_with_mf6(mf6.dir, runs[p]), runs[p].time) for p in (:double, :single))
-comparison_table("ex-gwf-twri01", stats)
+comparison_table("ex-gwf-twri01", stats; unit = "ft")

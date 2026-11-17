@@ -21,7 +21,7 @@
 # `INNER_RCLOSE` 1e-10), and runs MODFLOW 6.8.2 on it, so that both programs solve the
 # same input to the same closure.
 
-isdefined(Main, :ExampleTools) || include(joinpath(@__DIR__, "..", "docs", "ExampleTools.jl")) #hide
+isdefined(Main, :ExampleTools) || Base.include(Main, joinpath(@__DIR__, "..", "docs", "ExampleTools.jl")) #hide
 using Main.ExampleTools #hide
 using ModflowGPU, CairoMakie
 CairoMakie.activate!(; type = "png") #hide
@@ -91,4 +91,4 @@ save_figure(fig, "ex-gwf-toth-difference")
 # are those of the parity table, on an AMD Radeon RX 7800 XT.
 
 stats = Dict(p => (; cmp = compare_with_mf6(mf6.dir, runs[p]), runs[p].time) for p in (:double, :single))
-comparison_table("ex-gwf-toth", stats)
+comparison_table("ex-gwf-toth", stats; unit = "ft")

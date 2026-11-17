@@ -22,7 +22,7 @@
 # `INNER_RCLOSE` of 1e-10 mf6 does not converge on this model, so the closure is relative
 # (`RELATIVE_RCLOSE`), as for the reference run of the parity tests.
 
-isdefined(Main, :ExampleTools) || include(joinpath(@__DIR__, "..", "docs", "ExampleTools.jl")) #hide
+isdefined(Main, :ExampleTools) || Base.include(Main, joinpath(@__DIR__, "..", "docs", "ExampleTools.jl")) #hide
 using Main.ExampleTools #hide
 using ModflowGPU, CairoMakie
 CairoMakie.activate!(; type = "png") #hide

@@ -21,7 +21,7 @@
 # simulations from the released `mf6examples.zip`, sets the tight closures of the
 # [parity tests](@ref "Comparing results") in the IMS files, and runs MODFLOW 6.8.2.
 
-isdefined(Main, :ExampleTools) || include(joinpath(@__DIR__, "..", "docs", "ExampleTools.jl")) #hide
+isdefined(Main, :ExampleTools) || Base.include(Main, joinpath(@__DIR__, "..", "docs", "ExampleTools.jl")) #hide
 using Main.ExampleTools #hide
 using ModflowGPU, CairoMakie
 CairoMakie.activate!(; type = "png") #hide

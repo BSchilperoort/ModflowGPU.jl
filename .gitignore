@@ -36,4 +36,7 @@ Manifest-v*.toml
 
 # Figures made at docs build time (docs/performance_figures.jl)
 docs/src/assets/performance_*.svg
+# The example gallery: downloads and runs (docs/ExampleTools.jl), and the pages that
+# docs/make.jl generates from examples/*.jl
+docs/src/examples/
 docs/.cache/
