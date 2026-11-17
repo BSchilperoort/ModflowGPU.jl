@@ -517,7 +517,7 @@ marked; their merge commits on `main` hold the card reports.
   - T8.1 Documenter scaffold and CI deployment (done)
   - T8.2 Public API and API reference (done)
   - T8.3 Installation, getting started and GPU guide (done)
-  - T8.4 MF6 compatibility: packages and results
+  - T8.4 MF6 compatibility: packages and results (done)
   - T8.5 Stepping API and BMI guide (done)
   - T8.6 Example gallery: infrastructure and first examples
   - T8.7 Remaining gallery examples
