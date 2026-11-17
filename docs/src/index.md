@@ -5,7 +5,8 @@ on a GPU or a CPU. It reads ordinary MODFLOW 6 input files (`mfsim.nam` and the 
 lists), writes the usual head, budget and listing files, and can also be driven one time step
 at a time from Julia, for example to couple it to a land-surface or hydrology model. It is
 written in Julia with [KernelAbstractions.jl](https://github.com/JuliaGPU/KernelAbstractions.jl),
-so the same code runs on AMD, NVIDIA, Intel and Apple GPUs, on OpenCL devices and on the CPU.
+so the same code can run on AMD, NVIDIA, Intel and Apple GPUs, on OpenCL devices and on the CPU.
+Only AMD (ROCm) and the CPU are tested so far.
 
 MODFLOW 6 is the reference. A feature is only accepted when it reproduces MODFLOW 6 heads
 and volumetric budgets on the same input. The first user is
@@ -42,8 +43,8 @@ transport models) are out of scope. See [Supported packages](compatibility/packa
 ## When not to use it
 
 - Your model needs a package or option listed as unsupported. Use MODFLOW 6.
-- Your model is small. On a few thousand cells MODFLOW 6 on the CPU is as fast or faster,
-  because a GPU only pays off when there is enough work to keep it busy.
+- Your model is small. A GPU only pays off when there is enough work to keep it busy, so
+  on a model of a few thousand cells do not expect a speed-up over MODFLOW 6 on the CPU.
 - You need identical iteration counts or listing files. ModflowGPU uses a different
   preconditioner, so iteration counts differ; heads and budgets agree within the closure
   criteria of the model.

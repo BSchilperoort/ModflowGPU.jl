@@ -20,6 +20,7 @@ longer the base for a wrap.
 geometry instead of RCH/EVT area-factor scaling). This deviates from MF6 DIS;
 validate against an mf6 DISU model with the same geometry (DISU is supported since
 T6.4).
+
 **Docs:** update `docs/src/compatibility/differences.md` (spherical geometry deviates from MF6 DIS) and `compatibility/packages.md`; no gallery example (no MF6 counterpart).
 
 **T7.3 Regional 30″ on one GPU: dropped (2026-11-16).** 30″ is not relevant for now.
@@ -45,4 +46,5 @@ or T7.4). Target: the global 5′ model, not 30″.
   synthetic `global5m` model within 1e-8 m in `:double`, and the iteration counts
   against the number of partitions are reported. Real multi-GPU scaling runs need
   hardware that this machine does not have.
+
 **Docs:** update `docs/src/gpu.md` (running on several GPUs) and `docs/src/performance.md` (scaling numbers); no gallery example.

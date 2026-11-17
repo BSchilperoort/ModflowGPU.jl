@@ -13,8 +13,9 @@ MODFLOW 6 to [mGV](https://github.com/SWIFT-WUR/mGV) through BMI for basin-to-gl
 models. MODFLOW 6 is the reference: every feature is accepted only when it reproduces MF6 heads and
 budgets.
 
-**Status:** under development, not yet registered. Supported now: DIS, confined NPF, STO, IC, CHD,
-WEL, RCH, GHB, RIV, DRN, EVT, OC, the Picard outer loop with CG/BiCGSTAB, and budgets. See
+**Status:** under development, not yet registered. Supported now: DIS, DISV, DISU, NPF
+(confined and convertible), STO, IC, CHD, WEL, RCH, GHB, RIV, DRN, EVT, OC, time series, the Picard
+outer loop with CG/BiCGSTAB, and budgets. See
 [docs/dev/support_matrix.md](docs/dev/support_matrix.md) for details and [PLAN.md](PLAN.md) for the roadmap.
 
 ## Installation
