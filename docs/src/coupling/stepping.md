@@ -60,7 +60,7 @@ SciML packages, through CommonSolve). libmf6's `finalize` is
 
 | libmf6 (XMI) / xmipy | ModflowGPU | Notes |
 | :--- | :--- | :--- |
-| `mf6 = XmiWrapper(lib, ws)`; `mf6.initialize()` | `sim = initialize(simdir; backend, precision, ...)` | also takes a `SimulationSpec` |
+| `mf6 = XmiWrapper(lib, working_directory=ws)`; `mf6.initialize()` | `sim = initialize(simdir; backend, precision, ...)` | also takes a `SimulationSpec` |
 | `mf6.update()` | `ModflowGPU.update(sim)` | returns `false` when the step failed to converge without CONTINUE |
 | `mf6.finalize()` | `finalize_simulation(sim)` | frees the GPU memory at once |
 | `mf6.prepare_time_step(dt)` | `prepare_time_step(sim)` | `dt` may be passed and is ignored, as in libmf6 |
@@ -82,7 +82,8 @@ of this loop. With the stepping API you write the loop yourself and put that cod
 place: `Callbacks.initialize` after `initialize`; `stress_period_start` and
 `timestep_start` after `prepare_time_step` (a period starts when
 `only(get_value(sim, "TDIS/KSTP")) == 1`); `iteration_start` and `iteration_end` around
-`ModflowGPU.solve`; `timestep_end` after `finalize_time_step`, and `stress_period_end`
+`ModflowGPU.solve` (set values there with `set_value`: mirror writes after
+`prepare_solve` are discarded); `timestep_end` after `finalize_time_step`, and `stress_period_end`
 there too at the last step of a period; `finalize` before `finalize_simulation`. modflowapi's package objects (`model.riv.stress_period_data`, ...)
 have no counterpart: read and write the `BOUND` arrays directly.
 
@@ -142,7 +143,8 @@ Notes on the table:
   row by row (`nodesuser = nlay·nrow·ncol` for DIS). `X(n)` belongs to user node
   `NODEUSER(n)`. Without IDOMAIN the two numberings are the same.
 - **Units.** L and T are the length and time units of the model (DIS `LENGTH_UNITS`, TDIS
-  `TIME_UNITS`). `BMI.get_var_units` returns the strings of the Units column.
+  `TIME_UNITS`). `BMI.get_var_units` returns the Units column as `"L"`, `"L2"`, `"L3/T"`,
+  `"T"` and `"-"`.
 - **Types.** Values are `Float64` and counts and indices `Int32`; scalars are one-element
   vectors (`only(get_value(sim, "TDIS/KPER"))`).
 - **DIS.** The grid variables are named `<model>/DIS/...` for DIS, DISV and DISU grids
@@ -174,8 +176,10 @@ auxiliary variable (`AUXMULTNAME`) is applied.
 | DRN | 1 drain elevation (h), 2 conductance (L²/T), 3 drainage depth DDRN (from `AUXDEPTHNAME`, 0 without it) |
 | EVT, EVTA | 1 ET surface (h), 2 maximum ET rate (L/T), 3 extinction depth (L), 4 PETM0 (1 without `SURF_RATE_SPECIFIED`), then the `NSEG − 1` PXDP and the `NSEG − 1` PETM values |
 
-The order of the DRN and EVT rows is ModflowGPU's; check it if you port code that indexes
-these rows in libmf6's arrays.
+The DRN and EVT rows after the first ones are ModflowGPU's: in libmf6 (MODFLOW 6.8) the
+`BOUND` of DRN has the first two rows only (DDRN is an auxiliary variable) and that of EVT
+the first three (PETM0, PXDP and PETM are separate arrays). Code ported from libmf6 that
+indexes only those rows works unchanged.
 
 Values set through `BOUND` are used from the next solve until new period data for the
 package replace them, as in MF6. A value that comes from a time series is replaced by
@@ -227,7 +231,7 @@ Cost: the mirrors of `BOUND` and `NODELIST` are copied only when the engine valu
 (new period data, a write); the other mirrors (`X`, `SIMVALS`, ...) are copied from the
 device at each of the three refresh points of a time step. A simulation without mirrors
 (reading with `get_value` only) moves no array between host and device in a time step,
-apart from the heads that OC saves or prints.
+apart from new period data and time-series values, and the heads that OC saves or prints.
 
 ### Device arrays
 
