@@ -84,7 +84,8 @@ scope. These parts of MODFLOW 6 will not be supported:
 ## Not supported yet
 
 These MODFLOW 6 features are in scope but not supported yet. A model that uses them is
-rejected with an [`MF6UnsupportedError`](@ref).
+rejected with an [`MF6UnsupportedError`](@ref), except where the status says that the
+input is accepted.
 
 | Feature | Status |
 | :-- | :-- |

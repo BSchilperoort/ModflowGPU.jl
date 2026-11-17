@@ -25,9 +25,10 @@ The IMS options that configure MODFLOW 6's preconditioner (`PRECONDITIONER_LEVEL
 sets) are accepted, but their values are not used. The log says so when the run starts:
 an `Info` for ILU0 and for settings that come from `COMPLEXITY` alone, a `Warning` when
 you set `RELAXATION_FACTOR` or `PRECONDITIONER_LEVELS` yourself. MILU relaxation can be
-switched on with `precond_options = (; relax = 0.97)`. `REORDERING_METHOD` has no effect
-(an `Info`): the multicolour preconditioners use their own ordering. `RED_BLACK_ORDERING`
-is accepted and has no effect either.
+switched on with `precond_options = (; relax = 0.97)`. The multicolour preconditioners
+use their own ordering: `REORDERING_METHOD RCM` and `MD` are rejected (with
+`strict = false` they have no effect, with an `Info`), and `RED_BLACK_ORDERING` is
+accepted and has no effect.
 
 The convergence tests of IMS (`INNER_DVCLOSE`, `INNER_RCLOSE` with its `STRICT`,
 `L2NORM_RCLOSE` and `RELATIVE_RCLOSE` variants, `OUTER_DVCLOSE`) are the same, so the
@@ -68,9 +69,10 @@ The `:double` and `:mixed` presets give MODFLOW 6's accuracy. `:single` computes
 Float32, which MODFLOW 6 cannot:
 
 - **Closures are raised** to what Float32 can resolve: `OUTER_DVCLOSE` and
-  `INNER_DVCLOSE` to at least 1e-6 m and to the resolution of the heads of the model (with
-  heads 1000 m from their reference that is about 1e-4 m); an absolute `INNER_RCLOSE` to
-  the rounding level of the residual. An `Info` message says when this happens. Once a
+  `INNER_DVCLOSE` to at least 1e-6 m (an `Info` message says when this happens),
+  `OUTER_DVCLOSE` also to the resolution of the heads of the model (with heads 1000 m
+  from their reference that is about 1e-4 m), and an absolute `INNER_RCLOSE` to the
+  rounding level of the residual. Once a
   step's head change meets `OUTER_DVCLOSE` but its linear solve did not converge, the
   inner `INNER_DVCLOSE` is raised to the head resolution for the rest of that step.
 - **Results differ from MODFLOW 6** by up to about 1e-4 m in heads, and budgets by
@@ -126,12 +128,12 @@ The stepping API works as libmf6 and its XMI/BMI interface do, with these differ
   ModflowGPU keeps `BOUND` (stage, conductance, bottom), as earlier MODFLOW 6 versions
   and ModflowCoupling do; MODFLOW 6.8 has separate `STAGE`, `COND` and `RBOT` arrays.
 - The checks of boundary records (RIV stage and bottom, DRN elevation and GHB head not
-  below the bottom of a convertible cell; conductances not negative) run when period
-  data are read, as in MODFLOW 6; values set through
-  `set_value` or `get_value_ptr` are not checked, as in libmf6. `BOUND` arrays written
-  on the device ([`ModflowGPU.device_bound!`](@ref)) get a reduced check at
-  `prepare_solve`: finite values and, for RIV, stage not below bottom and conductance
-  not negative.
+  below the bottom of a convertible cell; conductances not negative) run only when period
+  data are read. MODFLOW 6 repeats them at the start of every time step (unless
+  `NOCHECK`), so it also checks values written through its API; ModflowGPU does not check
+  values set with `set_value` or `get_value_ptr`. `BOUND` arrays written on the device
+  ([`ModflowGPU.device_bound!`](@ref)) get a reduced check at `prepare_solve`: finite
+  values and, for RIV, stage not below bottom and conductance not negative.
 
 ## Recharge rates and older MODFLOW 6 versions
 

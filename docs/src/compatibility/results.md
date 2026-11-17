@@ -110,8 +110,9 @@ reference runs. It is not regenerated when the manual is built.
 
 ModflowGPU was built for coupled runs with a hydrological model, so it was also compared
 with MODFLOW 6 on the models it was made for. These comparisons use the coupling
-quantities (baseflow to rivers and capillary rise) as well as heads, with tight closures,
-on the ROCm backend (the CPU backend gives the same digits).
+quantities (baseflow to rivers and capillary rise) as well as heads, with tight closures
+(`INNER_RCLOSE` 1e-8, as MODFLOW 6 does not converge at 1e-10 on these models), on the
+ROCm backend (on the Indus the CPU backend gives the same digits).
 
 **Indus basin** (204 × 180 cells in 2 layers; RIV, DRN, RCH, EVT, CHD, STO; three monthly
 stress periods, and 31 daily ones), against MODFLOW 6.3.0 (the version the coupling uses).
@@ -167,11 +168,11 @@ dq = maximum(abs.(read_budget(a, ia).q .- read_budget(b, ib).q))
 
 # The listing budget tables: rate in and out per package, and the percent discrepancy
 listing_rates(r.listing_file, "RIV"), listing_rates(joinpath(simdir, "model.lst"), "RIV")
-percent_discrepancy.(read_listing_budgets(r.listing_file))
+[t.rate_percent_discrepancy for t in read_listing_budgets(r.listing_file)]
 ```
 
 Dry cells hold the same `HDRY` value in both head files; leave them out of the
 difference. The readers are described on [Output files](../api/output.md):
 [`open_head_file`](@ref), [`read_head`](@ref), [`open_budget_file`](@ref),
 [`find_budget_records`](@ref), [`read_budget`](@ref), [`read_listing_budgets`](@ref),
-[`listing_rates`](@ref) and [`percent_discrepancy`](@ref).
+and [`listing_rates`](@ref).

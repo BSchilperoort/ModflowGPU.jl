@@ -50,7 +50,7 @@ Accepted with a different behaviour (logged warnings, not errors):
 | Package | Supported | Rejected (card) |
 | --- | --- | --- |
 | Name file | LIST, PRINT_INPUT, PRINT_FLOWS, SAVE_FLOWS | NEWTON (T6.2, `:newton`; also *engine*, `GwfModel`), UNDER_RELAXATION (Newton) |
-| DIS6 | LENGTH_UNITS, NOGRB, GRB6 output, XORIGIN, YORIGIN, ANGROT, CRS; IDOMAIN 0, 1 and −1 (pass-through) | – |
+| DIS6 | LENGTH_UNITS, NOGRB, GRB6 FILEOUT (accepted; GRB files are not written), XORIGIN, YORIGIN, ANGROT, CRS; IDOMAIN 0, 1 and −1 (pass-through) | – |
 | DISV6 (T6.4) | as DIS6; VERTICES, CELL2D (vertex lists closed as in MF6); IDOMAIN 0, 1 and −1 (pass-through) | – |
 | DISU6 (T6.4) | as DIS6, plus VERTICAL_OFFSET_TOLERANCE; CONNECTIONDATA IAC, JA, IHC (0, 1, 2), CL12, HWVA, ANGLDEGX (optional); VERTICES, CELL2D (optional); IDOMAIN 0 and 1 (MF6 rejects −1) | READASARRAYS stress input (MF6 rejects it too) |
 | NPF6 | ICELLTYPE 0 (confined) and ≠ 0 (convertible, standard formulation, T6.1), THICKSTRT, VARIABLECV [DEWATERED], PERCHED, REWET (WETFCT, IWETIT, IHDWET) with WETDRY (T6.1), K, K22, K33, ANGLE1–3, K22OVERK, K33OVERK (on DISV/DISU the K ellipse uses the connection angles, `anglex`, T6.4; DISU K22 or SAVE_SPECIFIC_DISCHARGE without ANGLDEGX, or with inconsistent ANGLDEGX, is MF6's error), ALTERNATIVE_CELL_AVERAGING (LOGARITHMIC, AMT-LMK, AMT-HMK; harmonic default), SAVE_FLOWS, PRINT_FLOWS, SAVE_SPECIFIC_DISCHARGE | XT3D (T6.5), HIGHEST_CELL_SATURATION and NEWTON (T6.2), TVK6 (T6.x), other options |
