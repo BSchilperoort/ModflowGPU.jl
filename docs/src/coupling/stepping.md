@@ -146,8 +146,8 @@ Notes on the table:
   row by row (`nodesuser = nlay·nrow·ncol` for DIS). `X(n)` belongs to user node
   `NODEUSER(n)`. Without IDOMAIN the two numberings are the same.
 - **Units.** L and T are the length and time units of the model (DIS `LENGTH_UNITS`, TDIS
-  `TIME_UNITS`). `BMI.get_var_units` returns the Units column as `"L"`, `"L2"`, `"L3/T"`,
-  `"T"` and `"-"`.
+  `TIME_UNITS`). `BMI.get_var_units` returns them as UDUNITS strings, e.g. `"m"`, `"m2"`,
+  `"m3 d-1"`, `"d"` and `"1"` for `-` (see [Units](@ref)).
 - **Types.** Values are `Float64` and counts and indices `Int32`; scalars are one-element
   vectors (`only(get_value(sim, "TDIS/KPER"))`).
 - **DIS.** The grid variables are named `<model>/DIS/...` for DIS, DISV and DISU grids

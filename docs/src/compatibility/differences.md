@@ -134,6 +134,10 @@ The stepping API works as libmf6 and its XMI/BMI interface do, with these differ
   values set with `set_value` or `get_value_ptr`. `BOUND` arrays written on the device
   ([`ModflowGPU.device_bound!`](@ref)) get a reduced check at `prepare_solve`: finite
   values and, for RIV, stage not below bottom and conductance not negative.
+- The BMI follows the BMI specification where libmf6's BMI does not: settings come from
+  a configuration file, the grid functions give real-world coordinates of the cell
+  centres (DIS) or of the vertices (DISV, DISU), every variable has a grid (scalars and
+  package arrays too), and the units are UDUNITS strings. See [BMI](../coupling/bmi.md).
 
 ## Recharge rates and older MODFLOW 6 versions
 
