@@ -45,8 +45,9 @@ needs `prepare_time_step`, `do_time_step` and `finalize_time_step`: set inputs a
 `prepare_time_step`, read outputs after `finalize_time_step` (or after `do_time_step`).
 
 The calls must come in this order; a call out of order throws an `ArgumentError` that
-says which calls may come before it. After `prepare_time_step`, [`get_current_time`](@ref) is the
-time at the *end* of the new step, as in libmf6, and [`get_time_step`](@ref) its length.
+says which calls may come before it. After `prepare_time_step`,
+[`get_current_time`](@ref) is the time at the *end* of the new step, as in libmf6, and
+[`get_time_step`](@ref) its length.
 All times are in the time units of the TDIS input (`TIME_UNITS`), from 0 at the start of
 the simulation.
 
@@ -81,8 +82,8 @@ of this loop. With the stepping API you write the loop yourself and put that cod
 place: `Callbacks.initialize` after `initialize`; `stress_period_start` and
 `timestep_start` after `prepare_time_step` (a period starts when
 `only(get_value(sim, "TDIS/KSTP")) == 1`); `iteration_start` and `iteration_end` around
-`ModflowGPU.solve`; `timestep_end` after `finalize_time_step`; `finalize` before
-`finalize_simulation`. modflowapi's package objects (`model.riv.stress_period_data`, ...)
+`ModflowGPU.solve`; `timestep_end` after `finalize_time_step`, and `stress_period_end`
+there too at the last step of a period; `finalize` before `finalize_simulation`. modflowapi's package objects (`model.riv.stress_period_data`, ...)
 have no counterpart: read and write the `BOUND` arrays directly.
 
 What is different from libmf6:
@@ -149,16 +150,17 @@ Notes on the table:
 - **Dry cells.** In a model with convertible cells (ICELLTYPE ≠ 0), the host `X` holds
   HDRY (−1.0e30) in dry cells, as MF6 stores it, and `IBOUND` is 0 there.
 - **Records.** A stress package has `MAXBOUND` record slots, of which the first `NBOUND`
-  are in force in the current period. `BOUND`, `NODELIST` and `SIMVALS` change when the
-  period data change (at `prepare_time_step` of the first step of a period). Array input
-  (RCHA, EVTA) has one record per cell of a layer (`ncpl`).
+  are in force in the current period. `BOUND` and `NODELIST` change when the period data
+  change (at `prepare_time_step` of the first step of a period), and the `BOUND` values
+  that come from time series at every `prepare_time_step`. Array input (RCHA, EVTA) has
+  one record per cell of a layer (`ncpl`).
 - **SIMVALS** are computed in `finalize_solve`: after it, they are the flows of the step
   just solved. For CHD they are the flows through the constant-head cells.
 
 ### BOUND columns
 
 The rows of `BOUND` are the values of the PERIOD block, in the order of the MF6 input,
-without auxiliary variables. A host read gives them as in the input: head-like columns
+without the auxiliary variables (except DRN's drainage depth). A host read gives them as in the input: head-like columns
 (marked h) as absolute heads or elevations, and the values *before* the MULTIPLIER
 auxiliary variable (`AUXMULTNAME`) is applied.
 
@@ -176,7 +178,8 @@ The order of the DRN and EVT rows is ModflowGPU's; check it if you port code tha
 these rows in libmf6's arrays.
 
 Values set through `BOUND` are used from the next solve until new period data for the
-package replace them, as in MF6. They are not checked as the input is (for example that
+package replace them, as in MF6. A value that comes from a time series is replaced by
+the series at the next `prepare_time_step`. They are not checked as the input is (for example that
 a river stage is above its bottom), except when written on the device through
 [`ModflowGPU.device_bound!`](@ref).
 
@@ -196,8 +199,9 @@ fills `dest` instead. [`set_value`](@ref) writes an address of [`input_addresses
 conversion as period data (multiplier, offsets, precision). `BOUND` may be given as a
 `(ncol, maxbound)` matrix or flattened.
 
-Both can be called at any point of the loop. Each call copies the whole array between
-host and device. This is the simplest and safest choice.
+Both can be called at any point of the loop. Each call copies the whole array, from or
+to the device for the engine variables (`X`, `XOLD`, `BOUND`, `SIMVALS`). This is the
+simplest and safest choice.
 
 ### `get_value_ptr`: host mirrors
 
@@ -206,10 +210,11 @@ form as `get_value`. The same array is returned on every call and stays valid un
 `finalize_simulation`, so you can keep it, as with libmf6. Unlike libmf6 it is a copy,
 which ModflowGPU synchronises with the engine at the call boundaries:
 
-- **Reads.** Every mirror is refreshed from the engine at the end of `initialize`,
-  `prepare_time_step`, `prepare_solve` and `finalize_solve`. So the `X` mirror holds the
-  heads of the start of the step during the outer iterations, and the new heads after
-  `finalize_solve`; use `get_value` to read heads between outer iterations.
+- **Reads.** A mirror is filled when `get_value_ptr` first creates it, and refreshed
+  from the engine at the end of `prepare_time_step`, `prepare_solve` and
+  `finalize_solve`. So the `X` mirror holds the heads of the start of the step during
+  the outer iterations, and the new heads after `finalize_solve`; use `get_value` to read
+  heads between outer iterations.
 - **Writes.** Writes into the mirror of `X` or a `BOUND` are sent to the device at the
   start of the next `prepare_time_step` or `prepare_solve`, if the mirror changed. Write
   `BOUND` mirrors after `prepare_time_step` and before `prepare_solve` (or
@@ -220,9 +225,9 @@ which ModflowGPU synchronises with the engine at the call boundaries:
 
 Cost: the mirrors of `BOUND` and `NODELIST` are copied only when the engine values change
 (new period data, a write); the other mirrors (`X`, `SIMVALS`, ...) are copied from the
-device at each of the four refresh points. A simulation without mirrors (reading with
-`get_value` only) moves no array between host and device in a time step, apart from the
-heads that OC saves or prints.
+device at each of the three refresh points of a time step. A simulation without mirrors
+(reading with `get_value` only) moves no array between host and device in a time step,
+apart from the heads that OC saves or prints.
 
 ### Device arrays
 
@@ -241,12 +246,14 @@ values differ from the host forms:
 - `HREF` is not a device array: it is a host `Vector{Float64}`, fixed at `initialize`
   (from the starting heads). Copy it to the device once if a kernel needs it.
 
-Keep the offset form in kernels where you can: in `:single`, an absolute head of
-hundreds of metres in `Float32` loses the millimetres that the offsets keep.
+Keep the offset form in kernels where you can. Offsets are small numbers, which
+`Float32` resolves much more finely than absolute heads: near a head of 1000 m, `Float32`
+steps by about 0.06 mm, and differences of nearly equal heads lose most of their digits.
 
 On a GPU these arrays live in GPU memory: index them only inside kernels or with
-whole-array operations (see [Scalar indexing is disallowed](../gpu.md#Scalar-indexing-is-disallowed) in the GPU guide). Do not use them after
-`finalize_simulation`, which frees them.
+whole-array operations (see
+[Scalar indexing is disallowed](../gpu.md#Scalar-indexing-is-disallowed) in the GPU
+guide). Do not use them after `finalize_simulation`, which frees them.
 
 Treat the device arrays as read-only, with one exception: to write `BOUND` on the
 device, open it with [`ModflowGPU.device_bound!`](@ref) between `prepare_time_step` and
@@ -261,7 +268,7 @@ until new period data replace them, and are not seen by host reads of `BOUND`
 | Use | When | Cost per call or step |
 | :--- | :--- | :--- |
 | `get_value`, `set_value` | reading or setting a few arrays now and then; any point of the loop | one copy of the array per call |
-| `get_value_ptr` | code ported from libmf6 that keeps pointers; arrays read every step | `X`, `SIMVALS`, ...: up to four copies per step; `BOUND`, `NODELIST`: only when they change |
+| `get_value_ptr` | code ported from libmf6 that keeps pointers; arrays read every step | `X`, `SIMVALS`, ...: three copies per step; `BOUND`, `NODELIST`: only when they change |
 | `get_value_ptr(...; device = true)`, `device_bound!` | the other model runs on the same GPU | none; you handle precision `T` and offsets |
 
 ## Example: a river stage from a Julia function
@@ -344,13 +351,17 @@ ModflowCoupling couples MODFLOW 6 to the mGV hydrology model. Its patched versio
 `patches/modflow-coupling/` of the ModflowGPU repository) has a GPU engine built on this
 API, and is the production example of it:
 
-- `[solver] engine = "gpu"` builds the model in memory with the builder functions and
-  runs it with `prepare_time_step`, `prepare_solve`, `ModflowGPU.solve`,
-  `finalize_solve` and `finalize_time_step`, using the same code as the libmf6 engine;
-- with host coupling, the river stages and recharge are written into the `BOUND` host
-  mirrors after `prepare_time_step`, and heads and `SIMVALS` are read from mirrors;
-- with device coupling (`coupling = "device"`), the inputs are written into the device
-  `BOUND` arrays in KernelAbstractions kernels, opened with
-  [`ModflowGPU.device_bound!`](@ref), and the outputs are computed in kernels from the
-  device heads and `SIMVALS`, in offset form; no array passes through the CPU in a time
-  step.
+- `[solver] engine = "gpu"` (`src/gpu_engine.jl`) builds the model in memory with the
+  builder functions and runs each period with `prepare_time_step`, `prepare_solve`,
+  `ModflowGPU.solve`, `finalize_solve` and `finalize_time_step` (`advance!`), the same
+  call sequence as its libmf6 engine;
+- with `coupling = "host"`, the RCH, RIV and WEL values of the period are written into
+  the `BOUND` host mirrors after `prepare_time_step` (river stages as absolute heads),
+  and heads and `SIMVALS` are read from mirrors, as the libmf6 engine does with libmf6's
+  arrays;
+- with `coupling = "device"` (`src/device_coupling.jl`), the stresses are written into
+  the device `BOUND` arrays by KernelAbstractions kernels, opened with
+  [`ModflowGPU.device_bound!`](@ref), with river stages computed in offset form; the
+  outputs are computed in kernels from the device heads and `SIMVALS`. A period then
+  moves no data between host and device except what the caller reads or sets on the
+  host.
