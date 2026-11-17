@@ -118,16 +118,20 @@ The stepping API works as libmf6 and its XMI/BMI interface do, with these differ
   is copied at the calls of the time-step loop, not a pointer into the model's memory.
   Heads in it are absolute heads. `get_value_ptr(...; device = true)` returns the device
   array in the precision of the run, with heads as offsets from a reference head per cell.
-- Values written through `get_value_ptr` take effect when written between
-  `prepare_time_step` and `prepare_solve`; a write after `prepare_solve` is discarded
-  with a warning. Use [`set_value`](@ref) to write at another moment.
+- Values written through `get_value_ptr` are sent to the device at the next
+  `prepare_time_step` or `prepare_solve`. A write between `prepare_solve` and
+  `finalize_solve` is discarded with a warning at `finalize_solve`; use
+  [`set_value`](@ref) to change a value during the outer iterations.
 - `BOUND` is the package data before the `AUXMULTNAME` multiplier is applied. For RIV
   ModflowGPU keeps `BOUND` (stage, conductance, bottom), as earlier MODFLOW 6 versions
   and ModflowCoupling do; MODFLOW 6.8 has separate `STAGE`, `COND` and `RBOT` arrays.
-- The checks that boundary values are not below the bottom of a convertible cell (RIV
-  stage and bottom, DRN elevation, GHB head) run when period data are applied and, for
-  values set through the stepping API, at `prepare_solve`; MODFLOW 6 repeats them at the
-  start of every time step. The errors are the same.
+- The checks of boundary records (RIV stage and bottom, DRN elevation and GHB head not
+  below the bottom of a convertible cell; conductances not negative) run when period
+  data are read, as in MODFLOW 6; values set through
+  `set_value` or `get_value_ptr` are not checked, as in libmf6. `BOUND` arrays written
+  on the device ([`ModflowGPU.device_bound!`](@ref)) get a reduced check at
+  `prepare_solve`: finite values and, for RIV, stage not below bottom and conductance
+  not negative.
 
 ## Recharge rates and older MODFLOW 6 versions
 
