@@ -1,0 +1,245 @@
+# Values plotted on the Performance page (docs/performance_figures.jl).
+# Each value is copied from a committed result file in benchmark/results/; the build checks
+# that a line of `file` contains both `row` and `text`. Units: scaling = seconds for the steady
+# state plus 30 daily steps (x = nodes); global = milliseconds per daily step (x = bar index);
+# precond = seconds for the same 31 steps on global5m (x = preconditioner index).
+
+[[value]]
+figure = "scaling"
+series = "rocm"
+label = "ROCm (RX 7800 XT), :mixed, default preconditioner"
+x = 32972
+y = 0.25
+file = "2026-11-08-T4.4.md"
+row = "| indus | `:mixed` | **mc_ilu0**"
+text = "0.25"
+
+[[value]]
+figure = "scaling"
+series = "rocm"
+label = "ROCm (RX 7800 XT), :mixed, default preconditioner"
+x = 888300
+y = 2.37
+file = "2026-11-08-T4.4.md"
+row = "| continental | `:mixed` | **mc_ilu0**"
+text = "2.37"
+
+[[value]]
+figure = "scaling"
+series = "rocm"
+label = "ROCm (RX 7800 XT), :mixed, default preconditioner"
+x = 6592790
+y = 14.94
+file = "2026-11-08-T4.4.md"
+row = "| global5m | `:mixed` | **mc_ilu0**"
+text = "14.94"
+
+[[value]]
+figure = "scaling"
+series = "cpu"
+label = "CPU backend (8 threads), :mixed, default preconditioner"
+x = 32972
+y = 0.59
+file = "2026-11-08-T4.4.md"
+row = "| indus | `:mixed` | 2.09 / 2.45"
+text = "0.59"
+
+[[value]]
+figure = "scaling"
+series = "cpu"
+label = "CPU backend (8 threads), :mixed, default preconditioner"
+x = 888300
+y = 17.20
+file = "2026-11-08-T4.4.md"
+row = "| continental | `:mixed` | 42.03"
+text = "17.20"
+
+[[value]]
+figure = "scaling"
+series = "mf6"
+label = "MODFLOW 6.8.2, serial, ILU0"
+x = 32972
+y = 2.72
+file = "2026-11-07.md"
+row = "| indus | 32972 | mf6"
+text = "2.72"
+
+[[value]]
+figure = "scaling"
+series = "mf6"
+label = "MODFLOW 6.8.2, serial, ILU0"
+x = 888300
+y = 92.16
+file = "2026-11-07.md"
+row = "| continental | 888300 | mf6"
+text = "92.16"
+
+[[value]]
+figure = "scaling"
+series = "mf6"
+label = "MODFLOW 6.8.2, serial, ILU0"
+x = 6592790
+y = 672.94
+file = "2026-11-07.md"
+row = "| global5m | 6592790 | mf6"
+text = "672.94"
+
+[[value]]
+figure = "global"
+series = "bar"
+label = "MODFLOW 6, serial, closure 5"
+x = 1
+y = 1649
+file = "2026-11-15-T5.6.md"
+row = "| MF6 (serial) | 5 (mf6 default)"
+text = "1649"
+
+[[value]]
+figure = "global"
+series = "bar"
+label = "MODFLOW 6, serial, closure 0.01"
+x = 2
+y = 3919
+file = "2026-11-15-T5.6.md"
+row = "| MF6 (serial) | 0.01 "
+text = "3919"
+
+[[value]]
+figure = "global"
+series = "bar"
+label = "ModflowGPU CPU backend (16 threads), :mixed, closure 0.01"
+x = 3
+y = 605
+file = "2026-11-15-T5.6.md"
+row = "| GPU CPU `:mixed` | 0.01 "
+text = "605"
+
+[[value]]
+figure = "global"
+series = "bar"
+label = "ModflowGPU ROCm :double, closure 0.01"
+x = 4
+y = 76.5
+file = "2026-11-15-T5.6.md"
+row = "| GPU rocm `:double` | 0.01 "
+text = "76.5"
+
+[[value]]
+figure = "global"
+series = "bar"
+label = "ModflowGPU ROCm :mixed, closure 0.01"
+x = 5
+y = 65.3
+file = "2026-11-15-T5.6.md"
+row = "| GPU rocm `:mixed` | **0.01 (GPU default)**"
+text = "65.3"
+
+[[value]]
+figure = "global"
+series = "bar"
+label = "ModflowGPU ROCm :single, closure 0.01"
+x = 6
+y = 44.1
+file = "2026-11-15-T5.6.md"
+row = "| GPU rocm `:single` | 0.01 "
+text = "44.1"
+
+[[value]]
+figure = "global"
+series = "bar"
+label = "ModflowGPU ROCm :mixed, closure 5"
+x = 7
+y = 28.1
+file = "2026-11-15-T5.6.md"
+row = "| GPU rocm `:mixed` | 5 "
+text = "28.1"
+
+[[value]]
+figure = "precond"
+series = "double"
+label = "jacobi"
+x = 1
+y = 43.55
+file = "2026-11-08-T4.4.md"
+row = "| global5m | `:double` | "
+text = "43.55"
+
+[[value]]
+figure = "precond"
+series = "double"
+label = "mc_ilu0"
+x = 2
+y = 17.42
+file = "2026-11-08-T4.4.md"
+row = "| global5m | `:double` | "
+text = "17.42"
+
+[[value]]
+figure = "precond"
+series = "double"
+label = "amg"
+x = 3
+y = 32.46
+file = "2026-11-08-T4.4.md"
+row = "| global5m | `:double` | "
+text = "32.46"
+
+[[value]]
+figure = "precond"
+series = "mixed"
+label = "jacobi"
+x = 1
+y = 41.60
+file = "2026-11-08-T4.4.md"
+row = "| global5m | `:mixed` | "
+text = "41.60"
+
+[[value]]
+figure = "precond"
+series = "mixed"
+label = "mc_ilu0"
+x = 2
+y = 14.94
+file = "2026-11-08-T4.4.md"
+row = "| global5m | `:mixed` | "
+text = "14.94"
+
+[[value]]
+figure = "precond"
+series = "mixed"
+label = "amg"
+x = 3
+y = 27.13
+file = "2026-11-08-T4.4.md"
+row = "| global5m | `:mixed` | "
+text = "27.13"
+
+[[value]]
+figure = "precond"
+series = "single"
+label = "jacobi"
+x = 1
+y = 14.04
+file = "2026-11-08-T4.4.md"
+row = "| global5m | `:single` | "
+text = "14.04"
+
+[[value]]
+figure = "precond"
+series = "single"
+label = "mc_ilu0"
+x = 2
+y = 6.30
+file = "2026-11-08-T4.4.md"
+row = "| global5m | `:single` | "
+text = "6.30"
+
+[[value]]
+figure = "precond"
+series = "single"
+label = "amg"
+x = 3
+y = 12.84
+file = "2026-11-08-T4.4.md"
+row = "| global5m | `:single` | "
+text = "12.84"
