@@ -46,12 +46,12 @@ Pkg.add("AMDGPU")  # for example
 ```julia
 using AMDGPU, ModflowGPU   # omit the GPU package to run on the CPU
 
-backend = ModflowGPU.select_backend("auto")   # first working GPU, else CPU
-result = ModflowGPU.run("path/to/simulation"; backend)
+backend = select_backend("auto")   # first working GPU, else CPU
+result = run_simulation("path/to/simulation"; backend)
 result.converged
 ```
 
-`run` reads `mfsim.nam` and writes the head, budget and listing files that the OC package asks
+`run_simulation` reads `mfsim.nam` and writes the head, budget and listing files that the OC package asks
 for. Options (`precision`, `preconditioner`) and the stepping API for coupled models are
 described in the [documentation](https://bschilperoort.github.io/ModflowGPU.jl/dev/).
 

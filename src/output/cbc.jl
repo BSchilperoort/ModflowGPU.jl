@@ -25,9 +25,10 @@
 const BUDGET_HEADER_BYTES = 4 * 2 + OUTPUT_TEXT_BYTES + 4 * 3 + 4 + 8 * 3
 
 """
-    BudgetRecord
+    ModflowGPU.BudgetRecord
 
-Header of one record of a budget file, as indexed by [`open_budget_file`](@ref):
+Header of one record of a budget file, an element of `BudgetFile.records`, as indexed by
+[`open_budget_file`](@ref):
 
 - `kstp`, `kper`, `text` (16 characters as in the file, e.g. `"    FLOW-JA-FACE"`),
   `ndim1`, `ndim2`, `ndim3` (the grid dimensions; `ndim3` as written, i.e. negative
@@ -60,9 +61,11 @@ end
 """
     BudgetList
 
-The entries of an IMETH 6 budget record: `id1`, `id2` (int32 node numbers), `q` (flow,
-positive into the model cell `id1`), and `aux` (`naux × nlist` matrix of auxiliary values,
-in the order of the record's `auxtxt`).
+The entries of an IMETH 6 budget record, as returned by [`read_budget`](@ref): `id1`,
+`id2` (Int32 node numbers; for a stress package `id1` is the model cell (user node) and
+`id2` the package entry), `q` (flow, L³/T, positive into the model cell `id1`), and `aux`
+(`naux × nlist` matrix of auxiliary values, in the order of the record's `auxtxt`).
+`length(list)` is the number of entries.
 """
 struct BudgetList
     id1::Vector{Int32}
@@ -80,8 +83,8 @@ Base.:(==)(a::BudgetList, b::BudgetList) = a.id1 == b.id1 && a.id2 == b.id2 && a
     BudgetFile
 
 Index of a budget file, built by [`open_budget_file`](@ref): the `path` and the header of
-every record (`records`, [`BudgetRecord`](@ref)s in file order). Data are read lazily by
-[`read_budget`](@ref).
+every record (`records`, [`ModflowGPU.BudgetRecord`](@ref)s in file order). Data are read
+lazily by [`read_budget`](@ref). `length(bf)` is the number of records.
 """
 struct BudgetFile
     path::String
@@ -97,8 +100,19 @@ end
 """
     open_budget_file(path) -> BudgetFile
 
-Index the budget file at `path`: read the header of every record (not the data). Only
-compact records with IMETH 1 or 6, the ones MF6 writes, are supported.
+Index the budget file (`.cbc`) at `path`: read the header of every record (not the
+data). Only compact records with IMETH 1 or 6, the ones MF6 writes, are supported. Reads
+budget files of ModflowGPU and of MF6 alike. Throws an
+[`ModflowGPU.MF6BinaryFileError`](@ref) for a malformed file.
+
+# Example
+```julia
+bf = open_budget_file("path/to/simulation/model.cbc")
+budget_texts(bf)        # e.g. ["FLOW-JA-FACE", "DATA-SPDIS", "WEL", "RIV", ...]
+budget_kstpkper(bf)     # [(1, 1), (1, 2), ...]
+riv = read_budget(bf; text = "RIV", kper = 2, kstp = 1)   # one BudgetList
+sum(only(riv).q)        # net river flow into the model (L³/T)
+```
 """
 function open_budget_file(path::AbstractString)
     path = String(path)
@@ -150,22 +164,24 @@ end
 """
     budget_texts(bf) -> Vector{String}
 
-The distinct record texts of the budget file (without padding), in order of first
-appearance.
+The distinct record texts of the budget file `bf` ([`BudgetFile`](@ref)), without
+padding, in order of first appearance.
 """
 budget_texts(bf::BudgetFile) = unique(String(strip(r.text)) for r in bf.records)
 
 """
     budget_kstpkper(bf) -> Vector{Tuple{Int, Int}}
 
-The distinct `(kstp, kper)` of the budget file, in file order.
+The distinct `(kstp, kper)` (time step, stress period) of the budget file `bf`, in file
+order.
 """
 budget_kstpkper(bf::BudgetFile) = unique((Int(r.kstp), Int(r.kper)) for r in bf.records)
 
 """
     budget_times(bf) -> Vector{Float64}
 
-The distinct simulation times (`totim`) of the budget file, in file order.
+The distinct simulation times (`totim`, in the model's time units) of the budget file
+`bf`, in file order.
 """
 budget_times(bf::BudgetFile) = unique(r.totim for r in bf.records)
 
@@ -178,6 +194,12 @@ Indices of the records matching all given keys. Texts and names are compared wit
 padding and case-insensitively. Note that GWF-GWF exchange flows are IMETH 6 records with
 text `FLOW-JA-FACE` (and the exchange name as `paknam2`); use `imeth = 1` for the
 model's own FLOW-JA-FACE array.
+
+# Example
+```julia
+idx = find_budget_records(bf; text = "STO-SS")
+[bf.records[i].totim for i in idx]
+```
 """
 function find_budget_records(
         bf::BudgetFile; text = nothing, kstp = nothing, kper = nothing, totim = nothing,
@@ -221,7 +243,8 @@ end
 Read the data of record `i`: a vector of `n` values for IMETH 1 (user-node order,
 `reshape(v, ndim1, ndim2, -ndim3)` gives the grid shape; FLOW-JA-FACE is a vector of
 length NJA), a [`BudgetList`](@ref) for IMETH 6. The keyword form reads all records
-matching [`find_budget_records`](@ref), in file order.
+matching [`find_budget_records`](@ref), in file order. Flows are in L³/T in the model's
+units. See [`open_budget_file`](@ref) for an example.
 """
 function read_budget(bf::BudgetFile, i::Integer)
     r = bf.records[i]

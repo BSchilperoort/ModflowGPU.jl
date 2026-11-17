@@ -15,20 +15,37 @@
 # of `record_array`, `dnodata` of OutputControlData.f90); dry cells hold HDRY = -1e30
 # (`DHNOFLO`, `DHDRY` in Constants.f90). Values are written as stored in MF6 (Float64).
 
-"""HNOFLO: head written for cells outside the model (`DHNOFLO` in Constants.f90)."""
+"""
+    ModflowGPU.HNOFLO = 1.0e30
+
+The head written to head files for cells outside the model (IDOMAIN ≤ 0), as MF6
+(`DHNOFLO` in Constants.f90).
+
+# Example
+```julia
+h = read_head(open_head_file("model.hds"), 1)
+h[h .== ModflowGPU.HNOFLO] .= NaN
+```
+"""
 const HNOFLO = 1.0e30
-"""HDRY: head written for dry cells (`DHDRY` in Constants.f90)."""
+
+"""
+    ModflowGPU.HDRY = -1.0e30
+
+The head written to head files for dry cells, as MF6 (`DHDRY` in Constants.f90).
+"""
 const HDRY = -1.0e30
 
 const HEAD_HEADER_BYTES = 52  # 2 Int32 + 2 Float64 + 16 characters + 3 Int32
 
 """
-    HeadStep
+    ModflowGPU.HeadStep
 
-One saved array of a head file (all its layer records): `kstp`, `kper`, `pertim`,
-`totim`, `text` (16 characters as in the file, e.g. `"HEAD            "`), `m1`, `m2`
-(per-layer record size), `nlay` (number of layer records) and the byte `offsets` of the
-data of each layer record.
+One saved array of a head file (all its layer records), an element of `HeadFile.steps`:
+`kstp`, `kper` (time step and stress period), `pertim`, `totim` (time in the period and
+in the simulation), `text` (16 characters as in the file, e.g. `"HEAD            "`),
+`m1`, `m2` (per-layer record size), `nlay` (number of layer records) and the byte
+`offsets` of the data of each layer record.
 """
 struct HeadStep
     kstp::Int32
@@ -47,8 +64,8 @@ end
 
 Index of an MF6 head file, built by [`open_head_file`](@ref): the `path`, the `grid`
 layout used to shape arrays (`:dis`, `:disv`, `:disu` or `:auto`) and the saved arrays
-(`steps`, one [`HeadStep`](@ref) each, in file order). Data are read lazily by
-[`read_head`](@ref).
+(`steps`, one [`ModflowGPU.HeadStep`](@ref) each, in file order). Data are read lazily
+by [`read_head`](@ref). `length(hf)` is the number of saved arrays.
 """
 struct HeadFile
     path::String
@@ -72,6 +89,17 @@ layer records of each saved array. `grid` sets the shape of the arrays returned 
 [`read_head`](@ref): `:dis` gives `(ncol, nrow, nlay)`, `:disv` `(ncpl, nlay)`, `:disu`
 a vector of nodes, and `:auto` the record layout `(m1, m2, nlay)` (which is the DIS
 shape). All values are Float64, in MF6's user-node order.
+
+Reads head files of ModflowGPU and of MF6 alike. Throws an
+[`ModflowGPU.MF6BinaryFileError`](@ref) for a malformed file.
+
+# Example
+```julia
+hf = open_head_file("path/to/simulation/model.hds")
+head_times(hf)                   # the times of the saved arrays
+h = read_head(hf, length(hf))    # the last one, (ncol, nrow, nlay) for DIS
+h = read_head(hf; kper = 2, kstp = 1)
+```
 """
 function open_head_file(path::AbstractString; grid::Symbol = :auto)
     grid in (:auto, :dis, :disv, :disu) || throw(ArgumentError("grid must be :auto, :dis, :disv or :disu, got :$grid"))
@@ -139,7 +167,14 @@ end
     find_head_step(hf; kstp = nothing, kper = nothing, totim = nothing, text = nothing) -> Int
 
 Index of the saved array matching all given keys (`text` is compared without the
-padding blanks and case-insensitively). Throws if there is no match or more than one.
+padding blanks and case-insensitively). Throws an `ArgumentError` if there is no match or
+more than one.
+
+# Example
+```julia
+i = find_head_step(hf; kper = 1, kstp = 10)
+read_head(hf, i)
+```
 """
 function find_head_step(hf::HeadFile; kstp = nothing, kper = nothing, totim = nothing, text = nothing)
     idx = findall(hf.steps) do s
@@ -159,7 +194,9 @@ end
 
 Read the `i`-th saved array of the head file (or the one selected by
 [`find_head_step`](@ref)), shaped as set by the `grid` of [`open_head_file`](@ref).
-Inactive cells hold [`HNOFLO`](@ref), dry cells [`HDRY`](@ref).
+Heads are in the model's length units; cells outside the model hold
+[`ModflowGPU.HNOFLO`](@ref), dry cells [`ModflowGPU.HDRY`](@ref). See
+[`open_head_file`](@ref) for an example.
 """
 function read_head(hf::HeadFile, i::Integer)
     s = hf.steps[i]

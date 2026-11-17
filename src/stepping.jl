@@ -1,4 +1,4 @@
-# Stepping API (PLAN.md section 3.6): the time loop of `ModflowGPU.run` cut into the
+# Stepping API (PLAN.md section 3.6): the time loop of `run_simulation` cut into the
 # libmf6/XMI calls (srcbmi/mf6xmi.F90, mf6core.f90), with libmf6 memory addresses.
 #
 #   initialize               load, build the model on the device (`Mf6Initialize`)
@@ -9,7 +9,7 @@
 #   solve -> converged       one outer iteration (`xmi_solve`: `sln_ca` loop body)
 #   finalize_solve           flows and budget (`finalizeSolve`: `model_cq`, `model_bd`)
 #   finalize_time_step       output (`Mf6FinalizeTimestep`: `model_ot`)
-#   do_time_step, update     the steps above in one call; finalize
+#   do_time_step, update     the steps above in one call; finalize_simulation
 #
 # Values. Addresses are libmf6's, e.g. "RDE/X", "RDE/DIS/NODEUSER", "RDE/RIV/BOUND",
 # "RDE/DRN/SIMVALS", "SLN_1/MXITER", "TDIS/DELT" (`get_var_address`). `get_value_ptr`
@@ -38,7 +38,7 @@
 # on the device (finite values, `riv_ck`). They are replaced by new period data, and are
 # not seen by host reads of BOUND (`get_value`, mirrors), which keep the last values set on
 # the host. A host mirror of the same BOUND does not overwrite them unless it is written.
-# `finalize` frees the device arrays (T5.4: two models on one GPU). A caller that
+# `finalize_simulation` frees the device arrays (T5.4: two models on one GPU). A caller that
 # keeps no host mirrors (reads through `get_value` only) makes a time step move no array
 # between host and device: the mirrors are the only per-step copies of the stepping API,
 # and the output of `finalize_time_step` copies the heads only when OC saves or prints them.
@@ -46,8 +46,20 @@
 """
     StepResult
 
-Per time step of a run: the `step` (`TimeStep`) and the `outer` result (`OuterResult`:
-convergence, outer and inner iterations).
+The result of one time step, in `RunResult.steps` and `Simulation.results`.
+
+Fields:
+- `step`: the TDIS time step, with `kper`, `kstp` (stress period and time step numbers),
+  `delt` (step length), `pertim` and `totim` (time in the period and in the simulation at
+  the end of the step), in the model's time units;
+- `outer`: the outer-iteration result, with `converged::Bool`, `iterations` (outer
+  iterations) and `inner` (total inner, linear-solver, iterations).
+
+# Example
+```julia
+result = run_simulation("path/to/simulation")
+[(r.step.kper, r.step.kstp, r.outer.iterations) for r in result.steps]
+```
 """
 struct StepResult
     step::TimeStep
@@ -88,12 +100,26 @@ end
 """
     Simulation
 
-A simulation driven step by step (the stepping API, `initialize`): the `spec`, the
-`model` (`GwfModel`), the outer solver (`PicardSolver`), the budget accumulator, the
-output files (or `nothing`), the precision types `T`, `Ts`, `Tp`, the TDIS `steps` and the
-index `istep` of the current one (0 before the first `prepare_time_step`), the `stage` of
-the call sequence, the outer-iteration state of the current step, and per completed
-step its `StepResult` and `ModelBudget` (`results`, `budgets`).
+A simulation driven one time step at a time, created by [`initialize`](@ref) and used by
+the other functions of the stepping API. It is also the model type of the BMI methods
+(`BasicModelInterface.initialize(Simulation, dir)`).
+
+Fields that are useful to read (do not change them):
+- `spec`: the [`SimulationSpec`](@ref) it was built from;
+- `T`, `Ts`, `Tp`: the precision types (see [`resolve_precision`](@ref));
+- `steps`: the TDIS time steps, and `istep`, the index of the current one (0 before the
+  first [`prepare_time_step`](@ref));
+- `results` and `budgets`: per completed time step its [`StepResult`](@ref) and
+  [`ModelBudget`](@ref).
+
+The other fields (the model on the device, the solver, the output files, the call stage)
+are internal.
+
+# Example
+```julia
+sim = initialize("path/to/simulation")
+sim.istep, length(sim.steps)   # (0, number of time steps)
+```
 """
 mutable struct Simulation{M <: GwfModel, P <: PicardSolver, A <: BudgetAccumulator}
     const spec::SimulationSpec
@@ -122,14 +148,32 @@ Base.show(io::IO, s::Simulation) = print(
 )
 
 """
-    initialize(simdir or spec::SimulationSpec; backend = CPU(), precision = :auto,
-               outdir = simdir, closures = nothing, write_output = true,
-               preconditioner = :auto, precond_options = (;)) -> Simulation
+    initialize(simdir::AbstractString; kwargs...) -> Simulation
+    initialize(spec::SimulationSpec; kwargs...) -> Simulation
 
-Load the simulation (one GWF model with one IMS solution), build the model, the outer
-solver and the budget accumulator on `backend` in `precision` (`resolve_precision`), and
-open the output files (`write_output`; see `ModflowGPU.run` for the keywords, including
-`preconditioner` and `precond_options`). Before the first `prepare_time_step` the heads are the starting heads and no period data is applied.
+Start a simulation to be run one time step at a time: load the MF6 simulation in directory
+`simdir` (or take a loaded or built `spec`; one GWF model with one IMS solution), build
+the model, the outer solver and the budget accumulator on the device, and open the output
+files (libmf6's `initialize`).
+
+The keywords are those of [`run_simulation`](@ref): `backend`, `precision`, `outdir`,
+`closures`, `write_output`, `preconditioner` and `precond_options`.
+
+Before the first [`prepare_time_step`](@ref) (or [`update`](@ref)) the heads are the
+starting heads and no period data is applied. End with [`finalize_simulation`](@ref),
+which closes the output files and frees the device memory.
+
+Throws an [`ModflowGPU.MF6InputError`](@ref) or [`MF6UnsupportedError`](@ref) for invalid
+or unsupported input (also for a simulation with more than one model).
+
+# Example
+```julia
+sim = initialize("path/to/simulation"; backend = select_backend("auto"))
+while get_current_time(sim) < get_end_time(sim)
+    update(sim) || error("time step did not converge")
+end
+finalize_simulation(sim)
+```
 """
 function initialize(
         simdir::AbstractString; backend::Backend = CPU(), precision::Symbol = :auto, outdir::AbstractString = simdir,
@@ -172,9 +216,25 @@ end
     prepare_time_step(sim::Simulation, dt = 0.0) -> sim
 
 Advance to the next TDIS time step and, at the first step of a stress period, apply the
-period data (`Mf6PrepareTimestep`). `dt` is ignored, as in libmf6 (no ATS). Values set
-through the stepping API before this call are kept unless the period has new data for
-that package (as in MF6).
+period data (libmf6's `prepare_time_step`). `dt` is ignored, as in libmf6 (no adaptive
+time stepping). Values set through the stepping API before this call are kept unless the
+period has new data for that package (as in MF6). Values written into host mirrors
+([`get_value_ptr`](@ref)) are sent to the device first.
+
+Allowed after [`initialize`](@ref) and after [`finalize_time_step`](@ref); throws an
+`ArgumentError` otherwise, or when the simulation has ended.
+
+# Example
+One time step, call by call (what [`update`](@ref) does):
+```julia
+prepare_time_step(sim)
+prepare_solve(sim)
+for _ in 1:only(get_value(sim, "SLN_1/MXITER"))
+    ModflowGPU.solve(sim) && break
+end
+finalize_solve(sim)
+finalize_time_step(sim)
+```
 """
 function prepare_time_step(s::Simulation, dt::Real = 0.0)
     _check_stage(s, :prepare_time_step, :initialized, :finalized_time_step)
@@ -194,10 +254,13 @@ end
 """
     prepare_solve(sim::Simulation, isol = 1) -> sim
 
-Start the outer iterations of the current time step (`prepareSolve`, `model_ad`): the
-storage term for the step length, `hold ← h`, the constant heads; resets the iteration
-counter. Values written into host mirrors since the last call are sent to the device
-first.
+Start the outer iterations of the current time step (libmf6's `prepare_solve`): the
+storage term for the step length, the heads of the previous step and the constant heads;
+it resets the iteration counter. Values written into host mirrors since the last call are
+sent to the device first, and BOUND arrays opened with [`ModflowGPU.device_bound!`](@ref)
+are checked. `isol` is the solution number; only 1 exists.
+
+Allowed after [`prepare_time_step`](@ref); see there for an example.
 """
 function prepare_solve(s::Simulation, isol::Integer = 1)
     _check_solution(isol)
@@ -212,10 +275,15 @@ function prepare_solve(s::Simulation, isol::Integer = 1)
 end
 
 """
-    solve(sim::Simulation, isol = 1) -> Bool
+    ModflowGPU.solve(sim::Simulation, isol = 1) -> Bool
 
-One outer iteration of the current time step (`xmi_solve`); returns whether the step has
-converged. Call it up to `MXITER` (`"SLN_1/MXITER"`) times.
+One outer (Picard) iteration of the current time step (libmf6's `solve`); returns whether
+the step has converged. Call it up to MXITER times (`get_value(sim, "SLN_1/MXITER")`).
+`isol` is the solution number; only 1 exists.
+
+Not exported, because `solve` is also exported by CommonSolve (the SciML packages) and
+would be ambiguous next to it: write `ModflowGPU.solve`. See [`prepare_time_step`](@ref)
+for an example.
 """
 function solve(s::Simulation, isol::Integer = 1)
     _check_solution(isol)
@@ -227,9 +295,10 @@ end
 """
     finalize_solve(sim::Simulation, isol = 1) -> Bool
 
-End the outer iterations of the current time step (`finalizeSolve`): flows (`calc_flows!`,
-SIMVALS) and the budget of the step; returns whether the step converged (libmf6 reports a
-failure status when it did not).
+End the outer iterations of the current time step (libmf6's `finalize_solve`): compute the
+flows (the `SIMVALS` of the stress packages) and the budget of the step. Returns whether
+the step converged (libmf6 reports a failure status when it did not). `isol` is the
+solution number; only 1 exists. See [`prepare_time_step`](@ref) for an example.
 """
 function finalize_solve(s::Simulation, isol::Integer = 1)
     _check_solution(isol)
@@ -248,10 +317,11 @@ end
 """
     finalize_time_step(sim::Simulation) -> Bool
 
-End the current time step (`Mf6FinalizeTimestep`): the output selected by OC (HDS, CBC,
-listing). Returns `false` when the step did not converge and the simulation has no
-CONTINUE option (libmf6 returns a failure status; `ModflowGPU.run` throws a
-`ConvergenceError` there), `true` otherwise.
+End the current time step (libmf6's `finalize_time_step`): write the output selected by
+OC (head file, budget file, listing file). Returns `false` when the step did not converge
+and the simulation has no CONTINUE option (libmf6 returns a failure status;
+[`run_simulation`](@ref) throws a [`ConvergenceError`](@ref) there), `true` otherwise.
+See [`prepare_time_step`](@ref) for an example.
 """
 function finalize_time_step(s::Simulation)
     _check_stage(s, :finalize_time_step, :finalized_solve)
@@ -268,8 +338,18 @@ end
 """
     do_time_step(sim::Simulation) -> Bool
 
-`prepare_solve`, up to MXITER `solve` calls, `finalize_solve` (`Mf6DoTimestep`); returns
-whether the step converged.
+Solve the current time step: [`prepare_solve`](@ref), up to MXITER
+[`ModflowGPU.solve`](@ref) calls, [`finalize_solve`](@ref) (libmf6's `do_time_step`).
+Returns whether the step converged. Call [`prepare_time_step`](@ref) before it and
+[`finalize_time_step`](@ref) after it.
+
+# Example
+```julia
+prepare_time_step(sim)
+# ... set boundary values of this step with set_value ...
+do_time_step(sim) || @warn "no convergence"
+finalize_time_step(sim)
+```
 """
 function do_time_step(s::Simulation)
     prepare_solve(s)
@@ -282,8 +362,20 @@ end
 """
     update(sim::Simulation) -> Bool
 
-One full time step: `prepare_time_step`, `do_time_step`, `finalize_time_step` (libmf6
-`update`). Returns the result of `finalize_time_step`.
+Run one full time step: [`prepare_time_step`](@ref), [`do_time_step`](@ref),
+[`finalize_time_step`](@ref) (libmf6's `update`). Returns the result of
+`finalize_time_step`: `false` when the step did not converge and the simulation has no
+CONTINUE option.
+
+This is not `BasicModelInterface.update`, which throws a [`ConvergenceError`](@ref) in
+that case and returns `nothing`.
+
+# Example
+```julia
+sim = initialize("path/to/simulation")
+update(sim)            # the first time step
+get_current_time(sim)  # the time at its end
+```
 """
 function update(s::Simulation)
     prepare_time_step(s)
@@ -292,18 +384,30 @@ function update(s::Simulation)
 end
 
 """
-    finalize(sim::Simulation; free = true) -> sim
+    finalize_simulation(sim::Simulation; free = true) -> sim
 
-Close the output files and, with `free` (the default), release the device memory of the
-model, the solver and the budget accumulator now (`free_device_arrays!`, through the
-backend hook `free_memory!`) rather than when the garbage collector runs: with two models
-on one GPU (T5.4) the memory must be back in the pool before the other model allocates.
-Afterwards the simulation cannot be stepped or read (`get_value`, `get_value_ptr` throw);
-device arrays obtained before (`get_value_ptr(...; device = true)`) must not be used, while
-host mirrors keep their last values. With `free = false` the model stays readable
-(`ModflowGPU.run` returns it) and its memory is released by the garbage collector.
+End a simulation started with [`initialize`](@ref) (libmf6's `finalize`): close the
+output files and, with `free` (the default), release the device memory of the model now
+([`ModflowGPU.free_device_arrays!`](@ref)) rather than when the garbage collector runs.
+This matters when another model on the same GPU allocates next (T5.4).
+
+Afterwards the simulation cannot be stepped, and with `free = true` not read either
+([`get_value`](@ref) and [`get_value_ptr`](@ref) throw); device arrays obtained before
+(`get_value_ptr(...; device = true)`) must not be used, while host mirrors keep their
+last values. With `free = false` the model stays readable ([`run_simulation`](@ref)
+returns it) and its memory is released by the garbage collector. A second call does
+nothing.
+
+[`ModflowGPU.finalize`](@ref) is the same function under its earlier name.
+
+# Example
+```julia
+sim = initialize("path/to/simulation")
+update(sim)
+finalize_simulation(sim)
+```
 """
-function finalize(s::Simulation; free::Bool = true)
+function finalize_simulation(s::Simulation; free::Bool = true)
     s.stage === :freed && return s
     isnothing(s.output) || close(s.output)
     s.stage = :finalized
@@ -317,10 +421,20 @@ function finalize(s::Simulation; free::Bool = true)
 end
 
 """
-    device_bound!(sim, address) -> device BOUND array
+    ModflowGPU.finalize(sim::Simulation; free = true) -> sim
 
-Open the device BOUND array at `address` (`"<model>/<package>/BOUND"`) for writing in the
-current time step: the enforced form of the device write contract (T5.2, T5.4). Allowed
+The same function as [`finalize_simulation`](@ref), under the name used before it was
+exported. Not exported, because it would clash with `Base.finalize`; it is kept (not
+deprecated) for code that calls `ModflowGPU.finalize`.
+"""
+const finalize = finalize_simulation
+
+"""
+    ModflowGPU.device_bound!(sim, address) -> device BOUND array
+
+For coupling on the device: open the device BOUND array at `address`
+(`"<model>/<package>/BOUND"`) for writing in the current time step, so that kernels of
+the coupled model can write boundary values without a copy to the host. Allowed
 only between `prepare_time_step` and `prepare_solve` (otherwise an `ArgumentError`).
 Returns the engine array, as `get_value_ptr(sim, address; device = true)`: precision `T`,
 `(ncol, maxbound)`, head-like columns as offsets from the reference of the record's cell
@@ -331,6 +445,17 @@ throws an `MF6InputError` naming the first bad record. The written values are us
 step, are replaced by new period data, and are not seen by host reads of BOUND
 (`get_value`, mirrors), which keep the values last set on the host. Writes into a device
 BOUND that was not opened this way are not checked (the stepping API cannot see them).
+
+Not exported: it is for code that writes device arrays in its own kernels.
+
+# Example
+```julia
+prepare_time_step(sim)
+bound = ModflowGPU.device_bound!(sim, "GWF/RIV-1/BOUND")   # (3, maxbound) on the device
+my_stage_kernel!(bound, ...)   # write the stages (row 1) as offsets from the references
+do_time_step(sim)
+finalize_time_step(sim)
+```
 """
 function device_bound!(s::Simulation, address::AbstractString)
     _check_readable(s)
@@ -406,32 +531,53 @@ function _device_bound_error(pkg::BoundaryPackage{K}) where {K}
 end
 
 _check_readable(s::Simulation) = s.stage === :freed &&
-    throw(ArgumentError("the simulation was finalized and its device memory freed (finalize(sim; free = false) keeps it readable)"))
+    throw(ArgumentError("the simulation was finalized and its device memory freed (finalize_simulation(sim; free = false) keeps it readable)"))
 
 _check_solution(isol) = isol == 1 || throw(ArgumentError("solution $isol: the simulation has one solution (SLN_1)"))
 
 """
-    get_current_time(sim) -> Float64
+    get_current_time(sim::Simulation) -> Float64
 
-The simulation time at the end of the current time step (TDIS `totim`; 0 before the first
-`prepare_time_step`).
+The simulation time at the end of the current time step (TDIS `totim`, in the model's
+time units; 0 before the first [`prepare_time_step`](@ref)).
+
+# Example
+```julia
+sim = initialize("path/to/simulation")
+get_current_time(sim)   # 0.0
+update(sim)
+get_current_time(sim)   # the length of the first time step
+```
 """
 get_current_time(s::Simulation) = s.istep == 0 ? 0.0 : s.steps[s.istep].totim
 
 """
-    get_start_time(sim) -> 0.0
-    get_end_time(sim) -> Float64
+    get_start_time(sim::Simulation) -> Float64
 
-The start (0) and end (sum of PERLEN) of the simulation.
+The start time of the simulation: always 0.0, in the model's time units.
 """
 get_start_time(::Simulation) = 0.0
+
+"""
+    get_end_time(sim::Simulation) -> Float64
+
+The end time of the simulation: the sum of the stress-period lengths (TDIS PERLEN), in
+the model's time units.
+
+# Example
+```julia
+while get_current_time(sim) < get_end_time(sim)
+    update(sim)
+end
+```
+"""
 get_end_time(s::Simulation) = isempty(s.steps) ? 0.0 : last(s.steps).totim
 
 """
-    get_time_step(sim) -> Float64
+    get_time_step(sim::Simulation) -> Float64
 
-The length of the current time step (TDIS `delt`, as libmf6's `get_time_step`; before the
-first step, that of the first step).
+The length of the current time step (TDIS `delt`, in the model's time units, as libmf6's
+`get_time_step`; before the first step, that of the first step).
 """
 get_time_step(s::Simulation) = isempty(s.steps) ? 0.0 : s.steps[max(s.istep, 1)].delt
 
@@ -440,10 +586,18 @@ get_time_step(s::Simulation) = isempty(s.steps) ? 0.0 : s.steps[max(s.istep, 1)]
 # ---------------------------------------------------------------------------------------
 
 """
-    get_var_address(sim, var, component; subcomponent_name = "") -> String
+    get_var_address(sim::Simulation, var, component; subcomponent_name = "") -> String
 
-The address of variable `var` of `component` (a model name, `"SLN_1"`, `"TDIS"`) and
-optional subcomponent (a package name), as libmf6: `"RDE/RIV/BOUND"`.
+The address of variable `var` of `component` (a model name, `"SLN_1"` or `"TDIS"`) and
+an optional subcomponent (a package name), as libmf6's `get_var_address`: the names in
+upper case, joined by `/`. The address is not checked; [`var_addresses`](@ref) lists the
+valid ones.
+
+# Example
+```julia
+get_var_address(sim, "bound", "gwf"; subcomponent_name = "riv-1")   # "GWF/RIV-1/BOUND"
+get_var_address(sim, "x", "gwf")                                     # "GWF/X"
+```
 """
 get_var_address(::Simulation, var::AbstractString, component::AbstractString; subcomponent_name::AbstractString = "") =
     join(filter(!isempty, uppercase.([component, subcomponent_name, var])), "/")
@@ -521,9 +675,25 @@ function _variable(s::Simulation, address::AbstractString)
 end
 
 """
-    var_addresses(sim) -> Vector{String}
+    var_addresses(sim::Simulation) -> Vector{String}
 
-Every address the stepping API and the BMI support (writable ones: `input_addresses`).
+Every address that [`get_value`](@ref), [`get_value_ptr`](@ref) and the BMI accept, as
+libmf6 names them, for a model `<model>` with stress packages `<package>`:
+
+- `<model>/X`, `XOLD` (heads now and at the end of the previous step), `HREF` (the
+  per-cell reference heads), `IBOUND`;
+- `<model>/DIS/NODEUSER`, `NODEREDUCED`, `TOP`, `BOT`, `AREA`, `NODES`, `NODESUSER`;
+- `<model>/<package>/BOUND`, `NODELIST`, `SIMVALS` (simulated flows), `NBOUND`,
+  `MAXBOUND`;
+- `SLN_1/MXITER` and `TDIS/DELT`, `TOTIM`, `PERTIM`, `KPER`, `KSTP`, `NPER`.
+
+The writable ones are listed by [`input_addresses`](@ref).
+
+# Example
+```julia
+sim = initialize("path/to/simulation")
+filter(contains("/RIV"), var_addresses(sim))
+```
 """
 function var_addresses(s::Simulation)
     m = s.model
@@ -539,28 +709,43 @@ function var_addresses(s::Simulation)
 end
 
 """
-    input_addresses(sim) -> Vector{String}
+    input_addresses(sim::Simulation) -> Vector{String}
 
-The writable addresses: `"<model>/X"` and `"<model>/<package>/BOUND"`.
+The addresses that [`set_value`](@ref) accepts (and whose [`get_value_ptr`](@ref) mirrors
+may be written): `"<model>/X"` and `"<model>/<package>/BOUND"` of every stress package.
 """
 input_addresses(s::Simulation) = filter(a -> !isnothing(_variable(s, a).set), var_addresses(s))
 
 """
-    get_value_ptr(sim, address; device = false) -> Array
+    get_value_ptr(sim::Simulation, address; device = false) -> Array
 
-A host mirror of the variable at `address` (Float64 with absolute heads, Int32 indices;
-BOUND as `(ncol, maxbound)`, values before the MULTIPLIER aux variable). The same array
-is returned on every call and stays valid until `finalize`; see the header of
-src/stepping.jl for when it is synchronised with the device. Writes into the mirror of
-`X` or `BOUND` take effect at the next `prepare_time_step` or `prepare_solve`.
+A host array that mirrors the variable at `address` (see [`var_addresses`](@ref)), as
+libmf6's `get_value_ptr`. Values are Float64 with absolute heads (in the model's length
+units), indices Int32; BOUND is `(ncol, maxbound)`, with the values before the MULTIPLIER
+auxiliary variable is applied.
 
-With `device = true`: the engine array on the device (precision `T`, head-like values as
-offsets from `"<model>/HREF"`, BOUND with the multiplier applied); `X`, `XOLD`, `HREF`,
-`IBOUND`, `BOUND`, `NODELIST`, `SIMVALS` only (`HREF` is the host Float64 vector of the
-references). Write a device BOUND through `device_bound!` (between `prepare_time_step`
-and `prepare_solve`, checked at `prepare_solve`); host reads of BOUND do not see device
-writes (see the header of src/stepping.jl). No host mirror is created. After
-`finalize` (which frees the device memory) the returned arrays must not be used.
+The same array is returned on every call and stays valid until
+[`finalize_simulation`](@ref). It is a copy of the engine data, refreshed at the end of
+[`initialize`](@ref), [`prepare_time_step`](@ref), [`prepare_solve`](@ref) and
+[`finalize_solve`](@ref). Writes into the mirror of `X` or `BOUND` are sent to the device
+at the next `prepare_time_step` or `prepare_solve`; writes between `prepare_solve` and
+`finalize_solve` are discarded with a warning (use [`set_value`](@ref) there).
+
+With `device = true`: the engine array itself, on the device, in the precision `T` of the
+simulation, with head-like values as offsets from `"<model>/HREF"` and BOUND with the
+multiplier applied; only for `X`, `XOLD`, `HREF`, `IBOUND`, `BOUND`, `NODELIST` and
+`SIMVALS` (`HREF` is the host Float64 vector of the references). No mirror is made.
+Write a device BOUND only through [`ModflowGPU.device_bound!`](@ref).
+
+# Example
+```julia
+heads = get_value_ptr(sim, "GWF/X")          # updated by every time step
+riv = get_value_ptr(sim, "GWF/RIV-1/BOUND")  # stage, cond, rbot per river cell
+prepare_time_step(sim)
+riv[1, :] .+= 0.1                            # raise the stages for this step
+do_time_step(sim)
+finalize_time_step(sim)
+```
 """
 function get_value_ptr(s::Simulation, address::AbstractString; device::Bool = false)
     _check_readable(s)
@@ -575,22 +760,43 @@ function get_value_ptr(s::Simulation, address::AbstractString; device::Bool = fa
 end
 
 """
-    get_value(sim, address) -> Array
-    get_value(sim, address, dest) -> dest
+    get_value(sim::Simulation, address) -> Array
+    get_value(sim::Simulation, address, dest) -> dest
 
-A copy of the current value at `address` on the host (as `get_value_ptr`, but read from the
-engine now).
+A new host array (or `dest`, filled) with the current value of the variable at `address`
+(see [`var_addresses`](@ref)), read from the engine now. Values are as in
+[`get_value_ptr`](@ref): Float64 with absolute heads, Int32 indices; scalars are
+one-element vectors.
+
+# Example
+```julia
+h = get_value(sim, "GWF/X")                     # heads per model node
+q = get_value(sim, "GWF/RIV-1/SIMVALS")         # river flows of the last step
+kper = only(get_value(sim, "TDIS/KPER"))
+```
 """
 get_value(s::Simulation, address::AbstractString) = (_check_readable(s); _variable(s, address).get(s))
 get_value(s::Simulation, address::AbstractString, dest::AbstractArray) = copyto!(dest, get_value(s, address))
 
 """
-    set_value(sim, address, values) -> sim
+    set_value(sim::Simulation, address, values) -> sim
 
-Set the variable at `address` (`X` in absolute heads, `BOUND` as `(ncol, maxbound)` or
-flat, values before the multiplier, head-like columns absolute) and send it to the device
-now (`set_bound!`: the conversion of period data). A host mirror of the address is
-updated as well.
+Set the variable at `address` (one of [`input_addresses`](@ref)) and send it to the
+device now. `X` takes absolute heads per model node (cells with IDOMAIN > 0); `BOUND`
+takes `(ncol, maxbound)` values (or the same values flattened), before the MULTIPLIER
+auxiliary variable, with head-like columns (stage, head, elevation) absolute, in the model's units. A host mirror of
+the address ([`get_value_ptr`](@ref)) is updated as well. The values are used from the
+next solve until new period data for the package replaces them.
+
+# Example
+```julia
+prepare_time_step(sim)
+bound = get_value(sim, "GWF/WEL-1/BOUND")
+bound[1, :] .= -100.0                   # pumping rate of every well
+set_value(sim, "GWF/WEL-1/BOUND", bound)
+do_time_step(sim)
+finalize_time_step(sim)
+```
 """
 function set_value(s::Simulation, address::AbstractString, values::AbstractArray)
     _check_readable(s)

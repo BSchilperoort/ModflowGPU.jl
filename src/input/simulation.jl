@@ -803,7 +803,17 @@ packages (`UNSUPPORTED_PACKAGES`) are always an `MF6UnsupportedError`
 ("unsupported: SFR6 package 'SFR-1' in model 'GWF'"). With `strict = true`, so are
 options, values and features not (yet) implemented by the engine (`SUPPORTED_OPTIONS`,
 `SUPPORTED_VALUES`, `SUPPORTED_FEATURES` in `src/input/supported.jl`); `strict = false`
-reads all in-scope input.
+reads all in-scope input (for inspection; the engine may then not run it).
+
+Loading only reads files on the host; nothing is allocated on a device. Pass the result
+to [`run_simulation`](@ref) or [`initialize`](@ref), or change it and write it back with
+[`write_simulation`](@ref).
+
+# Example
+```julia
+spec = load_simulation("path/to/simulation")   # the directory with mfsim.nam
+result = run_simulation(spec; outdir = "output")
+```
 """
 function load_simulation(simdir::AbstractString; strict::Bool = true)
     simdir = abspath(simdir)

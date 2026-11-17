@@ -107,10 +107,12 @@ end
 """
     BudgetTerm
 
-One row of a model budget: `name` (budget text, e.g. `"STO-SS"`, `"CHD"`, `"RCHA"`),
-`package` (package name in the listing, e.g. `"STORAGE"`, `"CHD_0"`), and the rates of the
-time step `rate_in`, `rate_out` (non-negative, Float64) and the cumulative volumes
-`cum_in`, `cum_out`.
+One row of a [`ModelBudget`](@ref). Fields:
+- `name`: the budget text, e.g. `"STO-SS"`, `"CHD"`, `"RCHA"`;
+- `package`: the package name as in the listing file, e.g. `"STORAGE"`, `"CHD_0"`;
+- `rate_in`, `rate_out`: the inflow and outflow rates of the time step (non-negative,
+  Float64, volume per time, L³/T in the model's units);
+- `cum_in`, `cum_out`: the cumulative inflow and outflow volumes since the start (L³).
 """
 struct BudgetTerm
     name::String
@@ -124,10 +126,22 @@ end
 """
     ModelBudget
 
-The volumetric budget of a model for one time step (`budget_ot`): `kstp`, `kper`, the
-`terms` (`BudgetTerm`) in MF6's order (STO-SS, STO-SY when ICONVERT is used, then the
-stress packages), and the totals. `percent_discrepancy(b)` and `cum_percent_discrepancy(b)`
-use MF6's formula on the rates and the cumulative volumes.
+The volumetric budget of a model for one time step, as in MF6's listing file: `kstp` and
+`kper` (time step and stress period numbers) and the `terms` ([`BudgetTerm`](@ref)) in
+MF6's order (STO-SS, STO-SY when ICONVERT is used, then the stress packages). Computed on
+the device in every time step, also when no budget is printed or saved; found in
+`RunResult.budgets` and `Simulation.budgets`.
+
+[`percent_discrepancy(b)`](@ref percent_discrepancy) and
+[`cum_percent_discrepancy(b)`](@ref cum_percent_discrepancy) give MF6's percent
+discrepancy of the rates and of the cumulative volumes.
+
+# Example
+```julia
+b = run_simulation("path/to/simulation").budgets[end]
+[(t.name, t.rate_in, t.rate_out) for t in b.terms]
+percent_discrepancy(b)
+```
 """
 struct ModelBudget
     kstp::Int
@@ -140,6 +154,13 @@ total_rate_out(b::ModelBudget) = sum(t -> t.rate_out, b.terms; init = 0.0)
 total_cum_in(b::ModelBudget) = sum(t -> t.cum_in, b.terms; init = 0.0)
 total_cum_out(b::ModelBudget) = sum(t -> t.cum_out, b.terms; init = 0.0)
 percent_discrepancy(b::ModelBudget) = percent_discrepancy(total_rate_in(b), total_rate_out(b))
+
+"""
+    cum_percent_discrepancy(b::ModelBudget) -> Float64
+
+MF6's percent discrepancy (see [`percent_discrepancy`](@ref)) of the cumulative volumes
+of budget `b` since the start of the simulation.
+"""
 cum_percent_discrepancy(b::ModelBudget) = percent_discrepancy(total_cum_in(b), total_cum_out(b))
 
 @inline function _inout_term(::Type{Ta}, i, q) where {Ta}

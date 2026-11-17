@@ -4,18 +4,28 @@
 """
     supports_float64(backend)::Bool
 
-Whether `backend` can run kernels in Float64. Extension hook like [`pin_memory!`](@ref):
-the default is `true` (CPU, CUDA, ROCm). The Metal extension returns `false`, and the oneAPI
-and OpenCL extensions query the device.
+Whether `backend` can run kernels in Float64, which the `:double` and `:mixed` precision
+presets need. Extension hook like [`ModflowGPU.pin_memory!`](@ref): the default is `true`
+(CPU, CUDA, ROCm). The Metal extension returns `false`, and the oneAPI and OpenCL
+extensions query the device.
 
 This is deliberately not `KernelAbstractions.supports_float64`, whose default (through
 KernelInterface, since KernelAbstractions 0.10) is `false` for backends that do not define
 it.
+
+# Example
+```jldoctest
+julia> supports_float64(select_backend("cpu"))
+true
+```
 """
 supports_float64(::Backend) = true
 
 """
-Precision presets accepted by [`resolve_precision`](@ref).
+    ModflowGPU.PRECISION_PRESETS
+
+The precision presets accepted by [`resolve_precision`](@ref) and the `precision` keyword
+of [`run_simulation`](@ref): `(:auto, :double, :mixed, :single)`.
 """
 const PRECISION_PRESETS = (:auto, :double, :mixed, :single)
 
@@ -40,6 +50,18 @@ faster with less memory (measured in docs/dev/precision.md, T4.4).
 
 The result is a `NamedTuple`, so `T, Ts, Tp = resolve_precision(backend, preset)` works.
 Requesting `:double` or `:mixed` on a backend without Float64 support throws an error.
+`preset` may also be a string (`"single"`).
+
+# Example
+```jldoctest
+julia> backend = select_backend("cpu");
+
+julia> resolve_precision(backend)
+(T = Float64, Ts = Float64, Tp = Float32)
+
+julia> resolve_precision(backend, :single)
+(T = Float32, Ts = Float32, Tp = Float32)
+```
 """
 function resolve_precision(backend::Backend, preset::Symbol = :auto)
     if preset === :auto

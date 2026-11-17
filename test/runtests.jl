@@ -46,6 +46,7 @@ include("run_parity.jl")
 const TEST_GROUPS = [
     "backend" => ["unit/backend_test.jl"],
     "precision" => ["unit/precision_test.jl"],
+    "api" => ["unit/api_test.jl"],
     "kernel" => ["unit/kernel_test.jl"],
     "input_tokenizer" => ["unit/input_tokenizer_test.jl"],
     "input_blocks" => ["unit/input_blocks_test.jl"],

@@ -8,9 +8,10 @@
 # 4-byte integers, DOUBLE as 8-byte reals.
 
 """
-    GrbVariable
+    ModflowGPU.GrbVariable
 
-One variable of a binary grid file: `name` (e.g. `"IA"`), `type` (`:INTEGER` or
+One variable of a binary grid file, an element of `BinaryGridFile.variables`: `name`
+(e.g. `"IA"`), `type` (`:INTEGER` or
 `:DOUBLE`), `dims` (empty for a scalar) and `definition`, the definition line as written
 in the file (LENTXT characters, including the trailing newline).
 """
@@ -55,7 +56,18 @@ end
 """
     read_grb(path) -> BinaryGridFile
 
-Read an MF6 binary grid file (`.dis.grb`, `.disv.grb`, `.disu.grb`).
+Read an MF6 binary grid file (`.dis.grb`, `.disv.grb`, `.disu.grb`), written by
+ModflowGPU or MF6 for the DIS, DISV or DISU package. It holds the grid and the model's
+connectivity (`IA`, `JA`), which give the meaning of the FLOW-JA-FACE budget record.
+Throws an [`ModflowGPU.MF6BinaryFileError`](@ref) for a malformed file.
+
+# Example
+```julia
+g = read_grb("path/to/simulation/model.dis.grb")
+g.grid                  # "DIS"
+g["NCOL"], g["NROW"], g["NLAY"]
+ia, ja = g["IA"], g["JA"]
+```
 """
 function read_grb(path::AbstractString)
     path = String(path)

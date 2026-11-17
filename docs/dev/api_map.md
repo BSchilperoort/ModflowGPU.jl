@@ -6,6 +6,20 @@ One entry per file, in include order (`src/ModflowGPU.jl`): purpose, key types a
 functions, and the test groups (`MFGPU_TEST_GROUPS`, see `test/runtests.jl`) that cover
 it. Underscore-prefixed helpers are omitted.
 
+## Public API (T8.2)
+
+- **ModflowGPU.jl**: the `export` and `public` lists, by group (running, backends and
+  precision, stepping, builder, output, backend authors). Exported: the user-facing names
+  (`run_simulation`, `finalize_simulation`, the stepping calls, builders, readers);
+  `public` only: `run` and `finalize` (aliases of `run_simulation` and
+  `finalize_simulation`, same function objects; Base clash), `solve` (CommonSolve clash),
+  `device_bound!`, the error and component types (`MF6InputError`, `HeadStep`, ...), the
+  backend hooks (`register_backend!`, `pin_memory!`, `free_memory!`, `host_mapped_zeros`,
+  `free_device_arrays!`). Every public name has a docstring and is listed in exactly one
+  `@docs` block of `docs/src/api/*.md` (`checkdocs = :public` in docs/make.jl). A new
+  public name needs both. Tests: api (test/unit/api_test.jl: names vs the API pages,
+  docstrings, no clash with Base exports, aliases).
+
 ## Backends and precision
 
 - **backend_setup.jl**: backend registry, adapted from mGV. `select_backend` (name → KA
@@ -358,18 +372,20 @@ it. Underscore-prefixed helpers are omitted.
 
 ## Running a simulation
 
-- **run.jl** (T2.8): `ModflowGPU.run(simdir or SimulationSpec; backend, precision,
+- **run.jl** (T2.8): `run_simulation(simdir or SimulationSpec; backend, precision,
   outdir, closures, write_output, preconditioner, precond_options)` (on the stepping API since T3.3) → `RunResult` (model, precision types, `StepResult`s,
   `ModelBudget`s, final heads, output paths); `ConvergenceError`. One model, one IMS
   solution. Tests: run (parity vs MF6 on Tier 0, ex-gwf-fhb, ts_tas, coupling_rde and IMS
   variants; flopy read-back with MFGPU_FLOPY=1). `_write_step` (step output) copies the
-  heads to the host only when OC saves or prints them (T5.2).
+  heads to the host only when OC saves or prints them (T5.2). `run` is a `const` alias
+  of `run_simulation` (T8.2).
 
 - **stepping.jl** (T3.3): libmf6/XMI-like stepping (PLAN.md 3.6). `Simulation`,
   `initialize`, `prepare_time_step`, `prepare_solve`, `solve` (one outer iteration),
-  `finalize_solve`, `finalize_time_step`, `do_time_step`, `update`, `finalize`,
+  `finalize_solve`, `finalize_time_step`, `do_time_step`, `update`, `finalize_simulation`
+  (T8.2; `finalize` is a `const` alias),
   `get_current_time` / `get_start_time` / `get_end_time` / `get_time_step`, `StepResult`;
-  T5.4: `finalize(sim; free = true)` frees the device arrays (stage `:freed`; `run` uses
+  T5.4: `finalize_simulation(sim; free = true)` frees the device arrays (stage `:freed`; `run_simulation` uses
   `free = false`), `device_bound!` (the device BOUND write window between
   `prepare_time_step` and `prepare_solve`, enforced; `prepare_solve` checks the written
   records on the device: finite, RIV stage ≥ bottom and conductance ≥ 0,
