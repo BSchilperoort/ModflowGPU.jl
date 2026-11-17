@@ -514,7 +514,7 @@ marked; their merge commits on `main` hold the card reports.
   - T7.5 Multi-GPU domain decomposition (at 5′; includes its own design section)
 - **Phase 8: user documentation (Documenter.jl manual on GitHub Pages)**: [docs/dev/plan/phase8.md](docs/dev/plan/phase8.md) (owner decisions 2026-11-17 at the top of the phase file)
   - T8.0 Move the developer notes to `docs/dev/` (done)
-  - T8.1 Documenter scaffold and CI deployment
+  - T8.1 Documenter scaffold and CI deployment (done)
   - T8.2 Public API and API reference
   - T8.3 Installation, getting started and GPU guide
   - T8.4 MF6 compatibility: packages and results
