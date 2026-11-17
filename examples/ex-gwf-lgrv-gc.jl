@@ -40,7 +40,8 @@ r.converged
 #
 # The land surface (the top of layer 1) with the river cells, and a cross-section
 # through the column at x = 3000 m that shows the natural logarithm of the hydraulic
-# conductivity (K in m/s), as in the MF6 example.
+# conductivity (K in m/s), as in the MF6 example. As there, the section runs from the
+# north edge (left) to the south edge (right), so the y axis increases to the left.
 
 g = read_dis_grid(mf6.dir)
 top = [g.idomain[c, r, 1] > 0 ? g.top[c, r] : NaN for c in 1:g.ncol, r in 1:g.nrow]
@@ -57,7 +58,7 @@ save_figure(fig, "ex-gwf-lgrv-gc-grid")
 k = reshape(only(load_simulation(mf6.dir).models).npf.k, g.ncol, g.nrow, g.nlay)
 col = searchsortedlast(g.xe, 3000.0)
 fig = Figure(; size = (600, 300))
-ax = Axis(fig[1, 1]; xlabel = "y position (m)", ylabel = "z position (m)")
+ax = Axis(fig[1, 1]; xlabel = "y position (m)", ylabel = "z position (m)", xreversed = true)
 pl = section_heatmap!(ax, g, log.(k); column = col, colormap = (:jet, 0.25))
 section_grid!(ax, g; column = col, linewidth = 0.5)
 Colorbar(fig[1, 2], pl; label = "ln K (K in m/s)")

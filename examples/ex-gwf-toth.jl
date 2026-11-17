@@ -59,7 +59,7 @@ u = qx[:, 1, :]                                          # (ncol, nlay), layer 1
 z = h[:, 1, 1]                                           # the water table (CHD heads)
 
 top = g.top[1, 1]
-fig = Figure(; size = (720, 480))
+fig = Figure(; size = (720, 480), figure_padding = (8, 24, 8, 8))   # room for the last x tick label
 ax = Axis(fig[1, 1]; xlabel = "x position (ft)", ylabel = "elevation (ft)", aspect = DataAspect(), xtickformat = intformat)
 section_contour!(ax, g, h; row = 1, levels = collect(top:25.0:maximum(z)), color = :blue, linewidth = 0.5)
 section_contour!(ax, g, reshape(ψ, g.ncol, 1, g.nlay); row = 1, levels = range(extrema(ψ)..., length = 10))

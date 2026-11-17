@@ -1,7 +1,7 @@
 # # Horizontal anisotropy: a well in an anisotropic aquifer
 #
-# A single confined layer of 51 × 51 cells of 10 m, with a well that pumps 1 m³/d from
-# the centre cell and constant heads of 0 m on the cells along the edge. The hydraulic
+# A single confined layer, 10 m thick, of 51 × 51 cells of 1 m, with a well that pumps
+# 1 m³/d from the centre cell and constant heads of 0 m on the cells along the edge. The hydraulic
 # conductivity is anisotropic in the horizontal plane: 1 m/d along the principal
 # direction and 0.01 m/d across it (NPF `K` and `K22`). The direction is set by the NPF
 # angle `ANGLE1`:

@@ -44,7 +44,7 @@ r.converged, length(r.steps)
 # The constant-head cells (blue) and the well (red).
 
 g = read_dis_grid(mf6.dir)
-fig = Figure(; size = (480, 300))
+fig = Figure(; size = (480, 300), figure_padding = (8, 24, 8, 8))   # room for the last x tick label
 ax = Axis(fig[1, 1]; aspect = DataAspect(), xlabel = "x position (m)", ylabel = "y position (m)", xtickformat = intformat, ytickformat = intformat)
 map_cells!(ax, g, budget_cells(g, r.budget_file, "CHD"); color = BC_COLORS["CHD"])
 map_cells!(ax, g, budget_cells(g, r.budget_file, "WEL"); color = BC_COLORS["WEL"])

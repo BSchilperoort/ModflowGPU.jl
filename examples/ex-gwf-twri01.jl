@@ -66,7 +66,7 @@ for (row, (label, hds, cbc)) in enumerate((("ModflowGPU", r.head_file, r.budget_
         local ax = Axis(
             fig[row, col]; aspect = DataAspect(), title = "$(('A':'F')[3(row - 1) + col]). $(titles[col]), $label",
             titlesize = 13, xtickformat = intformat, ytickformat = intformat, xticklabelsize = 10, yticklabelsize = 10,
-            xticks = 0:25_000:75_000, yticks = 0:25_000:75_000,
+            xticks = 0:20_000:60_000, yticks = 0:20_000:60_000,
         )
         push!(heatmaps, map_heatmap!(ax, g, layer_values(h, l); colorrange = (-25, 100)))
         map_grid!(ax, g; linewidth = 0.5)
@@ -102,7 +102,7 @@ for (row, p) in enumerate((:double, :single))
     m = maximum(x -> isnan(x) ? 0.0 : abs(x), mask_inactive(d))
     local hm
     for (col, l) in enumerate((1, 3, 5))
-        local ax = Axis(fig[row, col]; aspect = DataAspect(), title = "$(titles[col]), :$p − MODFLOW 6", titlesize = 12, xtickformat = intformat, ytickformat = intformat, xticks = 0:25_000:75_000, yticks = 0:25_000:75_000, xticklabelsize = 10, yticklabelsize = 10)
+        local ax = Axis(fig[row, col]; aspect = DataAspect(), title = "$(titles[col]), :$p − MODFLOW 6", titlesize = 12, xtickformat = intformat, ytickformat = intformat, xticks = 0:20_000:60_000, yticks = 0:20_000:60_000, xticklabelsize = 10, yticklabelsize = 10)
         hm = map_heatmap!(ax, g, layer_values(d, l); colormap = :balance, colorrange = (-m, m))
         col > 1 && hideydecorations!(ax; grid = false)
     end
