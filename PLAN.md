@@ -522,6 +522,7 @@ marked; their merge commits on `main` hold the card reports.
   - T8.6 Example gallery: infrastructure and first examples
   - T8.7 Remaining gallery examples
   - T8.8 Performance page (done)
+  - T8.9 BMI conformance with the specification
 
 ---
 

@@ -298,10 +298,58 @@ examples/               # T8.6: Literate scripts, runnable on their own
 - Done when: every number on the page cites the result file it comes from, with the
   date and hardware.
 
+**T8.9 BMI conformance with the specification (M)**
+- Depends: T8.5. Added 2026-11-17 at the owner's request: the BMI guide shows
+  `BMI.initialize(Simulation, config_file; backend = ..., precision = ...)`, but the BMI
+  specification has `initialize(::Type{Model}, config_file)` only; all model settings
+  come from the configuration file. Other functions may deviate too.
+- Reference: the BasicModelInterface.jl version in the manifest (docstrings in its
+  `src/BasicModelInterface.jl`: 41 functions with argument and return types) and the
+  CSDMS BMI documentation (bmi.csdms.io) for the meaning of each function. Where the two
+  differ, follow BasicModelInterface.jl and record the difference.
+- Audit every BMI function implemented in `src/bmi.jl` against the specification and
+  write the result as a table in the card report (function, spec signature and return,
+  ours, verdict, fix). Points known to need a decision or fix:
+  - `initialize`: drop the keywords. Settings go into a configuration file: define a
+    small TOML file (e.g. `simulation = "<dir or mfsim.nam>"`, `backend`, `precision`,
+    `preconditioner`, `outdir`, closures, `write_output`; relative paths are relative to
+    the file). A directory or an `mfsim.nam` path stays valid as `config_file` and uses
+    the defaults. The keyword form remains available through `ModflowGPU.initialize`
+    (stepping API), not through BMI.
+  - In-place getters (`get_value`, `get_value_at_indices`, `get_grid_*` with a
+    destination argument) return the destination, with the element types the spec gives
+    (`DenseVector{Int}` for shapes and indices, `Float64` for coordinates).
+  - Index base and type of `get_value_at_indices` / `set_value_at_indices`.
+  - `get_var_units`: the spec asks for UDUNITS strings; ours returns `"L2"`, `"L3/T"`.
+    MODFLOW is unit-agnostic: decide (from `LENGTH_UNITS` / `TIME_UNITS` in DIS/TDIS
+    when given, otherwise a documented placeholder) and document it.
+  - `get_time_units` (UDUNITS-compatible string; `"undefined"` case).
+  - `get_grid_size` vs the length of node variables (user nodes vs active nodes),
+    `get_var_nbytes` / `get_var_itemsize` consistency with `get_grid_size` for
+    `get_var_location == "node"`; `get_grid_rank` and `get_grid_type` for DISV/DISU;
+    `get_grid_x`/`get_grid_y` and ANGROT.
+  - Functions not implemented: either implement them (`get_grid_origin`,
+    `get_grid_spacing`, `get_grid_z`, and the unstructured edge/face functions where the
+    `.grb`/DISV data allow) or make them throw an error that names the function and says
+    it is not supported, instead of a `MethodError`.
+- Deliver: the fixes in `src/bmi.jl`; a conformance test group `bmi` that, on a DIS, a
+  DISV and a DISU model, calls every one of the 41 functions with the argument types the
+  spec gives and checks return types, in-place semantics (the returned array is the
+  destination), sizes (`get_var_nbytes == get_var_itemsize * length`), the
+  grid/variable consistency rules above, time and `update_until` behaviour, and that
+  unsupported functions throw the documented error; updated `docs/src/coupling/bmi.md`
+  (configuration file format, a BMI loop that uses only spec calls, the conformance
+  table, remaining deviations) and the BMI rows of `coupling/stepping.md` if they change.
+  Check that no caller in this repository or in `patches/modflow-coupling/` passes
+  keywords to `BMI.initialize` for a ModflowGPU `Simulation` (as of 2026-11-17 none does).
+- Done when: the `bmi` group passes in `:single` and `:double` on the CPU (and on rocm
+  locally), every spec function is either conformant or listed on `bmi.md` with the
+  reason, and the docs build without warnings.
+
 ## Order
 
 T8.0, then T8.1. Then T8.2, T8.3, T8.4, T8.5 and T8.8 in parallel. T8.6 after T8.3; T8.7
-after T8.6. The phase does not block or depend on the open Phase 6 and 7 cards; those
+after T8.6. T8.9 after T8.5. The phase does not block or depend on the open Phase 6 and 7 cards; those
 cards update the manual as they merge (T8.1 rule).
 
 ## Out of scope for this phase
