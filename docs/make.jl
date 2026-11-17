@@ -7,6 +7,11 @@ using ModflowGPU
 # Tables of the MODFLOW 6 compatibility pages (Main.CompatTables, used by their @eval blocks).
 include(joinpath(@__DIR__, "compat_tables.jl"))
 
+# Figures of the Performance page, from docs/src/assets/performance.toml (checked against
+# benchmark/results/); written to docs/src/assets/ (gitignored).
+include(joinpath(@__DIR__, "performance_figures.jl"))
+PerformanceFigures.make_figures(joinpath(@__DIR__, "src", "assets"))
+
 DocMeta.setdocmeta!(ModflowGPU, :DocTestSetup, :(using ModflowGPU); recursive = true)
 
 makedocs(;
