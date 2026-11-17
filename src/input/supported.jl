@@ -27,8 +27,18 @@
 """
     MF6UnsupportedError(file, msg)
 
-Input that ModflowGPU does not support (yet). `msg` starts with `"unsupported: "` and
-names the package, option or feature; `file` is the input file (or `""`).
+Input that ModflowGPU does not support (yet), thrown by [`load_simulation`](@ref) (and
+so by [`run_simulation`](@ref) and [`initialize`](@ref)) before anything runs. `msg`
+starts with `"unsupported: "` and names the package, option or feature; `file` is the
+input file (or `""`). Nothing unsupported is silently ignored.
+
+# Example
+```jldoctest
+julia> e = MF6UnsupportedError("model.npf", "unsupported: NPF option XT3D");
+
+julia> sprint(showerror, e)
+"MF6UnsupportedError: unsupported: NPF option XT3D (model.npf)"
+```
 """
 struct MF6UnsupportedError <: Exception
     file::String

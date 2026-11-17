@@ -31,7 +31,15 @@ makedocs(;
             "BMI" => "coupling/bmi.md",
         ],
         "Performance" => "performance.md",
-        "API reference" => "api/index.md",
+        "API reference" => [
+            "Overview" => "api/index.md",
+            "Running a simulation" => "api/running.md",
+            "Backends and precision" => "api/backends.md",
+            "Stepping API" => "api/stepping.md",
+            "Building models" => "api/builder.md",
+            "Output files" => "api/output.md",
+            "For backend authors" => "api/backend_authors.md",
+        ],
         "For developers" => "developers.md",
     ],
     # Warnings are errors (no `warnonly`): broken cross-references, doctest failures and
@@ -41,12 +49,9 @@ makedocs(;
     # doi.org refuses bots; GitHub rate-limits (429) when many links go to the same repo, and
     # links to files of this repository only resolve once they are pushed.
     linkcheck_ignore = [r"^https://doi\.org/", r"^https://github\.com/BSchilperoort/ModflowGPU\.jl/"],
-    # Off for now: the package exports nothing and declares nothing `public`, so the only
-    # documented name in the checked module is the module itself, which the check would
-    # report as missing. When the API pages exist, set `checkdocs = :public` (exported and
-    # `public` names; not `:all`, since internals are documented in docs/dev only) and list
-    # the module docstring in an `@docs ModflowGPU` block on the API index.
-    checkdocs = :none,
+    # Every exported or `public` name must be in an `@docs` block (docs/src/api/); internal
+    # names are documented in docs/dev only. test/unit/api_test.jl checks the same list.
+    checkdocs = :public,
 )
 
 deploydocs(;

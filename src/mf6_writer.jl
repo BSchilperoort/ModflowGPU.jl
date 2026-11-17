@@ -338,6 +338,25 @@ Supported: GWF models on DIS grids with NPF, IC, STO, OC, the stress packages of
 `BOUNDARY_KINDS` (lists and READASARRAYS), TDIS and IMS. Exchanges, DISV/DISU, time
 series, TAS, OBS, TVK, TVS and ATS input are an `ArgumentError`. Ported from
 ModflowCoupling's `write_simulation` (src/mf6_writer.jl there).
+
+# Example
+```jldoctest; setup = :(dis = build_dis(; delr = 100.0, delc = 100.0, top = 0.0, botm = fill(-10.0, 10, 5, 1)); chd = build_boundary(:CHD, dis; periods = [1 => (; cells = [(1, 1, 1), (1, 5, 10)], values = [0.0, -2.0])]); sim = build_simulation(build_model("flow"; dis, npf = build_npf(dis; k = 10.0), ic = build_ic(dis; strt = 0.0), boundaries = [chd]); tdis = build_tdis(; perlen = 1.0)))
+julia> dir = write_simulation(mktempdir(), sim);
+
+julia> readdir(dir)
+8-element Vector{String}:
+ "flow.chd-1"
+ "flow.dis"
+ "flow.ic"
+ "flow.ims"
+ "flow.nam"
+ "flow.npf"
+ "flow.tdis"
+ "mfsim.nam"
+
+julia> load_simulation(dir)
+SimulationSpec(1 model(s): FLOW; 1 period(s); 0 exchange(s))
+```
 """
 function write_simulation(dir::AbstractString, spec::SimulationSpec)
     _check_writable(isempty(spec.exchanges), "GWF6-GWF6 exchanges")

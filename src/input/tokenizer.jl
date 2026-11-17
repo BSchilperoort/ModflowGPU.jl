@@ -20,10 +20,18 @@
 # stored, so large array blocks cost little more than the file itself.
 
 """
-    MF6InputError(file, line, msg)
+    ModflowGPU.MF6InputError(file, line, msg)
 
-An error in an MF6 input file. `showerror` prints `file:line: msg` (`line = 0` when the
-error is not about a particular line).
+An error in an MF6 input file, thrown by [`load_simulation`](@ref) (and so by
+[`run_simulation`](@ref) and [`initialize`](@ref)) with MF6's message where MF6 has one.
+`showerror` prints `file:line: msg` (`line = 0` when the error is not about a particular
+line).
+
+# Example
+```jldoctest
+julia> sprint(showerror, ModflowGPU.MF6InputError("model.dis", 12, "NLAY must be > 0"))
+"MF6InputError: model.dis:12: NLAY must be > 0"
+```
 """
 struct MF6InputError <: Exception
     file::String

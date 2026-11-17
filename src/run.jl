@@ -1,14 +1,29 @@
-# Running a simulation: `ModflowGPU.run(simdir)` (the time loop of MF6's `Sim`, with
+# Running a simulation: `run_simulation(simdir)`, alias `ModflowGPU.run` (the time loop of MF6's `Sim`, with
 # `tdis_set_timestep`, `sln_ca` and `gwf_ot` per step), on the stepping API (src/stepping.jl).
 
 """
     RunResult
 
-What `ModflowGPU.run` returns: `model` (the `GwfModel`, still on the device), the
-precision types `T`, `Ts`, `Tp`, `steps` (`StepResult` per time step), `budgets`
-(`ModelBudget` per time step), `heads` (absolute Float64 heads per reduced node at the end
-of the run), `converged` (every step converged) and the output paths `head_file`,
-`budget_file`, `listing_file` (`""` when not written).
+What [`run_simulation`](@ref) returns. Fields:
+
+- `converged::Bool`: every time step converged;
+- `heads::Vector{Float64}`: the absolute heads at the end of the run, per model node
+  (cells with IDOMAIN > 0, in MF6's reduced node order), in the model's length units;
+- `steps::Vector{StepResult}`: per time step its [`StepResult`](@ref) (time, iterations);
+- `budgets::Vector{ModelBudget}`: per time step the volumetric budget
+  ([`ModelBudget`](@ref));
+- `head_file`, `budget_file`, `listing_file`: the paths of the output files (`""` when
+  not written);
+- `T`, `Ts`, `Tp`: the precision types used (see [`resolve_precision`](@ref));
+- `model`: the model, still on the device (internal; its memory is released by the
+  garbage collector).
+
+# Example
+```julia
+result = run_simulation("path/to/simulation")
+result.converged
+result.budgets[end].terms   # budget terms of the last time step
+```
 """
 struct RunResult{M <: GwfModel}
     model::M
@@ -27,8 +42,20 @@ end
 """
     ConvergenceError(kper, kstp, iterations)
 
-A time step did not converge within OUTER_MAXIMUM and the simulation has no CONTINUE
-option (MF6 stops the simulation after writing the step's output).
+Thrown by [`run_simulation`](@ref) (and `BasicModelInterface.update`) when time step
+`kstp` of stress period `kper` did not converge within OUTER_MAXIMUM (`iterations` outer
+iterations) and the simulation has no CONTINUE option. As MF6, the run stops after writing
+the output of that step.
+
+# Example
+```julia
+try
+    run_simulation("path/to/simulation")
+catch e
+    e isa ConvergenceError || rethrow()
+    @warn "stopped in stress period \$(e.kper), time step \$(e.kstp)"
+end
+```
 """
 struct ConvergenceError <: Exception
     kper::Int
@@ -42,38 +69,62 @@ Base.showerror(io::IO, e::ConvergenceError) = print(
 )
 
 """
-    ModflowGPU.run(simdir; backend = CPU(), precision = :auto, outdir = simdir,
-                   closures = nothing, write_output = true, preconditioner = :auto,
-                   precond_options = (;)) -> RunResult
+    run_simulation(simdir::AbstractString; kwargs...) -> RunResult
+    run_simulation(spec::SimulationSpec; kwargs...) -> RunResult
 
-Run the MF6 simulation in `simdir` (one GWF model with one IMS solution; exchanges arrive
-in Phase 3) on `backend` in precision `precision` (`resolve_precision`: `:auto` =
-`:mixed` on backends with Float64, else `:single`; `:double`, `:mixed`, `:single`). Per time step: stress period data once per period, the outer
-iterations (`solve_timestep!`), flows and budget (`calc_flows!`, `model_budget!`), and the
-output selected by OC: HDS and CBC files and the model listing file (budget tables at the
-end of each period, with PRINT BUDGET, and after a failed step), written to `outdir` under
-the names of the input (the listing file under its name-file name or `<model>.lst`).
+Run the MF6 simulation in directory `simdir` (the directory with `mfsim.nam`), or a
+loaded or built [`SimulationSpec`](@ref), from start to end. The simulation has one GWF
+model and one IMS solution. Each time step applies the stress-period data, solves the
+heads with the outer (Picard) iterations, computes flows and the budget, and writes the
+output that the OC package asks for: the head file, the budget file and the model listing
+file (budget tables), under the names given in the input.
 
-`closures` overrides IMS closures (see `PicardSettings`); in `:single` closures below
-`FLOAT32_CLOSURES` are raised. A step that does not converge throws a `ConvergenceError`
-after its output, unless the simulation has the CONTINUE option.
+Keywords:
+- `backend = CPU()`: the KernelAbstractions backend, e.g. from [`select_backend`](@ref);
+- `precision = :auto`: a precision preset, see [`resolve_precision`](@ref) (`:auto` is
+  `:mixed` on backends with Float64, else `:single`);
+- `outdir = simdir`: the directory for the output files (`spec.simdir` for a spec);
+- `write_output = true`: `false` writes no files;
+- `closures = nothing`: a `NamedTuple` that overrides IMS settings, with any of
+  `outer_dvclose`, `outer_maximum`, `inner_dvclose`, `inner_rclose`, `inner_maximum`
+  (closures in the model's units); in `:single`, closures below what Float32 can reach
+  are raised (logged);
+- `preconditioner = :auto`: the linear-solver preconditioner, replacing the ILU0, MILU0
+  or ILUT of IMS (a ModflowGPU option, not in MF6 input): `:auto` (`:mc_ilu0`),
+  `:jacobi`, `:chebyshev`, `:mc_sgs`, `:mc_ilu0` or `:amg`;
+- `precond_options = (;)`: keywords for the preconditioner: `degree` for `:chebyshev`,
+  `relax` for `:mc_sgs` and `:mc_ilu0`, the AMG options for `:amg` (developer notes,
+  docs/dev/mf6_notes.md).
 
-`preconditioner` (a ModflowGPU option, not in MF6 input) selects the inner preconditioner
-in place of the ILU0/MILU0/ILUT of IMS: `:auto` (the default, `DEFAULT_PRECONDITIONER` =
-`:mc_ilu0`), `:jacobi`, `:chebyshev`, `:mc_sgs`, `:mc_ilu0` or `:amg` (`PRECONDITIONERS`). `precond_options` is a NamedTuple of keywords
-for its constructor (see `build_preconditioner`; for `:amg` those of `AMGOptions`). See
-`KrylovSettings` and docs/dev/mf6_notes.md (IMS linear solver mapping).
+Returns a [`RunResult`](@ref) with the heads, the budgets and the iteration counts. A
+time step that does not converge throws a [`ConvergenceError`](@ref) after writing its
+output, unless the simulation has the CONTINUE option. Invalid or unsupported input
+throws an [`ModflowGPU.MF6InputError`](@ref) or an [`MF6UnsupportedError`](@ref) before
+anything runs.
+
+[`ModflowGPU.run`](@ref) is the same function under its earlier name.
+
+# Example
+```julia
+using ModflowGPU
+backend = select_backend("auto")
+result = run_simulation("path/to/simulation"; backend)
+result.converged
+
+# on a GPU without Float64, or to save memory:
+result = run_simulation("path/to/simulation"; backend, precision = :single)
+```
 """
-function run(
+function run_simulation(
         simdir::AbstractString; backend::Backend = CPU(), precision::Symbol = :auto, outdir::AbstractString = simdir,
         closures = nothing, write_output::Bool = true, preconditioner::Symbol = :auto,
         precond_options::NamedTuple = (;),
     )
     sim = load_simulation(simdir)
-    return run(sim; backend, precision, outdir, closures, write_output, preconditioner, precond_options)
+    return run_simulation(sim; backend, precision, outdir, closures, write_output, preconditioner, precond_options)
 end
 
-function run(
+function run_simulation(
         sim::SimulationSpec; backend::Backend = CPU(), precision::Symbol = :auto, outdir::AbstractString = sim.simdir,
         closures = nothing, write_output::Bool = true, preconditioner::Symbol = :auto,
         precond_options::NamedTuple = (;),
@@ -84,13 +135,22 @@ function run(
             update(s) || (r = last(s.results); throw(ConvergenceError(r.step.kper, r.step.kstp, r.outer.iterations)))
         end
     finally
-        finalize(s; free = false)   # the model is returned (RunResult)
+        finalize_simulation(s; free = false)   # the model is returned (RunResult)
     end
     out = s.output
     paths = isnothing(out) ? ("", "", "") : (out.head_path, out.budget_path, out.listing_path)
     allconv = all(r -> r.outer.converged, s.results)
     return RunResult(s.model, s.T, s.Ts, s.Tp, s.results, s.budgets, absolute_heads(s.model), allconv, paths...)
 end
+
+"""
+    ModflowGPU.run(simdir; kwargs...) -> RunResult
+
+The same function as [`run_simulation`](@ref), under the name used before it was
+exported. Not exported, because it would clash with `Base.run`; it is kept (not
+deprecated) for code that calls `ModflowGPU.run`.
+"""
+const run = run_simulation
 
 function _listing_header(io::IO, m::GwfModel, ps::PicardSolver, T, Ts, Tp, backend)
     st = ps.settings

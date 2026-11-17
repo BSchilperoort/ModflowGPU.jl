@@ -32,7 +32,7 @@ function BMI.update_until(s::Simulation, time::Float64)
     return nothing
 end
 
-BMI.finalize(s::Simulation) = (finalize(s); nothing)
+BMI.finalize(s::Simulation) = (finalize_simulation(s); nothing)
 
 BMI.get_component_name(::Simulation) = "ModflowGPU (MODFLOW 6 GWF)"
 BMI.get_input_var_names(s::Simulation) = input_addresses(s)

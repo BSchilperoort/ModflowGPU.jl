@@ -20,9 +20,10 @@
 # name; a model may have several terms with the same name (e.g. three RCH packages).
 
 """
-    ListingBudgetTerm
+    ModflowGPU.ListingBudgetTerm
 
-One term of a listing-file budget table: `name` (budget text, e.g. `"WEL"`, `"STO-SS"`),
+One term of a listing-file budget table, an element of `ListingBudget.terms`: `name`
+(budget text, e.g. `"WEL"`, `"STO-SS"`),
 `package` (package name column, `""` when the table is unlabeled), cumulative volumes
 `cum_in`, `cum_out` and rates `rate_in`, `rate_out` (both non-negative, as printed).
 """
@@ -40,7 +41,7 @@ end
 
 One budget table of a listing file: `title` (e.g. `"VOLUME"`), `zone` (e.g.
 `"ENTIRE MODEL"`), `kstp`, `kper` (0 if the
-printed number overflowed its field), the `terms` ([`ListingBudgetTerm`](@ref)), the
+printed number overflowed its field), the `terms` ([`ModflowGPU.ListingBudgetTerm`](@ref)), the
 totals `total_cum_in`, `total_cum_out`, `total_rate_in`, `total_rate_out`, the
 differences `cum_in_minus_out`, `rate_in_minus_out` and the printed
 `cum_percent_discrepancy`, `rate_percent_discrepancy`.
@@ -93,8 +94,16 @@ end
 """
     read_listing_budgets(path) -> Vector{ListingBudget}
 
-All budget tables (`... BUDGET FOR ... AT END OF TIME STEP ...`) of an MF6 model listing
-file, in file order.
+All budget tables (`... BUDGET FOR ... AT END OF TIME STEP ...`) of a model listing file
+(`.lst`) of ModflowGPU or MF6, in file order, with the values as printed (rates L³/T,
+volumes L³). Throws an [`ModflowGPU.MF6InputError`](@ref) for a table it cannot read.
+
+# Example
+```julia
+tables = read_listing_budgets("path/to/simulation/model.lst")
+last(tables).rate_percent_discrepancy
+[(t.name, t.rate_in, t.rate_out) for t in last(tables).terms]
+```
 """
 function read_listing_budgets(path::AbstractString)
     path = String(path)
@@ -166,7 +175,13 @@ file with the given `title` and `zone` (by default the model's volume budget; e.
 table per stress period with PRINT BUDGET LAST), summed over the rows whose name or
 package name equals `term` (case-insensitive). Ported from the `listing_rates` helper
 of ModflowCoupling's tests, which took the first matching row; summing gives the same
-for a single package and the model total for several packages of one type.
+for a single package and the model total for several packages of one type. Rates are in
+L³/T in the model's units.
+
+# Example
+```julia
+listing_rates("path/to/simulation/model.lst", "RIV")   # [(in, out) per table]
+```
 """
 function listing_rates(
         path::AbstractString, term::AbstractString; title::AbstractString = "VOLUME",
@@ -182,9 +197,20 @@ end
 
 """
     percent_discrepancy(total_in, total_out) -> Float64
+    percent_discrepancy(b::ModelBudget) -> Float64
 
 MF6's percent discrepancy `100 (in - out) / ((in + out) / 2)`, zero when both are zero
-(`budget_ot` in Budget.f90).
+(`budget_ot` in Budget.f90). For a [`ModelBudget`](@ref): of its total rates in and out
+(see [`cum_percent_discrepancy`](@ref) for the cumulative volumes).
+
+# Example
+```jldoctest
+julia> percent_discrepancy(101.0, 99.0)
+2.0
+
+julia> percent_discrepancy(0.0, 0.0)
+0.0
+```
 """
 function percent_discrepancy(total_in::Real, total_out::Real)
     avg = (total_in + total_out) / 2

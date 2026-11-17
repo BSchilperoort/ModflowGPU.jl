@@ -219,6 +219,19 @@ built in memory), the `mfsim.nam` options (`continue_on_nonconvergence` (CONTINU
 `nocheck`, `memory_print_option`, `profile_option`, `maxerrors` (0 = MF6 default),
 `print_input`), `tdis`, the GWF `models` (in `mfsim.nam` order), `exchanges` and
 `solution_groups`. Look up a model with `model_spec(spec, name)`.
+
+A plain host-side description in Float64, with no device data. It is made by
+[`load_simulation`](@ref) (from MF6 input files) or [`build_simulation`](@ref) (from
+Julia arrays), and taken by [`run_simulation`](@ref), [`initialize`](@ref) and
+[`write_simulation`](@ref). The specs of its parts (`TdisSpec`, `GwfSpec`, `DisSpec`,
+...) are not part of the public API; read them, but build them with the builder
+functions.
+
+# Example
+```julia
+spec = load_simulation("path/to/simulation")
+spec.models[1].name, spec.tdis.perlen
+```
 """
 Base.@kwdef struct SimulationSpec
     simdir::String = ""
