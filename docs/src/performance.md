@@ -118,7 +118,7 @@ gain left without changing the data layout.
 
 ![Milliseconds per daily step for serial MODFLOW 6, the ModflowGPU CPU backend and ModflowGPU on ROCm in three precisions, at closure criteria 5 and 0.01](assets/performance_global.svg)
 
-*Median over days 3 to 31 of the MODFLOW part of a daily step, real global 5′ model, all
+*Median over days 3 to 31 (days 3 to 10 for the CPU backend) of the MODFLOW part of a daily step, real global 5′ model, all
 3,675,450 active cells, 31 daily steps from 1979-01-01. Source:
 [`2026-11-15-T5.6.md`][t56] (2026-11-15, RX 7800 XT and Ryzen 7 7700). The MODFLOW 6 in this
 test is libmf6 6.3.0, serial. The closure number is the head and flow closure of both
@@ -177,10 +177,10 @@ does not fit one card.
 ![Total time of a steady state and 30 daily steps on the global model for three preconditioners and three precisions](assets/performance_precond.svg)
 
 *Synthetic global 5′ model (6.6 million cells), steady state plus 30 daily steps, ROCm.
-Source: [`2026-11-08-T4.4.md`][t44] (2026-11-08, RX 7800 XT; the same ordering holds in the
-later [`2026-11-16-T4.7.md`][t47]).*
+Source: [`2026-11-08-T4.4.md`][t44] (2026-11-08, RX 7800 XT; the ordering of the precisions
+holds in the later [`2026-11-16-T4.7.md`][t47], which timed only the default preconditioner).*
 
-`:single` is 2.5 to 3 times faster than `:double` here and uses 30 % less memory, but its
+`:single` is 2 to 3 times faster than `:double` here and uses about a third less memory, but its
 heads are 1e-6 to 2e-4 m from the `:double` ones on these models
 ([`2026-11-08-T4.4.md`][t44]; [GPU guide](gpu.md#which-preset-to-use)).
 `:mixed` is 14 % faster than `:double` with the default preconditioner (14.9 s against 17.4 s,
