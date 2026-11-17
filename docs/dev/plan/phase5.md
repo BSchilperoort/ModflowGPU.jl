@@ -1,6 +1,6 @@
 # Phase 5: ModflowCoupling integration and Milestone B
 
-Task cards for this phase of [PLAN.md](../../PLAN.md). Read PLAN.md sections 1–4 and 6 for the goals, conventions, architecture and validation rules these cards refer to.
+Task cards for this phase of [PLAN.md](../../../PLAN.md). Read PLAN.md sections 1–4 and 6 for the goals, conventions, architecture and validation rules these cards refer to.
 
 Size: S ≈ < 1 day of agent work, M ≈ 1–3 days, L ≈ > 3 days.
 `‖` marks cards that can run in parallel with their siblings.
@@ -30,7 +30,7 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
      reductions, which backends without the hook still use), the written-out reduction
      tree in `src/solver/krylov.jl` if KA 0.10 allows the simpler form, and the `"CPU"`
      name in `test/unit/backend_test.jl`.
-  3. Update `docs/compat.md` (replace its "mGV in the same environment" section, which
+  3. Update `docs/dev/compat.md` (replace its "mGV in the same environment" section, which
      still describes mGV on KA 0.9, with the versions ModflowGPU + mGV `main` resolve to),
      the Commands and Compat parts of `CLAUDE.md`, the comment
      in `src/precision.jl` and the header of `test/unit/kernel_test.jl`.
@@ -90,9 +90,9 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
   0.01), while the GPU engine was within 8.2e-6 m. For both engines and for
   `outer_dvclose` = 5, 0.5 and 0.01, report the distance to the tight heads and the wall
   time per period (monthly and daily). Propose production closures for the GPU engine
-  in `docs/precision.md`; the owner decides (PLAN.md section 8, still open).
+  in `docs/dev/precision.md`; the owner decides (PLAN.md section 8, still open).
 - Done when: the section 4 coupling criteria pass (`:mixed` against the `:double`
-  criteria), and the closure table and proposal are in `docs/precision.md`.
+  criteria), and the closure table and proposal are in `docs/dev/precision.md`.
 
 **T5.4 mGV + ModflowGPU on one GPU (M) (merged 2026-11-14, one check open)**
 - Open owner decision: the Done-when check below fails for baseflow in the closed loop
@@ -113,7 +113,7 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
   both sides; in `:mixed` and `:double`, convert Float32 mGV ↔ Float64 MODFLOW in a
   kernel; check that `align_to_grid` is the identity when grids match, and keep
   the host path otherwise). Both packages in one environment on KA 0.10; update
-  `docs/compat.md` with the resolved versions.
+  `docs/dev/compat.md` with the resolved versions.
 - Re-run `benchmark/run.jl` (indus, `global5m`) in the shared environment and compare
   with `benchmark/results/2026-11-08-T4.5.md`, so the Phase 4 numbers are known to hold
   where Milestone B runs. Use the timings to decide whether T4.7 is needed.
@@ -148,7 +148,7 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
     decision 9). Make `outer_dvclose = inner_dvclose = 0.01` the default of the GPU
     engine in the patched `config.jl` (the mf6 engine keeps 5, with a note in
     `indus.toml` that it stops up to 1.9 m from the converged heads on monthly
-    periods), and update the proposal section of `docs/precision.md` to say it is
+    periods), and update the proposal section of `docs/dev/precision.md` to say it is
     adopted. Report its cost against 5 on the 1-year run; T5.5a repeats this at global
     size.
   - At closures 5 and 0.5, `:single` stops 3e-3 m from its tight heads on monthly
@@ -249,7 +249,7 @@ cleanly. Run the tests with `INDUS_DATA=/home/bart/data/modflow/data`.
   - The closed-loop parity criterion of T5.4 is still undecided.
 - Depends: T5.5a. The global inputs are available since 2026-11-14 (PLAN.md section 8,
   decisions 1 and 8): MODFLOW in `/home/bart/data/modflow/global_data`, mGV as in
-  T5.5a, with the file choices T5.5a recorded: `docs/global_inputs.md` (file choices,
+  T5.5a, with the file choices T5.5a recorded: `docs/dev/global_inputs.md` (file choices,
   what does not line up, package sizes) and the draft config
   `examples/global/global.toml` of ModflowCoupling patch 0005. Before the run, decide the
   CHD heads (the chosen steady-head file has none on the 173,727 CHD ring cells; sea

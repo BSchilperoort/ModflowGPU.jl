@@ -146,19 +146,19 @@ end
             pc = hwell_amg ? :amg : RUN_PRECONDITIONER
             # ex-gwf-lgrv-gr in :single: Float32 CG with MC-ILU0 stops 6.1e-3 m from the exact
             # heads (the correction solves converge too slowly on this badly conditioned steady
-            # state); with AMG 6.7e-6 m (T6.0, docs/precision.md).
+            # state); with AMG 6.7e-6 m (T6.0, docs/dev/precision.md).
             spc = name == "ex-gwf-lgrv-gr" && default_pc ? :amg : pc
             # :single budgets (T6.1): for the models below only, differences beyond the
             # Float32 rounding of the cell flows and the head difference (`_rounding_bounds`,
             # test/run_parity.jl) must be below 1e-4 × total in (replaces the 5e-4 of
             # rad_disu_confined, T6.4); every other model keeps the raw criteria. Raw `:single`
             # values there: rad-disu CBC 0.39 × total in and pd 48.5 %, maw-p03c 1.0e-3 and
-            # 0.60 %, advtidal pd 1.9e-2 % (docs/precision.md).
+            # 0.60 %, advtidal pd 1.9e-2 % (docs/dev/precision.md).
             srb = name in ("rad_disu_confined", "ex-gwf-rad-disu", "ex-gwf-maw-p03c", "ex-gwf-advtidal")
             # ex-gwf-rad-disu in :double/:mixed: STO-SY of cell 21 in step 2 (Sy·area/delt is
             # large: Δt = 9.4e-5 d; heads at the cell top) turns the 2.5e-10 ft head difference
             # to MF6's tight-relative reference into 6.0e-6 × total in; criterion 1e-5 there
-            # (docs/precision.md).
+            # (docs/dev/precision.md).
             dbt = name == "ex-gwf-rad-disu" ? 1.0e-5 : 1.0e-6
             _run_parity(name, rundir; preconditioner = pc, single_preconditioner = spc, double_budget_tol = dbt, single_rounding_bound = srb)
         end

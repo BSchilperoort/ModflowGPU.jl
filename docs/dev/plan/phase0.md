@@ -1,6 +1,6 @@
 # Phase 0: setup and reference environment
 
-Task cards for this phase of [PLAN.md](../../PLAN.md). Read PLAN.md sections 1–4 and 6 for the goals, conventions, architecture and validation rules these cards refer to.
+Task cards for this phase of [PLAN.md](../../../PLAN.md). Read PLAN.md sections 1–4 and 6 for the goals, conventions, architecture and validation rules these cards refer to.
 
 Size: S ≈ < 1 day of agent work, M ≈ 1–3 days, L ≈ > 3 days.
 `‖` marks cards that can run in parallel with their siblings.
@@ -20,7 +20,7 @@ Size: S ≈ < 1 day of agent work, M ≈ 1–3 days, L ≈ > 3 days.
 - **KA compat:** this machine has KA 0.10.3 (pulled in by AMDGPU 2.10); mGV
   pins `KernelAbstractions = "0.9.41"`, which excludes 0.10. Set compat to
   `"0.9.41, 0.10"` and check that both resolve, because Milestone B loads mGV
-  and ModflowGPU in one environment. Record the finding in `docs/compat.md`.
+  and ModflowGPU in one environment. Record the finding in `docs/dev/compat.md`.
 - Also deliver the precision skeleton of section 3.7: `supports_float64`
   (default `true`; methods in the Metal, oneAPI and OpenCL extensions), the
   presets `:double`, `:single`, `:auto` resolving to `(T, Ts, Tp)`, and a test
@@ -41,7 +41,7 @@ Size: S ≈ < 1 day of agent work, M ≈ 1–3 days, L ≈ > 3 days.
   Each download goes into its own new directory. Also deliver
   `scripts/apply_coupling_patches.sh` and `patches/modflow-coupling/README.md`
   (no patches yet).
-- Check, and write the result to `docs/reference_tooling.md`:
+- Check, and write the result to `docs/dev/reference_tooling.md`:
   1. ModflowInterface.jl + Modflow6_jll 6.3.0 initialises and runs one example.
   2. Can ModflowInterface load the 6.8.2 `libmf6.so` (JLL override via
      `~/.julia/artifacts/Overrides.toml` or a preference)? If yes, use 6.8.2 for

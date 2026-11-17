@@ -495,7 +495,7 @@ and for preconditioners that come from the COMPLEXITY defaults only, as a warnin
 PRECONDITIONER_LEVELS or RELAXATION_FACTOR were given (their fill levels and relaxation
 are not used). REORDERING_METHOD is ignored
 with a logged message. See
-docs/mf6_notes.md (IMS linear solver mapping).
+docs/dev/mf6_notes.md (IMS linear solver mapping).
 """
 struct KrylovSettings
     method::Symbol

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Bart Schilperoort <b.schilperoort@esciencecenter.nl>
 Date: Sun, 15 Nov 2026 14:30:37 +0100
-Subject: [PATCH 6/6] T5.5b: global 5' run with real data
+Subject: [PATCH] T5.5b: global 5' run with real data
 
 River-loss limit (river_water_volume, river_bottom) on the host and device
 paths; coupling example: channel volumes to MODFLOW, created water and the
@@ -30,7 +30,7 @@ derived inputs, configs, the coupled spin-up and daily driver, Indus check.
  create mode 100644 examples/global/run_global.jl
 
 diff --git a/examples/global/README.md b/examples/global/README.md
-index 2e0237e..70b303f 100644
+index f14b859..c45a5a2 100644
 --- a/examples/global/README.md
 +++ b/examples/global/README.md
 @@ -32,3 +32,31 @@ uv run <this directory>/merge_routing_tiles.py --output routing/routing_global_5

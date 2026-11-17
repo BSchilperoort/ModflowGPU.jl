@@ -101,7 +101,7 @@ function _mf6_reference(A, b, st::KrylovSettings; kstp = 1)
     itmax = l2norm0 == 0 ? 0 : st.maxiter
     icnvg = l2norm0 == 0 ? 1 : 0
     epfact = ims_epfact(st.icnvgopt, kstp)
-    # MF6 adds SIGN(DPREC, d); ours is relative to the numerator (`_safe_div`, mf6_notes.md).
+    # MF6 adds SIGN(DPREC, d); ours is relative to the numerator (`_safe_div`, docs/dev/mf6_notes.md).
     sdiv(num, d) = num / (d + copysign(max(eps(Float64) * abs(num), floatmin(Float64)), d))
     close(a, b) = a == b || abs(a - b) <= 100 * eps() * max(abs(a), abs(b))
     iters = 0

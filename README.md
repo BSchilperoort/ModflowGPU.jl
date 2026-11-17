@@ -14,7 +14,7 @@ budgets.
 
 **Status:** under development, not yet registered. Supported now: DIS, confined NPF, STO, IC, CHD,
 WEL, RCH, GHB, RIV, DRN, EVT, OC, the Picard outer loop with CG/BiCGSTAB, and budgets. See
-[docs/support_matrix.md](docs/support_matrix.md) for details and [PLAN.md](PLAN.md) for the roadmap.
+[docs/dev/support_matrix.md](docs/dev/support_matrix.md) for details and [PLAN.md](PLAN.md) for the roadmap.
 
 ## Installation
 
@@ -63,10 +63,10 @@ time. ModflowCoupling uses this API.
 
 ## Documentation
 
-- [docs/support_matrix.md](docs/support_matrix.md): supported MF6 packages and options
-- [docs/mf6_notes.md](docs/mf6_notes.md): how MF6 behaviour is mapped, and where it differs
-- [docs/precision.md](docs/precision.md): precision presets and accuracy
-- [docs/scaling.md](docs/scaling.md) and [benchmark/results/](benchmark/results/): performance
+- [docs/dev/support_matrix.md](docs/dev/support_matrix.md): supported MF6 packages and options
+- [docs/dev/mf6_notes.md](docs/dev/mf6_notes.md): how MF6 behaviour is mapped, and where it differs
+- [docs/dev/precision.md](docs/dev/precision.md): precision presets and accuracy
+- [docs/dev/scaling.md](docs/dev/scaling.md) and [benchmark/results/](benchmark/results/): performance
 
 ## Development
 

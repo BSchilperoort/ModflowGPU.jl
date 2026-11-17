@@ -35,7 +35,7 @@ merge script; tests.
 
 diff --git a/examples/global/README.md b/examples/global/README.md
 new file mode 100644
-index 0000000..2e0237e
+index 0000000..f14b859
 --- /dev/null
 +++ b/examples/global/README.md
 @@ -0,0 +1,34 @@
@@ -47,7 +47,7 @@ index 0000000..2e0237e
 +- `mgv_global.toml`: the mGV config (parameters, generated routing, land-only forcing).
 +- `check_inputs.jl`: reads every input through ModflowCoupling and compares the grids of
 +  MODFLOW, the mGV parameters, the forcing and the routing file. The results and the
-+  reasons for each file choice are in ModflowGPU's `docs/global_inputs.md`.
++  reasons for each file choice are in ModflowGPU's `docs/dev/global_inputs.md`.
 +- `merge_routing_tiles.py`: merges routing files of mGV-input-data's `make-routing.py`.
 +
 +## The global routing file

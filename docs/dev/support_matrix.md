@@ -39,10 +39,10 @@ Accepted with a different behaviour (logged warnings, not errors):
   the ModflowGPU option `preconditioner` (`ModflowGPU.run` / `initialize` keyword):
   `:auto` (default: `:mc_ilu0`, T4.4; logged as a message for ILU0, a warning for the
   others), `:jacobi`, `:chebyshev`, `:mc_sgs`, `:mc_ilu0` (multicolour ILU0, T4.2), `:amg` (smoothed-aggregation AMG, T4.3), with `precond_options`
-  (docs/mf6_notes.md). RED_BLACK_ORDERING is accepted (it only affects MF6's ILU).
+  (docs/dev/mf6_notes.md). RED_BLACK_ORDERING is accepted (it only affects MF6's ILU).
 - Backtracking (BACKTRACKING_* and COMPLEXITY COMPLEX's implicit backtracking): accepted,
   not applied, with a warning (T6.2).
-- `:single`: closures below the Float32 floors (`FLOAT32_CLOSURES`, docs/precision.md) are
+- `:single`: closures below the Float32 floors (`FLOAT32_CLOSURES`, docs/dev/precision.md) are
   raised, with an info message.
 
 ## GWF model packages
@@ -79,7 +79,7 @@ Accepted with a different behaviour (logged warnings, not errors):
 ## Validated models (Milestone A gate)
 
 Parity against mf6 6.8.2 in both presets on the CPU backend and on ROCm (tolerances of
-PLAN.md section 4; numbers in docs/precision.md and docs/scaling.md): Tier 0
+PLAN.md section 4; numbers in docs/dev/precision.md and docs/dev/scaling.md): Tier 0
 (ex-gwf-toth, ex-gwf-hanic, ex-gwf-hanir), Tier 2 (ex-gwf-fhb since T6.3, which replaced the
 `fhb_const` stand-in; ex-gwf-hwell-a only in `:double`, opt-in), and Tier 1, the synthetic coupling models (test/models/coupling_rde
 and benchmark/synthetic.jl `tiny` and `indus`). The Tier 3–7 examples load with
@@ -90,7 +90,7 @@ K33OVERK, IMS CG with STRICT rclose): ex-gwf-lgrv-gc (9×61×49) and ex-gwf-lgrv
 (25×183×147, 672525 cells; `MFGPU_TEST_LGRV_GR=0` skips it), in the universal residual
 test and the run parity test, `:single`, `:mixed` and `:double`, CPU and ROCm. Default
 preconditioner, except ex-gwf-lgrv-gr in `:single`, which runs with `:amg`: with
-`:mc_ilu0` the Float32 solve does not converge (docs/precision.md, T6.0).
+`:mc_ilu0` the Float32 solve does not converge (docs/dev/precision.md, T6.0).
 
 T6.3 adds time series: ex-gwf-fhb (CHD heads and WEL rates from LINEAREND series) in the
 universal residual test, the storage residual test and the run parity test against its
@@ -105,7 +105,7 @@ T6.4 adds the Tier 5 DISV examples ex-gwf-u1disv (121 cells), ex-gwf-curve-90 (2
 ex-gwf-curvilin (864) (CHD, STO steady state, BiCGSTAB), and `rad_disu_confined`
 (ex-gwf-rad-disu, DISU with vertices, 550 cells, transient WEL, with STO ICONVERT 0; built
 from the reference run at test time, AMG preconditioner) in the universal residual test
-and the run parity test, `:single`, `:mixed` and `:double`, CPU and ROCm (docs/precision.md,
+and the run parity test, `:single`, `:mixed` and `:double`, CPU and ROCm (docs/dev/precision.md,
 T6.4). ex-gwf-u1disv-x and ex-gwf-disvmesh need XT3D (T6.5).
 
 T6.1 adds convertible cells: ex-gwf-twri01, ex-gwf-bcf2ss-p01a, ex-gwf-bump-p01b,
@@ -113,6 +113,6 @@ ex-gwf-nwt-p02b (Tier 3), ex-gwf-advtidal, ex-gwf-maw-p03a, ex-gwf-maw-p03c (Tie
 convertible layers), ex-gwf-rad-disu (DISU, convertible storage; AMG) and the synthetic
 test/models/wetdry, disu_staggered and afr (mf6 at test time), in the universal residual
 test, the libmf6 oracle and the run parity test, `:single`, `:mixed` and `:double`, CPU and
-ROCm (docs/precision.md, T6.1, with two documented per-example criteria). Left out of the
+ROCm (docs/dev/precision.md, T6.1, with two documented per-example criteria). Left out of the
 convertible examples: the Tier 4 examples (NEWTON, T6.2); OBS6 output of advtidal,
 maw-p03c and rad-disu is not written (T6.7).

@@ -1,6 +1,6 @@
 # Phase 6: generic MF6 GWF (Milestone C)
 
-Task cards for this phase of [PLAN.md](../../PLAN.md). Read PLAN.md sections 1–4 and 6 for the goals, conventions, architecture and validation rules these cards refer to.
+Task cards for this phase of [PLAN.md](../../../PLAN.md). Read PLAN.md sections 1–4 and 6 for the goals, conventions, architecture and validation rules these cards refer to.
 
 Size: S ≈ < 1 day of agent work, M ≈ 1–3 days, L ≈ > 3 days.
 `‖` marks cards that can run in parallel with their siblings.
@@ -20,8 +20,8 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
   `reference/runs/<example>/tight/`, in `:single`, `:mixed` and `:double`, with the
   default preconditioner, on CPU and rocm. If `-gr` is too slow for the default CPU
   suite, make it opt-out like hwell-a (`MFGPU_TEST_HWELL`). Add the measured numbers to
-  `docs/precision.md` and both examples to "Validated models" in
-  `docs/support_matrix.md`.
+  `docs/dev/precision.md` and both examples to "Validated models" in
+  `docs/dev/support_matrix.md`.
 - From the T5.3 report: T5.3 (merged first) and this card both changed the Float32
   convergence test in `src/solver/picard.jl` for the same stall (a converged state whose
   first inner correction is above the fixed 1e-6 m INNER_DVCLOSE floor). T5.3 raises
@@ -99,7 +99,7 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
   `COMPLEXITY MODERATE`/`COMPLEX`, deferred from T2.8), and `NEWTON
   UNDER_RELAXATION`.
 - Done when: T6.2a: the coupling_rde COMPLEX run backtracks where MF6 does (MF6: in 3
-  of 125 outer iterations, `docs/precision.md`), the warning is gone, and the run
+  of 125 outer iterations, `docs/dev/precision.md`), the warning is gone, and the run
   parity tests still pass. T6.2: the Tier 4 examples pass parity.
 
 **T6.3 Time series and time-array series (M) ‖ (done 2026-11-16)**
@@ -151,7 +151,7 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
   the host every step, and `move_to_highest_active!` restages RCH/EVT when IBOUND
   changes: both overwrite device-only BOUND writes (`device_bound!`); needs a partial
   restage. (3) The `:single` cell-by-cell budgets of advtidal, maw-p03c and rad-disu
-  are not verified (`docs/precision.md`). (4) Cell-conversion messages are not written
+  are not verified (`docs/dev/precision.md`). (4) Cell-conversion messages are not written
   to the listing.
 - Done when: observation files of advtidal, fhb and rad-disu match within
   tolerance.

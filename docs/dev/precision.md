@@ -157,7 +157,7 @@ the steps (MF6 with ILU0, ours with Jacobi until Phase 4).
 The under-relaxation variants run with OUTER_DVCLOSE 1e-9, INNER_DVCLOSE 1e-11 and
 INNER_RCLOSE 1e-9; their `:double` outer counts equal MF6's within one iteration.
 The inner counts reflect Jacobi vs ILU0 and the relative denominator guard of the Krylov
-solvers (`_safe_div`, docs/mf6_notes.md): with MF6's absolute `DPREC` guard the
+solvers (`_safe_div`, docs/dev/mf6_notes.md): with MF6's absolute `DPREC` guard the
 correction solves stalled at |r| ~ 1e-8 and hit INNER_MAXIMUM every outer iteration
 (hanir `:double` 16/14402, coupling_rde 226/215792; MF6's own 107439 inner iterations on
 coupling_rde show the same stall). Columns other than `:single` vs `:double` were
@@ -227,7 +227,7 @@ tolerances.
 ## Synthetic coupling models (T3.4)
 
 Parity, device memory per preset and precision, and the `:single` BiCGSTAB + Jacobi
-divergence on the synthetic models: docs/scaling.md. The section 4 thresholds hold
+divergence on the synthetic models: docs/dev/scaling.md. The section 4 thresholds hold
 unchanged (`:single` tiny 1.7e-4 m, indus 1.0e-4 m; pd <= 2.7e-3 %).
 
 ## `:mixed` preset and production default (T4.4)
@@ -627,7 +627,7 @@ device as `T(h − r)`, as a constant head does. ex-gwf-fhb (3×10 cells, 20 ste
 heads and WEL rates from LINEAREND series) replaces the `fhb_const` stand-in of the
 tables above (the T2.x rows are kept as measured then); its reference is the
 tight-relative MF6 run (the tight run does not converge in MF6). test/models/ts_tas
-(5×10 cells, 15 steps; every TS6/TAS6 form, see docs/support_matrix.md) is run with mf6
+(5×10 cells, 15 steps; every TS6/TAS6 form, see docs/dev/support_matrix.md) is run with mf6
 at test time.
 
 **Universal residual and oracle** (CPU and ROCm bitwise identical): max |res| / max
@@ -808,7 +808,7 @@ MF6's tight-relative reference into 6.0e-6 × total in. The heads agree to 2.5e-
 
 **Float32 STO-SY.** MF6's `rho2·thk·snold − rho2·thk·snnew` cancels in Float32 when the
 saturations are near 1 (rad-disu: rates quantised to 4, 8, 64, 512 ft³/d); the engine uses
-the equivalent `rho2·(clamp(hold) − clamp(h))` (docs/mf6_notes.md).
+the equivalent `rho2·(clamp(hold) − clamp(h))` (docs/dev/mf6_notes.md).
 
 **Float32 rclose floor with convertible cells.** The floor `eps32·max Σ|terms|` was taken
 from the first formulation of a step (T2.8). With convertible cells the terms grow as cells

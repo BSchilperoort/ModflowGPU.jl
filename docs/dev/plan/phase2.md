@@ -1,6 +1,6 @@
 # Phase 2: CPU engine for confined models (KA kernels on the CPU backend)
 
-Task cards for this phase of [PLAN.md](../../PLAN.md). Read PLAN.md sections 1–4 and 6 for the goals, conventions, architecture and validation rules these cards refer to.
+Task cards for this phase of [PLAN.md](../../../PLAN.md). Read PLAN.md sections 1–4 and 6 for the goals, conventions, architecture and validation rules these cards refer to.
 
 Size: S ≈ < 1 day of agent work, M ≈ 1–3 days, L ≈ > 3 days.
 `‖` marks cards that can run in parallel with their siblings.
@@ -53,7 +53,7 @@ the same code on the GPU.
   array input, `FIXED_CELL`/highest-active cell), and GHB.
 - **CHD:** find out exactly how MF6 ≥ 6.4 treats constant-head nodes in the
   system (ibound < 0, row replacement, how their flows are computed in `cq`) and
-  replicate it. Write it down in `docs/mf6_notes.md`.
+  replicate it. Write it down in `docs/dev/mf6_notes.md`.
 - Done when: unit tests per package pass, and the toth/hanic residual test
   passes with CHD/WEL.
 
@@ -125,7 +125,7 @@ the same code on the GPU.
   (`backtracking_number > 0`), so tests on such models may differ from MF6
   until T6.2. Log a warning when an input would backtrack, and record any such
   difference (and whether MF6's run actually backtracked) in the test and
-  `docs/precision.md` rather than failing on it. Also conversion of offsets to
+  `docs/dev/precision.md` rather than failing on it. Also conversion of offsets to
   absolute Float64 heads on the host for all output,
   `src/budget.jl` (FLOW-JA-FACE, per-package in/out, storage, percent
   discrepancy; CHD as in `calc_chd_rate`: the listing's CHD in/out is the
@@ -137,7 +137,7 @@ the same code on the GPU.
   (pick and document the threshold); re-measure toth/hwell-a `:single` residuals.
   From the T2.6 review: call `apply_period!` once per period, and remove the duplicate
   `dev` helper in `src/gwf/npf.jl` (use `_device_copy`).
-- Also deliver `docs/precision.md`: the Float32 closures (section 3.7), and the
+- Also deliver `docs/dev/precision.md`: the Float32 closures (section 3.7), and the
   measured `:single` vs `:double` and `:single` vs MF6 differences on every
   parity model. These confirm or revise the `:single` thresholds of section 4.
 - Done when: Tier 0 examples and the small synthetic coupling model reproduce MF6

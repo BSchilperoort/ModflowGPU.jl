@@ -47,7 +47,7 @@ const PRECONDITIONERS = (:jacobi, :chebyshev, :mc_sgs, :mc_ilu0, :amg)
 What `preconditioner = :auto` (the default of `ModflowGPU.run`, `initialize` and
 `KrylovSettings(ims)`) selects: `:mc_ilu0`, the fastest preconditioner in the T4.4
 benchmark on every model, precision and backend (steady state and transient steps;
-docs/precision.md).
+docs/dev/precision.md).
 """
 const DEFAULT_PRECONDITIONER = :mc_ilu0
 

@@ -326,7 +326,7 @@ module SyntheticModels
     under-relaxation (theta 0.9, kappa 1e-4, gamma 0: COMPLEXITY MODERATE's values; without
     it the Picard iterations of the steady state cycle between DRN/EVT on/off states). CG,
     not ModflowCoupling's BiCGSTAB: the matrix is symmetric, and BiCGSTAB with the Jacobi
-    preconditioner diverges in `:single` in the steady state (docs/scaling.md);
+    preconditioner diverges in `:single` in the steady state (docs/dev/scaling.md);
     `:production`: ModflowCoupling's settings (5 m, 5 m, 10 m³/d STRICT, 200/500 iterations,
     BiCGSTAB). `settings` override either.
     """
