@@ -139,6 +139,9 @@ CG-compatible boundaries the matrix is symmetric, so preconditioned CG applies.
   global mGV routing parameters with
   [mGV-input-data](https://github.com/SWIFT-WUR/mGV-input-data). Only T5.5a/T5.5b use
   them; tests keep using the synthetic models of T3.4.
+- **User docs:** a card that changes user-visible behaviour (a new package or option, a changed
+  keyword, a new address) updates the matching page under `docs/src/` in the same branch; the
+  reviewer checks it. `docs/make.jl` must still build without warnings.
 - **Git:** one local branch per card, `T<id>-<short-name>`, branched from
   `main`. No GitHub PRs and no pushed card branches. After an independent
   review the branch is merged into `main` with `git merge --no-ff`, with the

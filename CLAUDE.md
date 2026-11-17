@@ -58,6 +58,9 @@ above works without extra setup. CI (`.github/workflows/`) runs only the CPU tes
   since T5.0, PLAN.md decision 7). mGV (a package with GPU weak dependencies) requires
   KA 0.10.7 and AMDGPU 2.11, and Milestone B loads both in one environment. KA 0.9 is no
   longer supported. See `docs/dev/compat.md` (e.g. `CPU()` is `POCLBackend` in KA 0.10).
+- **User docs:** a card that changes user-visible behaviour (a new package or option, a changed
+  keyword, a new address) updates the matching page under `docs/src/` in the same branch
+  (build: `julia --project=docs docs/make.jl`; must have no warnings). The reviewer checks it.
 
 ## Float32 and Float64 (PLAN.md section 3.7)
 
