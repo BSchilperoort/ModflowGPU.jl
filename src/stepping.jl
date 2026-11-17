@@ -21,8 +21,8 @@
 #   - writes into a writable mirror (X, BOUND) are sent to the device at the start of
 #     `prepare_time_step` and of `prepare_solve` (when the mirror differs from what was
 #     last synchronised), through the same conversion as period data (`set_bound!`);
-#   - every mirror is refreshed from the engine at the end of `initialize`,
-#     `prepare_time_step`, `prepare_solve` and `finalize_solve` (so X during the outer
+#   - a mirror is filled when `get_value_ptr` creates it, and refreshed from the engine
+#     at the end of `prepare_time_step`, `prepare_solve` and `finalize_solve` (so X during the outer
 #     iterations is the X at the start of the step; read it with `get_value`). BOUND and
 #     NODELIST mirrors are versioned (T4.6): they are copied only when the engine value
 #     changed (new period data, a write) or, in `finalize_solve`, when the mirror differs.
@@ -728,8 +728,8 @@ units), indices Int32; BOUND is `(ncol, maxbound)`, with the values before the M
 auxiliary variable is applied.
 
 The same array is returned on every call and stays valid until
-[`finalize_simulation`](@ref). It is a copy of the engine data, refreshed at the end of
-[`initialize`](@ref), [`prepare_time_step`](@ref), [`prepare_solve`](@ref) and
+[`finalize_simulation`](@ref). It is a copy of the engine data, filled when it is created
+and refreshed at the end of [`prepare_time_step`](@ref), [`prepare_solve`](@ref) and
 [`finalize_solve`](@ref). Writes into the mirror of `X` or `BOUND` are sent to the device
 at the next `prepare_time_step` or `prepare_solve`; writes between `prepare_solve` and
 `finalize_solve` are discarded with a warning (use [`set_value`](@ref) there).

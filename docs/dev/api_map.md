@@ -395,7 +395,10 @@ it. Underscore-prefixed helpers are omitted.
   `set_value` (X, BOUND). Mirror sync rules in the file header; BOUND and NODELIST
   mirrors are versioned (T4.6: copied only when the engine values changed, dirty check by
   memcmp). T5.2: device BOUND writes between `prepare_time_step` and `prepare_solve` (the
-  contract ModflowCoupling's device-resident coupling uses; header of the file). Tests: stepping.
+  contract ModflowCoupling's device-resident coupling uses; header of the file). Tests: stepping
+  (T8.5: "addresses documented" checks that `var_addresses` of a model with every stress
+  package matches the address table of `docs/src/coupling/stepping.md`; a new address
+  needs a row there).
 - **bmi.jl** (T3.3): BasicModelInterface methods on `Simulation` (`BMI.initialize`,
   `update`, `update_until`, time, variables, `get_value(_ptr)`, `set_value(_at_indices)`,
   grid 1 = model grid). Tests: stepping.
