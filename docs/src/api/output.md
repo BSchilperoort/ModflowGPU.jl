@@ -5,10 +5,12 @@ CurrentModule = ModflowGPU
 DocTestSetup = :(using ModflowGPU)
 ```
 
-ModflowGPU writes the same output files as MF6: the head file (`.hds`), the budget file
-(`.cbc`), the binary grid file (`.dis.grb` and the like) and the model listing file
-(`.lst`). The readers on this page read these files from ModflowGPU and from MF6 alike,
-so they can also be used to compare the two. The binary files can be read by
+ModflowGPU writes the head file (`.hds`), the budget file (`.cbc`) and the model listing
+file (`.lst`) in MF6's formats. It does not write the binary grid file (`.dis.grb` and
+the like), but [`read_grb`](@ref) reads MF6's (see
+[Differences from MODFLOW 6](../compatibility/differences.md)). The readers on this page
+read these files from ModflowGPU and from MF6 alike, so they can also be used to compare
+the two. The binary files can be read by
 [FloPy](https://github.com/modflowpy/flopy) as well.
 
 Head and budget files are indexed when opened (the record headers only); the data of a

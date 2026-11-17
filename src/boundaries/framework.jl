@@ -772,7 +772,8 @@ with `bound_user!`): apply the MULTIPLIER aux variable of the PERIOD block in fo
 convert the head-like columns to offsets from `r`, exactly as `apply_period!` does for
 period data (host, Float64), then cast to `T` and copy `bound` to the device (one fused
 pass into the staging buffer and one copy). Records are not checked (`riv_ck` etc. run in
-`bnd_rp` only, as in MF6) and are not moved (RCH/EVT keep their cells).
+`apply_period!` only; MF6 also runs them in every `gwf_ad`) and are not moved (RCH/EVT
+keep their cells).
 """
 function set_bound!(pkg::BoundaryPackage, r::AbstractVector{Float64})
     pkg.user_stale = false

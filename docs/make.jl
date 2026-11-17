@@ -4,6 +4,9 @@
 using Documenter
 using ModflowGPU
 
+# Tables of the MODFLOW 6 compatibility pages (Main.CompatTables, used by their @eval blocks).
+include(joinpath(@__DIR__, "compat_tables.jl"))
+
 DocMeta.setdocmeta!(ModflowGPU, :DocTestSetup, :(using ModflowGPU); recursive = true)
 
 makedocs(;
