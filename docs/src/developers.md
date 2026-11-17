@@ -1,0 +1,35 @@
+# For developers
+
+This section is for people who change ModflowGPU. The developer material is not part of
+the manual; it lives in the repository.
+
+- [PLAN.md](https://github.com/BSchilperoort/ModflowGPU.jl/blob/main/PLAN.md): goals, architecture, conventions and the roadmap.
+- [CLAUDE.md](https://github.com/BSchilperoort/ModflowGPU.jl/blob/main/CLAUDE.md): working rules for agents and contributors (git workflow,
+  precision rules, tests).
+- [docs/dev/](https://github.com/BSchilperoort/ModflowGPU.jl/tree/main/docs/dev): developer notes. Start with
+  [api_map.md](https://github.com/BSchilperoort/ModflowGPU.jl/blob/main/docs/dev/api_map.md) (map of `src/`),
+  [support_matrix.md](https://github.com/BSchilperoort/ModflowGPU.jl/blob/main/docs/dev/support_matrix.md) (what is supported, card by card),
+  [mf6_notes.md](https://github.com/BSchilperoort/ModflowGPU.jl/blob/main/docs/dev/mf6_notes.md) (how MODFLOW 6 behaviour is mapped),
+  [precision.md](https://github.com/BSchilperoort/ModflowGPU.jl/blob/main/docs/dev/precision.md) and [scaling.md](https://github.com/BSchilperoort/ModflowGPU.jl/blob/main/docs/dev/scaling.md).
+- [docs/dev/plan/](https://github.com/BSchilperoort/ModflowGPU.jl/tree/main/docs/dev/plan): the task cards, one file per phase.
+- [benchmark/results/](https://github.com/BSchilperoort/ModflowGPU.jl/tree/main/benchmark/results): committed benchmark results.
+
+## Running the tests
+
+```sh
+julia --project -e 'using Pkg; Pkg.test()'                    # CPU tests (what CI runs)
+MFGPU_TEST_BACKEND=rocm julia --project=test test/runtests.jl # GPU tests, on a machine with a GPU
+MFGPU_TEST_GROUPS=connectivity,npf julia --project=test test/runtests.jl # selected groups
+julia --project=@runic -m Runic --check .                     # formatting
+```
+
+## Building this manual
+
+```sh
+julia --project=docs -e 'using Pkg; Pkg.instantiate()'
+julia --project=docs docs/make.jl
+```
+
+The site is written to `docs/build/`. Warnings fail the build. A change that alters what
+users see (a new package or option, a changed keyword, a new address) should update the
+matching page under `docs/src/` in the same change.
