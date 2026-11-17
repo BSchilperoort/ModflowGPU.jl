@@ -12,7 +12,7 @@ it. Underscore-prefixed helpers are omitted.
   precision, stepping, builder, output, backend authors). Exported: the user-facing names
   (`run_simulation`, `finalize_simulation`, the stepping calls, builders, readers);
   `public` only: `run` and `finalize` (aliases of `run_simulation` and
-  `finalize_simulation`, same function objects; Base clash), `solve` (CommonSolve clash),
+  `finalize_simulation`, same function objects; Base clash), `solve` (CommonSolve clash), `update` (CUDA.jl exports `update`),
   `device_bound!`, the error and component types (`MF6InputError`, `HeadStep`, ...), the
   backend hooks (`register_backend!`, `pin_memory!`, `free_memory!`, `host_mapped_zeros`,
   `free_device_arrays!`). Every public name has a docstring and is listed in exactly one

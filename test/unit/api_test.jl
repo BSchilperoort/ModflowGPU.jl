@@ -43,7 +43,8 @@ end
         # finalize_simulation instead of run and finalize).
         @test isempty([n for n in exported if n !== :ModflowGPU && Base.isexported(Base, n)])
         @test :run_simulation in exported && :finalize_simulation in exported
-        @test !(:run in exported) && !(:finalize in exported) && !(:solve in exported)
+        @test !(:run in exported) && !(:finalize in exported) && !(:solve in exported) &&
+            !(:update in exported)   # CUDA.jl exports `update`
     end
 
     @testset "Aliases" begin

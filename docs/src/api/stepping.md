@@ -7,7 +7,7 @@ DocTestSetup = :(using ModflowGPU)
 
 The stepping API runs a simulation one time step at a time, as libmf6's API (XMI) does,
 so that another model can read and change its variables between steps.
-[`initialize`](@ref) builds the model; [`update`](@ref) runs one time step, or the calls
+[`initialize`](@ref) builds the model; [`ModflowGPU.update`](@ref) runs one time step, or the calls
 it is made of ([`prepare_time_step`](@ref), then [`do_time_step`](@ref) or
 [`prepare_solve`](@ref), [`ModflowGPU.solve`](@ref) and [`finalize_solve`](@ref), then
 [`finalize_time_step`](@ref)); [`finalize_simulation`](@ref) ends it. Variables are named
@@ -38,7 +38,7 @@ ModflowGPU.solve
 finalize_solve
 finalize_time_step
 do_time_step
-update
+ModflowGPU.update
 finalize_simulation
 ModflowGPU.finalize
 get_value

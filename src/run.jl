@@ -107,7 +107,8 @@ anything runs.
 # Example
 ```julia
 using ModflowGPU
-result = run_simulation("path/to/simulation"; backend = select_backend("auto"))
+backend = select_backend("auto")
+result = run_simulation("path/to/simulation"; backend)
 result.converged
 
 # on a GPU without Float64, or to save memory:

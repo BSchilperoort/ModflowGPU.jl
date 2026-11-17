@@ -159,7 +159,7 @@ files (libmf6's `initialize`).
 The keywords are those of [`run_simulation`](@ref): `backend`, `precision`, `outdir`,
 `closures`, `write_output`, `preconditioner` and `precond_options`.
 
-Before the first [`prepare_time_step`](@ref) (or [`update`](@ref)) the heads are the
+Before the first [`prepare_time_step`](@ref) (or [`ModflowGPU.update`](@ref)) the heads are the
 starting heads and no period data is applied. End with [`finalize_simulation`](@ref),
 which closes the output files and frees the device memory.
 
@@ -170,7 +170,7 @@ or unsupported input (also for a simulation with more than one model).
 ```julia
 sim = initialize("path/to/simulation"; backend = select_backend("auto"))
 while get_current_time(sim) < get_end_time(sim)
-    update(sim) || error("time step did not converge")
+    ModflowGPU.update(sim) || error("time step did not converge")
 end
 finalize_simulation(sim)
 ```
@@ -225,7 +225,7 @@ Allowed after [`initialize`](@ref) and after [`finalize_time_step`](@ref); throw
 `ArgumentError` otherwise, or when the simulation has ended.
 
 # Example
-One time step, call by call (what [`update`](@ref) does):
+One time step, call by call (what [`ModflowGPU.update`](@ref) does):
 ```julia
 prepare_time_step(sim)
 prepare_solve(sim)
@@ -360,12 +360,15 @@ function do_time_step(s::Simulation)
 end
 
 """
-    update(sim::Simulation) -> Bool
+    ModflowGPU.update(sim::Simulation) -> Bool
 
 Run one full time step: [`prepare_time_step`](@ref), [`do_time_step`](@ref),
 [`finalize_time_step`](@ref) (libmf6's `update`). Returns the result of
 `finalize_time_step`: `false` when the step did not converge and the simulation has no
 CONTINUE option.
+
+Not exported, because CUDA.jl exports an `update` (for CUDA graphs) and
+`using CUDA, ModflowGPU` would make `update` ambiguous: write `ModflowGPU.update`.
 
 This is not `BasicModelInterface.update`, which throws a [`ConvergenceError`](@ref) in
 that case and returns `nothing`.
@@ -373,7 +376,7 @@ that case and returns `nothing`.
 # Example
 ```julia
 sim = initialize("path/to/simulation")
-update(sim)            # the first time step
+ModflowGPU.update(sim) # the first time step
 get_current_time(sim)  # the time at its end
 ```
 """
@@ -403,7 +406,7 @@ nothing.
 # Example
 ```julia
 sim = initialize("path/to/simulation")
-update(sim)
+ModflowGPU.update(sim)
 finalize_simulation(sim)
 ```
 """
@@ -545,7 +548,7 @@ time units; 0 before the first [`prepare_time_step`](@ref)).
 ```julia
 sim = initialize("path/to/simulation")
 get_current_time(sim)   # 0.0
-update(sim)
+ModflowGPU.update(sim)
 get_current_time(sim)   # the length of the first time step
 ```
 """
@@ -567,7 +570,7 @@ the model's time units.
 # Example
 ```julia
 while get_current_time(sim) < get_end_time(sim)
-    update(sim)
+    ModflowGPU.update(sim)
 end
 ```
 """
@@ -731,8 +734,8 @@ The same array is returned on every call and stays valid until
 at the next `prepare_time_step` or `prepare_solve`; writes between `prepare_solve` and
 `finalize_solve` are discarded with a warning (use [`set_value`](@ref) there).
 
-With `device = true`: the engine array itself, on the device, in the precision `T` of the
-simulation, with head-like values as offsets from `"<model>/HREF"` and BOUND with the
+With `device = true`: the engine array itself, on the device (values in the precision `T`
+of the simulation, indices Int32), with head-like values as offsets from `"<model>/HREF"` and BOUND with the
 multiplier applied; only for `X`, `XOLD`, `HREF`, `IBOUND`, `BOUND`, `NODELIST` and
 `SIMVALS` (`HREF` is the host Float64 vector of the references). No mirror is made.
 Write a device BOUND only through [`ModflowGPU.device_bound!`](@ref).

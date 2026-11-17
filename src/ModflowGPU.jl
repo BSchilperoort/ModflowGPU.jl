@@ -10,7 +10,7 @@ ModflowGPU`; also CUDA, oneAPI, Metal, OpenCL). The exported names cover:
 
 - running a simulation: [`run_simulation`](@ref), [`load_simulation`](@ref);
 - backends and precision: [`select_backend`](@ref), [`resolve_precision`](@ref);
-- the stepping API: [`initialize`](@ref), [`update`](@ref),
+- the stepping API: [`initialize`](@ref), [`do_time_step`](@ref),
   [`finalize_simulation`](@ref), [`get_value`](@ref), [`set_value`](@ref), ...;
 - building models in Julia: [`build_dis`](@ref), ..., [`build_simulation`](@ref),
   [`write_simulation`](@ref);
@@ -18,7 +18,7 @@ ModflowGPU`; also CUDA, oneAPI, Metal, OpenCL). The exported names cover:
   [`read_grb`](@ref), [`read_listing_budgets`](@ref).
 
 Other documented names are public but not exported, because their names are generic
-(`ModflowGPU.run`, `ModflowGPU.finalize`, `ModflowGPU.solve`) or they are for backend
+(`ModflowGPU.run`, `ModflowGPU.finalize`, `ModflowGPU.solve`, `ModflowGPU.update`) or they are for backend
 authors (`ModflowGPU.register_backend!`). BMI is implemented as methods of
 BasicModelInterface's functions (`BasicModelInterface.update(sim)`).
 
@@ -33,7 +33,7 @@ module ModflowGPU
 
 # Public API (docs/src/api/). Exported: the names a user calls. `public` (Julia >= 1.11;
 # the package needs 1.12): documented names that stay qualified, because they clash with
-# Base (`run`, `finalize`) or CommonSolve (`solve`), are exception or component types of
+# Base (`run`, `finalize`), CommonSolve (`solve`) or CUDA (`update`), are exception or component types of
 # the exported ones, or are extension hooks for backend authors. test/unit/api_test.jl
 # checks that this list matches the @docs blocks of docs/src/api/.
 
@@ -46,10 +46,10 @@ export select_backend, backend_options, backend_name, supports_float64, resolve_
 public PRECISION_PRESETS
 # Stepping
 export Simulation, StepResult, initialize, prepare_time_step, prepare_solve, finalize_solve,
-    finalize_time_step, do_time_step, update, finalize_simulation, get_value, get_value_ptr,
+    finalize_time_step, do_time_step, finalize_simulation, get_value, get_value_ptr,
     set_value, get_var_address, var_addresses, input_addresses, get_current_time,
     get_start_time, get_end_time, get_time_step
-public solve, finalize, device_bound!
+public solve, update, finalize, device_bound!
 # Builder
 export SimulationSpec, build_dis, build_npf, build_ic, build_sto, oc_record, build_oc,
     build_boundary, build_array_boundary, build_model, build_tdis, build_ims, build_simulation,
