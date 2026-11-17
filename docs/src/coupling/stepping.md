@@ -94,6 +94,9 @@ What is different from libmf6:
 - Only one GWF model with one IMS solution, and the addresses below. There are no
   exchanges and no other model types.
 - `prepare_time_step` cannot change the step length (no adaptive time stepping).
+- Boundary values written through the API are not checked each time step as in MF6.
+  [Differences from MODFLOW 6](../compatibility/differences.md) lists this and the
+  other differences in behaviour.
 
 ## Addresses
 
