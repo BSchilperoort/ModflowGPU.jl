@@ -519,7 +519,7 @@ marked; their merge commits on `main` hold the card reports.
   - T8.3 Installation, getting started and GPU guide (done)
   - T8.4 MF6 compatibility: packages and results (done)
   - T8.5 Stepping API and BMI guide (done)
-  - T8.6 Example gallery: infrastructure and first examples
+  - T8.6 Example gallery: infrastructure and first examples (done)
   - T8.7 Remaining gallery examples
   - T8.8 Performance page (done)
   - T8.9 BMI conformance with the specification
