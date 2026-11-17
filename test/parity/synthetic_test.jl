@@ -11,7 +11,7 @@ isdefined(@__MODULE__, :SyntheticModels) || include(joinpath(@__DIR__, "..", "..
     if !isfile(RUN_MF6)
         @info "Skipping the synthetic model parity test: mf6 not found at $RUN_MF6 (set REFERENCE_DIR or MF6)"
     else
-        for preset in split(get(ENV, "MFGPU_TEST_SYNTHETIC", "tiny,indus"), ',')
+        for preset in split(get(ENV, "MFGPU_TEST_SYNTHETIC", join(SYNTHETIC_PARITY_MODELS, ',')), ',')
             @testset "$preset" begin
                 mktempdir() do dir
                     SyntheticModels.write_synthetic(dir, Symbol(preset))
