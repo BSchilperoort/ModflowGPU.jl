@@ -302,3 +302,35 @@ end
     @test t.counts[:budget] == length(r.steps)
     @test all(k -> haskey(t.counts, k), (:precond_setup, :update_reduce, :vector_update, :outer_reduction, :period_data, :flows))
 end
+
+# The address table of the user manual (docs/src/coupling/stepping.md) lists every address
+# of `var_addresses` of a model with every supported stress package (list and array
+# input), with `<model>` and `<package>` for the names, and no address that does not exist.
+@testset "addresses documented" begin
+    dis = build_dis(; delr = 100.0, delc = 100.0, top = 0.0, botm = fill(-10.0, 4, 3, 1))
+    cell = [(1, 2, 2)]
+    list(kind, values) = build_boundary(kind, dis; periods = [1 => (; cells = cell, values)])
+    bs = [
+        list(:CHD, [0.0]), list(:WEL, [-1.0]), list(:RCH, [1.0e-3]), list(:GHB, [-1.0 1.0]),
+        list(:RIV, [-1.0 1.0 -2.0]), list(:DRN, [-1.0 1.0]), list(:EVT, [0.0 1.0e-3 1.0]),
+        build_array_boundary(:RCH, dis; periods = [1 => (; recharge = 1.0e-4)]),
+        build_array_boundary(:EVT, dis; periods = [1 => (; surface = 0.0, rate = 1.0e-3, depth = 1.0)]),
+    ]
+    @test Set(ModflowGPU.boundary_kind.(bs)) == Set(ModflowGPU.BOUNDARY_KINDS)
+    gwf = build_model("all"; dis, npf = build_npf(dis; k = 1.0), ic = build_ic(dis; strt = 0.0), boundaries = bs)
+    s = initialize(build_simulation(gwf; tdis = build_tdis(; perlen = 1.0)); backend = TEST_BACKEND, write_output = false)
+    pkgs = [uppercase(b.name) for b in gwf.boundaries]
+    function generic(a)
+        a = replace(a, r"^ALL/" => "<model>/")
+        for p in pkgs
+            a = replace(a, "<model>/$p/" => "<model>/<package>/")
+        end
+        return a
+    end
+    addresses = Set(generic.(var_addresses(s)))
+    finalize_simulation(s)
+    page = read(joinpath(pkgdir(ModflowGPU), "docs", "src", "coupling", "stepping.md"), String)
+    documented = Set(m[1] for m in eachmatch(r"`((?:<model>|SLN_1|TDIS)(?:/(?:<package>|[A-Z0-9_-]+))+)`", page))
+    @test isempty(setdiff(addresses, documented))   # an address missing from the page
+    @test isempty(setdiff(documented, addresses))   # a documented address that does not exist
+end
