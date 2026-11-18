@@ -408,6 +408,15 @@ it. Underscore-prefixed helpers are omitted.
   records / BOUND as vectors; coordinates with XORIGIN, YORIGIN, ANGROT; unstructured
   faces and edges from the DISV/DISU vertices), `_bmi_unsupported` (the ArgumentError of
   unsupported functions). Tests: bmi (conformance on DIS, DISV, DISU), stepping.
+- **mf6model.jl** (T8.10): `MF6Model`, libmf6's BMI/XMI as ModflowInterface.jl wraps it
+  (`ModflowModel`), a handle (`source`, `settings`, `simulation`, `last_error`, `arrays`)
+  around a `Simulation`; every call forwards to the stepping API (`_mf6call` keeps the
+  error message for `get_last_bmi_error`). `_mf6_ptr`: host mirrors with libmf6 shapes
+  (0-dim scalars, length-1 NODEUSER/NODEREDUCED dummies); grid 1 per mf6bmiGrid.f90
+  (`_mf6_dis(m, f, grid, T)` = `confirm_grid_type`, failures throw); functions libmf6
+  lacks throw (`_mf6_not_libmf6`). Simulation's BMI (bmi.jl) is separate and unchanged.
+  Tests: bmi (`test/unit/mf6model_test.jl`: validation/bmi_script.jl on MF6Model and,
+  via validation/libmf6_bmi.jl, on libmf6 6.3.0 and 6.8.2).
 
 ## Test helpers (`test/`, always loaded)
 

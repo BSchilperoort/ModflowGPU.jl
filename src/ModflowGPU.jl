@@ -20,7 +20,8 @@ ModflowGPU`; also CUDA, oneAPI, Metal, OpenCL). The exported names cover:
 Other documented names are public but not exported, because their names are generic
 (`ModflowGPU.run`, `ModflowGPU.finalize`, `ModflowGPU.solve`, `ModflowGPU.update`) or they are for backend
 authors (`ModflowGPU.register_backend!`). BMI is implemented as methods of
-BasicModelInterface's functions (`BasicModelInterface.update(sim)`).
+BasicModelInterface's functions (`BasicModelInterface.update(sim)`), for [`Simulation`](@ref)
+(the BMI specification) and for [`MF6Model`](@ref) (libmf6's BMI, as ModflowInterface.jl).
 
 # Example
 ```julia
