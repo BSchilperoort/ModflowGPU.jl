@@ -523,6 +523,7 @@ marked; their merge commits on `main` hold the card reports.
   - T8.7 Remaining gallery examples
   - T8.8 Performance page (done)
   - T8.9 BMI conformance with the specification (done)
+  - T8.10 BMI as in MODFLOW 6 (libmf6 and ModflowInterface.jl)
 
 ---
 

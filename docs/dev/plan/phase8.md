@@ -346,10 +346,72 @@ examples/               # T8.6: Literate scripts, runnable on their own
   locally), every spec function is either conformant or listed on `bmi.md` with the
   reason, and the docs build without warnings.
 
+**T8.10 BMI as in MODFLOW 6 (libmf6 and ModflowInterface.jl) (M)**
+- Depends: T8.9. Added 2026-11-18 at the owner's request: the BMI must match MODFLOW 6's
+  own BMI, so that code written for libmf6 through
+  [ModflowInterface.jl](https://github.com/Deltares/ModflowInterface.jl/blob/main/src/ModflowInterface.jl)
+  runs on ModflowGPU by swapping the model type. T8.9 followed the generic BMI
+  specification instead and moved away from libmf6 in several places (grid ids, flat
+  `BOUND` pointer, cell-centre coordinates, units).
+- References, in this order: libmf6's behaviour (`reference/modflow6/srcbmi/mf6bmi.f90`,
+  `mf6bmiGrid.f90`, `mf6xmi.F90`) for what each function returns; ModflowInterface.jl
+  (main branch; fetch it into the scratchpad, do not add it as a dependency) for the Julia
+  signatures, argument types and return values. Where ModflowInterface.jl has a bug
+  (`get_start_time` calls libmf6 `get_current_time`, `get_time_step` calls
+  `get_end_time`), follow libmf6 and record it.
+- Deliver:
+  - A model handle used as in ModflowInterface.jl: `m = <Type>(path)` with `path` the
+    simulation directory or its `mfsim.nam` (uninitialised), then `BMI.initialize(m)`;
+    `BMI.initialize(m)` on an initialised model finalises and initialises again;
+    `BMI.initialize(::Type{<Type>})` uses `pwd()`. Engine settings (backend, precision,
+    preconditioner, closures, output) are keywords of the constructor. Decide whether
+    `<Type>` is `Simulation` or a new handle type (no exported name may clash, T8.2), and
+    keep `BMI.initialize(::Type, config_file)` from T8.9 only if it does not conflict.
+    `BMI.initialize`, `BMI.update` and `BMI.finalize` return the model, as in
+    ModflowInterface.jl.
+  - The libmf6 BMI functions with libmf6's results: time functions, component name
+    (libmf6 returns `MODFLOW 6`; decide and record), item counts and var names (libmf6
+    addresses), `get_var_type` (libmf6 type strings such as `DOUBLE (n)`, `INTEGER`), 
+    `get_var_itemsize`, `get_var_nbytes`, `get_var_grid` (the model's grid id for every
+    address of that model, as in `mf6bmiGrid.f90`), `get_value(m, name)` (copy) and
+    `get_value(m, name, dest)`, `get_value_ptr` with libmf6's array shapes in Julia
+    order (e.g. `BOUND` as a `(ncolbnd, nbound)` matrix, scalars as 0-dimensional
+    arrays) and memory that stays valid for the run, `set_value`, grid functions as in
+    `mf6bmiGrid.f90` (`get_grid_type` "rectilinear" for DIS and "unstructured" for
+    DISV/DISU; rank 2 when nlay is 1 else 3; shape from MSHAPE, returned as a reversed
+    Tuple by `get_grid_shape(m, grid)`; size; `get_grid_x`/`get_grid_y` as libmf6 —
+    for DIS the indices `0:ncol` and `0:nrow`, for DISV/DISU the vertex coordinates;
+    node count = number of vertices; face count, face nodes, nodes per face).
+  - The non-BMI functions of ModflowInterface.jl with the same names and signatures:
+    `get_last_bmi_error`, `get_var_rank`, `get_var_shape` (Julia order),
+    `prepare_time_step(m, dt)`, `do_time_step(m)`, `finalize_time_step(m)`,
+    `get_subcomponent_count(m)`, `prepare_solve(m, component_id = 1)`,
+    `solve(m, component_id = 1)::Bool`, `finalize_solve(m, component_id = 1)`,
+    `get_var_address(m, var_name, component_name; subcomponent_name = "")`. Reconcile
+    with the existing stepping API (T3.3, T8.2): same functions where possible, no
+    second implementation.
+  - Functions libmf6 does not implement (`update_until`, `get_var_units`,
+    `get_var_location`, `get_grid_z`, spacing, origin, edges, `*_at_indices`, ...):
+    behave as libmf6 does (an error), unless T8.9's implementation is consistent with the
+    libmf6 grid above and the owner keeps it; list each case in the card report.
+  - A test group (extend `bmi`) that runs the same script through ModflowInterface.jl's
+    call sequence on the MF6 examples that libmf6 can run (DIS, DISV, DISU), compares
+    every function's result with libmf6 itself where `Modflow6_jll` or the mf6 8.2
+    library from `validation/fetch_reference.sh` is available (skip with a message
+    otherwise), and checks the ModflowGPU-only results in `:single` and `:double`.
+  - Updated `docs/src/coupling/bmi.md` (the ModflowInterface.jl pattern, a side-by-side
+    table of the calls, differences from libmf6 that remain), `coupling/stepping.md` and
+    `compatibility/differences.md`; the T8.9 "Changes from earlier versions" note
+    revised.
+- Done when: a script written for ModflowInterface.jl runs unchanged on ModflowGPU except
+  for the type name and `using` line, every libmf6 BMI/XMI function returns what libmf6
+  returns on the test models (or a recorded, owner-approved difference), and the docs
+  build without warnings.
+
 ## Order
 
 T8.0, then T8.1. Then T8.2, T8.3, T8.4, T8.5 and T8.8 in parallel. T8.6 after T8.3; T8.7
-after T8.6. T8.9 after T8.5. The phase does not block or depend on the open Phase 6 and 7 cards; those
+after T8.6. T8.9 after T8.5; T8.10 after T8.9. The phase does not block or depend on the open Phase 6 and 7 cards; those
 cards update the manual as they merge (T8.1 rule).
 
 ## Out of scope for this phase
