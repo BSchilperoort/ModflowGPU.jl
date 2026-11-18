@@ -192,6 +192,13 @@ function initialize(
         throw(MF6UnsupportedError(sim.simdir, "unsupported: $(length(sim.models)) models and $(length(sim.exchanges)) exchanges (only one model is supported)"))
     spec = only(sim.models)
     ims = only(only(sim.solution_groups).solutions)
+    # NumericalSolution.f90 `sln_ar`: the Newton formulation (T6.2) gives a nonsymmetric matrix.
+    spec.newton && ims.linear_acceleration === :cg && throw(
+        MF6InputError(
+            ims.file, 0,
+            "MODEL **$(uppercase(spec.name))** PRODUCES AN ASYMMETRIC COEFFICIENT MATRIX, BUT THE CONJUGATE GRADIENT METHOD WAS SELECTED. USE BICGSTAB INSTEAD.",
+        ),
+    )
     T, Ts, Tp = resolve_precision(backend, precision)
     steps = time_steps(sim.tdis)
     m = GwfModel(backend, T, spec, nper(sim.tdis))

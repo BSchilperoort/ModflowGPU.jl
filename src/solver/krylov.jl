@@ -1007,6 +1007,16 @@ end
     end
 end
 
+# Restart after a breakdown (T6.2): the shadow residual becomes the current residual,
+# `dhat = r`; returns (r·r, 0, 0, 0), the new rho.
+@inline function _bcgs_restart(::Type{Ta}, n, dhat, r) where {Ta}
+    @inbounds begin
+        rn = r[n]
+        dhat[n] = rn
+        return (Ta(rn) * Ta(rn), zero(Ta), zero(Ta), zero(Ta))
+    end
+end
+
 @inline function _bcgs_true_residual(::Type{Ta}, n, r, dhat, x, b0, amat, ia, ja, rowfac, colfac) where {Ta}
     @inbounds begin
         rn = b0[n] - _op_row(n, amat, ia, ja, rowfac, colfac, x)
@@ -1213,9 +1223,12 @@ function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res, rf, cf) where {Ts}
     innerit = 0
     deltax = rmax = 0.0
     l2norm = l2norm0
+    dnorm = l2norm0  # |dhat|
+    restart = true
     for iiter in 1:itmax
         innerit += 1
-        beta = iiter == 1 ? 0.0 : (rho / rho0) * (alpha0 / omega0)
+        beta = restart ? 0.0 : (rho / rho0) * (alpha0 / omega0)
+        restart = false
         if jac
             @timed_section :vector_update _map!(backend, _bcgs_direction, n, s.p, s.phat, s.r, s.v, s.minv, Ts(beta), Ts(omega0))
         else
@@ -1263,6 +1276,19 @@ function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res, rf, cf) where {Ts}
         alpha0 = alpha
         omega0 = omega
         rho = rho_next
+        if abs(rho) <= eps(Ts) * dnorm * l2norm
+            # Breakdown (T6.2): `dhat·r` vanished at the rounding level of the vectors, e.g.
+            # after a first iteration from a residual that is nonzero in a few cells only
+            # (the first outer iteration of a Newton steady state with the red–black ILU0;
+            # ex-gwf-zaidel: 4e-33·|dhat|·|r|), and the next step length would be noise.
+            # Restart from the current iterate with the shadow residual `dhat = r` (MF6's
+            # ims_base_bcgs has no restart; its natural-order ILU0 does not break down there).
+            @timed_section :update_reduce _reduce_async!(red, backend, _bcgs_restart, _SUM4, n, s.dhat, s.r; post = _SetRho{1}(), sa, ss)
+            _sync(backend)
+            rho = _reduced(red)[1]
+            dnorm = sqrt(rho)
+            restart = true
+        end
     end
     return KrylovResult(icnvg == 1, innerit, _status(icnvg, innerit, st.maxiter), abs(deltax), abs(rmax), l2norm0, l2norm)
 end

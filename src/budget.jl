@@ -93,7 +93,7 @@ function calc_flows!(m::GwfModel)
         if boundary_kind(pkg) === :CHD
             calc_chd_rate!(pkg, m.flowja, csr.ia, csr.ja, m.ibound)
         elseif pkg.nbound > 0
-            formulate!(pkg, m.h, m.ibound, m.area; kind = record_kind(pkg, m.npf.cv))
+            formulate!(pkg, m.h, m.ibound, m.area; kind = record_kind(pkg, m.npf.cv; newton = m.newton))
             calc_simvals!(pkg, m.h, m.ibound)
             boundary_flowja_kernel!(backend, _WG)(m.flowja, csr.ia, pkg.simvals, pkg.nodeptr, pkg.noderec; ndrange = csr.nodes)
         end

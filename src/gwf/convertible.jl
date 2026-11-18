@@ -1,4 +1,5 @@
-# Convertible cells and wetting/drying, standard (non-Newton) formulation (T6.1).
+# Convertible cells and wetting/drying, standard formulation (T6.1), and the
+# Newton–Raphson formulation of the conductances (T6.2).
 #
 # Ports MF6 6.8.2:
 # - gwf-npf.f90 `cf_default_flow` / `sgwf_npf_thksat` (saturation per cell), `fc_default_flow`
@@ -15,6 +16,18 @@
 #
 # Confined models (every ICELLTYPE 0 after THICKSTRT) do not use any of this: their
 # `NpfModel.cv` is `nothing` and the kernels take the constant-`condsat` path.
+#
+# Newton–Raphson (T6.2; model NEWTON option; gwf-npf.f90 `sgwf_npf_thksat`, `fc_default_flow`,
+# `fn_default_flow`, `highest_cell_saturation`, `npf_nur`; GwfConductanceUtils.f90
+# `convertible_upstream`; SmoothingFunctions.f90 `sQuadraticSaturation`,
+# `sQuadraticSaturationDerivative`): the saturation is the quadratic smoothing with
+# SATOMEGA 1e-6 (`newton_saturation`), a horizontal conductance with a convertible cell is
+# `condsat` times the saturation of the upstream cell (the higher head; the higher-numbered
+# cell on a tie), vertical conductances are `condsat` (VARIABLECV, PERCHED and REWET are
+# errors with NEWTON), and no cell dries: MF6 skips `sgwf_npf_wetdry`. The Jacobian adds,
+# for a convertible upstream cell `u`, `condsat·S'(h_u)·(h_m − h_n)` to the entry of column
+# `u` in row `n` (diagonal or off-diagonal) and the matching `·h_u` to the right-hand side,
+# so the residual is that of the conductance formulation: `connection_terms` with `jac`.
 
 """
     ConvertibleNpf{T}
@@ -28,7 +41,10 @@ Device data of the saturation-dependent NPF conductances of a model with convert
 - per symmetric connection (`njas`): `condsat`, `Δr`, `hyl`/`hyh` (effective K of the
   lower/higher-numbered cell towards the other), `cl1`, `cl2`, `hwva`, and `ihcx` (`ihc`
   plus 4 when the bottom of the lower-numbered cell is above that of the other);
-- options: `ivarcv` (VARIABLECV), `idewatcv` (DEWATERED), `iperched` (PERCHED), `icellavg`.
+- options: `ivarcv` (VARIABLECV), `idewatcv` (DEWATERED), `iperched` (PERCHED), `icellavg`;
+  T6.2: `newton` (the model's NEWTON option: quadratic saturations, upstream conductances
+  and the Jacobian terms) and `ihighcellsat` (HIGHEST_CELL_SATURATION; `ihcx` bit 8: the
+  bottoms of the two cells differ by at least 0.01).
 
 Moved to a device with Adapt.
 """
@@ -50,6 +66,8 @@ struct ConvertibleNpf{T <: AbstractFloat, V <: AbstractVector{T}, VI <: Abstract
     idewatcv::Bool
     iperched::Bool
     icellavg::Int32
+    newton::Bool
+    ihighcellsat::Bool
 end
 
 Adapt.@adapt_structure ConvertibleNpf
@@ -57,7 +75,7 @@ Adapt.@adapt_structure ConvertibleNpf
 Base.eltype(::ConvertibleNpf{T}) where {T} = T
 
 # The ConvertibleNpf of a setup, or `nothing` for a confined model (or without options).
-function _convertible_npf(backend, ::Type{T}, s::NpfSetup, options, conn) where {T}
+function _convertible_npf(backend, ::Type{T}, s::NpfSetup, options, conn; newton::Bool = false) where {T}
     (isnothing(options) || isnothing(conn)) && return nothing
     p = s.properties
     all(==(0), p.icelltype) && return nothing
@@ -68,12 +86,14 @@ function _convertible_npf(backend, ::Type{T}, s::NpfSetup, options, conn) where 
         m = conn.ja[ii]
         m > n || continue
         j = conn.jas[ii]
-        ihcx[j] = conn.ihc[j] + (bot[n] > bot[m] ? 4 : 0)
+        # highest_cell_saturation: `abs(botm − botn) >= DEM2` (bit 8).
+        ihcx[j] = conn.ihc[j] + (bot[n] > bot[m] ? 4 : 0) + (abs(bot[m] - bot[n]) >= 1.0e-2 ? 8 : 0)
     end
     return ConvertibleNpf(
         dev(p.icelltype), dev(T.(top .- r)), dev(T.(bot .- r)), dev(T.(top .- bot)), dev(T.(p.sat0)),
         dev(T.(s.condsat)), dev(T.(s.Δr)), dev(T.(s.hyl)), dev(T.(s.hyh)), dev(T.(conn.cl1)), dev(T.(conn.cl2)),
-        dev(T.(conn.hwva)), dev(ihcx), options.variablecv, options.dewatered, options.perched, Int32(p.icellavg),
+        dev(T.(conn.hwva)), dev(ihcx), options.variablecv, options.dewatered, options.perched, Int32(p.icellavg), newton,
+        newton && options.highest_cell_saturation,
     )
 end
 
@@ -86,6 +106,46 @@ Saturated fraction of a convertible cell, standard formulation (gwf-npf.f90
 `botoff` from the same reference, `thk = top − bot`. Device-safe.
 """
 @inline thksat(h::T, topoff::T, botoff::T, thk::T) where {T} = h >= topoff ? one(T) : (h - botoff) / thk
+
+"""
+    newton_saturation(top, bot, x) -> y
+
+`sQuadraticSaturation(top, bot, x, eps = 1e-6)` (SmoothingFunctions.f90; SATOMEGA of the
+Newton formulation, gwf-npf.f90 `check_options`): 0 below `bot`, 1 above `top`, quadratic
+within `eps` of either end and linear (slope `1/(1 − eps)`) between; a step at `bot` when
+`top <= bot`. Offsets from one reference. Device-safe in the precision of the arguments.
+"""
+@inline function newton_saturation(top::T, bot::T, x::T) where {T}
+    teps = T(1.0e-6)
+    b = top - bot
+    if b > zero(T)
+        br = x < bot ? zero(T) : (x > top ? one(T) : (x - bot) / b)
+        av = one(T) / (one(T) - teps)
+        bri = one(T) - br
+        br < teps && return av * T(0.5) * (br * br) / teps
+        br < one(T) - teps && return av * br + T(0.5) * (one(T) - av)
+        br < one(T) && return one(T) - ((av * T(0.5) * (bri * bri)) / teps)
+        return one(T)
+    else
+        return x < bot ? zero(T) : one(T)
+    end
+end
+
+"""
+    newton_saturation_derivative(top, bot, x) -> dy/dx
+
+`sQuadraticSaturationDerivative(top, bot, x, eps = 1e-6)` (SmoothingFunctions.f90), the
+derivative of `newton_saturation` with respect to the head. Device-safe.
+"""
+@inline function newton_saturation_derivative(top::T, bot::T, x::T) where {T}
+    teps = T(1.0e-6)
+    b = top - bot
+    br = x < bot ? zero(T) : (x > top ? one(T) : (x - bot) / b)
+    av = one(T) / (one(T) - teps)
+    bri = one(T) - br
+    y = br < teps ? av * br / teps : (br < one(T) - teps ? av : (br < one(T) ? av * bri / teps : zero(T)))
+    return y / b
+end
 
 # Conductance of the symmetric connection `j` between `lo < hi` (`hcond`/`vcond` of
 # GwfConductanceUtils.f90 with the saturations of the last `npf_cf!`), and whether the
@@ -103,14 +163,19 @@ Saturated fraction of a convertible cell, standard formulation (gwf-npf.f90
             if cv.ivarcv && (ictl != Int32(0) || icth != Int32(0)) && !(h[lo] >= cv.topoff[lo] && h[hi] >= cv.topoff[hi])
                 satn = cv.sat[lo]
                 satm = cv.sat[hi]
-                lobot_higher = code >= Int32(4)
+                lobot_higher = (code & Int32(4)) != Int32(0)
                 if !cv.idewatcv
                     lobot_higher ? (satm = one(T)) : (satn = one(T))
                 else
+                    # T6.2 (from T6.1): a saturation below eps(T) is a cell at its bottom.
+                    # MF6's absolute heads give exactly 0 there (and a zero conductance);
+                    # the offsets resolve it (e.g. 1e-305), and `hwva/denom` would overflow.
                     if lobot_higher
                         satm < one(T) && (satm = zero(T))
+                        satn < eps(T) && (satn = zero(T))
                     else
                         satn < one(T) && (satn = zero(T))
+                        satm < eps(T) && (satm = zero(T))
                     end
                 end
                 bovk1 = satn * cv.thk[lo] * T(0.5) / cv.hyl[j]
@@ -140,8 +205,60 @@ Saturated fraction of a convertible cell, standard formulation (gwf-npf.f90
     end
 end
 
+# Newton (T6.2): the conductance of connection `j` between `lo < hi` and whether `lo` is the
+# upstream cell (`dlh = h_hi − h_lo < 0`; `convertible_upstream`, `fn_default_flow`: the
+# higher-numbered cell on a tie). Vertical: `condsat` (`vcond` without VARIABLECV);
+# horizontal with a convertible cell: the upstream saturation times `condsat`, with
+# HIGHEST_CELL_SATURATION both saturations from the geometry of the cell with the higher
+# bottom when the bottoms differ by at least 0.01 (`highest_cell_saturation`).
+@inline function _newton_conductance(cv::ConvertibleNpf{T}, ibound, h, lo, hi, j, dlh) where {T}
+    return @inbounds begin
+        (ibound[lo] == 0 || ibound[hi] == 0) && return zero(T)
+        csat = cv.condsat[j]
+        code = cv.ihcx[j]
+        (code & Int32(3)) == Int32(0) && return csat
+        (cv.icelltype[lo] == Int32(0) && cv.icelltype[hi] == Int32(0)) && return csat
+        uplo = dlh < zero(T)
+        if cv.ihighcellsat && (code & Int32(8)) != Int32(0)
+            # In the frame of `lo`: `hi`'s head is h_lo + dlh.
+            if (code & Int32(4)) != Int32(0)
+                tp, bt = cv.topoff[lo], cv.botoff[lo]
+            else
+                dr = cv.Δr[j]
+                tp, bt = cv.topoff[hi] + dr, cv.botoff[hi] + dr
+            end
+            hl = h[lo]
+            sat = uplo ? newton_saturation(tp, bt, hl) : newton_saturation(tp, bt, hl + dlh)
+        else
+            sat = uplo ? cv.sat[lo] : cv.sat[hi]
+        end
+        sat * csat
+    end
+end
+
+# Newton (T6.2): `fn_default_flow`'s Jacobian term of row `n` for the connection to `m`,
+# `condsat·S'(h_u)·(h_m − h_n)` for the upstream cell `u` (0 when `u` is confined or the
+# connection vertical), with `d = h_m − h_n`. Staggered DISU connections take the
+# derivative over the overlap of the two cells (`topup`, `botup`).
+@inline function _newton_jacobian(cv::ConvertibleNpf{T}, h, n, m, j, up, d) where {T}
+    return @inbounds begin
+        code = cv.ihcx[j]
+        ihc = code & Int32(3)
+        (ihc == Int32(0) || cv.icelltype[up] == Int32(0)) && return zero(T)
+        tp, bt = cv.topoff[up], cv.botoff[up]
+        if ihc == Int32(2)
+            # The other cell's elevations in the frame of `up`.
+            other = up == n ? m : n
+            dr = other > up ? cv.Δr[j] : -cv.Δr[j]
+            tp = min(tp, cv.topoff[other] + dr)
+            bt = max(bt, cv.botoff[other] + dr)
+        end
+        cv.condsat[j] * newton_saturation_derivative(tp, bt, h[up]) * d
+    end
+end
+
 """
-    connection_terms(cond, Δr, jas, ibound, h, n, m, ii) -> (a, dd, sb, q, c, dr)
+    connection_terms(cond, Δr, jas, ibound, h, n, m, ii[, jac]) -> (a, dd, sb, q, c, dr)
 
 The terms of off-diagonal entry `ii` (row `n`, column `m`) for the row kernels: the matrix
 entry `a`, the amount `dd` subtracted from the diagonal, the amount `sb` added to the offset
@@ -149,18 +266,39 @@ right-hand side, the flow `q` into `n` at the offset heads `h`, the conductance 
 reference difference `dr = r_m − r_n`. `cond` is `condsat` (a confined model: `a = dd = c`,
 `sb = −c·dr`, `q = c·(h'_m − h'_n + dr)`) or a `ConvertibleNpf`; with PERCHED flow from the
 upper cell `lo` to `hi` (`fc_default_flow`) the row of `lo` gets `dd = c`, `sb = −c·bot'_lo`,
-`a = 0` and the row of `hi` `a = c`, `dd = 0`, `sb = c·bot'_lo`. Device-safe.
+`a = 0` and the row of `hi` `a = c`, `dd = 0`, `sb = c·bot'_lo`. With the Newton formulation
+(T6.2, `cv.newton`) and `jac = true` the Jacobian term `t` of the upstream cell `u`
+(`fn_default_flow`) is added to the entry of column `u` (`a += t` or `dd −= t`) and `t·h'_u`
+to `sb`; `q` and the residual do not change. Device-safe.
 """
-@inline function connection_terms(condsat::AbstractVector, Δr, jas, ibound, h, n, m, ii)
+@inline function connection_terms(condsat::AbstractVector, Δr, jas, ibound, h, n, m, ii, jac::Bool = true)
     c, dr = _connection(condsat, Δr, jas, ibound, n, m, ii)
     return c, c, -(c * dr), c * (h[m] - h[n] + dr), c, dr
 end
 
-@inline function connection_terms(cv::ConvertibleNpf{T}, Δr, jas, ibound, h, n, m, ii) where {T}
+@inline function connection_terms(cv::ConvertibleNpf{T}, Δr, jas, ibound, h, n, m, ii, jac::Bool = true) where {T}
     return @inbounds begin
         j = jas[ii]
         dr = m > n ? Δr[j] : -Δr[j]
         lo, hi = n < m ? (n, m) : (m, n)
+        if cv.newton
+            d = h[m] - h[n] + dr
+            dlh = n == lo ? d : -d
+            c = _newton_conductance(cv, ibound, h, lo, hi, j, dlh)
+            a, dd, sb = c, c, -(c * dr)
+            if jac && ibound[lo] != 0 && ibound[hi] != 0
+                up = dlh < zero(T) ? lo : hi
+                t = _newton_jacobian(cv, h, n, m, j, up, d)
+                if up == n
+                    dd -= t
+                    sb += t * h[n]
+                else
+                    a += t
+                    sb += t * h[m]
+                end
+            end
+            return a, dd, sb, c * d, c, dr
+        end
         c, perched = _cv_conductance(cv, ibound, h, lo, hi, j)
         if !perched
             return c, c, -(c * dr), c * (h[m] - h[n] + dr), c, dr
@@ -177,10 +315,16 @@ end
 # The conductance argument of the row kernels: `condsat` (confined) or the ConvertibleNpf.
 _cond_arg(npf) = isnothing(npf.cv) ? npf.condsat : npf.cv
 
-@kernel function npf_sat_kernel!(sat, @Const(icelltype), @Const(topoff), @Const(botoff), @Const(thk), @Const(h), @Const(ibound))
+@kernel function npf_sat_kernel!(sat, @Const(icelltype), @Const(topoff), @Const(botoff), @Const(thk), @Const(h), @Const(ibound), newton::Bool)
     n = @index(Global)
     @inbounds if icelltype[n] != Int32(0)
-        sat[n] = ibound[n] == Int32(0) ? zero(eltype(sat)) : thksat(h[n], topoff[n], botoff[n], thk[n])
+        sat[n] = if ibound[n] == Int32(0)
+            zero(eltype(sat))
+        elseif newton
+            newton_saturation(topoff[n], botoff[n], h[n])
+        else
+            thksat(h[n], topoff[n], botoff[n], thk[n])
+        end
     end
 end
 
@@ -188,11 +332,12 @@ end
     npf_cf!(cv::ConvertibleNpf, h, ibound) -> cv
 
 The saturation `cv.sat` of every convertible cell from the offset heads `h`
-(`cf_default_flow`): 0 for a dry cell (`ibound == 0`), `thksat` otherwise. Confined cells
-keep their saturation. One work item per node.
+(`cf_default_flow`): 0 for a dry cell (`ibound == 0`), `thksat` otherwise
+(`newton_saturation` with the Newton formulation, T6.2). Confined cells keep their
+saturation. One work item per node.
 """
 function npf_cf!(cv::ConvertibleNpf, h, ibound)
-    npf_sat_kernel!(get_backend(h), _WG)(cv.sat, cv.icelltype, cv.topoff, cv.botoff, cv.thk, h, ibound; ndrange = length(h))
+    npf_sat_kernel!(get_backend(h), _WG)(cv.sat, cv.icelltype, cv.topoff, cv.botoff, cv.thk, h, ibound, cv.newton; ndrange = length(h))
     return cv
 end
 

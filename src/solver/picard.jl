@@ -16,8 +16,15 @@
 # reformulate before the solve.
 # The loop stops at convergence or after OUTER_MAXIMUM iterations.
 #
-# Not implemented: pseudo-transient continuation and Newton (T6.2), package convergence
-# checks (none of the supported packages has one).
+# Newton–Raphson (T6.2, the model's NEWTON option): step 1 formulates with the Newton terms
+# (`sln_buildsystem(kiter, inewton = 1)`); with backtracking it is preceded by the
+# formulation without them (`inewton = 0`), on which `sln_backtracking` works. In a
+# steady-state period the pseudo-transient continuation term is then added to the
+# diagonal (`apply_ptc!`), and with NEWTON UNDER_RELAXATION step 4 ends with `npf_nur`
+# (`newton_ur!`; src/solver/newton.jl). The linear solver must be BiCGSTAB (the matrix is
+# not symmetric; CG is MF6's input error, checked by `initialize`).
+#
+# Not implemented: package convergence checks (none of the supported packages has one).
 
 """
     FLOAT32_CLOSURES
@@ -141,8 +148,9 @@ const _MAXSCALE_OPS = (_MaxAbsOp(), _SumOp(), _SumOp(), _SumOp())
 Workspace of the outer iterations of one model: `settings::PicardSettings`, the inner
 `KrylovSolver`, the `UnderRelaxation` state, a `Reducer` (Float64 accumulation where
 available), for the Float32 rclose floor a per-node scale vector, and for backtracking
-(BACKTRACKING_NUMBER > 0; else empty) `hprev`, the offset heads at the start of the last
-outer iteration (MF6's `xtemp`).
+(BACKTRACKING_NUMBER > 0, or NEWTON UNDER_RELAXATION; else empty) `hprev`, the offset heads
+at the start of the last outer iteration's update (MF6's `xtemp`), and `ptc`, the
+pseudo-transient continuation state of the Newton formulation (`PtcState`, T6.2).
 
     PicardSolver(m::GwfModel, settings; Ts = eltype(m), Tp = Ts)
 """
@@ -153,6 +161,7 @@ struct PicardSolver{K <: KrylovSolver, U <: UnderRelaxation, R <: Reducer, V}
     reducer::R
     scale::V
     hprev::V
+    ptc::PtcState
 end
 
 function PicardSolver(m::GwfModel{T}, settings::PicardSettings; Ts::Type = T, Tp::Type = Ts) where {T}
@@ -163,8 +172,8 @@ function PicardSolver(m::GwfModel{T}, settings::PicardSettings; Ts::Type = T, Tp
     ur = UnderRelaxation(backend, T, settings.ims, n)
     red = Reducer(backend, n, accumulation_type(backend, T))
     scale = KernelAbstractions.zeros(backend, T, settings.rclose_floor_factor > 0 ? n : 0)
-    hprev = KernelAbstractions.zeros(backend, T, settings.ims.backtracking_number > 0 ? n : 0)
-    return PicardSolver(settings, krylov, ur, red, scale, hprev)
+    hprev = KernelAbstractions.zeros(backend, T, (settings.ims.backtracking_number > 0 || !isempty(m.nurbot)) ? n : 0)
+    return PicardSolver(settings, krylov, ur, red, scale, hprev, PtcState())
 end
 
 Adapt.@adapt_structure PicardSolver
@@ -232,14 +241,21 @@ function outer_iteration!(state::OuterState, ps::PicardSolver, m::GwfModel{T}, k
     it = state.kiter += 1
     # Float32 rclose floor: from the first formulation; with convertible cells (T6.1) the
     # terms change with the saturations, so it is the maximum over the step's iterations.
-    floor_step = (it == 1 || !isnothing(m.wd)) && st.rclose_floor_factor > 0
+    floor_step = (it == 1 || !isnothing(m.npf.cv)) && st.rclose_floor_factor > 0
     # Wetting and drying of convertible cells (T6.1; `npf_cf` → `sgwf_npf_wetdry`), then
     # the formulation (the saturations, `npf_cf!`, are computed in `formulate!`).
     scale = floor_step ? ps.scale : nothing
     isnothing(m.wd) || @timed_section :assembly wetdry!(m, it)
-    @timed_section :assembly formulate!(m; symmetric = st.symmetric, terms = false, scale)
-    if st.ims.backtracking_number > 0
-        _backtracking!(state, ps, m, it, scale)
+    bt = st.ims.backtracking_number > 0
+    # Newton (T6.2): backtracking works on the formulation without the Newton terms
+    # (`sln_buildsystem(kiter, inewton = 0)`), then the system of the solve is formulated
+    # with them; otherwise the first formulation is the one of the solve.
+    @timed_section :assembly formulate!(m; symmetric = st.symmetric, terms = false, scale, jac = m.newton && !bt)
+    bt && _backtracking!(state, ps, m, it, scale)
+    m.newton && bt && @timed_section :assembly formulate!(m; symmetric = st.symmetric, terms = false, scale)
+    # Pseudo-transient continuation of a steady-state Newton period (T6.2).
+    if m.newton && (isnothing(m.sto) || !m.sto.transient) && ptc_allowed(st.ims.no_ptc, m.kper)
+        @timed_section :assembly apply_ptc!(ps.ptc, ps.reducer, m, it, kstp)
     end
     if floor_step
         # Float32: the attainable residual, eps(T)·max Σ|terms| (rule 2 rounding).
@@ -284,9 +300,19 @@ function outer_iteration!(state::OuterState, ps::PicardSolver, m::GwfModel{T}, k
         return false
     end
     state.converged = res.converged && abs(hncg) <= state.dvclose
-    # MF6's `xtemp` (the heads before this iteration's update) for the next backtracking.
-    st.ims.backtracking_number > 0 && !state.converged && save_hprev!(ps.hprev, m.h, m.ibound)
+    # MF6's `xtemp` (the heads before this iteration's update) for the next backtracking
+    # and for NEWTON UNDER_RELAXATION.
+    nur = !isempty(m.nurbot)
+    (bt || nur) && !state.converged && save_hprev!(ps.hprev, m.h, m.ibound)
     @timed_section :underrelax underrelax!(ps.ur, m.h, m.δ, m.ibound, it, hncg; converged = state.converged)
+    if nur && !state.converged
+        # npf_nur, sln_nur_has_converged (T6.2).
+        adjusted, dxold, hncg_nur, lrch_nur = @timed_section :underrelax newton_ur!(ps.reducer, m, ps.hprev)
+        if adjusted && dxold <= state.dvclose && abs(hncg) <= state.dvclose
+            state.converged = true
+            state.hncg, state.lrch = hncg_nur, lrch_nur
+        end
+    end
     return state.converged
 end
 
@@ -300,7 +326,7 @@ function _backtracking!(state::OuterState, ps::PicardSolver, m::GwfModel, it::In
     ims = st.ims
     reformulate() = begin
         isnothing(m.wd) || @timed_section :assembly wetdry!(m, it)
-        @timed_section :assembly formulate!(m; symmetric = st.symmetric, terms = false, scale)
+        @timed_section :assembly formulate!(m; symmetric = st.symmetric, terms = false, scale, jac = false)
     end
     rec, state.res_prev = backtrack!(
         reformulate, ps.reducer, m.h, ps.hprev, m.res, m.ibound, it, state.res_prev;
