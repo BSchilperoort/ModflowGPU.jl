@@ -37,8 +37,8 @@ end
 # MF6's `xtemp ← x` before the solve (`sln_ls`). A dry cell (IBOUND 0, T6.1) has `x = HDRY`
 # in MF6, while ModflowGPU keeps its head at the bottom; `hprev` stores HDRY for it, so that
 # a cell rewetted in the next iteration is backtracked as in MF6: its change is ~1e30
-# (always above OUTER_DVCLOSE) and the reduced head, ≈ 0.9·HDRY, dries it again in the
-# next `wetdry!`.
+# (always above OUTER_DVCLOSE) and the reduced head, ≈ (1 − breduc)·HDRY, dries it again
+# in the next `wetdry!`.
 @kernel function save_hprev_kernel!(hprev, @Const(h), @Const(ibound), hdry)
     n = @index(Global)
     @inbounds hprev[n] = ibound[n] == Int32(0) ? hdry : h[n]

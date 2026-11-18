@@ -178,7 +178,7 @@ src/timing.jl, src/budget.jl, src/output/oc.jl, src/run.jl.
   `x − xtemp`, `xtemp` being `x` before the previous solve (after its backtracking): the
   under-relaxed update. A dry cell has `x = HDRY` (−1e30) in MF6, so a cell rewetted in
   the next iteration has a change of ~1e30: it always passes the OUTER_DVCLOSE test, and
-  its reduced head (≈ 0.9·HDRY) dries it again in the next `wetdry`. ModflowGPU keeps dry
+  its reduced head (≈ (1 − breduc)·HDRY) dries it again in the next `wetdry`. ModflowGPU keeps dry
   heads at the bottom; `save_hprev!` stores HDRY for them so the same happens (ex: the
   wetdry test model, 18 backtracking outer iterations, all in rewetting steps). OUTER_DVCLOSE
   in the reduction test is the one in use (the Float32 floors raise it in `:single`, so

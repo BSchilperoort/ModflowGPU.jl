@@ -107,8 +107,8 @@ const SUPPORTED_OPTIONS = Dict{Tuple{String, String}, Vector{String}}(
     ("sln-ims", "NONLINEAR") => [
         "OUTER_DVCLOSE", "OUTER_MAXIMUM", "UNDER_RELAXATION", "UNDER_RELAXATION_GAMMA",
         "UNDER_RELAXATION_THETA", "UNDER_RELAXATION_KAPPA", "UNDER_RELAXATION_MOMENTUM", "LINEAR_SOLVER",
-        # Backtracking: implemented in T6.2; T2.8 warns. Accepted like the implicit
-        # backtracking of COMPLEXITY COMPLEX (backtracking_number = 20).
+        # Backtracking (also implied by COMPLEXITY COMPLEX, backtracking_number = 20):
+        # applied since T6.2a (src/solver/backtracking.jl).
         "BACKTRACKING_NUMBER", "BACKTRACKING_TOLERANCE", "BACKTRACKING_REDUCTION_FACTOR",
         "BACKTRACKING_RESIDUAL_LIMIT",
     ],

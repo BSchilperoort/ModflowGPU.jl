@@ -195,11 +195,6 @@ function _listing_difference(ours, mf6; extra = Dict{Tuple{Int, Int}, Float64}()
     return worst, ntab, length(tb)
 end
 
-# Runs both presets on TEST_BACKEND (and on a GPU backend also on the CPU backend) and
-# returns per preset (; dh, dq, dl, pd, outer, inner, time, mf6_outer, mf6_inner,
-# backend_vs_cpu), plus :single_vs_double. `single_preconditioner` replaces `preconditioner`
-# in `:single` (T6.0: ex-gwf-lgrv-gr). `single_budget_tol` replaces the `:single` budget
-# criterion 1e-4 × total in (T6.4: rad_disu_confined, docs/dev/precision.md).
 # (time step, outer iteration) pairs in which backtracking reduced the head change: from
 # MF6's outer table rows "Backtracking <kiter> <flag> <count> ..." (count > 0; a new time
 # step starts at kiter 1), or from the `BacktrackRecord`s of a ModflowGPU run.
@@ -217,6 +212,13 @@ end
 _backtracked_iterations(steps::AbstractVector) =
     [(i, b.kiter) for (i, s) in enumerate(steps) for b in s.outer.backtracking if b.count > 0]
 
+# Runs both presets on TEST_BACKEND (and on a GPU backend also on the CPU backend) and
+# returns per preset (; dh, dq, dl, pd, outer, inner, time, mf6_outer, mf6_inner,
+# backend_vs_cpu), plus :single_vs_double. `single_preconditioner` replaces `preconditioner`
+# in `:single` (T6.0: ex-gwf-lgrv-gr). `single_budget_tol` replaces the `:single` budget
+# criterion 1e-4 × total in (T6.4: rad_disu_confined, docs/dev/precision.md).
+# `backtracking = true` (T6.2a) also checks that the run backtracks in the same (time
+# step, outer iteration)s as MF6.
 function _run_parity(
         name, rundir; preconditioner::Symbol = RUN_PRECONDITIONER, precond_options::NamedTuple = (;),
         single_preconditioner::Symbol = preconditioner, single_budget_tol::Float64 = 1.0e-4,
