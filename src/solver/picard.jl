@@ -292,7 +292,7 @@ function outer_iteration!(state::OuterState, ps::PicardSolver, m::GwfModel{T}, k
         k = state.krylov
         kdv == k.settings.dvclose || (state.krylov = _with_settings(k, _with(k.settings; dvclose = kdv)))
     end
-    res = @timed_section :linear_solve solve!(m.δ, state.krylov, m.sys.amat, m.res; kstp, diag = m.sys.diag, offdiag_id = m.offdiag_id)
+    res = @timed_section :linear_solve solve!(m.δ, state.krylov, m.sys.amat, m.res; kstp, diag = m.sys.diag, offdiag_id = m.offdiag_id, newton = m.newton)
     state.inner += res.iterations
     (hncg, hmax, _, _), lrch = @timed_section :outer_reduction _mapreduce_loc!(ps.reducer, backend, _dxmax_term, _DXMAX_OPS, n, m.δ, m.ibound, m.h)
     state.hncg, state.lrch = hncg, lrch

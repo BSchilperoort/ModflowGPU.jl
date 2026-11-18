@@ -1043,7 +1043,7 @@ const _CG_UPDATE_OPS = (_MaxAbsOp(), _MaxAbsOp(), _SumOp(), _SumOp())
 @inline _safe_div(num::T, d::T) where {T <: AbstractFloat} = num / (d + copysign(max(eps(T) * abs(num), floatmin(T)), d))
 
 """
-    solve!(δ, solver::KrylovSolver, amat, res; kstp = 1, diag = nothing, offdiag_id = 0) -> KrylovResult
+    solve!(δ, solver::KrylovSolver, amat, res; kstp = 1, diag = nothing, offdiag_id = 0, newton = false) -> KrylovResult
 
 Solve the correction system `A·δ = res` (PLAN.md section 3.7, rule 3) with a zero
 initial guess: `amat` is MF6's matrix in the CSR layout of `solver.csr` (a
@@ -1058,8 +1058,12 @@ setup read it instead of the strided diagonal of `amat`. `offdiag_id` (`GwfModel
 same id, so the preconditioner may update only what depends on changed diagonal entries
 (the red–black MC-ILU0 does; the results are bitwise those of a full setup). The default
 0 means "unknown": a full setup.
+
+T6.2: `newton` (a Newton–Raphson system) sets the BiCGSTAB breakdown threshold to the
+rounding level of the vectors, `eps(Ts)`, instead of that of the dot products (see
+`_solve_bcgs!`).
 """
-function solve!(δ, solver::KrylovSolver{Ts}, amat, res; kstp::Integer = 1, diag = nothing, offdiag_id::Integer = 0) where {Ts}
+function solve!(δ, solver::KrylovSolver{Ts}, amat, res; kstp::Integer = 1, diag = nothing, offdiag_id::Integer = 0, newton::Bool = false) where {Ts}
     st = solver.settings
     csr = solver.csr
     backend = get_backend(solver)
@@ -1076,14 +1080,14 @@ function solve!(δ, solver::KrylovSolver{Ts}, amat, res; kstp::Integer = 1, diag
         scaling == 2 && _map!(backend, _setup_l2col, n, solver.colfac, solver.rowfac, amat, csr.ia, csr.ja, csr.isym)
         _precond_setup!(solver.precond, solver, amat, usediag ? diag : nothing, Int(offdiag_id))
     end
-    result = cg ? _solve_cg!(solver, amat, kstp, res) : _solve_bcgs!(solver, amat, kstp, res)
+    result = cg ? _solve_cg!(solver, amat, kstp, res) : _solve_bcgs!(solver, amat, kstp, res; newton)
     _precond_record!(solver.precond, result)
     if !result.converged && _precond_retry!(solver.precond)
         # A preconditioner set up from an earlier matrix (AMG hierarchy reuse): rebuild it
         # and solve again from zero; the iterations of both attempts count.
         @timed_section :precond_setup precond_setup!(solver.precond, solver, amat)
         first = result
-        result = cg ? _solve_cg!(solver, amat, kstp, res) : _solve_bcgs!(solver, amat, kstp, res)
+        result = cg ? _solve_cg!(solver, amat, kstp, res) : _solve_bcgs!(solver, amat, kstp, res; newton)
         _precond_record!(solver.precond, result)
         result = KrylovResult(
             result.converged, first.iterations + result.iterations, result.status, result.dvmax, result.rmax,
@@ -1198,9 +1202,9 @@ function _solve_cg!(s::KrylovSolver{Ts}, amat, kstp, res, rf, cf) where {Ts}
     return KrylovResult(icnvg == 1, innerit, _status(icnvg, innerit, st.maxiter), abs(deltax), abs(rmax), l2norm0, l2norm)
 end
 
-_solve_bcgs!(s::KrylovSolver, amat, kstp, res) = _solve_bcgs!(s, amat, kstp, res, _op_factors(s)...)
+_solve_bcgs!(s::KrylovSolver, amat, kstp, res; newton::Bool = false) = _solve_bcgs!(s, amat, kstp, res, _op_factors(s)...; newton)
 
-function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res, rf, cf) where {Ts}
+function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res, rf, cf; newton::Bool = false) where {Ts}
     st = s.settings
     csr = s.csr
     backend = get_backend(s)
@@ -1278,17 +1282,21 @@ function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res, rf, cf) where {Ts}
         alpha0 = alpha
         omega0 = omega
         rho = rho_next
-        if abs(rho) <= eps(_acctype(red)) * dnorm * l2norm
-            # Breakdown (T6.2): `dhat·r` vanished at the rounding level of the dot product
-            # (its accumulation type: Float64 also for Float32 vectors, whose products are
-            # exact in Float64), e.g. after a first iteration from a residual that is nonzero
-            # in a few cells only (the first outer iteration of a Newton steady state with the
-            # red–black ILU0; ex-gwf-zaidel: 4e-31·|dhat|·|r|), and the next step length would
-            # be noise. Restart from the current iterate with the shadow residual `dhat = r`
-            # (MF6's ims_base_bcgs has no restart; its natural-order ILU0 does not break down
-            # there). Not eps(Ts): in long Float32 solves `dhat·r` falls to 1e-10–1e-7 of
-            # |dhat|·|r| without a breakdown, and restarts there (coupling_rde with
-            # Chebyshev, 250 of them) keep the solve from converging.
+        if abs(rho) <= (newton ? eps(Ts) : eps(_acctype(red))) * dnorm * l2norm
+            # Breakdown (T6.2): `dhat·r` vanished at the rounding level, e.g. after a first
+            # iteration from a residual that is nonzero in a few cells only (the first outer
+            # iteration of a Newton steady state with the red–black ILU0; ex-gwf-zaidel:
+            # 3.7e-31·|dhat|·|r|), and the next step length would be noise. Restart from the
+            # current iterate with the shadow residual `dhat = r` (MF6's ims_base_bcgs has no
+            # restart; its natural-order ILU0 does not break down there). The rounding level:
+            # - Newton: that of the vectors, eps(Ts). In Float32, `dhat·r` of the Newton
+            #   systems falls to 1e-7 of |dhat|·|r| in long solves; without restarts there
+            #   ex-gwf-nwt-p02a `:single` does not converge (period 4), with them it does.
+            # - otherwise: that of the dot product, eps of its accumulation type (Float64
+            #   also for Float32 vectors, whose products are exact in Float64), so only true
+            #   breakdowns restart (hanic, hanir, curve-90). With eps(Float32), coupling_rde
+            #   with Chebyshev in `:single` restarted in every solve and no longer converged
+            #   (it does not with a single restart per solve either).
             @timed_section :update_reduce _reduce_async!(red, backend, _bcgs_restart, _SUM4, n, s.dhat, s.r; post = _SetRho{1}(), sa, ss)
             _sync(backend)
             rho = _reduced(red)[1]
