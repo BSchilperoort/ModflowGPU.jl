@@ -500,7 +500,7 @@ marked; their merge commits on `main` hold the card reports.
 - **Phase 6: generic MF6 GWF (Milestone C); dependencies between the cards are in the phase file and section 6**: [docs/dev/plan/phase6.md](docs/dev/plan/phase6.md)
   - T6.0 Parity on the confined lgrv examples (done)
   - T6.1 Convertible cells and rewetting (done 2026-11-16)
-  - T6.2 Newton–Raphson (backtracking part first, as T6.2a)
+  - T6.2 Newton–Raphson (backtracking part T6.2a done 2026-11-18)
   - T6.3 Time series and time-array series (done 2026-11-16)
   - T6.4 DISV and DISU (done 2026-11-16)
   - T6.5 XT3D
