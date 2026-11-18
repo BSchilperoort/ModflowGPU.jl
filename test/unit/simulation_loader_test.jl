@@ -398,7 +398,8 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
                     edit("gwf.sto", "iconvert\n    CONSTANT 0\n", "iconvert\n    CONSTANT 1\n  sy\n    CONSTANT 0.2\n"),
                     nothing, s -> s.models[1].sto.sy == fill(0.2, 24),
                 ),
-                (edit("gwf.nam", "SAVE_FLOWS", "NEWTON UNDER_RELAXATION"), "unsupported: NEWTON (model 'GWF')", s -> s.models[1].newton && s.models[1].newton_under_relaxation),
+                # Newton–Raphson: supported since T6.2 (BASE_SIM uses BICGSTAB).
+                (edit("gwf.nam", "SAVE_FLOWS", "NEWTON UNDER_RELAXATION"), nothing, s -> s.models[1].newton && s.models[1].newton_under_relaxation),
                 (edit("gwf.oc", "BUDGET FILEOUT gwf.cbc", "BUDGETCSV FILEOUT gwf.csv"), "unsupported: OC6 option BUDGETCSV", s -> s.models[1].oc.budgetcsv_file == "gwf.csv"),
                 (edit("gwf.wel", "BOUNDNAMES", "BOUNDNAMES\n  AUTO_FLOW_REDUCE 0.1"), nothing, s -> s.models[1].boundaries[1].auto_flow_reduce == 0.1),
                 (edit("sim.ims", "RELAXATION_FACTOR 0.97", "SCALING_METHOD L2NORM"), "unsupported: IMS6 SCALING_METHOD L2NORM", s -> s.solution_groups[1].solutions[1].scaling_method === :l2norm),
@@ -494,9 +495,6 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
                 "ex-gwf-hanix" => "NPF6 option XT3D", "ex-gwf-whirl" => "NPF6 option XT3D",
                 "ex-gwf-spbc" => "GWF6-GWF6 exchange", "ex-gwf-lgrv-lgr" => "more than one GWF6 model",
             )
-            for name in ("bcf2ss-p02a", "bump-p01a", "bump-p01c", "capture", "nwt-p02a", "nwt-p03a", "nwt-p03b", "zaidel")
-                expected["ex-gwf-$name"] = "NEWTON"
-            end
             # DISV is supported since T6.4; these two need XT3D (T6.5).
             for name in ("disvmesh", "u1disv-x")
                 expected["ex-gwf-$name"] = "NPF6 option XT3D"
@@ -518,6 +516,9 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
                             # T6.1: convertible cells
                             "ex-gwf-advtidal", "ex-gwf-twri01", "ex-gwf-bcf2ss-p01a", "ex-gwf-bump-p01b", "ex-gwf-nwt-p02b",
                             "ex-gwf-maw-p03a", "ex-gwf-maw-p03c", "ex-gwf-rad-disu",
+                            # T6.2: Newton–Raphson
+                            "ex-gwf-bcf2ss-p02a", "ex-gwf-bump-p01a", "ex-gwf-bump-p01c", "ex-gwf-capture",
+                            "ex-gwf-nwt-p02a", "ex-gwf-nwt-p03a", "ex-gwf-nwt-p03b", "ex-gwf-zaidel",
                         )
                         @test load_simulation(simdir) isa SimulationSpec
                     end
