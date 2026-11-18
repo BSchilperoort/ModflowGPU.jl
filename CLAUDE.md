@@ -39,6 +39,9 @@ above works without extra setup. CI (`.github/workflows/`) runs only the CPU tes
 - **Find your way first:** read `docs/dev/api_map.md` (map of `src/` and the test group of each
   file) before exploring `src/`. While iterating, run only your card's test groups
   (`MFGPU_TEST_GROUPS`, names in `test/runtests.jl`); run the full suite once at the end.
+  Exception (owner, 2026-11-18): a card that does not touch the engine (kernels, solver,
+  assembly, boundaries, input parsing), e.g. a docs or BMI card, runs only the affected
+  test groups; CI runs the full CPU suite after the push.
 - **Read before you write:** read the MF6 Fortran source for the feature
   (`reference/modflow6`, fetched by `validation/fetch_reference.sh`, T0.2). Port behaviour,
   not structure, and cite the Fortran routine in a comment where a formula comes from.
