@@ -873,7 +873,7 @@ Models: ex-gwf-bcf2ss-p02a, ex-gwf-bump-p01a and -p01c, ex-gwf-nwt-p02a, ex-gwf-
 -p03b, ex-gwf-zaidel, `capture_saved` (ex-gwf-capture with an OC that saves heads; the
 reference run saves none) and the synthetic test/models/newton (convertible storage, WEL
 AUTO_FLOW_REDUCE, DRN AUXDEPTHNAME, RCH, CHD; mf6 run at test time). Parity table
-(docs/src/assets/parity.toml, commit 3f910d7, MC-ILU0 BiCGSTAB in every preset): max
+(docs/src/assets/parity.toml, commit e719f66, MC-ILU0 BiCGSTAB in every preset): max
 |Δh| against MF6 (m, ft for bcf2ss and nwt-p02a; cells whose MF6 head is below the bottom
 are dry and left out, see below), the budget difference (the larger of CBC and listing,
 × total in), and outer iterations ours/MF6. CPU and ROCm give the same numbers (ROCm vs
