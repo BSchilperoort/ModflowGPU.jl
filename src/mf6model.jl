@@ -39,7 +39,9 @@ strings, one grid per model); the XMI functions of ModflowInterface.jl
 where ModflowInterface.jl does. BMI functions that libmf6 does not implement throw an
 `ArgumentError`; [`Simulation`](@ref) has the full BMI of the specification. The
 simulation of an initialised model is `m.simulation` (`nothing` before
-`BMI.initialize`).
+`BMI.initialize`). As ModflowInterface.jl's `ModflowModel`, a model that is garbage
+collected is finalised (in a new task, after the collection); call `BMI.finalize(m)` to
+close the output files and free the device memory at a known point.
 
 # Example
 ```julia
@@ -70,6 +72,27 @@ mutable struct MF6Model
     # libmf6-shaped arrays that are not host mirrors of the stepping API (the length-1
     # NODEUSER, NODEREDUCED), kept for the run as libmf6 keeps its memory.
     const arrays::Dict{String, Array}
+    function MF6Model(source, settings, simulation, last_error, arrays)
+        m = new(source, settings, simulation, last_error, arrays)
+        # As ModflowInterface.jl's ModflowModel: finalize when garbage collected.
+        return finalizer(_mf6_gc_finalize, m)
+    end
+end
+
+# The finalizer of an MF6Model. It runs inside the garbage collector, where a task switch,
+# I/O or a device synchronisation is not allowed, while `finalize_simulation` closes the
+# output files and synchronises the device: detach the simulation and finalize it in a
+# new task.
+function _mf6_gc_finalize(m::MF6Model)
+    sim = m.simulation
+    isnothing(sim) && return nothing
+    m.simulation = nothing
+    Threads.@spawn try
+        finalize_simulation(sim)
+    catch e
+        @error "MF6Model finalizer: finalize_simulation failed" exception = (e, catch_backtrace())
+    end
+    return nothing
 end
 
 function _mf6model_settings(kwargs)
@@ -387,8 +410,10 @@ end
 
 # Write `values` into the start of `dest` (libmf6 writes as many values as it has).
 function _mf6_fill!(m::MF6Model, f::Symbol, dest::AbstractVector, values)
+    # Never write past the end of `dest` (libmf6 does: its get_grid_y of DIS writes
+    # ncol + 1 values).
     length(dest) >= length(values) ||
-        _mf6call(() -> throw(DimensionMismatch("BMI.$f: the destination has length $(length(dest)), $(length(values)) values")), m)
+        _mf6call(() -> throw(ArgumentError("BMI.$f: the destination has length $(length(dest)), expected at least $(length(values))")), m)
     copyto!(dest, 1, values, 1, length(values))
     return dest
 end
@@ -397,7 +422,8 @@ end
     BMI.get_grid_x(m::MF6Model, grid, x) -> x
 
 As libmf6: for DIS the column edge indices `0:ncol` (not coordinates), for DISV and DISU
-the x of the VERTICES as given (model coordinates, without XORIGIN and ANGROT).
+the x of the VERTICES as given (model coordinates, without XORIGIN and ANGROT). `x` must
+have at least `ncol + 1` (DIS) or NVERT values, else an `ArgumentError`.
 """
 function BMI.get_grid_x(m::MF6Model, grid::Integer, x::AbstractVector{<:Real})
     d = _mf6call(() -> _mf6_dis(m, :get_grid_x, grid), m)
@@ -407,8 +433,10 @@ end
 """
     BMI.get_grid_y(m::MF6Model, grid, y) -> y
 
-As libmf6: for DIS the row edge indices `nrow:-1:0` (libmf6 6.8.2 writes `ncol:-1:0`, a
-bug), for DISV and DISU the y of the VERTICES as given.
+As libmf6: for DIS the row edge indices `nrow:-1:0`, for DISV and DISU the y of the
+VERTICES as given. libmf6 6.8.2 writes `ncol:-1:0` for DIS (a bug in `mf6bmiGrid.f90`,
+which uses the last MSHAPE entry): fixed here. `y` must have at least `nrow + 1` (DIS) or
+NVERT values, else an `ArgumentError`.
 """
 function BMI.get_grid_y(m::MF6Model, grid::Integer, y::AbstractVector{<:Real})
     d = _mf6call(() -> _mf6_dis(m, :get_grid_y, grid), m)

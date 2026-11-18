@@ -180,6 +180,14 @@ end
     end
 end
 
+# An initialised MF6Model that is not referenced after the call: its simulation.
+@noinline function _mf6model_dropped(dir)
+    m = MF6Model(dir; backend = TEST_BACKEND, write_output = false)
+    BMI.initialize(m)
+    BMI.update(m)
+    return m.simulation
+end
+
 @testset "MF6Model: handle, XMI calls and errors (T8.10)" begin
     mktempdir() do tmp
         one = _dis(; delr = [100.0, 150.0, 100.0, 120.0], delc = [50.0, 80.0, 60.0], top = fill(200.0, 4, 3), botm = fill(0.0, 4, 3, 1))
@@ -202,7 +210,16 @@ end
             @test ModflowGPU.get_var_rank(m, "TDIS/KPER") == 0 && ModflowGPU.get_var_shape(m, "BMI/CHD/BOUND") == (1, 2)
             @test BMI.get_grid_shape(m, 1, zeros(Int, 2)) == [3, 4]   # libmf6's C order
             @test BMI.get_grid_x(m, 1, zeros(5)) == 0:4
-            @test_throws DimensionMismatch BMI.get_grid_x(m, 1, zeros(2))
+            # ncol (4) > nrow (3): get_grid_y gives nrow + 1 values (libmf6 6.8.2 writes
+            # ncol + 1), and a short destination is an error, never written past its end.
+            @test BMI.get_grid_y(m, 1, fill(-1.0, 4)) == 3:-1:0
+            ybuf = fill(-1.0, 6)
+            @test BMI.get_grid_y(m, 1, ybuf) === ybuf && ybuf == [3, 2, 1, 0, -1, -1]
+            xbuf = zeros(2)
+            @test_throws r"length 2, expected at least 5" BMI.get_grid_x(m, 1, xbuf)
+            @test xbuf == [0, 0]
+            @test_throws ArgumentError BMI.get_grid_y(m, 1, zeros(3))
+            @test_throws ArgumentError BMI.get_grid_shape(m, 1, zeros(Int, 1))
             @test_throws r"no model for grid id 2" BMI.get_grid_type(m, 2)
             @test_throws r"solution 2" ModflowGPU.solve(m, 2)
             # Functions libmf6 does not implement.
@@ -230,5 +247,16 @@ end
         BMI.initialize(m)
         @test BMI.get_current_time(m) == 0.0
         BMI.finalize(m)
+        # The finalizer (as ModflowInterface.jl's ModflowModel): an initialised model that
+        # goes out of scope is finalized in a task after garbage collection.
+        sim = _mf6model_dropped(dir)
+        @test sim.stage !== :freed
+        @test timedwait(() -> (GC.gc(true); sim.stage === :freed), 60.0; pollint = 0.5) === :ok
+        m = MF6Model(dir; backend = TEST_BACKEND, write_output = false)
+        BMI.initialize(m)
+        BMI.finalize(m)
+        @test BMI.finalize(m) === m   # idempotent
+        finalize(m)                   # Base.finalize runs the finalizer: nothing left to do
+        @test isnothing(m.simulation)
     end
 end

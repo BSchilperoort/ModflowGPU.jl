@@ -408,9 +408,16 @@ installs) and 6.8.2, and compares every result. These differ:
   address, a grid id other than 1, and the grid functions libmf6 has only for some grid
   types (`get_grid_rank` and `get_grid_shape` for DISV and DISU; `get_grid_size`,
   `get_grid_node_count` and the face functions for DIS and DISV).
-- **`get_grid_y` of DIS** gives `nrow:-1:0`. libmf6 6.8.2 gives `ncol:-1:0` (it reads the
-  wrong entry of the grid shape) and writes past a buffer of `nrow + 1` values when
-  `ncol > nrow`.
+- **`get_grid_y` of DIS** gives `nrow:-1:0`: a deliberate fix of a libmf6 bug. libmf6
+  6.8.2 gives `ncol:-1:0`, because `mf6bmiGrid.f90` takes the last entry of the grid
+  shape (`ncol`) instead of `nrow`:
+  `y_size = grid_shape_ptr(size(grid_shape_ptr - 1)) + 1` (the `- 1` is inside
+  `size`). It so writes past a buffer of `nrow + 1` values (sized from
+  `get_grid_shape`) when `ncol > nrow`.
+- **Destination buffers** of the grid functions (`get_grid_x`, `get_grid_y`,
+  `get_grid_shape`, `get_grid_nodes_per_face`, `get_grid_face_nodes`) are checked: a
+  buffer shorter than the values throws an `ArgumentError` with the length needed, and
+  nothing is written past its end (libmf6 does not check).
 - **`get_time_step`** gives the step length. ModflowInterface.jl's `get_time_step` calls
   libmf6's `get_end_time` and gives the end time (and its `get_start_time` calls
   `get_current_time`, which is 0 only before the first step).
@@ -430,9 +437,13 @@ installs) and 6.8.2, and compares every result. These differ:
 - **`get_grid_face_nodes` of DISU** with excluded cells works; libmf6 corrupts its memory
   there (it sizes a buffer by the face count, the number of model nodes, and writes the
   nodes per face of every cell).
-- **The handle** has no finalizer: call `BMI.finalize(m)` (ModflowInterface.jl's
-  `ModflowModel` finalises when garbage-collected). Several `MF6Model`s can be active at
-  a time; libmf6 allows one per process.
+- **The handle** is finalised when garbage-collected, as ModflowInterface.jl's
+  `ModflowModel`. Because the garbage collector does not allow I/O or device
+  synchronisation, the finalizer finalises the simulation in a new task: output files are
+  closed and GPU memory is freed some time after the collection (not at all if Julia
+  exits first). Call `BMI.finalize(m)` to release them at a known point; a second call
+  does nothing. Several `MF6Model`s can be active at a time; libmf6 allows one per
+  process.
 
 ### Functions libmf6 does not have
 
