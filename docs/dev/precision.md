@@ -919,11 +919,19 @@ exceed 1e-4 × total in; the criterion applies to the part beyond the Float32 ro
 the cell flows (`single_rounding_bound`, as for rad-disu, maw-p03c and advtidal; MF6
 writes no budget file, so the bound takes C = condsat).
 
-**BiCGSTAB restart.** When `rho = dhat·r` vanishes at the rounding level
-(`|rho| <= eps(Ts)·|dhat|·|r|`), BiCGSTAB restarts with `dhat = r` (MF6 has no restart). It
-was added for the first outer iteration of the zaidel steady state with the red–black
-ILU0 (`rho` at 4e-33·|dhat|·|r|, after which the next step length is noise and the solve
-diverges). The check uses the `rho` BiCGSTAB already reduces (no extra reduction).
+**BiCGSTAB restart.** When `rho = dhat·r` vanishes at the rounding level of the dot
+product, BiCGSTAB restarts with `dhat = r` (MF6 has no restart). It was added for the
+first outer iteration of the zaidel steady state with the red–black ILU0 (`rho` at
+3.7e-31·|dhat|·|r| in `:double`, exactly 0 in `:single`; after that the next step length
+is noise and the solve diverges). The threshold is `eps(Ta)·|dhat|·|r|` with `Ta` the
+accumulation type of the reductions (Float64 also for Float32 vectors, whose products are
+exact in Float64), not `eps(Ts)`: in long Float32 solves `rho` falls to 1e-10–1e-7 of
+|dhat|·|r| without a breakdown, and a first version with `eps(Float32)` restarted there
+(coupling_rde with Chebyshev: 250 restarts, and step 1 no longer converged in 25 outer
+iterations; rad-disu `:single` changed). Ratios measured where it restarts now: zaidel
+0 / 3.7e-31, hanic 1.4e-22 (`:single`) / 5.8e-17 (`:double`), hanir 0 / 9.9e-17,
+curve-90 `:single` 0, nwt-p03b `:double` 3.6e-18–2.1e-16 (3 restarts in 96 outer
+iterations). The check uses the `rho` BiCGSTAB already reduces (no extra reduction).
 
 **Non-Newton models.** The Newton terms, PTC and NEWTON UNDER_RELAXATION are not
 formulated without NEWTON. Heads (sha256 of the head file), budget files and outer/inner

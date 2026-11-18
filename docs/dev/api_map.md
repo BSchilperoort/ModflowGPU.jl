@@ -299,7 +299,8 @@ it. Underscore-prefixed helpers are omitted.
   does); `_precond_record!` / `_precond_retry!` after a solve (a failed solve is repeated
   once after an AMG rebuild); `KrylovSolver(...; colors)` passes a host colouring.
   T6.2: BiCGSTAB restarts with `dhat = r` (`_bcgs_restart`) when `rho` vanishes at the
-  rounding level (`|rho| <= eps(Ts)·|dhat|·|r|`; ex-gwf-zaidel with the red–black ILU0).
+  rounding level (`|rho| <= eps(Ta)·|dhat|·|r|`, `Ta` the accumulation type of the
+  reductions, `_acctype`; ex-gwf-zaidel with the red–black ILU0).
 - **solver/precond/precond.jl** (T4.2, T4.3): preconditioner interface. `AbstractPreconditioner`,
   `precond_setup!(P, solver, amat)` (per `solve!`, after scaling), `precond_apply!(z, P, r)`,
   `JacobiPreconditioner` (wraps the solver's `minv`; fused path), `PRECONDITIONERS`
