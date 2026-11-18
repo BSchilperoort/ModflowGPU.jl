@@ -24,7 +24,7 @@ using SHA: sha256
 using TOML: TOML
 
 export example_run, mf6_run, quietly, cache_dir, repo_path, run_modflowgpu, compare_with_mf6, comparison_table, parity_row,
-    DisGrid, read_dis_grid, VertexGrid, read_vertex_grid, read_grid, node, cell_of, layer_values, specific_discharge, budget_cells,
+    DisGrid, read_dis_grid, VertexGrid, read_vertex_grid, read_grid, input_nodes, node, cell_of, layer_values, specific_discharge, budget_cells,
     map_heatmap!, map_contour!, map_grid!, map_cells!, map_vectors!, section_heatmap!, section_grid!,
     section_contour!, budget_bars, difference_map, save_figure, intformat, expformat, BC_COLORS, mask_inactive
 
@@ -411,6 +411,24 @@ cells of the packages of that type.
 """
 function budget_cells(g::DisGrid, budget_file::AbstractString, text::AbstractString)
     return [cell_of(g, Int(n)) for n in _first_step_nodes(budget_file, text)]
+end
+
+"""
+    input_nodes(dir, ftype) -> Vector{Int}
+
+The user nodes of the list-based boundary packages of type `ftype` (e.g. `"CHD"`) of the
+simulation in `dir`, over all stress periods, read from the input with
+`load_simulation` (for models that write no budget file; this reads ModflowGPU's
+internal input structures, which may change).
+"""
+function input_nodes(dir::AbstractString, ftype::AbstractString)
+    m = only(load_simulation(dir).models)
+    nodes = Int[]
+    for b in m.boundaries
+        (b.schema !== nothing && lowercase(b.schema.package) == "gwf-" * lowercase(ftype)) || continue
+        foreach(p -> append!(nodes, p.nodeu), b.periods.data)
+    end
+    return sort!(unique!(nodes))
 end
 
 """
@@ -811,6 +829,87 @@ function save_figure(fig, name)
     path = joinpath(mkpath(joinpath(cache_dir(), "figures")), name * ".png")
     save(path, fig; px_per_unit = 2)
     return PNGFile(path)
+end
+
+# --- The gallery and its index ------------------------------------------------------------
+
+"""
+The pages of the gallery, in the order of the manual: the script in `examples/` =>
+`(title, MF6 examples the page runs)`. Used by docs/make.jl and by
+`gallery_index_table`.
+"""
+const GALLERY = [
+    "ex-gwf-toth.jl" => ("Tóth: flow systems in a basin", ["ex-gwf-toth"]),
+    "ex-gwf-hani.jl" => ("Horizontal anisotropy", ["ex-gwf-hanir", "ex-gwf-hanic"]),
+    "ex-gwf-fhb.jl" => ("Time-series boundaries", ["ex-gwf-fhb"]),
+    "ex-gwf-twri01.jl" => ("TWRI: layered aquifers", ["ex-gwf-twri01"]),
+    "ex-gwf-bcf2ss.jl" => ("BCF2SS: wetting and drying", ["ex-gwf-bcf2ss-p01a"]),
+    "ex-gwf-bump.jl" => ("Flow around a high bottom", ["ex-gwf-bump-p01b"]),
+    "ex-gwf-nwt-p02.jl" => ("Water table under a recharge pond", ["ex-gwf-nwt-p02b"]),
+    "ex-gwf-advtidal.jl" => ("Highlands next to a tidal estuary", ["ex-gwf-advtidal"]),
+    "ex-gwf-maw-p03.jl" => ("A well screened across layers", ["ex-gwf-maw-p03a", "ex-gwf-maw-p03c"]),
+    "ex-gwf-hwell.jl" => ("A horizontal well", ["ex-gwf-hwell-a"]),
+    "ex-gwf-lgrv-gc.jl" => ("Valley aquifer with a river", ["ex-gwf-lgrv-gc"]),
+    "ex-gwf-lgrv-gr.jl" => ("Valley aquifer: the refined model", ["ex-gwf-lgrv-gr"]),
+    "ex-gwf-u1disv.jl" => ("A nested grid (DISV)", ["ex-gwf-u1disv"]),
+    "ex-gwf-curvilinear.jl" => ("Curvilinear grids (DISV)", ["ex-gwf-curve-90", "ex-gwf-curvilin"]),
+    "ex-gwf-rad-disu.jl" => ("An axisymmetric model (DISU)", ["ex-gwf-rad-disu"]),
+    "synthetic-coupling.jl" => ("Coupling-type model, step by step", String[]),
+]
+
+# The page (notebook) of each in-scope example in the MODFLOW 6 examples documentation,
+# where it is not the example's own name.
+const NOTEBOOKS = Dict(
+    "ex-gwf-hanic" => "ex-gwf-hani", "ex-gwf-hanir" => "ex-gwf-hani", "ex-gwf-hanix" => "ex-gwf-hani",
+    "ex-gwf-hwell-a" => "ex-gwf-hwell", "ex-gwf-maw-p03a" => "ex-gwf-maw-p03", "ex-gwf-maw-p03c" => "ex-gwf-maw-p03",
+    "ex-gwf-bcf2ss-p01a" => "ex-gwf-bcf2ss", "ex-gwf-bcf2ss-p02a" => "ex-gwf-bcf2ss",
+    "ex-gwf-bump-p01a" => "ex-gwf-bump", "ex-gwf-bump-p01b" => "ex-gwf-bump", "ex-gwf-bump-p01c" => "ex-gwf-bump",
+    "ex-gwf-lgrv-gc" => "ex-gwf-lgrv", "ex-gwf-lgrv-gr" => "ex-gwf-lgrv", "ex-gwf-lgrv-lgr" => "ex-gwf-lgrv",
+    "ex-gwf-nwt-p02a" => "ex-gwf-nwt-p02", "ex-gwf-nwt-p02b" => "ex-gwf-nwt-p02",
+    "ex-gwf-nwt-p03a" => "ex-gwf-nwt-p03", "ex-gwf-nwt-p03b" => "ex-gwf-nwt-p03",
+    "ex-gwf-twri01" => "ex-gwf-twri", "ex-gwf-curve-90" => "ex-gwf-curvilinear-90", "ex-gwf-curvilin" => "ex-gwf-curvilinear",
+    "ex-gwf-u1disv-x" => "ex-gwf-u1disv",
+    "ex-gwf-u1gwfgwf-s1" => "ex-gwf-u1gwfgwf", "ex-gwf-u1gwfgwf-s2" => "ex-gwf-u1gwfgwf",
+    "ex-gwf-u1gwfgwf-s3" => "ex-gwf-u1gwfgwf", "ex-gwf-u1gwfgwf-s4" => "ex-gwf-u1gwfgwf",
+)
+
+# Features (`requires` of validation/examples.toml) of unfinished Phase 6 cards.
+const PLANNED = ["newton" => "Newton–Raphson (T6.2)", "xt3d" => "XT3D (T6.5)", "exchange" => "GWF–GWF exchanges (T6.6)", "multi_model" => "GWF–GWF exchanges (T6.6)"]
+
+"""
+    gallery_index_table() -> Markdown.MD
+
+The table of the gallery's overview page: every in-scope MODFLOW 6 example of
+validation/examples.toml (`in_plan = true`) with its grid, size, link to the MODFLOW 6
+examples documentation and status: the gallery page that runs it, or "planned" with the
+unfinished Phase 6 feature it needs. Throws if an example that ModflowGPU supports has no
+page, or a page names an example that is not in scope, so the index cannot drift from
+validation/examples.toml.
+"""
+function gallery_index_table()
+    inv = TOML.parsefile(repo_path("validation", "examples.toml"))["examples"]
+    pages = Dict(ex => (replace(script, ".jl" => ".md"), title) for (script, (title, exs)) in GALLERY for ex in exs)
+    io = IOBuffer()
+    println(io, "| MODFLOW 6 example | Grid | Cells | Status |")
+    println(io, "| :-- | :-- | --: | :-- |")
+    names = sort([k for (k, v) in inv if get(v, "in_plan", false)]; by = k -> (inv[k]["tier"], k))
+    for ex in keys(pages)
+        ex in names || error("gallery page for $ex, which is not an in-scope example of validation/examples.toml")
+    end
+    for ex in names
+        v = inv[ex]
+        nb = get(NOTEBOOKS, ex, ex)
+        needs = unique([lab for (f, lab) in PLANNED if f in v["requires"]])
+        status = if haskey(pages, ex)
+            isempty(needs) || error("$ex has a gallery page but needs $(join(needs, ", "))")
+            "[$(pages[ex][2])](examples/$(pages[ex][1]))"
+        else
+            isempty(needs) && error("$ex is supported but has no gallery page (add one to ExampleTools.GALLERY)")
+            "planned: needs " * join(needs, " and ")
+        end
+        println(io, "| [`$ex`](https://modflow6-examples.readthedocs.io/en/latest/_notebooks/$nb.html) | ", v["grid"], " | ", v["ncells"], " | ", status, " |")
+    end
+    return Markdown.parse(String(take!(io)))
 end
 
 end # module ExampleTools
