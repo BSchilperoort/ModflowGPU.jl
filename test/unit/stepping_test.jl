@@ -242,6 +242,25 @@ end
 # the pool usage of a GPU backend returns to its level before `initialize` (ROCm:
 # `AMDGPU.used_memory`, the stream-ordered pool, measured without a GC in between). On
 # the CPU backend nothing is freed (host arrays).
+# T6.2 (from T6.1): no output into REFERENCE_DIR (the default `outdir` is the input
+# directory, which once overwrote a reference run).
+@testset "no output into REFERENCE_DIR" begin
+    mktempdir() do tmp
+        ref = joinpath(tmp, "reference")
+        dir = joinpath(ref, "runs", "rde")
+        mkpath(dirname(dir))
+        cp(STEPPING_MODEL, dir)
+        withenv("REFERENCE_DIR" => ref) do
+            @test_throws r"refusing to write output into .*REFERENCE_DIR" ModflowGPU.run(dir; backend = TEST_BACKEND)
+            @test_throws ArgumentError initialize(dir; backend = TEST_BACKEND, outdir = joinpath(ref, "out"))
+            @test !isfile(joinpath(dir, "rde.hds"))
+            # Elsewhere, or without output: fine.
+            @test ModflowGPU.run(dir; backend = TEST_BACKEND, outdir = joinpath(tmp, "out")).converged
+            @test ModflowGPU.run(dir; backend = TEST_BACKEND, write_output = false).converged
+        end
+    end
+end
+
 @testset "finalize frees device memory" begin
     pool_used() = TEST_BACKEND_NAME == "rocm" ? (AMDGPU.synchronize(); AMDGPU.used_memory()) : nothing
     for_each_precision(; presets = SOLVER_TEST_PRESETS) do p
