@@ -1,6 +1,6 @@
 # Phase 1: MF6 input and output (host only)
 
-Task cards for this phase of [PLAN.md](../../PLAN.md). Read PLAN.md sections 1–4 and 6 for the goals, conventions, architecture and validation rules these cards refer to.
+Task cards for this phase of [PLAN.md](../../../PLAN.md). Read PLAN.md sections 1–4 and 6 for the goals, conventions, architecture and validation rules these cards refer to.
 
 Size: S ≈ < 1 day of agent work, M ≈ 1–3 days, L ≈ > 3 days.
 `‖` marks cards that can run in parallel with their siblings.

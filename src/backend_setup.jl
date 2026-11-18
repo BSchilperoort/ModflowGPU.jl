@@ -25,10 +25,22 @@ const KNOWN_BACKENDS = [
 const BACKEND_REGISTRY = Dict{String, BackendEntry}()
 
 """
-    register_backend!(name, package, is_functional, construct)
+    ModflowGPU.register_backend!(name, package, is_functional, construct)
 
-Register a GPU backend under `name`, so it can be selected with `select_backend(name)`.
-Called by the package extensions on load.
+Register a GPU backend under `name` (lower case, e.g. `"rocm"`), so that
+[`select_backend(name)`](@ref select_backend) and `select_backend("auto")` can find it.
+`package` is the name of the GPU package (e.g. `"AMDGPU"`), `is_functional` a function
+`() -> Bool` that tells whether the GPU can be used on this machine, and `construct` a
+function `() -> KernelAbstractions.Backend`. Called by each package extension in its
+`__init__`. A later registration under the same name replaces the earlier one.
+
+# Example
+The registration of `ext/AMDGPUExt.jl`:
+```julia
+function __init__()
+    return ModflowGPU.register_backend!("rocm", "AMDGPU", AMDGPU.functional, ROCBackend)
+end
+```
 """
 function register_backend!(name::AbstractString, package::AbstractString, is_functional, construct)
     BACKEND_REGISTRY[lowercase(name)] = BackendEntry(package, is_functional, construct)
@@ -36,9 +48,17 @@ function register_backend!(name::AbstractString, package::AbstractString, is_fun
 end
 
 """
-    backend_name(backend)
+    backend_name(backend) -> String
 
-Name of the backend type, e.g. `"POCLBackend"` (KA's `CPU()`) or `"ROCBackend"`.
+The name of the type of the KernelAbstractions `backend`, e.g. `"POCLBackend"` (KA's
+`CPU()`), `"ROCBackend"` (AMDGPU) or `"CUDABackend"`. Used in log messages and the
+listing file.
+
+# Example
+```jldoctest
+julia> backend_name(select_backend("cpu"))
+"POCLBackend"
+```
 """
 backend_name(backend::Backend) = string(nameof(typeof(backend)))
 
@@ -52,9 +72,25 @@ end
 gpu_backend_names() = unique([first.(KNOWN_BACKENDS); sort!(collect(keys(BACKEND_REGISTRY)))])
 
 """
-    backend_options()
+    backend_options() -> Vector{String}
 
-All valid backend names for [`select_backend`](@ref): `"auto"`, `"cpu"` and the GPU backends.
+All valid backend names for [`select_backend`](@ref): `"auto"`, `"cpu"` and the GPU
+backends, known ones in order of preference for `"auto"` first. A GPU backend is
+listed even when its package is not loaded; selecting it then throws an error that names
+the package to load.
+
+# Example
+```jldoctest
+julia> backend_options()
+7-element Vector{String}:
+ "auto"
+ "cpu"
+ "cuda"
+ "rocm"
+ "metal"
+ "oneapi"
+ "opencl"
+```
 """
 backend_options() = ["auto"; "cpu"; gpu_backend_names()]
 
@@ -72,6 +108,23 @@ CPU. Explicitly requesting a GPU backend that is not loaded or not functional th
 an error.
 
 A `KernelAbstractions.Backend` can also be passed directly, which is returned as is.
+
+Returns a `KernelAbstractions.Backend`, to pass as the `backend` keyword of
+[`run_simulation`](@ref) and [`initialize`](@ref). The CPU backend of KernelAbstractions
+0.10 is `POCLBackend` (`CPU()`); it is meant for tests and small models.
+
+# Example
+```jldoctest
+julia> backend = select_backend("cpu");
+
+julia> backend_name(backend)
+"POCLBackend"
+```
+With a GPU package loaded:
+```julia
+using AMDGPU, ModflowGPU
+backend = select_backend("auto")   # ROCBackend() when the GPU works, else the CPU
+```
 """
 select_backend(backend::Backend) = backend
 
@@ -105,35 +158,53 @@ function select_backend(name::AbstractString = "auto")
 end
 
 """
-    pin_memory!(backend, arr)
+    ModflowGPU.pin_memory!(backend, arr)
 
-Page-lock host memory to speed up device transfers. Returns `nothing` when nothing was
+Extension hook. Page-lock the host array `arr` to speed up transfers between it and the
+device. Returns `nothing` when nothing was
 done (the default, unless a backend extension adds a method for its backend), otherwise a
 handle the caller keeps for as long as the memory should stay pinned (CUDA: the array;
 ROCm: a registered `ROCArray` wrapper). Copies from pinned memory may run
 asynchronously: synchronize before overwriting it.
+
+A backend extension adds a method for its backend type.
+
+# Example
+```julia
+# in ext/CUDAExt.jl
+ModflowGPU.pin_memory!(::CUDABackend, arr) = CUDA.pin(arr)
+```
 """
 pin_memory!(::Backend, arr) = nothing
 
 """
-    free_memory!(backend, arr)
+    ModflowGPU.free_memory!(backend, arr)
 
-Release the device memory of the device array `arr` now, instead of when the garbage
-collector finalises it (T5.4: two models on one GPU, `finalize`). `arr` must not be used
+Extension hook. Release the device memory of the device array `arr` now, instead of when
+the garbage collector finalises it (two models on one GPU, [`finalize_simulation`](@ref)).
+`arr` must not be used
 afterwards. The default calls `KernelAbstractions.unsafe_free!`, which GPU packages
 implement for their arrays (a no-op for host arrays); extensions add a method where the
 backend needs something else. Memory shared with other arrays (`reshape`, `unsafe_wrap`
-of the same buffer) is released when the last of them is freed.
+of the same buffer) is released when the last of them is freed. Returns `nothing`.
 """
 free_memory!(::Backend, arr::AbstractArray) = (KernelAbstractions.unsafe_free!(arr); nothing)
 
 """
-    free_device_arrays!(x) -> Int
+    ModflowGPU.free_device_arrays!(x) -> Int
 
-Free (`free_memory!`) every device array reachable from `x` through struct fields, array
-elements and dictionary entries (host arrays of bits types are skipped, wrappers such as
-views are followed to their parent). Returns the number of arrays freed. Nothing reachable
-from `x` may use those arrays afterwards. Used by `finalize`.
+Free ([`ModflowGPU.free_memory!`](@ref)) every device array reachable from `x` through
+struct fields, array elements and dictionary entries (host arrays of bits types are
+skipped, wrappers such as views are followed to their parent). Returns the number of
+arrays freed. Nothing reachable from `x` may use those arrays afterwards. Used by
+[`finalize_simulation`](@ref), and by coupling code to free its own device buffers before
+another model allocates.
+
+# Example
+```julia
+buffers = (; recharge = KernelAbstractions.zeros(backend, Float32, n))
+ModflowGPU.free_device_arrays!(buffers)   # 1 (0 on the CPU backend)
+```
 """
 function free_device_arrays!(x)
     seen = IdDict{Any, Nothing}()
@@ -178,15 +249,23 @@ function _free_walk!(x, seen::IdDict{Any, Nothing})
 end
 
 """
-    host_mapped_zeros(backend, T, n) -> (device, host) or nothing
+    ModflowGPU.host_mapped_zeros(backend, T, n) -> (device, host) or nothing
 
 A zeroed host vector `host` of `n` values of type `T` and a device array `device` that
 aliases its memory (kernels write the host memory directly), or `nothing` when the
 backend cannot map host memory (callers then copy with `copyto!`). Used for the small
 results of device reductions, which the host reads after every reduction: on ROCm this
-saves the device-to-host copy (~30 µs on the RX 7800 XT, docs/precision.md). Extension
+saves the device-to-host copy (~30 µs on the RX 7800 XT, docs/dev/precision.md). Extension
 hook: the CPU backend returns the same `Array` twice, ROCm a registered host array;
 other backends return `nothing` unless their extension adds a method.
+
+# Example
+```jldoctest
+julia> d, h = ModflowGPU.host_mapped_zeros(select_backend("cpu"), Float64, 2);
+
+julia> d === h
+true
+```
 """
 host_mapped_zeros(::Backend, ::Type, ::Integer) = nothing
 host_mapped_zeros(::CPU, ::Type{T}, n::Integer) where {T} = (a = zeros(T, n); (a, a))

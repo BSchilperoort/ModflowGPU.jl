@@ -1,7 +1,7 @@
 # ModflowGPU: plan for a GPU port of MODFLOW 6 groundwater flow
 
 This plan is written to be executed by coding agents, one task card at a time.
-The cards are in `docs/plan/phase<N>.md` (section 5). Each card lists its
+The cards are in `docs/dev/plan/phase<N>.md` (section 5). Each card lists its
 dependencies, what to read, what to deliver, and how to prove it is done. Do not start a card before its dependencies are merged.
 
 Working package name: **ModflowGPU.jl** (module `ModflowGPU`). It lives in the
@@ -35,7 +35,7 @@ BUY, VSC, API package, GWT, GWE, PRT, and PETSc parallel runs. These are
 sequential or very branchy, and the coupling does not need them. A few GWF
 features are not yet placed in or out of scope (HFB, GNC, TVK/TVS, ATS and some
 output options); they are listed under "Still open" in section 8 and are
-rejected at load time until decided (`docs/support_matrix.md`).
+rejected at load time until decided (`docs/dev/support_matrix.md`).
 
 ### 1.1 What the coupling model needs (from `ModflowCoupling/src/mf6_writer.jl`)
 
@@ -61,7 +61,7 @@ CG-compatible boundaries the matrix is symmetric, so preconditioned CG applies.
 - Development GPU: **AMD Radeon RX 7800 XT**, gfx1101, 16 GB, wavefront 32;
   ROCm 7.2.2 in `/opt/rocm`; Julia 1.12.6 (juliaup); AMDGPU.jl 2.11.0 with
   KernelAbstractions 0.10.5 (the versions of the Phase 4 benchmarks). KA 0.10
-  is the minimum from T5.0 on (section 8, decision 7; `docs/compat.md`).
+  is the minimum from T5.0 on (section 8, decision 7; `docs/dev/compat.md`).
 - **Float32 and Float64 are both supported from the start** (section 3.7).
   Float32 is required on backends without Float64 (Metal, Intel Arc via
   oneAPI, some OpenCL devices). On every backend it halves memory and cuts
@@ -73,13 +73,13 @@ CG-compatible boundaries the matrix is symmetric, so preconditioned CG applies.
 - Global 5′ grid: 4320 × 2160 × 2 ≈ 18.7 M cells, of which roughly a third
   are land. That gives ~5–7 M active nodes with about 6 non-zeros per row.
   Measured on the synthetic `global5m` (6.6 M nodes): the model arrays take
-  1.9 GiB in `:single` and 3.0 GiB in `:double` (`docs/scaling.md`), and the
+  1.9 GiB in `:single` and 3.0 GiB in `:double` (`docs/dev/scaling.md`), and the
   peak with the default preconditioner is about 2.5 GiB (`:single`) to 4 GiB
   (`:double`) (`benchmark/results/`). That fits in 16 GB next to mGV, whose own
   global footprint is still unknown (T5.5a).
 - Global 30″ (43200 × 21600 × 2 ≈ 1.9 G cells, ~0.65 G active nodes) needs
   about 190 GiB in `:single` and 300 GiB in `:double` for the model arrays
-  alone (`docs/scaling.md`, scaled from `global5m`). That is 12 to 19 cards of
+  alone (`docs/dev/scaling.md`, scaled from `global5m`). That is 12 to 19 cards of
   16 GB. Its 3.9 G CSR entries also exceed `Int32` indices. A regional 30″
   model would fit on one card: the Indus at 30″ is 2040 × 1800 × 2 ≈ 7.3 M
   cells, about the size of global 5′. 30″ is not a goal for now (section 8,
@@ -139,6 +139,9 @@ CG-compatible boundaries the matrix is symmetric, so preconditioned CG applies.
   global mGV routing parameters with
   [mGV-input-data](https://github.com/SWIFT-WUR/mGV-input-data). Only T5.5a/T5.5b use
   them; tests keep using the synthetic models of T3.4.
+- **User docs:** a card that changes user-visible behaviour (a new package or option, a changed
+  keyword, a new address) updates the matching page under `docs/src/` in the same branch; the
+  reviewer checks it. `docs/make.jl` must still build without warnings.
 - **Git:** one local branch per card, `T<id>-<short-name>`, branched from
   `main`. No GitHub PRs and no pushed card branches. After an independent
   review the branch is merged into `main` with `git merge --no-ff`, with the
@@ -168,7 +171,7 @@ CG-compatible boundaries the matrix is symmetric, so preconditioned CG applies.
   message): what was ported (Fortran routines), test results with numbers
   (including the GPU test summary), deviations from MF6, open issues. Open
   issues that a later card must pick up are also written into that card in
-  `docs/plan/` ("From the T<id> review: …") when the branch is merged.
+  `docs/dev/plan/` ("From the T<id> review: …") when the branch is merged.
 
 ---
 
@@ -179,7 +182,7 @@ CG-compatible boundaries the matrix is symmetric, so preconditioned CG applies.
 ```
 mf-gpu/
 ├── Project.toml            # ModflowGPU; [weakdeps] AMDGPU, CUDA, Metal, oneAPI, OpenCL
-├── src/                    # file-by-file map with test groups: docs/api_map.md
+├── src/                    # file-by-file map with test groups: docs/dev/api_map.md
 │   ├── ModflowGPU.jl
 │   ├── backend_setup.jl    # from mGV
 │   ├── precision.jl        # presets, resolve_precision, supports_float64
@@ -202,7 +205,7 @@ mf-gpu/
 ├── test/                   # Project.toml (workspace), unit/, parity/, gpu/, models/
 ├── validation/             # fetch_reference.sh, run_reference.jl, examples.toml, libmf6 probes
 ├── benchmark/              # hardware.jl, synthetic.jl, run.jl, results/*.md
-├── docs/                   # plan/ (task cards), api_map, precision, scaling, compat, MF6 notes, support matrix
+├── docs/                   # Documenter manual (phase 8); dev/: plan/ (task cards), api_map, precision, scaling, compat, MF6 notes, support matrix
 ├── patches/modflow-coupling/  # git format-patch series for ModflowCoupling + README
 ├── scripts/                # apply_coupling_patches.sh and other helpers
 └── reference/              # gitignored: mf6 binaries, example inputs, MF6 source,
@@ -318,7 +321,7 @@ preset is a keyword (`precision = :auto`) and a config option:
 | `:double` | Float64 | Float64 | Float64 | Exact MF6 parity |
 | `:single` | Float32 | Float32 | Float32 | Backends without Float64; less memory everywhere |
 | `:mixed` (T4.4) | Float64 | Float64 | Float32 | Float64 accuracy with a cheaper preconditioner |
-| `:auto` | `:mixed` if `supports_float64(backend)`, else `:single` | | | Production default (T4.4, with `preconditioner = :auto` = `:mc_ilu0`; docs/precision.md) |
+| `:auto` | `:mixed` if `supports_float64(backend)`, else `:single` | | | Production default (T4.4, with `preconditioner = :auto` = `:mc_ilu0`; docs/dev/precision.md) |
 
 `supports_float64(::Backend)` is an extension hook like mGV's `pin_memory!`.
 CPU, CUDA and ROCm return `true`, Metal returns `false`, and oneAPI and OpenCL
@@ -364,7 +367,7 @@ and make Float32 accurate.
 
 **Closures in Float32.** Float32 runs cannot reach `1e-9` closures. T2.8 set
 floors that `:single` applies to any tighter closure (`FLOAT32_CLOSURES`,
-`docs/precision.md`), and the parity runs use them as the single-precision
+`docs/dev/precision.md`), and the parity runs use them as the single-precision
 "tight" setting:
 
 - `OUTER_DVCLOSE ≥ max(1e-6 m, eps32 · max |h'|)`, checked every outer
@@ -383,7 +386,7 @@ floors that `:single` applies to any tighter closure (`FLOAT32_CLOSURES`,
 | --- | --- | --- |
 | Parsing | All in-scope example decks parse; arrays/lists equal a flopy-free independent read where available | exact |
 | Connectivity | `ia`, `ja`, `ihc`, `cl1`, `cl2`, `hwva` vs libmf6 memory (`<model>/DIS/...`, `<model>/CON/...` addresses) | exact / 1e-14 rel |
-| **Assembly, universal** | Plug MF6's converged heads (from a *tight-closure* reference run) into our assembly; residual `‖b − A·h_mf6‖∞ / max_row Σ|terms|` | `:double`: < 1e-8; `:single`: at most the bound from rounding the offset heads to Float32 (`docs/precision.md`) |
+| **Assembly, universal** | Plug MF6's converged heads (from a *tight-closure* reference run) into our assembly; residual `‖b − A·h_mf6‖∞ / max_row Σ|terms|` | `:double`: < 1e-8; `:single`: at most the bound from rounding the offset heads to Float32 (`docs/dev/precision.md`) |
 | Assembly, oracle | `amat` and `b'` (section 3.3) vs libmf6 `SLN_1/AMAT`, `SLN_1/RHS` after the first `solve` call (if exposed; see T0.2) | `:double` < 1e-12 rel; `:single` < 1e-6 rel |
 | Heads | Our run vs MF6 run, both with tight closures | `:double`: max abs diff < 1e-6 m (or 1e-7 × head range); `:single`: < 1e-3 m |
 | Budgets | Per-package in/out rates per stress period vs MF6 listing/CBC | `:double`: < 1e-6 rel, or 1e-6 × total in; `:single`: < 1e-4 × total in, and percent discrepancy < 0.01 % |
@@ -395,8 +398,8 @@ floors that `:single` applies to any tighter closure (`FLOAT32_CLOSURES`,
 and must meet the `:double` criteria in every row.
 
 T2.8 confirmed the `:single` thresholds on Tier 0–2 and the synthetic models
-(`docs/precision.md`); T5.3 checks them on the Indus. A card may tighten them,
-or loosen them with a written reason in `docs/precision.md`.
+(`docs/dev/precision.md`); T5.3 checks them on the Indus. A card may tighten them,
+or loosen them with a written reason in `docs/dev/precision.md`.
 
 **Tight-closure reference runs.** Production IMS settings (`outer_dvclose =
 5 m` in ModflowCoupling) leave answers that depend on the solver path. All parity
@@ -448,22 +451,22 @@ steady state without STO, convertible layer 1) are extra Tier 3 size tests.
 
 ## 5. Task cards
 
-The cards live in one file per phase under `docs/plan/`. An agent working on a
+The cards live in one file per phase under `docs/dev/plan/`. An agent working on a
 card reads this file (sections 1–4 and 6) and its own phase file. Done cards are
 marked; their merge commits on `main` hold the card reports.
 
-- **Phase 0: setup and reference environment**: [docs/plan/phase0.md](docs/plan/phase0.md)
+- **Phase 0: setup and reference environment**: [docs/dev/plan/phase0.md](docs/dev/plan/phase0.md)
   - T0.1 Package scaffold (done)
   - T0.2 Reference toolchain (done)
   - T0.3 Example inventory and reference runs (done)
   - T0.4 GPU baseline numbers (done)
-- **Phase 1: MF6 input and output (host only)**: [docs/plan/phase1.md](docs/plan/phase1.md)
+- **Phase 1: MF6 input and output (host only)**: [docs/dev/plan/phase1.md](docs/dev/plan/phase1.md)
   - T1.1 Tokenizer and block parser (done)
   - T1.2 Array input (done)
   - T1.3 List and period input (done)
   - T1.4 Simulation loader → `SimulationSpec` (done)
   - T1.5 Binary output readers/writers (done)
-- **Phase 2: CPU engine for confined models (KA kernels on the CPU backend)**: [docs/plan/phase2.md](docs/plan/phase2.md)
+- **Phase 2: CPU engine for confined models (KA kernels on the CPU backend)**: [docs/dev/plan/phase2.md](docs/dev/plan/phase2.md)
   - T2.1 Discretization and connectivity (done)
   - T2.2 NPF, confined (done)
   - T2.3 Boundary framework + CHD, WEL, RCH, GHB (done)
@@ -472,12 +475,12 @@ marked; their merge commits on `main` hold the card reports.
   - T2.6 Assembly and matrix oracle (done)
   - T2.7 Linear solvers (done)
   - T2.8 Picard loop, time stepping, budgets, output (done)
-- **Phase 3: GPU execution and Milestone A**: [docs/plan/phase3.md](docs/plan/phase3.md) (Milestone A reached 2026-11-07)
+- **Phase 3: GPU execution and Milestone A**: [docs/dev/plan/phase3.md](docs/dev/plan/phase3.md) (Milestone A reached 2026-11-07)
   - T3.1 Device execution (done)
   - T3.2 Builder API (done)
   - T3.3 Stepping API (done)
   - T3.4 Synthetic coupling-model generator (done)
-- **Phase 4: solver performance**: [docs/plan/phase4.md](docs/plan/phase4.md) (T4.1–T4.6 complete 2026-11-08; the four missed targets are card T4.7)
+- **Phase 4: solver performance**: [docs/dev/plan/phase4.md](docs/dev/plan/phase4.md) (T4.1–T4.6 complete 2026-11-08; the four missed targets are card T4.7)
   - T4.1 Benchmark harness (done)
   - T4.2 Chebyshev and multicolour smoothers (done)
   - T4.3 Algebraic multigrid preconditioner (done)
@@ -485,7 +488,7 @@ marked; their merge commits on `main` hold the card reports.
   - T4.5 Kernel fusion and matrix formats (done)
   - T4.6 Period-data path (done)
   - T4.7 Carried-over Phase 4 targets (merged 2026-11-16: 2 of 5 targets met; the real global model is not re-timed yet, see the status block)
-- **Phase 5: ModflowCoupling integration and Milestone B**: [docs/plan/phase5.md](docs/plan/phase5.md)
+- **Phase 5: ModflowCoupling integration and Milestone B**: [docs/dev/plan/phase5.md](docs/dev/plan/phase5.md)
   - T5.0 KernelAbstractions 0.10 as the minimum (done)
   - T5.1 Engine switch in ModflowCoupling (done)
   - T5.2 Device-resident coupling (done)
@@ -494,7 +497,7 @@ marked; their merge commits on `main` hold the card reports.
   - T5.5a Global-size dress rehearsal (done 2026-11-15)
   - T5.5b Global 5′ run with real data (merged 2026-11-15: the run completed on the GPU; the 200-year spin-up has not converged in heads and used 1979 forcing only, see the card)
   - T5.6 Global parity and timing against MODFLOW 6 (done 2026-11-15)
-- **Phase 6: generic MF6 GWF (Milestone C); dependencies between the cards are in the phase file and section 6**: [docs/plan/phase6.md](docs/plan/phase6.md)
+- **Phase 6: generic MF6 GWF (Milestone C); dependencies between the cards are in the phase file and section 6**: [docs/dev/plan/phase6.md](docs/dev/plan/phase6.md)
   - T6.0 Parity on the confined lgrv examples (done)
   - T6.1 Convertible cells and rewetting (done 2026-11-16)
   - T6.2 Newton–Raphson (backtracking part first, as T6.2a)
@@ -503,12 +506,24 @@ marked; their merge commits on `main` hold the card reports.
   - T6.5 XT3D
   - T6.6 Multi-model solutions and GWF–GWF exchanges
   - T6.7 OBS for GWF heads and flows
-- **Phase 7: beyond MF6 parity (build after Milestone B)**: [docs/plan/phase7.md](docs/plan/phase7.md)
+- **Phase 7: beyond MF6 parity (build after Milestone B)**: [docs/dev/plan/phase7.md](docs/dev/plan/phase7.md)
   - T7.1 Longitude wrap-around for global grids (dropped 2026-11-16)
   - T7.2 Spherical geometry
   - T7.3 Regional 30″ on one GPU (dropped 2026-11-16)
   - T7.4 30″ design note (dropped 2026-11-16)
   - T7.5 Multi-GPU domain decomposition (at 5′; includes its own design section)
+- **Phase 8: user documentation (Documenter.jl manual on GitHub Pages)**: [docs/dev/plan/phase8.md](docs/dev/plan/phase8.md) (owner decisions 2026-11-17 at the top of the phase file)
+  - T8.0 Move the developer notes to `docs/dev/` (done)
+  - T8.1 Documenter scaffold and CI deployment (done)
+  - T8.2 Public API and API reference (done)
+  - T8.3 Installation, getting started and GPU guide (done)
+  - T8.4 MF6 compatibility: packages and results (done)
+  - T8.5 Stepping API and BMI guide (done)
+  - T8.6 Example gallery: infrastructure and first examples (done)
+  - T8.7 Remaining gallery examples (done)
+  - T8.8 Performance page (done)
+  - T8.9 BMI conformance with the specification (done)
+  - T8.10 BMI as in MODFLOW 6 (libmf6 and ModflowInterface.jl) (done)
 
 ---
 
@@ -552,7 +567,7 @@ T5.5b. Done up to T5.1; mGV is on KA 0.10 and the global inputs are available.
 | MF6 6.3 (JLL) vs 6.8.2 behaviour differences | Parity examples use 6.8.2; ModflowCoupling parity uses tight settings and reports per-version differences |
 | Loose production closures make engines disagree | Pass/fail only with tight closures; report production differences separately. Measured in T5.1: up to 1.9 m on the Indus, from MF6 stopping early (section 4). T5.3 proposes production closures for the GPU engine |
 | Float64 atomics slow/unsupported on RDNA3 | Gather-based assembly (section 3.4); no atomics in hot paths |
-| `:single` is not accurate enough for badly conditioned steady states | Offsets, flux-form residual and correction solves (section 3.7); `:mixed` preset (T4.4); measured per model in `docs/precision.md` |
+| `:single` is not accurate enough for badly conditioned steady states | Offsets, flux-form residual and correction solves (section 3.7); `:mixed` preset (T4.4); measured per model in `docs/dev/precision.md` |
 | Float64 sneaks into kernels and breaks Metal/oneAPI, unnoticed because those backends cannot be tested here | IR hygiene test on rocm (T3.1); `T(…)` literals by convention |
 | A new package uses absolute elevations, which breaks the offset form | Rule 1 of section 3.7 requires each package card to check this; parity tests in `:single` catch it |
 | GPU and mGV together exceed 16 GB at global scale | ModflowGPU alone peaks at 2.5–4 GiB on `global5m` (section 1.2); mGV's share is measured in T5.5a. Device memory of a finalized simulation is freed only by the GC until T5.4 fixes it. `:single` / `:mixed` presets (section 3.7, T4.4); multi-GPU (T7.5) |
@@ -594,7 +609,7 @@ T5.5b. Done up to T5.1; mGV is on KA 0.10 and the global inputs are available.
    are available (decision 1), so T5.5b is no longer blocked.
 9. **Production closures of the GPU engine (2026-11-14):**
    `outer_dvclose = inner_dvclose = 0.01` m for the GPU engine (T5.3 proposal,
-   `docs/precision.md`: on the Indus within 1.5e-4 m of the tight heads on
+   `docs/dev/precision.md`: on the Indus within 1.5e-4 m of the tight heads on
    daily steps, against 0.15 m at 5, for 20–40 % more time per period on
    rocm). The mf6 engine keeps 5, with a note in `indus.toml`. T5.4 makes it
    the per-engine default in the patched `config.jl`; T5.4 and T5.5a report
@@ -607,7 +622,7 @@ T5.5b. Done up to T5.1; mGV is on KA 0.10 and the global inputs are available.
     needed: very little land crosses the date line. The 30″ goals (T7.3, T7.4)
     are skipped: not relevant for now. Spherical geometry (T7.2) and multi-GPU
     domain decomposition (T7.5) stay; T7.5 now targets the global 5′ model and
-    carries its own design section (`docs/plan/phase7.md`).
+    carries its own design section (`docs/dev/plan/phase7.md`).
 
 Still open:
 

@@ -144,7 +144,22 @@ scalar or a vector of `ncol`, `delc` a scalar or a vector of `nrow`, `top` a sca
 `(ncol, nrow)`; `idomain` is `nothing` (all active), `(ncol, nrow)` (the same in every
 layer, as ModflowCoupling's land mask) or `(ncol, nrow, nlay)`. The geometry is checked
 as MF6 does (`check_dis_grid`: positive thickness of active cells, at least one active
-cell).
+cell); invalid input is an `ArgumentError`.
+
+Lengths (`delr`, `delc`, `top`, `botm`, origins) are in the model's length units
+(`length_units`, e.g. `:meters`); `angrot` is in degrees. `file` is the file name the
+spec is written to by [`write_simulation`](@ref) (default `<model>.dis`).
+
+# Example
+A grid of 10 columns, 5 rows and 2 layers of 100 m × 100 m cells:
+```jldoctest
+julia> botm = cat(fill(-10.0, 10, 5), fill(-50.0, 10, 5); dims = 3);
+
+julia> dis = build_dis(; delr = 100.0, delc = 100.0, top = 0.0, botm, length_units = :meters);
+
+julia> (dis.ncol, dis.nrow, dis.nlay)
+(10, 5, 2)
+```
 """
 function build_dis(;
         delr, delc, top, botm, idomain = nothing, xorigin::Real = 0.0, yorigin::Real = 0.0, angrot::Real = 0.0,
@@ -192,6 +207,19 @@ Node property flow on grid `dis`. Each array is a scalar, one value per layer, a
 user node or a grid-shaped array (`(ncol, nrow, nlay)`); `nothing` means not given (MF6
 then uses K22 = K33 = K and zero angles). K, K22 and K33 must be positive in active
 cells. `options` are the other `NpfSpec` fields (`cell_averaging`, `save_flows`, ...).
+
+`k`, `k22` and `k33` are hydraulic conductivities (L/T, model units); `icelltype` 0 is a
+confined cell, other values a convertible cell (as MF6); angles are in degrees.
+
+# Example
+```jldoctest; setup = :(dis = build_dis(; delr = 100.0, delc = 100.0, top = 0.0, botm = cat(fill(-10.0, 10, 5), fill(-50.0, 10, 5); dims = 3)))
+julia> npf = build_npf(dis; k = [10.0, 1.0], k33 = 0.1, icelltype = [1, 0]);
+
+julia> npf.k[[1, 51]]   # the first cell of each layer
+2-element Vector{Float64}:
+ 10.0
+  1.0
+```
 """
 function build_npf(
         dis::AbstractDisSpec; k, icelltype = 0, k22 = nothing, k33 = nothing, angle1 = nothing, angle2 = nothing,
@@ -220,7 +248,16 @@ end
 """
     build_ic(dis; strt, file = "") -> IcSpec
 
-Initial heads on grid `dis` (a scalar, one value per layer, by user node or grid-shaped).
+Initial heads on grid `dis` (a scalar, one value per layer, by user node or
+grid-shaped), in the model's length units.
+
+# Example
+```jldoctest; setup = :(dis = build_dis(; delr = 100.0, delc = 100.0, top = 0.0, botm = zeros(10, 5, 1) .- 10))
+julia> ic = build_ic(dis; strt = fill(-1.0, 10, 5, 1));
+
+julia> length(ic.strt)
+50
+```
 """
 build_ic(dis::AbstractDisSpec; strt, file::AbstractString = "") =
     IcSpec(; strt = _node_array(strt, dis, "build_ic", "strt"), file = String(file))
@@ -233,6 +270,19 @@ pairs (MF6's PERIOD blocks; before the first one a model with STO is transient).
 SS and SY must not be negative in active cells; convertible cells need SY. `options`
 are the other `StoSpec` fields (`storagecoefficient`, `ss_confined_only`, `save_flows`,
 `file`).
+
+`ss` is the specific storage (1/L; with `storagecoefficient = true` the storage
+coefficient, dimensionless), `sy` the specific yield (dimensionless).
+
+# Example
+Steady state in the first stress period, transient from the second on:
+```jldoctest; setup = :(dis = build_dis(; delr = 100.0, delc = 100.0, top = 0.0, botm = zeros(10, 5, 1) .- 10))
+julia> sto = build_sto(dis; ss = 1e-5, sy = 0.15, iconvert = 1,
+                       periods = [1 => :steady_state, 2 => :transient]);
+
+julia> sto.sy[1]
+0.15
+```
 """
 function build_sto(dis::AbstractDisSpec; ss, iconvert = 0, sy = nothing, periods = (), options...)
     ctx = "build_sto"
@@ -252,13 +302,19 @@ function build_sto(dis::AbstractDisSpec; ss, iconvert = 0, sy = nothing, periods
 end
 
 """
-    oc_record(action, rtype, setting = :all, steps = Int[]) -> OcRecord
-    oc_record(text) -> OcRecord
+    ModflowGPU.oc_record(action, rtype, setting = :all, steps = Int[]) -> OcRecord
+    ModflowGPU.oc_record(text) -> OcRecord
 
 One OC PERIOD record: `oc_record(:save, "HEAD")`, `oc_record(:print, "BUDGET", :steps,
 [1, 5])` or `oc_record("SAVE HEAD FREQUENCY 2")`. `action` is `:save` or `:print`,
 `rtype` `"HEAD"` or `"BUDGET"`, `setting` `:all`, `:first`, `:last`, `:frequency` (one
-step number) or `:steps`.
+step number) or `:steps`. Used in the `periods` of [`build_oc`](@ref).
+
+# Example
+```jldoctest
+julia> ModflowGPU.oc_record(:save, "HEAD", :frequency, [5]) == ModflowGPU.oc_record("SAVE HEAD FREQUENCY 5")
+true
+```
 """
 function oc_record(action::Symbol, rtype::AbstractString, setting::Symbol = :all, steps = Int[])
     ctx = "oc_record"
@@ -284,8 +340,19 @@ _oc_records(recs) = OcRecord[r isa OcRecord ? oc_record(r.action, r.rtype, r.set
              head_print_format = nothing, periods = (), file = "") -> OcSpec
 
 Output control. `periods` are `kper => records` pairs, the records `OcRecord`s or their
-text (`"SAVE HEAD ALL"`, see `oc_record`); an empty list turns output off from that
-period on.
+text (`"SAVE HEAD ALL"`, see [`oc_record`](@ref)); an empty list turns output off from
+that period on. `head_file` and `budget_file` are the names of the binary output files
+(none written when empty).
+
+# Example
+Save heads and budgets at every time step:
+```jldoctest
+julia> oc = build_oc(; head_file = "model.hds", budget_file = "model.cbc",
+                     periods = [1 => ["SAVE HEAD ALL", "SAVE BUDGET ALL", "PRINT BUDGET LAST"]]);
+
+julia> length(oc.periods.data[1])
+3
+```
 """
 function build_oc(;
         head_file::AbstractString = "", budget_file::AbstractString = "", budgetcsv_file::AbstractString = "",
@@ -402,7 +469,23 @@ block (they apply until the next block; an empty `cells` list removes all stress
   `boundnames = true`).
 
 `maxbound = 0` uses the largest number of records of a period. An empty `name` gets
-MF6's default (`"WEL-1"`, ...) in `build_model`.
+MF6's default (`"WEL-1"`, ...) in [`build_model`](@ref).
+
+Values are in the model's units: heads, stages and elevations in L, conductances in
+L²/T, well rates in L³/T (negative for pumping), recharge and evapotranspiration rates in
+L/T.
+
+# Example
+Two constant-head cells and a river cell in stress period 1, the river stage raised in
+period 2:
+```jldoctest; setup = :(dis = build_dis(; delr = 100.0, delc = 100.0, top = 0.0, botm = zeros(10, 5, 1) .- 10))
+julia> chd = build_boundary(:CHD, dis; periods = [1 => (; cells = [(1, 1, 1), (1, 5, 10)], values = [0.0, -2.0])]);
+
+julia> riv = build_boundary(:RIV, dis; name = "river",
+                            periods = [1 => (; cells = [(1, 3, 5)], values = [-1.0 500.0 -3.0]),
+                                       2 => (; cells = [(1, 3, 5)], values = [-0.5 500.0 -3.0])])
+BoundarySpec{:RIV}("RIVER", list, periods [1, 2])
+```
 """
 function build_boundary(
         kind::Symbol, dis::AbstractDisSpec; periods, name::AbstractString = "", auxnames = String[],
@@ -443,7 +526,16 @@ A READASARRAYS stress package (RCHA: `kind = :RCH`; EVTA: `kind = :EVT`) on a DI
 DISV grid. `periods` are `kper => (; name = array, ...)` pairs: the arrays given in
 that PERIOD block (`recharge`, `irch`; `surface`, `rate`, `depth`, `ievt`; auxiliary
 variables by name), each a scalar, `(ncol, nrow)` or a vector of `ncpl`. Arrays not
-given keep their previous values (zero, layer 1 at first), as in MF6.
+given keep their previous values (zero, layer 1 at first), as in MF6. Rates are in L/T
+in the model's units.
+
+# Example
+Recharge on the top layer, a uniform rate in period 1 and a map in period 2:
+```jldoctest; setup = :(dis = build_dis(; delr = 100.0, delc = 100.0, top = 0.0, botm = zeros(10, 5, 1) .- 10))
+julia> rcha = build_array_boundary(:RCH, dis;
+                                   periods = [1 => (; recharge = 1e-3), 2 => (; recharge = fill(2e-3, 10, 5))])
+BoundarySpec{:RCH}("", arrays, periods [1, 2])
+```
 """
 function build_array_boundary(
         kind::Symbol, dis::AbstractDisSpec; periods, name::AbstractString = "", auxnames = String[],
@@ -549,7 +641,18 @@ A GWF model from package specs (`build_dis`, `build_npf`, `build_ic`, `build_sto
 order; the spec holds them in MF6's order (WEL, DRN, RIV, GHB, RCH, EVT, CHD, then this
 order). Unnamed stress packages get MF6's default names (`"CHD-1"`, ...). Files without a
 name get `<name>.<ext>` (lower case; `<name>.<package name>` for stress packages), the
-names `write_simulation` uses.
+names [`write_simulation`](@ref) uses. Model names have at most 16 characters (MF6).
+
+# Example
+```jldoctest; setup = :(dis = build_dis(; delr = 100.0, delc = 100.0, top = 0.0, botm = zeros(10, 5, 1) .- 10))
+julia> chd = build_boundary(:CHD, dis; periods = [1 => (; cells = [(1, 1, 1), (1, 5, 10)], values = [0.0, -2.0])]);
+
+julia> wel = build_boundary(:WEL, dis; periods = [1 => (; cells = [(1, 3, 5)], values = [-100.0])]);
+
+julia> gwf = build_model("flow"; dis, npf = build_npf(dis; k = 10.0), ic = build_ic(dis; strt = 0.0),
+                         boundaries = [chd, wel])
+GwfSpec("FLOW", DisSpec, boundaries: WEL-1, CHD-1)
+```
 """
 function build_model(
         name::AbstractString; dis::AbstractDisSpec, npf::NpfSpec, ic::IcSpec, sto::Union{Nothing, StoSpec} = nothing,
@@ -597,8 +700,19 @@ end
     build_tdis(; perlen, nstp = 1, tsmult = 1.0, time_units = :undefined,
                start_date_time = "", file = "") -> TdisSpec
 
-Time discretization: `perlen` per stress period; `nstp` and `tsmult` a scalar (every
-period) or one value per period. Checked as MF6's `check_tdis_timing`.
+Time discretization: `perlen` (the length of each stress period, in `time_units`, e.g.
+`:days`); `nstp` (time steps per period) and `tsmult` (the ratio of successive step
+lengths) a scalar (every period) or one value per period. Checked as MF6's
+`check_tdis_timing`.
+
+# Example
+A steady-state period of one day, then ten periods of 30 days with 5 steps each:
+```jldoctest
+julia> tdis = build_tdis(; perlen = [1.0; fill(30.0, 10)], nstp = [1; fill(5, 10)], time_units = :days);
+
+julia> sum(tdis.nstp)
+51
+```
 """
 function build_tdis(; perlen, nstp = 1, tsmult = 1.0, time_units::Symbol = :undefined, start_date_time::AbstractString = "", file::AbstractString = "")
     ctx = "build_tdis"
@@ -633,8 +747,23 @@ const _IMS_CHOICES = Dict(
 An IMS solution: MF6's defaults of `complexity` (`:simple` when not given) with the
 `ImsSpec` fields in `settings` (`outer_dvclose = 1e-6`, `linear_acceleration =
 :bicgstab`, ...). `given` lists the keywords passed (COMPLEXITY included when given), in
-the order `write_simulation` writes them. `models` is filled in by `build_simulation`
-when empty.
+the order `write_simulation` writes them. `models` is filled in by
+[`build_simulation`](@ref) when empty. Closures are in the model's units (head change in
+L for the `dvclose` settings).
+
+The linear-solver preconditioner of IMS (ILU0, MILU0, ILUT) is not used: ModflowGPU
+replaces it by its own (the `preconditioner` keyword of [`run_simulation`](@ref)).
+
+# Example
+```jldoctest
+julia> ims = build_ims(; complexity = :moderate, outer_dvclose = 1e-4, linear_acceleration = :bicgstab);
+
+julia> ims.given
+3-element Vector{String}:
+ "COMPLEXITY"
+ "OUTER_DVCLOSE"
+ "LINEAR_ACCELERATION"
+```
 """
 function build_ims(; complexity::Union{Nothing, Symbol} = nothing, models = String[], file::AbstractString = "", settings...)
     ctx = "build_ims"
@@ -676,6 +805,28 @@ A simulation of one or more GWF models (`build_model`) solved by one IMS solutio
 solution group. The IMS solution gets the model names when its `models` is empty; TDIS
 and IMS files without a name get `<first model>.tdis` / `.ims`. Period data must not
 refer to stress periods after the last one.
+
+The result can be run directly ([`run_simulation`](@ref), with `outdir` for the output
+files) or written as MF6 input ([`write_simulation`](@ref)).
+
+# Example
+A one-layer model with two constant heads and a well, in steady state:
+```jldoctest
+julia> dis = build_dis(; delr = 100.0, delc = 100.0, top = 0.0, botm = fill(-10.0, 10, 5, 1));
+
+julia> chd = build_boundary(:CHD, dis; periods = [1 => (; cells = [(1, 1, 1), (1, 5, 10)], values = [0.0, -2.0])]);
+
+julia> wel = build_boundary(:WEL, dis; periods = [1 => (; cells = [(1, 3, 5)], values = [-100.0])]);
+
+julia> oc = build_oc(; head_file = "flow.hds", budget_file = "flow.cbc",
+                     periods = [1 => ["SAVE HEAD ALL", "SAVE BUDGET ALL"]]);
+
+julia> gwf = build_model("flow"; dis, npf = build_npf(dis; k = 10.0), ic = build_ic(dis; strt = 0.0),
+                         oc, boundaries = [chd, wel]);
+
+julia> sim = build_simulation(gwf; tdis = build_tdis(; perlen = 1.0))
+SimulationSpec(1 model(s): FLOW; 1 period(s); 0 exchange(s))
+```
 """
 function build_simulation(
         models; tdis::TdisSpec, ims::ImsSpec = build_ims(), mxiter::Integer = 1, simdir::AbstractString = "",

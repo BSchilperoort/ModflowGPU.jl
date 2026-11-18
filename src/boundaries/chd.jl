@@ -1,4 +1,4 @@
-# CHD: constant heads (gwf-chd.f90, MF6 >= 6.4; see docs/mf6_notes.md).
+# CHD: constant heads (gwf-chd.f90, MF6 >= 6.4; see docs/dev/mf6_notes.md).
 #
 # A CHD cell keeps its row in the system but is not an unknown: `chd_rp` sets its IBOUND
 # to a negative value, `chd_ad` sets its head, `chd_fc` adds nothing, and the solution

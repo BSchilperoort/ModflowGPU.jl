@@ -6,6 +6,20 @@ One entry per file, in include order (`src/ModflowGPU.jl`): purpose, key types a
 functions, and the test groups (`MFGPU_TEST_GROUPS`, see `test/runtests.jl`) that cover
 it. Underscore-prefixed helpers are omitted.
 
+## Public API (T8.2)
+
+- **ModflowGPU.jl**: the `export` and `public` lists, by group (running, backends and
+  precision, stepping, builder, output, backend authors). Exported: the user-facing names
+  (`run_simulation`, `finalize_simulation`, the stepping calls, builders, readers);
+  `public` only: `run` and `finalize` (aliases of `run_simulation` and
+  `finalize_simulation`, same function objects; Base clash), `solve` (CommonSolve clash), `update` (CUDA.jl exports `update`),
+  `device_bound!`, the error and component types (`MF6InputError`, `HeadStep`, ...), the
+  backend hooks (`register_backend!`, `pin_memory!`, `free_memory!`, `host_mapped_zeros`,
+  `free_device_arrays!`). Every public name has a docstring and is listed in exactly one
+  `@docs` block of `docs/src/api/*.md` (`checkdocs = :public` in docs/make.jl). A new
+  public name needs both. Tests: api (test/unit/api_test.jl: names vs the API pages,
+  docstrings, no clash with Base exports, aliases).
+
 ## Backends and precision
 
 - **backend_setup.jl**: backend registry, adapted from mGV. `select_backend` (name → KA
@@ -197,7 +211,7 @@ it. Underscore-prefixed helpers are omitted.
   window, r)` re-evaluates them per step and restages `bound` (multiplier and offsets in
   Float64, as period data; after a stepping API write the series replace their columns of
   `bound_user`); `tswindow`. Tests: timeseries, run, assembly, sto.
-- **boundaries/chd.jl**: CHD (gwf-chd.f90; see `docs/mf6_notes.md`). `apply_chd_heads!`,
+- **boundaries/chd.jl**: CHD (gwf-chd.f90; see `docs/dev/mf6_notes.md`). `apply_chd_heads!`,
   `calc_chd_rate!`. Tests: boundaries (parity vs MF6 CBC).
 - **boundaries/wel.jl**, **rch.jl**, **ghb.jl**: WEL, RCH (list and RCHA arrays, cell
   area), GHB formulations (`formulate_record` methods). Tests: boundaries. T6.1: WEL
@@ -259,7 +273,7 @@ it. Underscore-prefixed helpers are omitted.
   `_ArgMaxAbsOp` as the first op also returns the first index of the largest magnitude,
   `_mapreduce_loc!`; results land in host-mapped memory where `host_mapped_zeros` allows).
   Adapt rules on `KrylovSolver` and `Reducer` (a new one on the target). IMS mapping in
-  docs/mf6_notes.md, accuracy and timing in docs/precision.md. Tests: krylov.
+  docs/dev/mf6_notes.md, accuracy and timing in docs/dev/precision.md. Tests: krylov.
   `KrylovSettings` has `preconditioner` and `precond_options`, `KrylovSolver` a `precond`
   field. Non-Jacobi preconditioners run through `precond_apply!` between non-fused kernels
   (`_cg_init_nf`, `_cg_update_nf`, `_bcgs_direction_nf`, `_bcgs_half_nf`; section
@@ -365,18 +379,20 @@ it. Underscore-prefixed helpers are omitted.
 
 ## Running a simulation
 
-- **run.jl** (T2.8): `ModflowGPU.run(simdir or SimulationSpec; backend, precision,
+- **run.jl** (T2.8): `run_simulation(simdir or SimulationSpec; backend, precision,
   outdir, closures, write_output, preconditioner, precond_options)` (on the stepping API since T3.3) → `RunResult` (model, precision types, `StepResult`s,
   `ModelBudget`s, final heads, output paths); `ConvergenceError`. One model, one IMS
   solution. Tests: run (parity vs MF6 on Tier 0, ex-gwf-fhb, ts_tas, coupling_rde and IMS
   variants; flopy read-back with MFGPU_FLOPY=1). `_write_step` (step output) copies the
-  heads to the host only when OC saves or prints them (T5.2).
+  heads to the host only when OC saves or prints them (T5.2). `run` is a `const` alias
+  of `run_simulation` (T8.2).
 
 - **stepping.jl** (T3.3): libmf6/XMI-like stepping (PLAN.md 3.6). `Simulation`,
   `initialize`, `prepare_time_step`, `prepare_solve`, `solve` (one outer iteration),
-  `finalize_solve`, `finalize_time_step`, `do_time_step`, `update`, `finalize`,
+  `finalize_solve`, `finalize_time_step`, `do_time_step`, `update`, `finalize_simulation`
+  (T8.2; `finalize` is a `const` alias),
   `get_current_time` / `get_start_time` / `get_end_time` / `get_time_step`, `StepResult`;
-  T5.4: `finalize(sim; free = true)` frees the device arrays (stage `:freed`; `run` uses
+  T5.4: `finalize_simulation(sim; free = true)` frees the device arrays (stage `:freed`; `run_simulation` uses
   `free = false`), `device_bound!` (the device BOUND write window between
   `prepare_time_step` and `prepare_solve`, enforced; `prepare_solve` checks the written
   records on the device: finite, RIV stage ≥ bottom and conductance ≥ 0,
@@ -386,10 +402,28 @@ it. Underscore-prefixed helpers are omitted.
   `set_value` (X, BOUND). Mirror sync rules in the file header; BOUND and NODELIST
   mirrors are versioned (T4.6: copied only when the engine values changed, dirty check by
   memcmp). T5.2: device BOUND writes between `prepare_time_step` and `prepare_solve` (the
-  contract ModflowCoupling's device-resident coupling uses; header of the file). Tests: stepping.
-- **bmi.jl** (T3.3): BasicModelInterface methods on `Simulation` (`BMI.initialize`,
-  `update`, `update_until`, time, variables, `get_value(_ptr)`, `set_value(_at_indices)`,
-  grid 1 = model grid). Tests: stepping.
+  contract ModflowCoupling's device-resident coupling uses; header of the file). Tests: stepping
+  (T8.5: "addresses documented" checks that `var_addresses` of a model with every stress
+  package matches the address table of `docs/src/coupling/stepping.md`; a new address
+  needs a row there).
+- **bmi.jl** (T3.3, T8.9): BasicModelInterface methods on `Simulation`, all 41 functions
+  of the spec. `BMI.initialize(Simulation, config_file)` (no keywords; `_bmi_config`
+  reads the TOML configuration file, or takes a directory / mfsim.nam with defaults),
+  `update`, `update_until` (step ends only), time, variables (`_bmi_units`: UDUNITS from
+  LENGTH_UNITS / TIME_UNITS; `_bmi_var_grid`), getters returning `dest`, grids
+  (`_bmi_grid`: 0 scalar, 1 model grid, 2 model nodes as points, 1 + 2i / 2 + 2i package
+  records / BOUND as vectors; coordinates with XORIGIN, YORIGIN, ANGROT; unstructured
+  faces and edges from the DISV/DISU vertices), `_bmi_unsupported` (the ArgumentError of
+  unsupported functions). Tests: bmi (conformance on DIS, DISV, DISU), stepping.
+- **mf6model.jl** (T8.10): `MF6Model`, libmf6's BMI/XMI as ModflowInterface.jl wraps it
+  (`ModflowModel`), a handle (`source`, `settings`, `simulation`, `last_error`, `arrays`)
+  around a `Simulation`; every call forwards to the stepping API (`_mf6call` keeps the
+  error message for `get_last_bmi_error`). `_mf6_ptr`: host mirrors with libmf6 shapes
+  (0-dim scalars, length-1 NODEUSER/NODEREDUCED dummies); grid 1 per mf6bmiGrid.f90
+  (`_mf6_dis(m, f, grid, T)` = `confirm_grid_type`, failures throw); functions libmf6
+  lacks throw (`_mf6_not_libmf6`). Simulation's BMI (bmi.jl) is separate and unchanged.
+  Tests: bmi (`test/unit/mf6model_test.jl`: validation/bmi_script.jl on MF6Model and,
+  via validation/libmf6_bmi.jl, on libmf6 6.3.0 and 6.8.2).
 
 ## Test helpers (`test/`, always loaded)
 
@@ -417,7 +451,7 @@ it. Underscore-prefixed helpers are omitted.
   transient) with CHD, WEL, RCHA, RIV, DRN, EVT, EVTA; `generate.jl` writes it
   (riv_drn_evt parity test); test/unit/builder_test.jl builds it in memory.
 - **models/wetdry/**, **models/disu_staggered/**, **models/afr/** (T6.1): synthetic models
-  run with mf6 at test time (groups assembly, run): wetting and drying (2×1×12, VARIABLECV
+  run with mf6 at test time (groups assembly, run; disu_staggered also bmi): wetting and drying (2×1×12, VARIABLECV
   DEWATERED, PERCHED, REWET, convertible storage, RCH moving to layer 2), DISU with staggered
   horizontal connections (IHC 2) and convertible cells, WEL AUTO_FLOW_REDUCE (fraction and
   FLOW_REDUCTION_LENGTH with AUTO_FLOW_REDUCE_AUXNAME).
@@ -437,7 +471,7 @@ it. Underscore-prefixed helpers are omitted.
   RIV, DRN, EVT, RCH, STO; steady + 12 daily periods, `ntransient`; `output = :none` = OC without records for mf6), `synthetic_ims` (`:parity`,
   `:production`), `write_synthetic`, `synthetic_counts` / `scaled_counts`, device memory
   `device_bytes` / `memory_coefficients` / `estimate_device_bytes`, `synthetic_main`
-  (benchmark driver). Tests: synthetic (unit + parity vs mf6). Results: docs/scaling.md.
+  (benchmark driver). Tests: synthetic (unit + parity vs mf6). Results: docs/dev/scaling.md.
 - **hardware.jl** (T0.4): hardware baseline (stream, SpMV, dot, atomics).
 - **run.jl** (T4.1): benchmark harness: indus / continental / global5m, steady state + 30
   daily steps (`synthetic_simulation(...; ntransient)`), on a backend in `:double` and

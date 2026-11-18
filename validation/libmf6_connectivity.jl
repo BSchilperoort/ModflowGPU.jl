@@ -20,7 +20,7 @@
 # (DIS/NODEUSER and DIS/NODEREDUCED are dummies of length 1 when no cell is excluded, and
 # CON/IAUSR, CON/JAUSR then equal IA, JA.)
 #
-# Which libmf6 is loaded is decided by the Julia environment (docs/reference_tooling.md):
+# Which libmf6 is loaded is decided by the Julia environment (docs/dev/reference_tooling.md):
 #
 #   julia --project=reference/julia-env/mf6.8.2 validation/libmf6_connectivity.jl <simdir> <outdir>
 #

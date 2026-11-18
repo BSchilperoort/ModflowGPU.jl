@@ -258,7 +258,7 @@ function npf_properties(
 
     _check_disu_angldegx(npf, dis, ik22)
 
-    npf.xt3d && unsupported(file, "NPF6 option XT3D (T6.5)")
+    npf.xt3d && unsupported(file, "NPF6 option XT3D")
 
     # gwf-npf.f90 `preprocess_input`: without THICKSTRT, negative ICELLTYPE means 1; with
     # it, such a cell is confined (ICELLTYPE 0) with the saturation of the starting head

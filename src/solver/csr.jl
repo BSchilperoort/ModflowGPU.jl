@@ -13,7 +13,7 @@
 #   (constant head; no-flow cells are not in the reduced system) becomes an identity row
 #   with `rhs = x`; with a symmetric solver (IMS CG) the entries of active rows in
 #   constant-head columns are moved to the right-hand side (`rhs −= a_nm·x_m`, `a_nm = 0`).
-#   See docs/mf6_notes.md (constant heads).
+#   See docs/dev/mf6_notes.md (constant heads).
 #
 # Heads are offsets `h' = h − r` from the per-cell references `r` (section 3.7, rule 1).
 # The matrix is MF6's `A`; the right-hand side is `b' = b − A·r`: for an active row

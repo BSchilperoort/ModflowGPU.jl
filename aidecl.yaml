@@ -12,7 +12,7 @@ ai_usage:
   code_proportion:
     ai_generated_percent: 100
   summary: >-
-    The plan (PLAN.md and docs/plan/) was written with AI assistance and is executed by
+    The plan (PLAN.md and docs/dev/plan/) was written with AI assistance and is executed by
     AI coding agents, one task card at a time. For each card, an implementer agent writes
     the code, tests, benchmarks and documentation on its own branch, and a separate agent
     reviews the branch. The owner directs the work, decides on scope and design questions.

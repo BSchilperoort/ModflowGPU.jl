@@ -14,7 +14,7 @@
 # `JacobiPreconditioner` is the default: CG and BiCGSTAB fuse its application into their
 # update kernels (`_precond` in krylov.jl) and only call `precond_setup!` for it; any other
 # preconditioner is applied with `precond_apply!` (non-fused kernels). Selection:
-# `KrylovSettings(; preconditioner, precond_options)`, from `ModflowGPU.run` / `initialize`
+# `KrylovSettings(; preconditioner, precond_options)`, from `run_simulation` / `initialize`
 # (`preconditioner = :jacobi`, `:chebyshev`, `:mc_sgs`, `:mc_ilu0`, `:amg`), built by
 # `build_preconditioner` with `precond_options` as the keywords of its constructor.
 #
@@ -44,10 +44,10 @@ const PRECONDITIONERS = (:jacobi, :chebyshev, :mc_sgs, :mc_ilu0, :amg)
 """
     DEFAULT_PRECONDITIONER
 
-What `preconditioner = :auto` (the default of `ModflowGPU.run`, `initialize` and
+What `preconditioner = :auto` (the default of `run_simulation`, `initialize` and
 `KrylovSettings(ims)`) selects: `:mc_ilu0`, the fastest preconditioner in the T4.4
 benchmark on every model, precision and backend (steady state and transient steps;
-docs/precision.md).
+docs/dev/precision.md).
 """
 const DEFAULT_PRECONDITIONER = :mc_ilu0
 

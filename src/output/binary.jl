@@ -7,10 +7,11 @@
 # and writers below read and write little-endian bytes.
 
 """
-    MF6BinaryFileError(path, offset, msg)
+    ModflowGPU.MF6BinaryFileError(path, offset, msg)
 
-Error raised when an MF6 binary output file (head, budget or binary grid file) is
-malformed: `offset` is the byte offset in the file where the problem was found.
+Error raised by the output readers ([`open_head_file`](@ref), [`open_budget_file`](@ref),
+[`read_grb`](@ref)) when an MF6 binary output file is malformed or truncated: `offset` is
+the byte offset in the file where the problem was found.
 """
 struct MF6BinaryFileError <: Exception
     path::String

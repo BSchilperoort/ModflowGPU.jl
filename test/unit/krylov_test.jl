@@ -101,7 +101,7 @@ function _mf6_reference(A, b, st::KrylovSettings; kstp = 1)
     itmax = l2norm0 == 0 ? 0 : st.maxiter
     icnvg = l2norm0 == 0 ? 1 : 0
     epfact = ims_epfact(st.icnvgopt, kstp)
-    # MF6 adds SIGN(DPREC, d); ours is relative to the numerator (`_safe_div`, mf6_notes.md).
+    # MF6 adds SIGN(DPREC, d); ours is relative to the numerator (`_safe_div`, docs/dev/mf6_notes.md).
     sdiv(num, d) = num / (d + copysign(max(eps(Float64) * abs(num), floatmin(Float64)), d))
     close(a, b) = a == b || abs(a - b) <= 100 * eps() * max(abs(a), abs(b))
     iters = 0
@@ -234,8 +234,9 @@ _tight(T, method; kw...) = KrylovSettings(;
         # ILUT of COMPLEXITY COMPLEX with RELAXATION_FACTOR 0 given (ModflowCoupling): a message.
         ims = ImsSpec(; complexity = :complex, preconditioner_levels = 5, relaxation_factor = 0.0, given = ["COMPLEXITY", "RELAXATION_FACTOR"])
         @test_logs (:info, r"ILUT is replaced by mc_ilu0") KrylovSettings(ims)
-        # Logged once per session (maxlog = 1), but per message (T5.4): another preconditioner, or the replacement of another model's
-        # preconditioner by an explicit one, is still logged once.
+        # Logged once per session (maxlog = 1), but per message (T5.4): another
+        # preconditioner, or the replacement of another model's preconditioner by an
+        # explicit one, is still logged once.
         logger = Test.TestLogger(; respect_maxlog = true)
         Base.CoreLogging.with_logger(logger) do
             for _ in 1:3

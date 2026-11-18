@@ -1,0 +1,44 @@
+name: Documentation
+
+# CPU only. Builds the manual on every push to main and on pull requests; deploys to the
+# gh-pages branch on main only (deploydocs in docs/make.jl, push_preview = false).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  actions: write
+  contents: write
+  statuses: write
+
+jobs:
+  docs:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v3
+      # The example gallery downloads mf6examples.zip and the mf6 6.8.2 Linux binary into
+      # docs/.cache/archives (docs/ExampleTools.jl checks their sha256). The key holds
+      # the pinned sha256 values of ExampleTools.ARCHIVES: change it with them.
+      - name: Cache the gallery downloads
+        uses: actions/cache@v4
+        with:
+          path: docs/.cache/archives
+          key: gallery-archives-cf40b4b900aa6ba19fbd108f0857b192ed90c8bed2a9ebdb7642565c1b9cc406-69847a003a4259d69f0ae637bc191b99097650062847f39ed17d234fd8596f37
+      - name: Install dependencies
+        run: julia --project=docs -e 'using Pkg; Pkg.instantiate()'
+      - name: Build and deploy
+        run: julia --project=docs docs/make.jl
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LINKCHECK: 'true'

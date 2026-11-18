@@ -333,7 +333,7 @@ function _set_state!(model, habs)
 end
 
 # Universal residual criterion per example where MF6's reference heads do not meet 1e-8
-# (docs/precision.md): ex-gwf-maw-p03c's reference is the tight-relative run (INNER_RCLOSE
+# (docs/dev/precision.md): ex-gwf-maw-p03c's reference is the tight-relative run (INNER_RCLOSE
 # 1e-10 RELATIVE_RCLOSE; the strict tight run does not converge), whose converged heads
 # leave a residual of 2.9e-8 of the row magnitudes; our formulation matches libmf6's first
 # AMAT/RHS to 0 and 6e-17 (the oracle below).

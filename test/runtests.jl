@@ -46,6 +46,7 @@ include("run_parity.jl")
 const TEST_GROUPS = [
     "backend" => ["unit/backend_test.jl"],
     "precision" => ["unit/precision_test.jl"],
+    "api" => ["unit/api_test.jl", "unit/docs_test.jl"],
     "kernel" => ["unit/kernel_test.jl"],
     "input_tokenizer" => ["unit/input_tokenizer_test.jl"],
     "input_blocks" => ["unit/input_blocks_test.jl"],
@@ -68,6 +69,7 @@ const TEST_GROUPS = [
     "picard" => ["unit/picard_test.jl", "unit/backtracking_test.jl"],
     "run" => ["parity/run_test.jl"],
     "stepping" => ["unit/stepping_test.jl"],
+    "bmi" => ["unit/bmi_test.jl", "unit/mf6model_test.jl"],
     "builder" => ["unit/builder_test.jl"],
     "synthetic" => ["unit/synthetic_test.jl", "parity/synthetic_test.jl"],
     # GPU only (skips with a message on other backends): no `double` in :single kernels.

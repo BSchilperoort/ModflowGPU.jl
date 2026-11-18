@@ -45,7 +45,7 @@ function _head_difference(ours, mf6)
     return d, hi - lo
 end
 
-# --- `:single` budget bound from Float32 rounding of the cell flows (T6.1, docs/precision.md)
+# --- `:single` budget bound from Float32 rounding of the cell flows (T6.1, docs/dev/precision.md)
 #
 # A flow of the engine is `q = C·(h'_m − h'_n + Δr)` (storage: `κ·(h'old − h')`, `κ = rho1 +
 # rho2`) from offset heads rounded to Float32, so it differs from MF6's by up to
@@ -199,7 +199,7 @@ end
 # returns per preset (; dh, dq, dl, pd, outer, inner, time, mf6_outer, mf6_inner,
 # backend_vs_cpu), plus :single_vs_double. `single_preconditioner` replaces `preconditioner`
 # in `:single` (T6.0: ex-gwf-lgrv-gr). `single_budget_tol` replaces the `:single` budget
-# criterion 1e-4 × total in (T6.4: rad_disu_confined, docs/precision.md).
+# criterion 1e-4 × total in (T6.4: rad_disu_confined, docs/dev/precision.md).
 # (time step, outer iteration) pairs in which backtracking reduced the head change: from
 # MF6's outer table rows "Backtracking <kiter> <flag> <count> ..." (count > 0; a new time
 # step starts at kiter 1), or from the `BacktrackRecord`s of a ModflowGPU run.
@@ -285,4 +285,126 @@ function _run_parity(
     @info "Run :single vs :double: $name, max |Δh| = $(round(d; sigdigits = 3)) m (final heads)"
     stats[:single_vs_double] = d
     return stats
+end
+
+# --- The models of the run parity test (test/parity/run_test.jl), also run by
+# docs/parity/collect.jl and checked against docs/src/assets/parity.toml (group api).
+
+"Sizes of benchmark/synthetic.jl in the synthetic parity test (test/parity/synthetic_test.jl)."
+const SYNTHETIC_PARITY_MODELS = ("tiny", "indus")
+
+"Synthetic models in test/models/ that the run parity test runs with mf6 at test time."
+const RUN_PARITY_TEST_MODELS = ("ts_tas", "coupling_rde", "wetdry", "disu_staggered", "afr")
+
+"""
+    run_parity_models() -> Vector{Pair{String, Any}}
+
+The models of the run parity test, in run order: `name => source`, where `source` is the
+reference run directory of an MF6 example (a `String`; `parity_examples()` with a
+converged reference run that strict loading accepts), `(:test_model, name)` for
+`RUN_PARITY_TEST_MODELS` or `:rad_disu_confined` (when its reference run exists). The
+last two need mf6 (`RUN_MF6`); `with_parity_rundir` prepares them. Examples left out
+are logged with the reason.
+"""
+function run_parity_models()
+    hwell = get(ENV, "MFGPU_TEST_HWELL", "1") != "0"
+    out = Pair{String, Any}[]
+    for (name, _) in parity_examples()
+        rundir = reference_rundir(name)
+        if isnothing(rundir)
+            @info "Skipping $name in the run parity test: no converged reference run in $(joinpath(REFERENCE_DIR, "runs", name))"
+            continue
+        end
+        if name == "ex-gwf-hwell-a" && !hwell
+            @info "Skipping $name in the run parity test (MFGPU_TEST_HWELL=0)"
+            continue
+        end
+        try
+            load_simulation(rundir; strict = true)
+        catch err
+            err isa MF6UnsupportedError || rethrow()
+            @info "Skipping $name in the run parity test (not loadable): $(sprint(showerror, err))"
+            continue
+        end
+        push!(out, name => rundir)
+    end
+    for name in RUN_PARITY_TEST_MODELS
+        push!(out, name => (:test_model, name))
+    end
+    # DISU against MF6 (T6.4): ex-gwf-rad-disu with confined storage.
+    if isdir(joinpath(REFERENCE_DIR, "runs", "ex-gwf-rad-disu", "tight-relative"))
+        push!(out, "rad_disu_confined" => :rad_disu_confined)
+    else
+        @info "Skipping rad_disu_confined in the run parity test: reference/runs/ex-gwf-rad-disu not found"
+    end
+    return out
+end
+
+"""
+    with_parity_rundir(f, name, source)
+
+Call `f(rundir)` with the simulation directory of a `run_parity_models()` entry: the
+reference run itself, or a temporary copy run with mf6 first. Returns `nothing` without
+calling `f` (logged) when such a model needs mf6 and `RUN_MF6` does not exist.
+"""
+function with_parity_rundir(f, name, source)
+    source isa AbstractString && return f(source)
+    if !isfile(RUN_MF6)
+        @info "Skipping $name in the run parity test: mf6 not found at $RUN_MF6 (set REFERENCE_DIR or MF6)"
+        return nothing
+    end
+    return mktempdir() do tmp
+        rundir = joinpath(tmp, name)
+        if source === :rad_disu_confined
+            rad_disu_confined(rundir)
+        else
+            cp(joinpath(@__DIR__, "models", last(source)), rundir)
+        end
+        out = read(Cmd(`$RUN_MF6`; dir = rundir), String)
+        @test occursin("Normal termination", out)
+        f(rundir)
+    end
+end
+
+"Run `f(name, rundir)` for every model of the run parity test (`run_parity_models`)."
+function _run_models(f)
+    for (name, source) in run_parity_models()
+        with_parity_rundir(rundir -> f(name, rundir), name, source)
+    end
+    return nothing
+end
+
+"""
+    run_parity_options(name) -> NamedTuple
+
+The keyword arguments of `_run_parity` for model `name` of the run parity test: the
+per-example preconditioners and criteria (the reasons are in the comments and in
+docs/dev/precision.md).
+"""
+function run_parity_options(name)
+    # ex-gwf-hwell-a: Jacobi BiCGSTAB does not converge in :single (T2.8); AMG does
+    # (T4.3), unless MFGPU_TEST_PRECONDITIONER chooses another preconditioner.
+    default_pc = !haskey(ENV, "MFGPU_TEST_PRECONDITIONER")
+    # rad_disu_confined (T6.4): radial DISU grid without fixed heads, nearly singular
+    # in the late (long) steps; MC-ILU0 BiCGSTAB stalls near 1e-8 m from step 21 on,
+    # AMG converges in 2 outer iterations per step, as MF6 with ILUT does.
+    hwell_amg = name in ("ex-gwf-hwell-a", "rad_disu_confined", "ex-gwf-rad-disu") && default_pc
+    pc = hwell_amg ? :amg : RUN_PRECONDITIONER
+    # ex-gwf-lgrv-gr in :single: Float32 CG with MC-ILU0 stops 6.1e-3 m from the exact
+    # heads (the correction solves converge too slowly on this badly conditioned steady
+    # state); with AMG 6.7e-6 m (T6.0, docs/dev/precision.md).
+    spc = name == "ex-gwf-lgrv-gr" && default_pc ? :amg : pc
+    # :single budgets (T6.1): for the models below only, differences beyond the
+    # Float32 rounding of the cell flows and the head difference (`_rounding_bounds`)
+    # must be below 1e-4 × total in (replaces the 5e-4 of rad_disu_confined, T6.4); every
+    # other model keeps the raw criteria. Raw `:single` values there: rad-disu CBC 0.39 ×
+    # total in and pd 48.5 %, maw-p03c 1.0e-3 and 0.60 %, advtidal pd 1.9e-2 %
+    # (docs/dev/precision.md).
+    srb = name in ("rad_disu_confined", "ex-gwf-rad-disu", "ex-gwf-maw-p03c", "ex-gwf-advtidal")
+    # ex-gwf-rad-disu in :double/:mixed: STO-SY of cell 21 in step 2 (Sy·area/delt is
+    # large: Δt = 9.4e-5 d; heads at the cell top) turns the 2.5e-10 ft head difference
+    # to MF6's tight-relative reference into 6.0e-6 × total in; criterion 1e-5 there
+    # (docs/dev/precision.md).
+    dbt = name == "ex-gwf-rad-disu" ? 1.0e-5 : 1.0e-6
+    return (; preconditioner = pc, single_preconditioner = spc, double_budget_tol = dbt, single_rounding_bound = srb)
 end

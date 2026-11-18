@@ -23,7 +23,7 @@
     FLOAT32_CLOSURES
 
 The tightest closures `:single` (Float32) runs use (PLAN.md section 3.7, "Closures in
-Float32"; measured in docs/precision.md): IMS closures below these are raised to them in
+Float32"; measured in docs/dev/precision.md): IMS closures below these are raised to them in
 Float32 by `PicardSettings`:
 
 - `outer_dvclose`, `inner_dvclose`: fixed floors (m);

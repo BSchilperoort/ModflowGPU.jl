@@ -50,7 +50,7 @@ a 50–350 m aquifer, as ModflowCoupling), uniform DELR = DELC (9000 m at 5′, 
   outer loop stops, `ConvergenceError`). `:double` BiCGSTAB converges in all 13 steps
   (tiny 68 outer / 6624 inner, indus 100 / 8506). The matrix is symmetric (confined, no
   Newton), so the parity settings use CG, which converges in both presets. The same
-  failure mode as ex-gwf-hwell-a (docs/precision.md); the cure is the Phase 4
+  failure mode as ex-gwf-hwell-a (docs/dev/precision.md); the cure is the Phase 4
   preconditioner, not a looser tolerance.
 
 ## Parity vs mf6 6.8.2
@@ -126,4 +126,4 @@ conductances keep the synthetic steady state well conditioned; the real global m
 
 **Benchmark baseline (T4.1)**: steady state + 30 daily steps on rocm, the CPU backend and
 mf6, with wall time per step, SpMV GB/s, peak device memory and the time split, in
-[benchmark/results/2026-11-07.md](../benchmark/results/2026-11-07.md) (`benchmark/run.jl`).
+[benchmark/results/2026-11-07.md](../../benchmark/results/2026-11-07.md) (`benchmark/run.jl`).

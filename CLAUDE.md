@@ -2,7 +2,7 @@
 
 A GPU port of MODFLOW 6 groundwater flow (GWF) in Julia with KernelAbstractions. The plan and
 architecture are in `PLAN.md`; the task cards are in one file per phase,
-`docs/plan/phase<N>.md` (index in PLAN.md section 5). The conventions below summarise
+`docs/dev/plan/phase<N>.md` (index in PLAN.md section 5). The conventions below summarise
 PLAN.md section 2. Read your card's phase file and the PLAN.md sections it references
 before starting.
 
@@ -36,9 +36,12 @@ above works without extra setup. CI (`.github/workflows/`) runs only the CPU tes
 
 ## Conventions (PLAN.md section 2)
 
-- **Find your way first:** read `docs/api_map.md` (map of `src/` and the test group of each
+- **Find your way first:** read `docs/dev/api_map.md` (map of `src/` and the test group of each
   file) before exploring `src/`. While iterating, run only your card's test groups
   (`MFGPU_TEST_GROUPS`, names in `test/runtests.jl`); run the full suite once at the end.
+  Exception (owner, 2026-11-18): a card that does not touch the engine (kernels, solver,
+  assembly, boundaries, input parsing), e.g. a docs or BMI card, runs only the affected
+  test groups; CI runs the full CPU suite after the push.
 - **Read before you write:** read the MF6 Fortran source for the feature
   (`reference/modflow6`, fetched by `validation/fetch_reference.sh`, T0.2). Port behaviour,
   not structure, and cite the Fortran routine in a comment where a formula comes from.
@@ -57,7 +60,10 @@ above works without extra setup. CI (`.github/workflows/`) runs only the CPU tes
 - **Compat:** `KernelAbstractions = "0.10"` and `AMDGPU = "2.11"` (KA 0.10 is the minimum
   since T5.0, PLAN.md decision 7). mGV (a package with GPU weak dependencies) requires
   KA 0.10.7 and AMDGPU 2.11, and Milestone B loads both in one environment. KA 0.9 is no
-  longer supported. See `docs/compat.md` (e.g. `CPU()` is `POCLBackend` in KA 0.10).
+  longer supported. See `docs/dev/compat.md` (e.g. `CPU()` is `POCLBackend` in KA 0.10).
+- **User docs:** a card that changes user-visible behaviour (a new package or option, a changed
+  keyword, a new address) updates the matching page under `docs/src/` in the same branch
+  (build: `julia --project=docs docs/make.jl`; must have no warnings). The reviewer checks it.
 
 ## Float32 and Float64 (PLAN.md section 3.7)
 

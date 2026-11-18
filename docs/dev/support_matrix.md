@@ -29,7 +29,7 @@ through the same engine checks.
 | Block | Supported | Rejected |
 | --- | --- | --- |
 | OPTIONS | PRINT_OPTION, COMPLEXITY (SIMPLE, MODERATE, COMPLEX presets) | CSV_OUTER_OUTPUT, CSV_INNER_OUTPUT, NO_PTC, ATS_OUTER_MAXIMUM_FRACTION |
-| NONLINEAR | OUTER_DVCLOSE, OUTER_MAXIMUM, UNDER_RELAXATION NONE / SIMPLE / COOLEY / DBD (+ THETA, KAPPA, GAMMA, MOMENTUM), LINEAR_SOLVER DEFAULT / LINEAR | other LINEAR_SOLVER values |
+| NONLINEAR | OUTER_DVCLOSE, OUTER_MAXIMUM, UNDER_RELAXATION NONE / SIMPLE / COOLEY / DBD (+ THETA, KAPPA, GAMMA, MOMENTUM), BACKTRACKING_NUMBER / _TOLERANCE / _REDUCTION_FACTOR / _RESIDUAL_LIMIT (also COMPLEXITY COMPLEX's; T6.2a, `sln_backtracking`, on DIS, DISV and DISU, confined and convertible cells, every precision preset), LINEAR_SOLVER DEFAULT / LINEAR | other LINEAR_SOLVER values |
 | LINEAR | INNER_MAXIMUM, INNER_DVCLOSE, INNER_RCLOSE (absolute, STRICT, L2NORM_RCLOSE, RELATIVE_RCLOSE), LINEAR_ACCELERATION CG / BICGSTAB, NUMBER_ORTHOGONALIZATIONS, SCALING_METHOD NONE / DIAGONAL, REORDERING_METHOD NONE | SCALING_METHOD L2NORM, REORDERING_METHOD RCM / MD |
 
 Accepted with a different behaviour (logged warnings, not errors):
@@ -39,12 +39,8 @@ Accepted with a different behaviour (logged warnings, not errors):
   the ModflowGPU option `preconditioner` (`ModflowGPU.run` / `initialize` keyword):
   `:auto` (default: `:mc_ilu0`, T4.4; logged as a message for ILU0, a warning for the
   others), `:jacobi`, `:chebyshev`, `:mc_sgs`, `:mc_ilu0` (multicolour ILU0, T4.2), `:amg` (smoothed-aggregation AMG, T4.3), with `precond_options`
-  (docs/mf6_notes.md). RED_BLACK_ORDERING is accepted (it only affects MF6's ILU).
-- Backtracking (BACKTRACKING_NUMBER, _TOLERANCE, _REDUCTION_FACTOR, _RESIDUAL_LIMIT and
-  COMPLEXITY COMPLEX's implicit backtracking): supported (T6.2a, `sln_backtracking`), on
-  DIS, DISV and DISU, confined and convertible cells (with wetting and drying), in every
-  precision preset. Not with Newton (T6.2).
-- `:single`: closures below the Float32 floors (`FLOAT32_CLOSURES`, docs/precision.md) are
+  (docs/dev/mf6_notes.md). RED_BLACK_ORDERING is accepted (it only affects MF6's ILU).
+- `:single`: closures below the Float32 floors (`FLOAT32_CLOSURES`, docs/dev/precision.md) are
   raised, with an info message.
 
 ## GWF model packages
@@ -52,7 +48,7 @@ Accepted with a different behaviour (logged warnings, not errors):
 | Package | Supported | Rejected (card) |
 | --- | --- | --- |
 | Name file | LIST, PRINT_INPUT, PRINT_FLOWS, SAVE_FLOWS | NEWTON (T6.2, `:newton`; also *engine*, `GwfModel`), UNDER_RELAXATION (Newton) |
-| DIS6 | LENGTH_UNITS, NOGRB, GRB6 output, XORIGIN, YORIGIN, ANGROT, CRS; IDOMAIN 0, 1 and −1 (pass-through) | – |
+| DIS6 | LENGTH_UNITS, NOGRB, GRB6 FILEOUT (accepted; GRB files are not written), XORIGIN, YORIGIN, ANGROT, CRS; IDOMAIN 0, 1 and −1 (pass-through) | – |
 | DISV6 (T6.4) | as DIS6; VERTICES, CELL2D (vertex lists closed as in MF6); IDOMAIN 0, 1 and −1 (pass-through) | – |
 | DISU6 (T6.4) | as DIS6, plus VERTICAL_OFFSET_TOLERANCE; CONNECTIONDATA IAC, JA, IHC (0, 1, 2), CL12, HWVA, ANGLDEGX (optional); VERTICES, CELL2D (optional); IDOMAIN 0 and 1 (MF6 rejects −1) | READASARRAYS stress input (MF6 rejects it too) |
 | NPF6 | ICELLTYPE 0 (confined) and ≠ 0 (convertible, standard formulation, T6.1), THICKSTRT, VARIABLECV [DEWATERED], PERCHED, REWET (WETFCT, IWETIT, IHDWET) with WETDRY (T6.1), K, K22, K33, ANGLE1–3, K22OVERK, K33OVERK (on DISV/DISU the K ellipse uses the connection angles, `anglex`, T6.4; DISU K22 or SAVE_SPECIFIC_DISCHARGE without ANGLDEGX, or with inconsistent ANGLDEGX, is MF6's error), ALTERNATIVE_CELL_AVERAGING (LOGARITHMIC, AMT-LMK, AMT-HMK; harmonic default), SAVE_FLOWS, PRINT_FLOWS, SAVE_SPECIFIC_DISCHARGE | XT3D (T6.5), HIGHEST_CELL_SATURATION and NEWTON (T6.2), TVK6 (T6.x), other options |
@@ -81,7 +77,7 @@ Accepted with a different behaviour (logged warnings, not errors):
 ## Validated models (Milestone A gate)
 
 Parity against mf6 6.8.2 in both presets on the CPU backend and on ROCm (tolerances of
-PLAN.md section 4; numbers in docs/precision.md and docs/scaling.md): Tier 0
+PLAN.md section 4; numbers in docs/dev/precision.md and docs/dev/scaling.md): Tier 0
 (ex-gwf-toth, ex-gwf-hanic, ex-gwf-hanir), Tier 2 (ex-gwf-fhb since T6.3, which replaced the
 `fhb_const` stand-in; ex-gwf-hwell-a only in `:double`, opt-in), and Tier 1, the synthetic coupling models (test/models/coupling_rde
 and benchmark/synthetic.jl `tiny` and `indus`). The Tier 3–7 examples load with
@@ -92,7 +88,7 @@ K33OVERK, IMS CG with STRICT rclose): ex-gwf-lgrv-gc (9×61×49) and ex-gwf-lgrv
 (25×183×147, 672525 cells; `MFGPU_TEST_LGRV_GR=0` skips it), in the universal residual
 test and the run parity test, `:single`, `:mixed` and `:double`, CPU and ROCm. Default
 preconditioner, except ex-gwf-lgrv-gr in `:single`, which runs with `:amg`: with
-`:mc_ilu0` the Float32 solve does not converge (docs/precision.md, T6.0).
+`:mc_ilu0` the Float32 solve does not converge (docs/dev/precision.md, T6.0).
 
 T6.3 adds time series: ex-gwf-fhb (CHD heads and WEL rates from LINEAREND series) in the
 universal residual test, the storage residual test and the run parity test against its
@@ -107,7 +103,7 @@ T6.4 adds the Tier 5 DISV examples ex-gwf-u1disv (121 cells), ex-gwf-curve-90 (2
 ex-gwf-curvilin (864) (CHD, STO steady state, BiCGSTAB), and `rad_disu_confined`
 (ex-gwf-rad-disu, DISU with vertices, 550 cells, transient WEL, with STO ICONVERT 0; built
 from the reference run at test time, AMG preconditioner) in the universal residual test
-and the run parity test, `:single`, `:mixed` and `:double`, CPU and ROCm (docs/precision.md,
+and the run parity test, `:single`, `:mixed` and `:double`, CPU and ROCm (docs/dev/precision.md,
 T6.4). ex-gwf-u1disv-x and ex-gwf-disvmesh need XT3D (T6.5).
 
 T6.1 adds convertible cells: ex-gwf-twri01, ex-gwf-bcf2ss-p01a, ex-gwf-bump-p01b,
@@ -115,6 +111,6 @@ ex-gwf-nwt-p02b (Tier 3), ex-gwf-advtidal, ex-gwf-maw-p03a, ex-gwf-maw-p03c (Tie
 convertible layers), ex-gwf-rad-disu (DISU, convertible storage; AMG) and the synthetic
 test/models/wetdry, disu_staggered and afr (mf6 at test time), in the universal residual
 test, the libmf6 oracle and the run parity test, `:single`, `:mixed` and `:double`, CPU and
-ROCm (docs/precision.md, T6.1, with two documented per-example criteria). Left out of the
+ROCm (docs/dev/precision.md, T6.1, with two documented per-example criteria). Left out of the
 convertible examples: the Tier 4 examples (NEWTON, T6.2); OBS6 output of advtidal,
 maw-p03c and rad-disu is not written (T6.7).
