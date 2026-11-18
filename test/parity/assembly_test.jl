@@ -348,7 +348,7 @@ end
 # 1e-10 RELATIVE_RCLOSE; the strict tight run does not converge), whose converged heads
 # leave a residual of 2.9e-8 of the row magnitudes; our formulation matches libmf6's first
 # AMAT/RHS to 0 and 6e-17 (the oracle below).
-# T6.2: ex-gwf-zaidel (K = 1e-4 m/s): MF6 ends on its absolute INNER_RCLOSE 1e-10 (STRICT;
+# T6.2: ex-gwf-zaidel (K = 1e-4 m/d): MF6 ends on its absolute INNER_RCLOSE 1e-10 (STRICT;
 # the last outer iteration changes nothing), which is 3e-8 of the largest row magnitude: the
 # residual of its heads is 3.1e-8 (node 121, a linear-saturation cell); the oracle below
 # matches libmf6's Newton matrix to 5e-20.

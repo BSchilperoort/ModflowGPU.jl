@@ -48,6 +48,7 @@ const FEATURE_NAMES = Dict(
     :disu => "Unstructured grids (DISU6)",
     :convertible => "Convertible cells (NPF `ICELLTYPE` ≠ 0), with wetting and drying (`REWET`, `WETDRY`)",
     :convertible_storage => "Convertible storage (STO `ICONVERT` ≠ 0, specific yield) in transient periods",
+    :newton => "Newton–Raphson formulation (`NEWTON` and `NEWTON UNDER_RELAXATION` in the model name file)",
 )
 
 "Why each package or model of `UNSUPPORTED_PACKAGES` and `UNSUPPORTED_MODELS` is rejected."

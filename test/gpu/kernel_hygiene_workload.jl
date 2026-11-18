@@ -129,7 +129,9 @@ function workload(dir)
     # Convertible cells (T6.1): wetting and drying, PERCHED, convertible storage, WEL
     # AUTO_FLOW_REDUCE, staggered DISU connections; and the separate assembly, residual and
     # storage kernels with a ConvertibleNpf / ConvertibleStorage.
-    for name in ("wetdry", "afr", "disu_staggered")
+    # T6.2: the Newton formulation (test/models/newton: PTC, NEWTON UNDER_RELAXATION, Newton
+    # storage, DRN and WEL terms, backtracking).
+    for name in ("wetdry", "afr", "disu_staggered", "newton")
         d = joinpath(dir, name)
         cp(joinpath(MODELS, name), d)
         chmod(d, 0o755; recursive = true)

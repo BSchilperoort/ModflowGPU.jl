@@ -10,9 +10,9 @@
 # The MODFLOW 6 example
 # [ex-gwf-nwt-p02](https://modflow6-examples.readthedocs.io/en/latest/_notebooks/ex-gwf-nwt-p02.html)
 # solves it with the Newton–Raphson formulation (`-p02a`) and with rewetting (`-p02b`), and
-# its figure compares the two. ModflowGPU does not support Newton–Raphson yet (planned, see
-# [Supported packages](@ref)), so this page runs `ex-gwf-nwt-p02b` and compares
-# ModflowGPU's water table with that of MODFLOW 6 on the same input.
+# its figure compares the two. This page first runs `ex-gwf-nwt-p02b` and compares
+# ModflowGPU's water table with that of MODFLOW 6 on the same input, then runs `-p02a` and
+# draws the figure of the MF6 example (both solutions from ModflowGPU).
 #
 # ## Input and the MODFLOW 6 run
 #
@@ -96,3 +96,41 @@ save_figure(difference_map(g, d; layer = 14, unit = "ft", xlabel = "x (ft)", yla
 
 stats = Dict(p => (; cmp = compare_with_mf6(mf6.dir, runs[p]), runs[p].time) for p in (:double, :single))
 comparison_table("ex-gwf-nwt-p02b", stats; unit = "ft")
+
+# ## The Newton–Raphson formulation (`ex-gwf-nwt-p02a`)
+#
+# The same model with `NEWTON` and `COMPLEXITY COMPLEX` (backtracking and delta-bar-delta
+# under-relaxation) instead of rewetting; the cells above the water table keep a head
+# below their bottom instead of going dry. The figure of the MF6 example: the water table
+# of the Newton–Raphson solution (line) and of the rewetting solution (circles), both from
+# ModflowGPU, with the mean absolute difference between them.
+
+mf6n = example_run("ex-gwf-nwt-p02a")
+runsn = Dict(p => run_modflowgpu(mf6n.dir, p) for p in (:double, :single))
+hfn = open_head_file(runsn[:double].result.head_file)
+fig = Figure(; size = (640, 700))
+for k in 1:4
+    local wt, wtb = water_table(read_head(hfn, k)), water_table(read_head(hf, k))
+    local mae = sum(x -> isnan(x) ? 0.0 : abs(x), wt .- wtb) / (g.ncol * g.nrow)
+    local ax = Axis(
+        fig[k, 1]; title = "$(('A':'D')[k]). Mean absolute water-table difference $(round(mae; sigdigits = 2)) feet",
+        titlesize = 12, titlealign = :right, ylabel = k == 2 ? "Water-table elevation, in feet" : "",
+    )
+    poly!(ax, [Rect2f(g.xe[c], g.botm[c, row, l], g.delr[c], (l == 1 ? g.top[c, row] : g.botm[c, row, l - 1]) - g.botm[c, row, l]) for (l, rw, c) in chd if rw == row]; color = :cyan)
+    section_grid!(ax, g; row, color = RGBf(0.5, 0.5, 0.5))
+    lines!(ax, g.xc, wt[:, row]; color = :black, linewidth = 0.75, label = "Newton–Raphson")
+    scatter!(ax, g.xc, wtb[:, row]; color = :transparent, strokecolor = :blue, strokewidth = 1, markersize = 7, label = "Rewetting")
+    ax.yticks = 20:10:60
+    limits!(ax, 0, 5000, 20, 65)
+    k == 1 && axislegend(ax; position = :rt, framevisible = false, labelsize = 10)
+    k < 4 && hidexdecorations!(ax; grid = false)
+    k == 4 && (ax.xlabel = "x-coordinate, in feet")
+end
+save_figure(fig, "ex-gwf-nwt-p02-newton")
+
+# The comparison of `-p02a` with MODFLOW 6 (cells whose MODFLOW 6 head is below the cell
+# bottom are dry and left out: their head is not unique, see
+# [Differences from MODFLOW 6](@ref "Newton–Raphson")).
+
+statsn = Dict(p => (; cmp = compare_with_mf6(mf6n.dir, runsn[p]), runsn[p].time) for p in (:double, :single))
+comparison_table("ex-gwf-nwt-p02a", statsn; unit = "ft")

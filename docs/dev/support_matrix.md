@@ -28,7 +28,7 @@ through the same engine checks.
 
 | Block | Supported | Rejected |
 | --- | --- | --- |
-| OPTIONS | PRINT_OPTION, COMPLEXITY (SIMPLE, MODERATE, COMPLEX presets) | CSV_OUTER_OUTPUT, CSV_INNER_OUTPUT, NO_PTC, ATS_OUTER_MAXIMUM_FRACTION |
+| OPTIONS | PRINT_OPTION, COMPLEXITY (SIMPLE, MODERATE, COMPLEX presets), NO_PTC [ALL / FIRST] (T6.2: pseudo-transient continuation of Newton steady states) | CSV_OUTER_OUTPUT, CSV_INNER_OUTPUT, ATS_OUTER_MAXIMUM_FRACTION, DEV_PTC* (developer options) |
 | NONLINEAR | OUTER_DVCLOSE, OUTER_MAXIMUM, UNDER_RELAXATION NONE / SIMPLE / COOLEY / DBD (+ THETA, KAPPA, GAMMA, MOMENTUM), BACKTRACKING_NUMBER / _TOLERANCE / _REDUCTION_FACTOR / _RESIDUAL_LIMIT (also COMPLEXITY COMPLEX's; T6.2a, `sln_backtracking`, on DIS, DISV and DISU, confined and convertible cells, every precision preset), LINEAR_SOLVER DEFAULT / LINEAR | other LINEAR_SOLVER values |
 | LINEAR | INNER_MAXIMUM, INNER_DVCLOSE, INNER_RCLOSE (absolute, STRICT, L2NORM_RCLOSE, RELATIVE_RCLOSE), LINEAR_ACCELERATION CG / BICGSTAB, NUMBER_ORTHOGONALIZATIONS, SCALING_METHOD NONE / DIAGONAL, REORDERING_METHOD NONE | SCALING_METHOD L2NORM, REORDERING_METHOD RCM / MD |
 
@@ -47,11 +47,11 @@ Accepted with a different behaviour (logged warnings, not errors):
 
 | Package | Supported | Rejected (card) |
 | --- | --- | --- |
-| Name file | LIST, PRINT_INPUT, PRINT_FLOWS, SAVE_FLOWS | NEWTON (T6.2, `:newton`; also *engine*, `GwfModel`), UNDER_RELAXATION (Newton) |
+| Name file | LIST, PRINT_INPUT, PRINT_FLOWS, SAVE_FLOWS, NEWTON [UNDER_RELAXATION] (T6.2, `:newton`; IMS CG is MF6's input error with NEWTON) | – |
 | DIS6 | LENGTH_UNITS, NOGRB, GRB6 FILEOUT (accepted; GRB files are not written), XORIGIN, YORIGIN, ANGROT, CRS; IDOMAIN 0, 1 and −1 (pass-through) | – |
 | DISV6 (T6.4) | as DIS6; VERTICES, CELL2D (vertex lists closed as in MF6); IDOMAIN 0, 1 and −1 (pass-through) | – |
 | DISU6 (T6.4) | as DIS6, plus VERTICAL_OFFSET_TOLERANCE; CONNECTIONDATA IAC, JA, IHC (0, 1, 2), CL12, HWVA, ANGLDEGX (optional); VERTICES, CELL2D (optional); IDOMAIN 0 and 1 (MF6 rejects −1) | READASARRAYS stress input (MF6 rejects it too) |
-| NPF6 | ICELLTYPE 0 (confined) and ≠ 0 (convertible, standard formulation, T6.1), THICKSTRT, VARIABLECV [DEWATERED], PERCHED, REWET (WETFCT, IWETIT, IHDWET) with WETDRY (T6.1), K, K22, K33, ANGLE1–3, K22OVERK, K33OVERK (on DISV/DISU the K ellipse uses the connection angles, `anglex`, T6.4; DISU K22 or SAVE_SPECIFIC_DISCHARGE without ANGLDEGX, or with inconsistent ANGLDEGX, is MF6's error), ALTERNATIVE_CELL_AVERAGING (LOGARITHMIC, AMT-LMK, AMT-HMK; harmonic default), SAVE_FLOWS, PRINT_FLOWS, SAVE_SPECIFIC_DISCHARGE | XT3D (T6.5), HIGHEST_CELL_SATURATION and NEWTON (T6.2), TVK6 (T6.x), other options |
+| NPF6 | ICELLTYPE 0 (confined) and ≠ 0 (convertible, standard formulation, T6.1), THICKSTRT, VARIABLECV [DEWATERED], PERCHED, REWET (WETFCT, IWETIT, IHDWET) with WETDRY (T6.1), K, K22, K33, ANGLE1–3, K22OVERK, K33OVERK (on DISV/DISU the K ellipse uses the connection angles, `anglex`, T6.4; DISU K22 or SAVE_SPECIFIC_DISCHARGE without ANGLDEGX, or with inconsistent ANGLDEGX, is MF6's error), ALTERNATIVE_CELL_AVERAGING (LOGARITHMIC, AMT-LMK, AMT-HMK; harmonic default), SAVE_FLOWS, PRINT_FLOWS, SAVE_SPECIFIC_DISCHARGE | XT3D (T6.5), TVK6 (T6.x), other options; HIGHEST_CELL_SATURATION is supported with NEWTON (T6.2), PERCHED, VARIABLECV and REWET with NEWTON are MF6's input errors |
 | STO6 | SS, SY, ICONVERT 0 and ≠ 0 (convertible storage, STO-SY, T6.1), STORAGECOEFFICIENT, SS_CONFINED_ONLY, SAVE_FLOWS, STEADY-STATE / TRANSIENT periods | TVS6 (*engine*) |
 | IC6 | STRT | – |
 | OC6 | HEAD and BUDGET FILEOUT, HEAD PRINT_FORMAT; SAVE / PRINT HEAD / BUDGET with ALL, FIRST, LAST, FREQUENCY, STEPS | BUDGETCSV (and other options) |
@@ -67,7 +67,7 @@ Accepted with a different behaviour (logged warnings, not errors):
 
 | Feature | Status |
 | --- | --- |
-| Formulation | confined (ICELLTYPE 0) and convertible cells with wetting/drying (standard formulation, T6.1; Newton is T6.2), Picard outer iterations, flux-form residual, heads as offsets (PLAN.md 3.7) |
+| Formulation | confined (ICELLTYPE 0) and convertible cells with wetting/drying (standard formulation, T6.1), the Newton–Raphson formulation (T6.2: NPF, STO, WEL AUTO_FLOW_REDUCE and DRN AUXDEPTHNAME Jacobian terms, pseudo-transient continuation, NEWTON UNDER_RELAXATION, backtracking on the system without the Newton terms; BiCGSTAB only), Picard outer iterations, flux-form residual, heads as offsets (PLAN.md 3.7) |
 | Precision presets | `:double`, `:mixed` (T4.4), `:single`, `:auto` (`:mixed` with Float64, else `:single`) |
 | Backends | CPU (KernelAbstractions), ROCm (tested on the RX 7800 XT); CUDA, Metal, oneAPI, OpenCL registered but untested |
 | Output | HDS, CBC (FLOW-JA-FACE, STO-SS, package lists), listing budget tables and PRINT HEAD, in the DIS, DISV (one head record per layer) and DISU (one record) layouts; GRB files are read, not written |
@@ -112,5 +112,17 @@ convertible layers), ex-gwf-rad-disu (DISU, convertible storage; AMG) and the sy
 test/models/wetdry, disu_staggered and afr (mf6 at test time), in the universal residual
 test, the libmf6 oracle and the run parity test, `:single`, `:mixed` and `:double`, CPU and
 ROCm (docs/dev/precision.md, T6.1, with two documented per-example criteria). Left out of the
-convertible examples: the Tier 4 examples (NEWTON, T6.2); OBS6 output of advtidal,
+convertible examples (until T6.2): the Tier 4 examples (NEWTON); OBS6 output of advtidal,
 maw-p03c and rad-disu is not written (T6.7).
+
+T6.2 adds the Newton–Raphson formulation: the Tier 4 examples ex-gwf-bcf2ss-p02a,
+ex-gwf-bump-p01a, ex-gwf-bump-p01c, ex-gwf-nwt-p02a (COMPLEXITY COMPLEX, STO, 30 steps),
+ex-gwf-nwt-p03a, ex-gwf-nwt-p03b, ex-gwf-zaidel, `capture_saved` (ex-gwf-capture, whose
+reference saves no heads, with OC saving them; mf6 at test time) and the synthetic
+test/models/newton (NEWTON UNDER_RELAXATION, HIGHEST_CELL_SATURATION, convertible storage,
+DRN AUXDEPTHNAME, WEL AUTO_FLOW_REDUCE, COMPLEXITY COMPLEX: backtracking in the same outer
+iterations as MF6) in the universal residual test, the libmf6 oracle (the first Newton
+matrix with the pseudo-transient continuation term: 0 to 3e-16 in `:double`) and the run
+parity test, `:single`, `:mixed` and `:double`, CPU and ROCm; ex-gwf-nwt-p03b without
+`:single` (its Newton iterations do not converge in Float32). Heads of cells below their
+bottom (Newton-dry) are compared as dry (docs/dev/precision.md, T6.2).

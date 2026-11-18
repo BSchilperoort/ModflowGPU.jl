@@ -449,7 +449,7 @@ function run_parity_options(name)
     # other model keeps the raw criteria. Raw `:single` values there: rad-disu CBC 0.39 ×
     # total in and pd 48.5 %, maw-p03c 1.0e-3 and 0.60 %, advtidal pd 1.9e-2 %
     # (docs/dev/precision.md).
-    # T6.2: ex-gwf-zaidel (K = 1e-4 m/s, head differences of 6 cm per cell next to heads of
+    # T6.2: ex-gwf-zaidel (K = 1e-4 m/d, head differences of 6 cm per cell next to heads of
     # 13 m: pd 1.3e-2 % raw, no MF6 budget file, so the bound takes C = condsat).
     srb = name in ("rad_disu_confined", "ex-gwf-rad-disu", "ex-gwf-maw-p03c", "ex-gwf-advtidal", "ex-gwf-zaidel")
     # ex-gwf-rad-disu in :double/:mixed: STO-SY of cell 21 in step 2 (Sy·area/delt is

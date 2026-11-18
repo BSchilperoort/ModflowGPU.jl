@@ -54,15 +54,20 @@ Why `:single` has wider limits, in plain terms:
   head range), with an `Info` message in the log. The results are then as close to
   MODFLOW 6 as the rounding allows.
 - **Budgets.** Flows are conductance × head difference. Where conductances or storage
-  coefficients are very large, the rounding of the heads is multiplied by them. For four
-  models (`rad_disu_confined`, `ex-gwf-rad-disu`, `ex-gwf-maw-p03c`, `ex-gwf-advtidal`) the
-  `:single` budget limit is applied to the part of the difference that exceeds this
-  rounding bound, computed per flow; the raw differences are larger (on the radial DISU
-  grid, up to 0.4 × total inflow in single flows). Use `:mixed` or `:double` when budgets
-  of such models matter.
+  coefficients are very large, the rounding of the heads is multiplied by them. For five
+  models (`rad_disu_confined`, `ex-gwf-rad-disu`, `ex-gwf-maw-p03c`, `ex-gwf-advtidal`,
+  `ex-gwf-zaidel`) the `:single` budget limit is applied to the part of the difference
+  that exceeds this rounding bound, computed per flow; the raw differences are larger (on
+  the radial DISU grid, up to 0.4 × total inflow in single flows). Use `:mixed` or
+  `:double` when budgets of such models matter.
 - **Iterations.** Not all models converge in `:single` with the default preconditioner.
   `ex-gwf-lgrv-gr` is run with `preconditioner = :amg` in `:single` (see the
-  [GPU guide](@ref "Which preset to use")).
+  [GPU guide](@ref "Which preset to use")). The Newton–Raphson example `ex-gwf-nwt-p03b`
+  does not converge in `:single` at all and is tested in `:mixed` and `:double` only.
+- **Newton–Raphson.** Cells whose head is below their bottom are dry, and their head is
+  not unique ([Differences from MODFLOW 6](@ref "Newton–Raphson")): the comparison checks
+  that such cells are below their bottom in both runs and leaves their heads out of the
+  differences.
 
 Three models use a criterion of their own, all for documented reasons in the developer
 notes: `ex-gwf-rad-disu` in `:double` and `:mixed` (budgets within 1e-5 × total inflow:

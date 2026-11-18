@@ -1,4 +1,4 @@
-# # BCF2SS: wetting and drying of an aquifer
+# # BCF2SS: wetting and drying, and Newton–Raphson
 #
 # A test problem of the MODFLOW-88 and MODFLOW-2005 documentation (McDonald and Harbaugh,
 # 1988): two aquifers of 10 × 15 cells of 500 ft, the upper one convertible, drained by a
@@ -9,9 +9,9 @@
 #
 # The MODFLOW 6 example
 # [ex-gwf-bcf2ss](https://modflow6-examples.readthedocs.io/en/latest/_notebooks/ex-gwf-bcf2ss.html)
-# solves it with rewetting (`ex-gwf-bcf2ss-p01a`, this page) and with the Newton–Raphson
-# formulation (`-p02a`), which ModflowGPU does not support yet (planned, see
-# [Supported packages](@ref)).
+# solves it with rewetting (`ex-gwf-bcf2ss-p01a`) and with the Newton–Raphson
+# formulation (`-p02a`). This page runs both: rewetting first, then Newton–Raphson at the
+# end of the page.
 #
 # ## Input and the MODFLOW 6 run
 #
@@ -139,3 +139,43 @@ save_figure(difference_map(g, d; unit = "ft", xlabel = "x (ft)", ylabel = "y (ft
 
 stats = Dict(p => (; cmp = compare_with_mf6(mf6.dir, runs[p]), runs[p].time) for p in (:double, :single))
 comparison_table("ex-gwf-bcf2ss-p01a", stats; unit = "ft")
+
+# ## The Newton–Raphson formulation (`ex-gwf-bcf2ss-p02a`)
+#
+# The same model with `NEWTON` in the model name file and no rewetting. Cells do not go
+# dry: where the water table falls below the bottom of the upper aquifer the cell keeps a
+# head below its bottom, has no saturated thickness and passes no water on. As for
+# `-p01a`, MODFLOW 6 needs the relative residual criterion here.
+
+mf6n = example_run("ex-gwf-bcf2ss-p02a"; mode = "tight-relative")
+runsn = Dict(p => run_modflowgpu(mf6n.dir, p) for p in (:double, :single))
+rn = runsn[:double].result
+rn.converged
+
+# The upper aquifer under pumping conditions with both formulations: rewetting (left;
+# dry cells white) and Newton–Raphson (right; cells with the head below the bottom white),
+# with the contours of the MF6 example.
+
+hn = read_head(open_head_file(rn.head_file), 2)
+fig = Figure(; size = (780, 440))
+hms = []
+for (i, (label, h)) in enumerate((("A. Rewetting (-p01a)", read_head(hf, 2)), ("B. Newton–Raphson (-p02a)", hn)))
+    local ax = Axis(fig[1, i]; aspect = DataAspect(), title = label, titlesize = 12, xlabel = "x-coordinate, in feet", ylabel = i == 1 ? "y-coordinate, in feet" : "")
+    local hl = layer_values(h, 1)
+    hl[hl .< g.botm[:, :, 1]] .= NaN
+    push!(hms, map_heatmap!(ax, g, hl; colorrange = (-10, 140)))
+    map_grid!(ax, g; color = RGBf(0.5, 0.5, 0.5))
+    map_cells!(ax, g, filter(c -> c[1] == 1, river); color = :green)
+    all(isnan, hl) || map_contour!(ax, g, hl; levels = levels[2], color = :black, linewidth = 0.5, labels = true, labelsize = 9)
+    limits!(ax, extrema(g.xe)..., extrema(g.ye)...)
+    i == 2 && hideydecorations!(ax; grid = false)
+end
+Colorbar(fig[2, 1:2], last(hms); vertical = false, label = "Head, in feet", width = Relative(0.5))
+save_figure(fig, "ex-gwf-bcf2ss-newton")
+
+# The comparison with MODFLOW 6 (cells whose MODFLOW 6 head is below the cell bottom are
+# dry and left out: their head is not unique, see
+# [Differences from MODFLOW 6](@ref "Newton–Raphson")).
+
+statsn = Dict(p => (; cmp = compare_with_mf6(mf6n.dir, runsn[p]), runsn[p].time) for p in (:double, :single))
+comparison_table("ex-gwf-bcf2ss-p02a", statsn; unit = "ft")
