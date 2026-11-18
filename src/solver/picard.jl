@@ -42,11 +42,17 @@ Float32 by `PicardSettings`:
   outer iteration (never more): the first inner correction of a converged Float32 state is
   rounding noise of about `eps32·max|h'|`, which a fixed 1e-6 m INNER_DVCLOSE rejects
   for ever (T5.3, T6.0; see `outer_iteration!`);
+- `dvclose_head_cap` (T6.2): that head resolution is used up to this value (m; offsets up
+  to 84 km). Heads of a diverging iteration (ex-gwf-nwt-p03b `:single`: 1.6e27 m after an
+  unconverged inner solve) would otherwise raise OUTER_DVCLOSE with them and end the step as
+  converged;
 - `inner_rclose_factor`: an absolute INNER_RCLOSE is at least this factor times
   `eps(Float32)·max_n Σ_m |terms|` of the first outer iteration of a step, the rounding
   level of the flux-form residual (rule 2).
 """
-const FLOAT32_CLOSURES = (; outer_dvclose = 1.0e-6, inner_dvclose = 1.0e-6, dvclose_head_factor = 1.0, inner_rclose_factor = 1.0)
+const FLOAT32_CLOSURES = (;
+    outer_dvclose = 1.0e-6, inner_dvclose = 1.0e-6, dvclose_head_factor = 1.0, dvclose_head_cap = 1.0e-2, inner_rclose_factor = 1.0,
+)
 
 """
     PicardSettings
@@ -290,7 +296,7 @@ function outer_iteration!(state::OuterState, ps::PicardSolver, m::GwfModel{T}, k
     state.inner += res.iterations
     (hncg, hmax, _, _), lrch = @timed_section :outer_reduction _mapreduce_loc!(ps.reducer, backend, _dxmax_term, _DXMAX_OPS, n, m.δ, m.ibound, m.h)
     state.hncg, state.lrch = hncg, lrch
-    state.dvfloor = st.dvclose_head_factor * eps(T) * abs(hmax)
+    state.dvfloor = min(st.dvclose_head_factor * eps(T) * abs(hmax), FLOAT32_CLOSURES.dvclose_head_cap)
     state.dvclose = max(st.dvclose, state.dvfloor)
     if !isfinite(hncg) || !isfinite(hmax)
         # The linear solve diverged (NaN or Inf): the step cannot converge.

@@ -211,14 +211,13 @@ end
 # horizontal with a convertible cell: the upstream saturation times `condsat`, with
 # HIGHEST_CELL_SATURATION both saturations from the geometry of the cell with the higher
 # bottom when the bottoms differ by at least 0.01 (`highest_cell_saturation`).
-@inline function _newton_conductance(cv::ConvertibleNpf{T}, ibound, h, lo, hi, j, dlh) where {T}
+@inline function _newton_conductance(cv::ConvertibleNpf{T}, ibound, h, lo, hi, j, dlh, uplo::Bool) where {T}
     return @inbounds begin
         (ibound[lo] == 0 || ibound[hi] == 0) && return zero(T)
         csat = cv.condsat[j]
         code = cv.ihcx[j]
         (code & Int32(3)) == Int32(0) && return csat
         (cv.icelltype[lo] == Int32(0) && cv.icelltype[hi] == Int32(0)) && return csat
-        uplo = dlh < zero(T)
         if cv.ihighcellsat && (code & Int32(8)) != Int32(0)
             # In the frame of `lo`: `hi`'s head is h_lo + dlh.
             if (code & Int32(4)) != Int32(0)
@@ -284,10 +283,14 @@ end
         if cv.newton
             d = h[m] - h[n] + dr
             dlh = n == lo ? d : -d
-            c = _newton_conductance(cv, ibound, h, lo, hi, j, dlh)
+            # Upstream: `lo` when its head is higher. MF6 compares absolute heads, which tie
+            # exactly for equal starting heads; the offsets carry their rounding, so a
+            # difference at that level is a tie (the same test in both rows).
+            uplo = dlh < -(T(4) * eps(T) * (abs(h[n]) + abs(h[m]) + abs(dr)))
+            c = _newton_conductance(cv, ibound, h, lo, hi, j, dlh, uplo)
             a, dd, sb = c, c, -(c * dr)
             if jac && ibound[lo] != 0 && ibound[hi] != 0
-                up = dlh < zero(T) ? lo : hi
+                up = uplo ? lo : hi
                 t = _newton_jacobian(cv, h, n, m, j, up, d)
                 if up == n
                     dd -= t
