@@ -302,8 +302,8 @@ function build_sto(dis::AbstractDisSpec; ss, iconvert = 0, sy = nothing, periods
 end
 
 """
-    oc_record(action, rtype, setting = :all, steps = Int[]) -> OcRecord
-    oc_record(text) -> OcRecord
+    ModflowGPU.oc_record(action, rtype, setting = :all, steps = Int[]) -> OcRecord
+    ModflowGPU.oc_record(text) -> OcRecord
 
 One OC PERIOD record: `oc_record(:save, "HEAD")`, `oc_record(:print, "BUDGET", :steps,
 [1, 5])` or `oc_record("SAVE HEAD FREQUENCY 2")`. `action` is `:save` or `:print`,
@@ -312,7 +312,7 @@ step number) or `:steps`. Used in the `periods` of [`build_oc`](@ref).
 
 # Example
 ```jldoctest
-julia> oc_record(:save, "HEAD", :frequency, [5]) == oc_record("SAVE HEAD FREQUENCY 5")
+julia> ModflowGPU.oc_record(:save, "HEAD", :frequency, [5]) == ModflowGPU.oc_record("SAVE HEAD FREQUENCY 5")
 true
 ```
 """

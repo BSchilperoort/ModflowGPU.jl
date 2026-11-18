@@ -167,7 +167,7 @@ function read_listing_budgets(path::AbstractString)
 end
 
 """
-    listing_rates(path, term; title = "VOLUME", zone = "ENTIRE MODEL")
+    ModflowGPU.listing_rates(path, term; title = "VOLUME", zone = "ENTIRE MODEL")
         -> Vector{Tuple{Float64, Float64}}
 
 `(rate in, rate out)` of the budget term `term` in every budget table of the listing
@@ -180,7 +180,7 @@ L³/T in the model's units.
 
 # Example
 ```julia
-listing_rates("path/to/simulation/model.lst", "RIV")   # [(in, out) per table]
+ModflowGPU.listing_rates("path/to/simulation/model.lst", "RIV")   # [(in, out) per table]
 ```
 """
 function listing_rates(
@@ -196,8 +196,8 @@ function listing_rates(
 end
 
 """
-    percent_discrepancy(total_in, total_out) -> Float64
-    percent_discrepancy(b::ModelBudget) -> Float64
+    ModflowGPU.percent_discrepancy(total_in, total_out) -> Float64
+    ModflowGPU.percent_discrepancy(b::ModelBudget) -> Float64
 
 MF6's percent discrepancy `100 (in - out) / ((in + out) / 2)`, zero when both are zero
 (`budget_ot` in Budget.f90). For a [`ModelBudget`](@ref): of its total rates in and out
@@ -205,10 +205,10 @@ MF6's percent discrepancy `100 (in - out) / ((in + out) / 2)`, zero when both ar
 
 # Example
 ```jldoctest
-julia> percent_discrepancy(101.0, 99.0)
+julia> ModflowGPU.percent_discrepancy(101.0, 99.0)
 2.0
 
-julia> percent_discrepancy(0.0, 0.0)
+julia> ModflowGPU.percent_discrepancy(0.0, 0.0)
 0.0
 ```
 """

@@ -15,7 +15,7 @@ to inspect or change a simulation before running it.
 using ModflowGPU
 result = run_simulation("path/to/simulation"; backend = select_backend("auto"))
 result.converged
-percent_discrepancy(result.budgets[end])
+ModflowGPU.percent_discrepancy(result.budgets[end])
 ```
 
 ```@docs
@@ -24,7 +24,7 @@ ModflowGPU.run
 RunResult
 ModelBudget
 BudgetTerm
-cum_percent_discrepancy
+ModflowGPU.cum_percent_discrepancy
 ConvergenceError
 load_simulation
 MF6UnsupportedError

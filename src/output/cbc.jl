@@ -108,8 +108,8 @@ budget files of ModflowGPU and of MF6 alike. Throws an
 # Example
 ```julia
 bf = open_budget_file("path/to/simulation/model.cbc")
-budget_texts(bf)        # e.g. ["FLOW-JA-FACE", "DATA-SPDIS", "WEL", "RIV", ...]
-budget_kstpkper(bf)     # [(1, 1), (1, 2), ...]
+ModflowGPU.budget_texts(bf)     # e.g. ["FLOW-JA-FACE", "DATA-SPDIS", "WEL", "RIV", ...]
+ModflowGPU.budget_kstpkper(bf)  # [(1, 1), (1, 2), ...]
 riv = read_budget(bf; text = "RIV", kper = 2, kstp = 1)   # one BudgetList
 sum(only(riv).q)        # net river flow into the model (L³/T)
 ```
@@ -162,7 +162,7 @@ function open_budget_file(path::AbstractString)
 end
 
 """
-    budget_texts(bf) -> Vector{String}
+    ModflowGPU.budget_texts(bf) -> Vector{String}
 
 The distinct record texts of the budget file `bf` ([`BudgetFile`](@ref)), without
 padding, in order of first appearance.
@@ -170,7 +170,7 @@ padding, in order of first appearance.
 budget_texts(bf::BudgetFile) = unique(String(strip(r.text)) for r in bf.records)
 
 """
-    budget_kstpkper(bf) -> Vector{Tuple{Int, Int}}
+    ModflowGPU.budget_kstpkper(bf) -> Vector{Tuple{Int, Int}}
 
 The distinct `(kstp, kper)` (time step, stress period) of the budget file `bf`, in file
 order.
@@ -178,7 +178,7 @@ order.
 budget_kstpkper(bf::BudgetFile) = unique((Int(r.kstp), Int(r.kper)) for r in bf.records)
 
 """
-    budget_times(bf) -> Vector{Float64}
+    ModflowGPU.budget_times(bf) -> Vector{Float64}
 
 The distinct simulation times (`totim`, in the model's time units) of the budget file
 `bf`, in file order.
@@ -188,7 +188,7 @@ budget_times(bf::BudgetFile) = unique(r.totim for r in bf.records)
 _text_eq(a::AbstractString, b::AbstractString) = uppercase(strip(a)) == uppercase(strip(b))
 
 """
-    find_budget_records(bf; text, kstp, kper, totim, imeth, paknam2, modelnam2) -> Vector{Int}
+    ModflowGPU.find_budget_records(bf; text, kstp, kper, totim, imeth, paknam2, modelnam2) -> Vector{Int}
 
 Indices of the records matching all given keys. Texts and names are compared without
 padding and case-insensitively. Note that GWF-GWF exchange flows are IMETH 6 records with
@@ -197,7 +197,7 @@ model's own FLOW-JA-FACE array.
 
 # Example
 ```julia
-idx = find_budget_records(bf; text = "STO-SS")
+idx = ModflowGPU.find_budget_records(bf; text = "STO-SS")
 [bf.records[i].totim for i in idx]
 ```
 """

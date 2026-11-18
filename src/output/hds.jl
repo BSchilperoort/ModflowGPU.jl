@@ -96,7 +96,7 @@ Reads head files of ModflowGPU and of MF6 alike. Throws an
 # Example
 ```julia
 hf = open_head_file("path/to/simulation/model.hds")
-head_times(hf)                   # the times of the saved arrays
+ModflowGPU.head_times(hf)        # the times of the saved arrays
 h = read_head(hf, length(hf))    # the last one, (ncol, nrow, nlay) for DIS
 h = read_head(hf; kper = 2, kstp = 1)
 ```
@@ -142,14 +142,14 @@ function open_head_file(path::AbstractString; grid::Symbol = :auto)
 end
 
 """
-    head_kstpkper(hf) -> Vector{Tuple{Int, Int}}
+    ModflowGPU.head_kstpkper(hf) -> Vector{Tuple{Int, Int}}
 
 `(kstp, kper)` of each saved array of the head file, in file order.
 """
 head_kstpkper(hf::HeadFile) = [(Int(s.kstp), Int(s.kper)) for s in hf.steps]
 
 """
-    head_times(hf) -> Vector{Float64}
+    ModflowGPU.head_times(hf) -> Vector{Float64}
 
 Simulation time (`totim`) of each saved array of the head file, in file order.
 """
@@ -164,7 +164,7 @@ function _head_shape(hf::HeadFile, s::HeadStep)
 end
 
 """
-    find_head_step(hf; kstp = nothing, kper = nothing, totim = nothing, text = nothing) -> Int
+    ModflowGPU.find_head_step(hf; kstp = nothing, kper = nothing, totim = nothing, text = nothing) -> Int
 
 Index of the saved array matching all given keys (`text` is compared without the
 padding blanks and case-insensitively). Throws an `ArgumentError` if there is no match or
@@ -172,7 +172,7 @@ more than one.
 
 # Example
 ```julia
-i = find_head_step(hf; kper = 1, kstp = 10)
+i = ModflowGPU.find_head_step(hf; kper = 1, kstp = 10)
 read_head(hf, i)
 ```
 """
