@@ -66,13 +66,20 @@ const EXTRA_PARITY_EXAMPLES = (
 )
 
 """
+Tier 4 (Newton, T6.2) examples whose reference run saves no heads or budgets: ex-gwf-capture
+(OC prints the budget only). The parity tests run `capture_saved` instead
+(`capture_saved`, mf6 at test time).
+"""
+const UNSAVED_REFERENCE_EXAMPLES = ("ex-gwf-capture",)
+
+"""
     parity_examples() -> Vector{Pair{String, String}}
 
 `name => simulation directory` of the examples of the assembly and run parity tests:
-the Tier 0–2 examples, `EXTRA_PARITY_EXAMPLES` and the Tier 5 (DISV/DISU, T6.4)
-examples, sorted by name. The parity tests skip, with the reason, those that strict
-loading rejects (ex-gwf-rad-disu: convertible storage, T6.1). `MFGPU_TEST_LGRV_GR=0`
-leaves out `ex-gwf-lgrv-gr` (672525 cells).
+the Tier 0–2 examples, `EXTRA_PARITY_EXAMPLES`, the Tier 4 (Newton, T6.2; without
+`UNSAVED_REFERENCE_EXAMPLES`) and the Tier 5 (DISV/DISU, T6.4) examples, sorted by name.
+The parity tests skip, with the reason, those that strict loading rejects.
+`MFGPU_TEST_LGRV_GR=0` leaves out `ex-gwf-lgrv-gr` (672525 cells).
 """
 function parity_examples()
     gr = get(ENV, "MFGPU_TEST_LGRV_GR", "1") != "0"
@@ -83,8 +90,51 @@ function parity_examples()
         name == "ex-gwf-lgrv-gr" && !gr && continue
         push!(out, name => dir)
     end
+    for (name, dir) in in_scope_examples(; tiers = 4:4)
+        name in UNSAVED_REFERENCE_EXAMPLES || push!(out, name => dir)
+    end
     append!(out, in_scope_examples(; tiers = 5:5))
     return sort!(out)
+end
+
+"""
+    capture_saved(dir) -> Bool
+
+Write `capture_saved` to `dir` (T6.2): the tight-closure inputs of `ex-gwf-capture`
+(reference/runs/ex-gwf-capture/tight; NEWTON UNDER_RELAXATION, RIV, WEL, RCHA, CHD, 800
+cells), whose OC prints the budget only, with an OC that saves the heads and the budget
+and SAVE_FLOWS in the name file, so that its run parity test compares them (mf6 runs at
+test time). Returns `false` when the reference run is missing.
+"""
+function capture_saved(dir::AbstractString)
+    src = joinpath(REFERENCE_DIR, "runs", "ex-gwf-capture", "tight")
+    isdir(src) || return false
+    mkpath(dir)
+    for f in readdir(src)
+        any(e -> endswith(f, e), (".hds", ".cbc", ".lst", ".txt", ".toml", ".grb", ".csv")) && continue
+        cp(joinpath(src, f), joinpath(dir, f))
+    end
+    nam = joinpath(dir, "ex-gwf-capture.nam")
+    txt = read(nam, String)
+    new = replace(txt, r"BEGIN options\s*\n"i => "BEGIN options\n  SAVE_FLOWS\n"; count = 1)
+    new != txt || error("capture_saved: no OPTIONS block in $nam")
+    write(nam, new)
+    write(
+        joinpath(dir, "ex-gwf-capture.oc"),
+        """
+        BEGIN options
+          HEAD  FILEOUT  ex-gwf-capture.hds
+          BUDGET  FILEOUT  ex-gwf-capture.cbc
+        END options
+
+        BEGIN period  1
+          SAVE  HEAD  ALL
+          SAVE  BUDGET  ALL
+          PRINT  BUDGET  ALL
+        END period  1
+        """,
+    )
+    return true
 end
 
 """
