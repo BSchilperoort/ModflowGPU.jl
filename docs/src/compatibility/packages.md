@@ -35,9 +35,11 @@ Notes:
 - `SAVE_SPECIFIC_DISCHARGE` is accepted, but the `DATA-SPDIS` record is not written to the
   budget file.
 - IMS: the ILU preconditioner options (`PRECONDITIONER_LEVELS`,
-  `PRECONDITIONER_DROP_TOLERANCE`, `RELAXATION_FACTOR`) and the backtracking options are
-  accepted, but ModflowGPU uses its own preconditioner and does not backtrack (see
-  [Differences from MODFLOW 6](differences.md)).
+  `PRECONDITIONER_DROP_TOLERANCE`, `RELAXATION_FACTOR`) are accepted, but ModflowGPU uses
+  its own preconditioner (see [Differences from MODFLOW 6](differences.md)). The
+  backtracking options (`BACKTRACKING_NUMBER`, `_TOLERANCE`, `_REDUCTION_FACTOR`,
+  `_RESIDUAL_LIMIT`, and the backtracking that `COMPLEXITY COMPLEX` turns on) are applied
+  as in MODFLOW 6.
 - In OC, `HEAD` and `BUDGET` stand for `HEAD FILEOUT`, `BUDGET FILEOUT` and
   `HEAD PRINT_FORMAT` (accepted, not applied). The `PERIOD` blocks accept `SAVE` and
   `PRINT` of `HEAD` and `BUDGET` with `ALL`, `FIRST`, `LAST`, `FREQUENCY` and `STEPS`.
@@ -90,7 +92,6 @@ input is accepted.
 | Feature | Status |
 | :-- | :-- |
 | Newton–Raphson formulation (`NEWTON` in the model name file) | planned |
-| Backtracking (IMS `BACKTRACKING_NUMBER`) | planned; accepted now but not applied |
 | XT3D (NPF `XT3D`) | planned |
 | More than one model or solution, GWF–GWF exchanges | planned |
 | Observation output (OBS6) | planned; the files are accepted, no output is written |

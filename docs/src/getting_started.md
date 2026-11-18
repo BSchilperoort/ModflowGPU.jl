@@ -309,9 +309,6 @@ julia> ims = build_ims(; complexity = :complex);
 julia> sim_complex = build_simulation(gwf; tdis = build_tdis(; perlen = 1.0, time_units = :days), ims);
 
 julia> r = run_simulation(sim_complex; write_output = false);
-┌ Warning: IMS BACKTRACKING_NUMBER = 20 (COMPLEXITY COMPLEX or given): backtracking is not implemented yet; outer iterations may differ from MF6
-│   ims.file = "flow.ims"
-└ @ ModflowGPU ~/ModflowGPU/src/solver/picard.jl:77
 ┌ Info: IMS preconditioner ILUT is replaced by mc_ilu0 (multicolour ILU0: red–black on DIS grids, greedy colouring on DISV and DISU; the default, see the `preconditioner` option)
 └   ims.file = "flow.ims"
 
@@ -332,9 +329,6 @@ What these messages mean:
   used (when you choose `preconditioner` yourself it is always an `Info`): for example
   `IMS preconditioner MILU0 is replaced by mc_ilu0 (...)`. Pass
   `precond_options = (; relax = 0.97)` to use MILU relaxation with `:mc_ilu0`.
-- **Backtracking** (BACKTRACKING_NUMBER > 0, also set by COMPLEXITY COMPLEX) is not
-  implemented: a `Warning`. The outer iterations then differ from MODFLOW 6's, but the
-  converged heads agree within the closure criteria.
 - **REORDERING_METHOD** has no effect with ModflowGPU's preconditioners: an `Info`.
 - In `:single`, closures below what Float32 can resolve are raised: an `Info`. See the
   [GPU guide](@ref "What the presets mean for accuracy").

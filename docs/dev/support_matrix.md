@@ -29,7 +29,7 @@ through the same engine checks.
 | Block | Supported | Rejected |
 | --- | --- | --- |
 | OPTIONS | PRINT_OPTION, COMPLEXITY (SIMPLE, MODERATE, COMPLEX presets) | CSV_OUTER_OUTPUT, CSV_INNER_OUTPUT, NO_PTC, ATS_OUTER_MAXIMUM_FRACTION |
-| NONLINEAR | OUTER_DVCLOSE, OUTER_MAXIMUM, UNDER_RELAXATION NONE / SIMPLE / COOLEY / DBD (+ THETA, KAPPA, GAMMA, MOMENTUM), LINEAR_SOLVER DEFAULT / LINEAR | other LINEAR_SOLVER values |
+| NONLINEAR | OUTER_DVCLOSE, OUTER_MAXIMUM, UNDER_RELAXATION NONE / SIMPLE / COOLEY / DBD (+ THETA, KAPPA, GAMMA, MOMENTUM), BACKTRACKING_NUMBER / _TOLERANCE / _REDUCTION_FACTOR / _RESIDUAL_LIMIT (also COMPLEXITY COMPLEX's; T6.2a, `sln_backtracking`, on DIS, DISV and DISU, confined and convertible cells, every precision preset), LINEAR_SOLVER DEFAULT / LINEAR | other LINEAR_SOLVER values |
 | LINEAR | INNER_MAXIMUM, INNER_DVCLOSE, INNER_RCLOSE (absolute, STRICT, L2NORM_RCLOSE, RELATIVE_RCLOSE), LINEAR_ACCELERATION CG / BICGSTAB, NUMBER_ORTHOGONALIZATIONS, SCALING_METHOD NONE / DIAGONAL, REORDERING_METHOD NONE | SCALING_METHOD L2NORM, REORDERING_METHOD RCM / MD |
 
 Accepted with a different behaviour (logged warnings, not errors):
@@ -40,8 +40,6 @@ Accepted with a different behaviour (logged warnings, not errors):
   `:auto` (default: `:mc_ilu0`, T4.4; logged as a message for ILU0, a warning for the
   others), `:jacobi`, `:chebyshev`, `:mc_sgs`, `:mc_ilu0` (multicolour ILU0, T4.2), `:amg` (smoothed-aggregation AMG, T4.3), with `precond_options`
   (docs/dev/mf6_notes.md). RED_BLACK_ORDERING is accepted (it only affects MF6's ILU).
-- Backtracking (BACKTRACKING_* and COMPLEXITY COMPLEX's implicit backtracking): accepted,
-  not applied, with a warning (T6.2).
 - `:single`: closures below the Float32 floors (`FLOAT32_CLOSURES`, docs/dev/precision.md) are
   raised, with an info message.
 

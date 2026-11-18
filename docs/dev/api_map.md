@@ -330,11 +330,18 @@ it. Underscore-prefixed helpers are omitted.
 - **solver/underrelax.jl**: `sln_underrelax`. `UnderRelaxation` (SIMPLE, COOLEY host
   scalars, DBD device state), `underrelax!` (`relax_update_kernel!`,
   `dbd_update_kernel!`); Adapt. Tests: picard (vs a host port), run (variants vs MF6).
+- **solver/backtracking.jl** (T6.2a): `sln_backtracking`. `BacktrackRecord` (kiter, flag,
+  count, resin, resout: MF6's "Backtracking" row), `backtrack!` (the reduction loop on a
+  `reformulate` callback; reusable for Newton, T6.2), `residual_l2norm` (`sln_l2norm`,
+  Float64 accumulation), `backtrack_update!` (`backtrack_update_kernel!`,
+  `apply_backtracking`), `save_hprev!` (`save_hprev_kernel!`: `xtemp` with HDRY for dry
+  cells). Tests: picard (unit and vs mf6), run (coupling_rde COMPLEX).
 - **solver/picard.jl**: outer loop (`sln_ca`/`solve`; PLAN.md 3.7 rule 3). `PicardSettings`
-  (from `ImsSpec`, `closures` overrides, Float32 floors `FLOAT32_CLOSURES`, backtracking
-  warning), `PicardSolver` (KrylovSolver, UnderRelaxation, Reducer; Adapt), `solve_timestep!` →
+  (from `ImsSpec`, `closures` overrides, Float32 floors `FLOAT32_CLOSURES`),
+  `PicardSolver` (KrylovSolver, UnderRelaxation, Reducer, `hprev` for backtracking; Adapt), `solve_timestep!` →
   `OuterResult` (converged, outer and inner iterations, hncg and its node `lrch` from one
-  argmax reduction, the dvclose/rclose used); `OuterState` + `outer_iteration!` (one outer
+  argmax reduction, the dvclose/rclose used, `backtracking` records, `backtrack_count`;
+  T6.2a: `_backtracking!` after the formulation when BACKTRACKING_NUMBER > 0); `OuterState` + `outer_iteration!` (one outer
   iteration, T3.3; `solve_timestep!` loops over it; T5.3/T6.0: in Float32, once a
   correction meets OUTER_DVCLOSE and only the inner test failed, `OuterState.noise_floor`
   holds INNER_DVCLOSE >= `OuterState.dvfloor` = eps32·max|h'| for the rest of the step;

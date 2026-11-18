@@ -195,15 +195,35 @@ function _listing_difference(ours, mf6; extra = Dict{Tuple{Int, Int}, Float64}()
     return worst, ntab, length(tb)
 end
 
+# (time step, outer iteration) pairs in which backtracking reduced the head change: from
+# MF6's outer table rows "Backtracking <kiter> <flag> <count> ..." (count > 0; a new time
+# step starts at kiter 1), or from the `BacktrackRecord`s of a ModflowGPU run.
+function _backtracked_iterations(lst::AbstractString)
+    out = Tuple{Int, Int}[]
+    istep = 0
+    for x in eachmatch(r"\n\s*Backtracking\s+(\d+)\s+(\d+)\s+(\d+)", lst)
+        k = parse(Int, x[1])
+        k == 1 && (istep += 1)
+        parse(Int, x[3]) > 0 && push!(out, (istep, k))
+    end
+    return out
+end
+
+_backtracked_iterations(steps::AbstractVector) =
+    [(i, b.kiter) for (i, s) in enumerate(steps) for b in s.outer.backtracking if b.count > 0]
+
 # Runs both presets on TEST_BACKEND (and on a GPU backend also on the CPU backend) and
 # returns per preset (; dh, dq, dl, pd, outer, inner, time, mf6_outer, mf6_inner,
 # backend_vs_cpu), plus :single_vs_double. `single_preconditioner` replaces `preconditioner`
 # in `:single` (T6.0: ex-gwf-lgrv-gr). `single_budget_tol` replaces the `:single` budget
 # criterion 1e-4 × total in (T6.4: rad_disu_confined, docs/dev/precision.md).
+# `backtracking = true` (T6.2a) also checks that the run backtracks in the same (time
+# step, outer iteration)s as MF6.
 function _run_parity(
         name, rundir; preconditioner::Symbol = RUN_PRECONDITIONER, precond_options::NamedTuple = (;),
         single_preconditioner::Symbol = preconditioner, single_budget_tol::Float64 = 1.0e-4,
         double_budget_tol::Float64 = 1.0e-6, single_rounding_bound::Bool = false,
+        backtracking::Bool = false,
     )
     sim = load_simulation(rundir)
     m = only(sim.models)
@@ -214,6 +234,7 @@ function _run_parity(
     nsteps = length(ModflowGPU.time_steps(sim.tdis))
     mf6_outer = sum(first, values(iters); init = 0)
     mf6_inner = sum(last, values(iters); init = 0)
+    mf6_bt = backtracking ? _backtracked_iterations(read(joinpath(rundir, "mfsim.lst"), String)) : nothing
     heads = Dict{Symbol, Vector{Float64}}()
     stats = Dict{Symbol, Any}()
     for_each_precision(; presets = SOLVER_TEST_PRESETS) do p
@@ -244,6 +265,12 @@ function _run_parity(
             p.T === Float32 && @test pdx < 0.01
             outer = sum(s -> s.outer.iterations, r.steps)
             inner = sum(s -> s.outer.inner, r.steps)
+            if backtracking
+                # T6.2a: backtracking in the same (step, outer iteration)s as MF6.
+                bt = _backtracked_iterations(r.steps)
+                @test bt == mf6_bt
+                @info "Backtracking: $name, :$(p.preset), $(backend_name(TEST_BACKEND)): (step, outer iteration) $bt (MF6 $mf6_bt)"
+            end
             @info "Run parity: $name, :$(p.preset), $(backend_name(TEST_BACKEND)) ($pcname), $nsteps step(s), $(round(t; digits = 1)) s: max |Δh| = $(round(dh; sigdigits = 3)) m (tol $(round(hdtol; sigdigits = 2))), CBC max |Δq| / total in = $(round(dq; sigdigits = 3)) ($nrec records), listing $(round(dl; sigdigits = 3)) ($ntab tables), max |percent discrepancy| = $(round(pd; sigdigits = 3))$(p.T === Float32 ? " (beyond the rounding bound $(round(pdx; sigdigits = 3)))" : ""); outer/inner iterations $outer/$inner (MF6 $mf6_outer/$mf6_inner)"
             stats[p.preset] = (; dh, dq, dl, pd, outer, inner, time = t, mf6_outer, mf6_inner, backend_vs_cpu = NaN)
             if !(TEST_BACKEND isa CPU)

@@ -50,11 +50,7 @@ more, cheaper, iterations; the [GPU guide](../gpu.md) helps to choose one.
 
 ## Outer iterations
 
-- **Backtracking is not applied.** The `BACKTRACKING_*` options, and the backtracking
-  that `COMPLEXITY COMPLEX` turns on, are accepted with a `Warning`. The outer
-  iterations then differ from MODFLOW 6's in the models where MODFLOW 6 backtracks; the
-  converged heads agree within the closure.
-- **Iteration counts differ.** Because of the preconditioner and backtracking, the
+- **Iteration counts differ.** Because of the preconditioner, the
   number of outer iterations can differ by a few, and the inner counts differ more. In
   `:single` the outer loop stops at the Float32 closures, often in fewer outer iterations
   than MODFLOW 6.

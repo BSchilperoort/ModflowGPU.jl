@@ -137,6 +137,7 @@ include("solver/precond/multicolor.jl")
 include("timing.jl")
 include("gwf/model.jl")
 include("solver/underrelax.jl")
+include("solver/backtracking.jl")
 include("solver/picard.jl")
 include("budget.jl")
 

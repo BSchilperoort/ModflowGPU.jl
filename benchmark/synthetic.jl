@@ -327,8 +327,10 @@ module SyntheticModels
     it the Picard iterations of the steady state cycle between DRN/EVT on/off states). CG,
     not ModflowCoupling's BiCGSTAB: the matrix is symmetric, and BiCGSTAB with the Jacobi
     preconditioner diverges in `:single` in the steady state (docs/dev/scaling.md);
-    `:production`: ModflowCoupling's settings (5 m, 5 m, 10 m³/d STRICT, 200/500 iterations,
-    BiCGSTAB). `settings` override either.
+    `:production`: ModflowCoupling's closures (5 m, 5 m, 10 m³/d STRICT, 200/500 iterations,
+    BiCGSTAB); `:coupling`: all of ModflowCoupling's IMS (`:production` with COMPLEXITY
+    COMPLEX, so backtracking, SIMPLE under-relaxation 0.99, RELAXATION_FACTOR 0; T6.2a).
+    `settings` override any of them.
     """
     function synthetic_ims(kind::Symbol = :parity; settings...)
         base = if kind === :parity
@@ -336,10 +338,13 @@ module SyntheticModels
                 outer_dvclose = 1.0e-9, outer_maximum = 500, inner_maximum = 5000, inner_dvclose = 1.0e-10, inner_rclose = 1.0e-3,
                 linear_acceleration = :cg, under_relaxation = :dbd, under_relaxation_theta = 0.9, under_relaxation_kappa = 1.0e-4, under_relaxation_gamma = 0.0,
             )
-        elseif kind === :production
+        elseif kind === :production || kind === :coupling
             (; outer_dvclose = 5.0, outer_maximum = 200, inner_maximum = 500, inner_dvclose = 5.0, inner_rclose = 10.0, rclose_option = :strict, linear_acceleration = :bicgstab)
         else
-            throw(ArgumentError("synthetic_ims: kind must be :parity or :production"))
+            throw(ArgumentError("synthetic_ims: kind must be :parity, :production or :coupling"))
+        end
+        if kind === :coupling
+            base = merge(base, (; complexity = :complex, under_relaxation = :simple, under_relaxation_gamma = 0.99, relaxation_factor = 0.0))
         end
         return build_ims(; print_option = :summary, merge(base, (; settings...))...)
     end

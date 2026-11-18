@@ -162,8 +162,9 @@ correction solves stalled at |r| ~ 1e-8 and hit INNER_MAXIMUM every outer iterat
 (hanir `:double` 16/14402, coupling_rde 226/215792; MF6's own 107439 inner iterations on
 coupling_rde show the same stall). Columns other than `:single` vs `:double` were
 re-measured after that change. COMPLEXITY COMPLEX enables backtracking, which MF6
-used in 3 of 125 outer iterations; ModflowGPU warns and does not backtrack (T6.2), and the
-converged heads agree as above. In `:single` the outer loop stops at the Float32 floors,
+used in 3 of 125 outer iterations; the row above was measured before T6.2a, when
+ModflowGPU did not backtrack (since T6.2a it backtracks in the same 3 iterations, see
+"Backtracking (T6.2a)" below). In `:single` the outer loop stops at the Float32 floors,
 hence fewer outer iterations than MF6.
 
 **ex-gwf-hwell-a** (153164 cells, 60 steps, BiCGSTAB; part of the run parity test with
@@ -835,3 +836,33 @@ kernel) compute the same operations in the same order: heads and outer/inner ite
 counts are bitwise those of `main` (24ccc38) in `:single`, `:mixed` and `:double`, on CPU
 and rocm (coupling_rde, ts_tas, ex-gwf-u1disv, ex-gwf-curve-90, synthetic tiny/indus; see
 benchmark/results/2026-11-16-T4.7.md). The accuracy numbers in this file are unchanged.
+
+## Backtracking (T6.2a)
+
+`sln_backtracking` (src/solver/backtracking.jl): the residual L2 norm is a device reduction
+of the flux-form residual with Float64 accumulation; the reduction of the head change acts
+on the offset heads. Measured on CPU and ROCm (identical numbers; ROCm vs CPU heads equal):
+
+| Model (IMS) | preset | backtracking (step, outer iteration) | outer/inner, ours (MF6) | max \|Δh\| vs MF6 |
+| --- | --- | --- | --- | --- |
+| coupling_rde (COMPLEX) | `:double` | (1,2), (1,3), (1,4), flag 1, 1 reduction each, as MF6 | 125/3083 (125/4019) | 7.5e-11 m |
+| coupling_rde (COMPLEX) | `:mixed` | same | 125/3069 | 7.5e-11 m |
+| coupling_rde (COMPLEX) | `:single` | same | 72/3449 | 5.7e-6 m |
+| wetdry (COMPLEX, test only) | `:double` | 18 outer iterations of steps 9 and 10, as MF6 (also flags and counts) | 103 (103) | – |
+| wetdry (COMPLEX, test only) | `:single` | the same 18; fewer reductions in the two flag-4 rows (5, 6 vs 8, 9: OUTER_DVCLOSE floored to 1e-6) | 76 (103) | – |
+
+The incoming and outgoing norms of the backtracking rows agree with MF6's listing to its
+8 printed digits in `:double` (e.g. coupling_rde step 1: 5440.7412 → 2402.1836). Before
+T6.2a (no backtracking; the same input with BACKTRACKING_NUMBER 0, MC-ILU0):
+coupling_rde `:double` 125/2948, `:single` 71/2239 — MF6 also needs 125 there; wetdry
+with COMPLEX `:double` 83 outer iterations against MF6's 103 (steps 9 and 10: 15 and 16
+instead of 22 and 29); now equal per step. On DISV (ex-gwf-curve-90 with ICELLTYPE 1)
+and DISU (disu_staggered) the incoming norms of the first outer iterations agree with
+MF6's within 1e-6 (`:double`) and 1e-3 (`:single`, norms above 1e-3 of the first; below,
+the Float32 rounding of the residual dominates).
+
+Models without backtracking are bitwise unchanged: heads and outer/inner iterations per
+step equal `main` for coupling_rde (MC-ILU0 and Jacobi), ts_tas, wetdry, disu_staggered,
+afr, ex-gwf-u1disv and ex-gwf-advtidal in `:single`, `:mixed` and `:double`, on CPU and
+ROCm (24 of 24 cases each). Cost on global5m: benchmark/results/2026-11-16-T6.2a.md
+(ModflowCoupling's COMPLEX IMS: +1 ms per daily step, no reduction ever applied).

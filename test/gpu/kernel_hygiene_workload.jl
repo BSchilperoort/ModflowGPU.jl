@@ -108,6 +108,13 @@ function workload(dir)
         red = M.Reducer(M.get_backend(y), length(y), M.accumulation_type(M.get_backend(y), eltype(y)))
         g = M._reduce_stage1!(red, M.get_backend(y), 0, M._dot_term, M._SUM4, length(y), y, y)
         M._reduce_last!(red, M.get_backend(y), g, M._dot_term, M._SUM4, 0, M._NoPost(), red.out, red.out, y, y)
+        # Backtracking (T6.2a): xtemp, the norm, the maximum change and the reduction.
+        hp = similar(y)
+        M.save_hprev!(hp, m.h, m.ibound)
+        M.backtrack!(
+            () -> nothing, red, y, hp, m.res, m.ibound, 2, 0.0;
+            numtrack = 1, btol = 1.0, breduc = 0.5, res_lim = 0.0, dvclose = 0.0,
+        )
         scale = similar(m.res)
         bound = similar(m.res)
         M.flux_residual!(m.res, m.sys, m.csr, m.npf, m.h, m.ibound; scale, bound)

@@ -165,9 +165,26 @@ src/timing.jl, src/budget.jl, src/output/oc.jl, src/run.jl.
   (`relax < 1` only changes `x`); DBD a factor per cell (`wsave`, `hchold`, `deold`
   initialised at `kiter == 1`, momentum from `kiter > 4`). A converged iteration keeps the
   full solution. COMPLEXITY MODERATE/COMPLEX select DBD; COMPLEX also backtracking
-  (BACKTRACKING_NUMBER 20; not ported until T6.2: `PicardSettings` warns). On coupling_rde
-  with COMPLEXITY COMPLEX, MF6 backtracked in 3 of 125 outer iterations; the converged
-  heads agree regardless (test/parity/run_test.jl).
+  (BACKTRACKING_NUMBER 20, see below).
+- **Backtracking** (`sln_backtracking`, T6.2a; src/solver/backtracking.jl) runs at the
+  start of every outer iteration when BACKTRACKING_NUMBER > 0, whatever UNDER_RELAXATION
+  is: MF6 sets `ibflag = 0` without under-relaxation, but `solve` tests only `numtrack`.
+  It needs its own `sln_buildsystem` before the one of the solve, and so runs `npf_cf`, and
+  with it the wetting and drying, twice per outer iteration (plus once per reduction);
+  the port does the same (`_backtracking!`), and reuses the last formulation for the solve
+  when the second `wetdry!` changes nothing. The norm is `||A·x − b||₂` over active cells
+  right after `sln_buildsystem`, so without `sln_ls`'s zero-diagonal fix; the port takes
+  the norm of the flux-form residual, the same quantity. The reduced change is
+  `x − xtemp`, `xtemp` being `x` before the previous solve (after its backtracking): the
+  under-relaxed update. A dry cell has `x = HDRY` (−1e30) in MF6, so a cell rewetted in
+  the next iteration has a change of ~1e30: it always passes the OUTER_DVCLOSE test, and
+  its reduced head (≈ (1 − breduc)·HDRY) dries it again in the next `wetdry`. ModflowGPU keeps dry
+  heads at the bottom; `save_hprev!` stores HDRY for them so the same happens (ex: the
+  wetdry test model, 18 backtracking outer iterations, all in rewetting steps). OUTER_DVCLOSE
+  in the reduction test is the one in use (the Float32 floors raise it in `:single`, so
+  fewer reductions are done before flag 4). On coupling_rde with COMPLEXITY COMPLEX, MF6
+  and the port backtrack in the same 3 of 125 outer iterations with the same norms
+  (test/parity/run_test.jl).
 - **Time steps.** The first step of a period is `perlen/float(nstp)` or
   `perlen·(1 − tsmult)/(1 − tsmult^nstp)`, later ones `tsmult·delt`, but the **last** step
   of a period is `topertim + perlen − totim`, and `pertim = perlen` at the end of the

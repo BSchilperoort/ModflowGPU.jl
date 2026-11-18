@@ -11,10 +11,13 @@
 # 4. converged when the inner solve converged and `|hncg| <= OUTER_DVCLOSE`
 #    (`sln_has_converged`); then `h' += δ`, otherwise the under-relaxed update
 #    (`sln_underrelax`, src/solver/underrelax.jl).
+# With BACKTRACKING_NUMBER > 0, step 1 is followed by `sln_backtracking`
+# (src/solver/backtracking.jl, T6.2a), which may reduce the previous head change and
+# reformulate before the solve.
 # The loop stops at convergence or after OUTER_MAXIMUM iterations.
 #
-# Not implemented: backtracking (T6.2), pseudo-transient continuation and Newton (T6.1),
-# package convergence checks (none of the supported packages has one).
+# Not implemented: pseudo-transient continuation and Newton (T6.2), package convergence
+# checks (none of the supported packages has one).
 
 """
     FLOAT32_CLOSURES
@@ -54,8 +57,7 @@ and `precond_options` as in `KrylovSettings(::ImsSpec)`). `closures` (a
 NamedTuple with any of `outer_dvclose`, `outer_maximum`, `inner_dvclose`, `inner_rclose`,
 `inner_maximum`) overrides them. For `T = Float32`, closures below `FLOAT32_CLOSURES` are
 raised to them (logged), since Float32 cannot reach MF6's tight closures (PLAN.md 3.7).
-Warns (once per session) when the input would use backtracking (BACKTRACKING_NUMBER > 0), which is not
-implemented until T6.2.
+Backtracking (BACKTRACKING_* of `ims`, T6.2a) is applied when BACKTRACKING_NUMBER > 0.
 """
 struct PicardSettings
     dvclose::Float64
@@ -72,10 +74,6 @@ function PicardSettings(
         precond_options::NamedTuple = (;),
     ) where {T <: AbstractFloat}
     get_c(k, default) = (isnothing(closures) || !haskey(closures, k)) ? default : getfield(closures, k)
-    if ims.backtracking_number > 0
-        msg = "IMS BACKTRACKING_NUMBER = $(ims.backtracking_number) (COMPLEXITY $(uppercase(String(ims.complexity))) or given): backtracking is not implemented yet; outer iterations may differ from MF6"
-        @warn msg ims.file maxlog = 1 _id = _log_id(msg)
-    end
     ims.under_relaxation in (:none, :simple, :cooley, :dbd) || throw(ArgumentError("unknown IMS UNDER_RELAXATION $(ims.under_relaxation)"))
     dvclose = Float64(get_c(:outer_dvclose, ims.outer_dvclose))
     maxiter = Int(get_c(:outer_maximum, ims.outer_maximum))
@@ -106,7 +104,8 @@ end
 Outcome of the outer iterations of one time step: `converged`, `iterations` (outer),
 `inner` (total inner iterations), `hncg` (signed maximum head change of the last outer
 iteration) and `lrch` (its reduced node, 0 when no head changed; `sln_get_dxmax`), `dvclose` and `inner_rclose` (the OUTER_DVCLOSE and INNER_RCLOSE used, after
-the Float32 floors).
+the Float32 floors), and `backtracking` (one `BacktrackRecord` per outer iteration with
+BACKTRACKING_NUMBER > 0, empty otherwise; T6.2a).
 """
 struct OuterResult
     converged::Bool
@@ -116,7 +115,16 @@ struct OuterResult
     lrch::Int
     dvclose::Float64
     inner_rclose::Float64
+    backtracking::Vector{BacktrackRecord}
 end
+
+"""
+    backtrack_count(r::OuterResult) -> Int
+
+The number of outer iterations of the step in which backtracking reduced the head change
+(MF6's outer table rows "Backtracking" with BACKTRACK ITERATIONS > 0).
+"""
+backtrack_count(r::OuterResult) = count(b -> b.count > 0, r.backtracking)
 
 # Signed max |δ| over the active cells (sln_get_dxmax) and max |h'| over all cells.
 @inline _dxmax_term(::Type{Ta}, i, δ, ibound, h) where {Ta} =
@@ -132,7 +140,9 @@ const _MAXSCALE_OPS = (_MaxAbsOp(), _SumOp(), _SumOp(), _SumOp())
 
 Workspace of the outer iterations of one model: `settings::PicardSettings`, the inner
 `KrylovSolver`, the `UnderRelaxation` state, a `Reducer` (Float64 accumulation where
-available) and, for the Float32 rclose floor, a per-node scale vector.
+available), for the Float32 rclose floor a per-node scale vector, and for backtracking
+(BACKTRACKING_NUMBER > 0; else empty) `hprev`, the offset heads at the start of the last
+outer iteration (MF6's `xtemp`).
 
     PicardSolver(m::GwfModel, settings; Ts = eltype(m), Tp = Ts)
 """
@@ -142,6 +152,7 @@ struct PicardSolver{K <: KrylovSolver, U <: UnderRelaxation, R <: Reducer, V}
     ur::U
     reducer::R
     scale::V
+    hprev::V
 end
 
 function PicardSolver(m::GwfModel{T}, settings::PicardSettings; Ts::Type = T, Tp::Type = Ts) where {T}
@@ -152,7 +163,8 @@ function PicardSolver(m::GwfModel{T}, settings::PicardSettings; Ts::Type = T, Tp
     ur = UnderRelaxation(backend, T, settings.ims, n)
     red = Reducer(backend, n, accumulation_type(backend, T))
     scale = KernelAbstractions.zeros(backend, T, settings.rclose_floor_factor > 0 ? n : 0)
-    return PicardSolver(settings, krylov, ur, red, scale)
+    hprev = KernelAbstractions.zeros(backend, T, settings.ims.backtracking_number > 0 ? n : 0)
+    return PicardSolver(settings, krylov, ur, red, scale, hprev)
 end
 
 Adapt.@adapt_structure PicardSolver
@@ -173,8 +185,10 @@ The state of the outer iterations of the current time step, for one iteration at
 rclose floor), the iteration count `kiter`, total inner iterations, the last `hncg`/`lrch`,
 `dvclose`, `rclose`, `converged`, `diverged` (the correction or the heads were not
 finite; no further iteration is done), `dvfloor` (Float32: `eps(T)·max|h'|` of the last
-outer iteration; 0 before the first) and `noise_floor` (Float32: INNER_DVCLOSE is at least
-`dvfloor` for the rest of the step, see `outer_iteration!`).
+outer iteration; 0 before the first), `noise_floor` (Float32: INNER_DVCLOSE is at least
+`dvfloor` for the rest of the step, see `outer_iteration!`), and for backtracking
+`res_prev` (the outgoing residual norm of the last outer iteration) and `backtracking`
+(the `BacktrackRecord`s of the step).
 
     OuterState(ps::PicardSolver)
 """
@@ -190,18 +204,23 @@ mutable struct OuterState{K <: KrylovSolver}
     diverged::Bool
     dvfloor::Float64
     noise_floor::Bool
+    res_prev::Float64
+    backtracking::Vector{BacktrackRecord}
 end
 
-OuterState(ps::PicardSolver) = OuterState(ps.krylov, 0, 0, 0.0, 0, ps.settings.dvclose, ps.settings.krylov.rclose, false, false, 0.0, false)
+OuterState(ps::PicardSolver) = OuterState(
+    ps.krylov, 0, 0, 0.0, 0, ps.settings.dvclose, ps.settings.krylov.rclose, false, false, 0.0, false, 0.0,
+    BacktrackRecord[],
+)
 
-OuterResult(s::OuterState) = OuterResult(s.converged, s.kiter, s.inner, s.hncg, s.lrch, s.dvclose, s.rclose)
+OuterResult(s::OuterState) = OuterResult(s.converged, s.kiter, s.inner, s.hncg, s.lrch, s.dvclose, s.rclose, copy(s.backtracking))
 
 """
     outer_iteration!(state::OuterState, ps::PicardSolver, m::GwfModel, kstp) -> Bool
 
 One outer iteration of the current time step (one pass of the `sln_ca` loop: formulate and
-assemble, the correction solve, `sln_get_dxmax`, the convergence check and
-`sln_underrelax`), after `start_timestep!` and a fresh `OuterState`. Returns whether the
+assemble, `sln_backtracking` when BACKTRACKING_NUMBER > 0, the correction solve,
+`sln_get_dxmax`, the convergence check and `sln_underrelax`), after `start_timestep!` and a fresh `OuterState`. Returns whether the
 step has converged. After a non-finite correction (`state.diverged`) it returns `false`
 without iterating.
 """
@@ -216,8 +235,12 @@ function outer_iteration!(state::OuterState, ps::PicardSolver, m::GwfModel{T}, k
     floor_step = (it == 1 || !isnothing(m.wd)) && st.rclose_floor_factor > 0
     # Wetting and drying of convertible cells (T6.1; `npf_cf` → `sgwf_npf_wetdry`), then
     # the formulation (the saturations, `npf_cf!`, are computed in `formulate!`).
+    scale = floor_step ? ps.scale : nothing
     isnothing(m.wd) || @timed_section :assembly wetdry!(m, it)
-    @timed_section :assembly formulate!(m; symmetric = st.symmetric, terms = false, scale = floor_step ? ps.scale : nothing)
+    @timed_section :assembly formulate!(m; symmetric = st.symmetric, terms = false, scale)
+    if st.ims.backtracking_number > 0
+        _backtracking!(state, ps, m, it, scale)
+    end
     if floor_step
         # Float32: the attainable residual, eps(T)·max Σ|terms| (rule 2 rounding).
         smax = @timed_section :outer_reduction _mapreduce!(ps.reducer, backend, _maxscale_term, _MAXSCALE_OPS, n, ps.scale)[1]
@@ -261,8 +284,34 @@ function outer_iteration!(state::OuterState, ps::PicardSolver, m::GwfModel{T}, k
         return false
     end
     state.converged = res.converged && abs(hncg) <= state.dvclose
+    # MF6's `xtemp` (the heads before this iteration's update) for the next backtracking.
+    st.ims.backtracking_number > 0 && !state.converged && save_hprev!(ps.hprev, m.h, m.ibound)
     @timed_section :underrelax underrelax!(ps.ur, m.h, m.δ, m.ibound, it, hncg; converged = state.converged)
     return state.converged
+end
+
+# sln_backtracking at the start of outer iteration `it`, after the formulation at the
+# current heads. Every MF6 `sln_buildsystem` runs `npf_cf` and so the wetting and drying
+# (T6.1): once for each backtracking formulation, and again for the formulation of the
+# solve, which here is the last backtracking one unless that second `wetdry!` changed
+# IBOUND (only models with convertible cells have `m.wd`).
+function _backtracking!(state::OuterState, ps::PicardSolver, m::GwfModel, it::Integer, scale)
+    st = ps.settings
+    ims = st.ims
+    reformulate() = begin
+        isnothing(m.wd) || @timed_section :assembly wetdry!(m, it)
+        @timed_section :assembly formulate!(m; symmetric = st.symmetric, terms = false, scale)
+    end
+    rec, state.res_prev = backtrack!(
+        reformulate, ps.reducer, m.h, ps.hprev, m.res, m.ibound, it, state.res_prev;
+        numtrack = ims.backtracking_number, btol = ims.backtracking_tolerance, breduc = ims.backtracking_reduction_factor,
+        res_lim = ims.backtracking_residual_limit, dvclose = state.dvclose,
+    )
+    push!(state.backtracking, rec)
+    if !isnothing(m.wd) && @timed_section(:assembly, wetdry!(m, it))
+        @timed_section :assembly formulate!(m; symmetric = st.symmetric, terms = false, scale)
+    end
+    return nothing
 end
 
 """
