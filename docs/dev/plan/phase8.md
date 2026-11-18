@@ -359,6 +359,13 @@ examples/               # T8.6: Literate scripts, runnable on their own
   signatures, argument types and return values. Where ModflowInterface.jl has a bug
   (`get_start_time` calls libmf6 `get_current_time`, `get_time_step` calls
   `get_end_time`), follow libmf6 and record it.
+- Design (owner, 2026-11-18, replaces the first version of this card): two BMIs,
+  chosen by type. `Simulation` keeps the spec-compliant BMI of T8.9 unchanged. A new
+  libmf6-compatible handle type (a thin wrapper around a `Simulation`) behaves like
+  ModflowInterface.jl's `ModflowModel`; the items below apply to that type. Functions
+  libmf6 does not implement throw an error on it that names the function and points
+  to `Simulation`'s BMI (this replaces the "keep the T8.9 additions" decision: they
+  stay on `Simulation`).
 - Deliver:
   - A model handle used as in ModflowInterface.jl: `m = <Type>(path)` with `path` the
     simulation directory or its `mfsim.nam` (uninitialised), then `BMI.initialize(m)`;
