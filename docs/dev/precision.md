@@ -919,41 +919,33 @@ exceed 1e-4 × total in; the criterion applies to the part beyond the Float32 ro
 the cell flows (`single_rounding_bound`, as for rad-disu, maw-p03c and advtidal; MF6
 writes no budget file, so the bound takes C = condsat).
 
-**BiCGSTAB restart.** When `rho = dhat·r` vanishes at the rounding level of the dot
-product, BiCGSTAB restarts with `dhat = r` (MF6 has no restart). It was added for the
-first outer iteration of the zaidel steady state with the red–black ILU0 (`rho` at
-3.7e-31·|dhat|·|r| in `:double`, exactly 0 in `:single`; after that the next step length
-is noise and the solve diverges). The threshold is `eps(Ta)·|dhat|·|r|` with `Ta` the
-accumulation type of the reductions (Float64 also for Float32 vectors, whose products are
-exact in Float64), not `eps(Ts)`: in long Float32 solves `rho` falls to 1e-10–1e-7 of
-|dhat|·|r| without a breakdown, and a first version with `eps(Float32)` restarted there
-(coupling_rde with Chebyshev: 250 restarts, and step 1 no longer converged in 25 outer
-iterations; rad-disu `:single` changed). Ratios measured where it restarts now: zaidel
-0 / 3.7e-31, hanic 1.4e-22 (`:single`) / 5.8e-17 (`:double`), hanir 0 / 9.9e-17,
-curve-90 `:single` 0, nwt-p03b `:double` 3.6e-18–2.1e-16 (3 restarts in 96 outer
-iterations). The check uses the `rho` BiCGSTAB already reduces (no extra reduction).
+**BiCGSTAB restart (Newton only).** In Newton–Raphson solves, when `rho = dhat·r`
+vanishes at the rounding level of the vectors (`|rho| <= eps(Ts)·|dhat|·|r|`), BiCGSTAB
+restarts with `dhat = r` (MF6 has no restart). It was added for the first outer iteration
+of the zaidel steady state with the red–black ILU0 (`rho` at 3.7e-31·|dhat|·|r| in
+`:double`, exactly 0 in `:single`; after that the next step length is noise and the solve
+diverges). In Float32, `rho` of the Newton systems also falls to 1e-7 of |dhat|·|r| in
+long solves: with these restarts ex-gwf-nwt-p02a `:single` converges (282 outer
+iterations; 14 restarts in 282 solves, at most 2 per solve), without them step 1 of period
+4 does not (500 outer iterations). nwt-p03b `:double` restarts 3 times (ratios
+3.6e-18–2.1e-16). The check uses the `rho` BiCGSTAB already reduces (no extra reduction).
 
-**Non-Newton models.** The Newton terms, PTC and NEWTON UNDER_RELAXATION are not
-formulated without NEWTON. Heads (sha256 of the head file), budget files and outer/inner
-iterations equal `main` (d0ba506) for coupling_rde, wetdry, disu_staggered, ex-gwf-u1disv
-(DISV), ex-gwf-twri01 and, but for `:single`, ex-gwf-rad-disu (DISU) in `:single`,
-`:mixed` and `:double` with the default preconditioner (MC-ILU0), on CPU and ROCm (ROCm
-equal to CPU). The BiCGSTAB restart changes the models whose BiCGSTAB solves break down
-(with the restart disabled, all of them are bitwise `main`'s again):
+Other systems do not restart, as in MF6 and `main`. Two variants that also restarted them
+were tried and dropped: with `eps(Ts)`, coupling_rde with Chebyshev in `:single` restarted
+about 10 times per solve (ratios 8e-11–1.2e-7) and step 1 no longer converged in 25 outer
+iterations (nor with at most one restart per solve), and rad-disu `:single` changed (110 →
+109 outer iterations); with the rounding level of the dot product (`eps(Float64)`, true
+breakdowns only: hanic 1.4e-22 `:single` / 5.8e-17 `:double`, hanir 0 / 9.9e-17,
+curve-90 `:single` 0), hanic and hanir needed fewer iterations (`:double` 4/270 → 3/100
+and 5/368 → 3/94) but one restart at `rho = 0` in rad_disu_confined `:single` (AMG,
+nearly singular, most inner solves unconverged) took it from 180 to 341 outer iterations.
 
-| Model (BiCGSTAB) | preset | outer/inner `main` → T6.2 | max \|Δh\| vs MF6 `main` → T6.2 |
-| --- | --- | --- | --- |
-| ex-gwf-hanic | `:double` | 4/270 → 3/100 | 1.44e-9 → 1.46e-9 m |
-| ex-gwf-hanic | `:single` | 10/1747 → 3/74 | 1.05e-6 → 4.8e-7 m |
-| ex-gwf-hanir | `:double` | 5/368 → 3/94 | 1.44e-9 → 1.45e-9 m |
-| ex-gwf-hanir | `:single` | 4/78 → 3/85 | 2.9e-7 → 1.2e-7 m |
-| ex-gwf-curve-90 | `:single` | 4/37 → 3/42 | 4.5e-6 → 2.9e-6 m |
-| ex-gwf-rad-disu (MC-ILU0) | `:single` | 110/41891 → 109/41179 | 1.5e-5 m (both) |
-| rad_disu_confined (AMG) | `:single` | 180/154434 → 146/105723 | 1.5e-6 → 1.7e-6 m |
-
-`:mixed` (Float64 Krylov) is unchanged in all of them (rows of docs/parity/collect.jl
-run on `main` and on T6.2), and every other row of the parity table equals the previous
-table (cf78ba7). The restart is a
-deviation from MF6 (docs/src/compatibility/differences.md); where it applies it needs
-fewer iterations for the same accuracy. Cost on global5m: none
+**Non-Newton models.** The Newton terms, PTC, NEWTON UNDER_RELAXATION and the BiCGSTAB
+restart apply only with NEWTON. Heads (sha256 of the head file), budget files and
+outer/inner iterations equal `main` (d0ba506) for coupling_rde, wetdry, disu_staggered,
+ex-gwf-u1disv (DISV), ex-gwf-rad-disu (DISU), ex-gwf-twri01, ex-gwf-hanic, ex-gwf-hanir and
+ex-gwf-curve-90 in `:single`, `:mixed` and `:double` with the default preconditioner
+(MC-ILU0), on CPU and ROCm (ROCm equal to CPU), and every non-Newton row of the parity
+table equals the previous table (cf78ba7) or, where T6.2a changed it, a run of
+docs/parity/collect.jl on `main`. Cost on global5m: none
 (benchmark/results/2026-11-18-T6.2.md).

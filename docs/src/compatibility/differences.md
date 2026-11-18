@@ -47,13 +47,11 @@ more, cheaper, iterations; the [GPU guide](../gpu.md) helps to choose one.
   models, ModflowGPU stops earlier.
 - When an ILU pivot is too small, ModflowGPU keeps the unfactorised diagonal; MODFLOW 6
   restarts the factorisation with a larger shift.
-- BiCGSTAB restarts with a new shadow residual when its `rho` vanishes at the rounding
-  level (a breakdown). MODFLOW 6 has no restart. It happens when the residual is nonzero
-  in a few cells only, for example in the first outer iteration of a Newton–Raphson steady
-  state with the red–black ILU0 (`ex-gwf-zaidel`), where the solve would otherwise diverge.
-  It also applies without Newton–Raphson: `ex-gwf-hanic` with BiCGSTAB then needs 3 outer
-  iterations instead of 4 in `:double` (and 3 instead of 10 in `:single`) for the same
-  heads.
+- With the Newton–Raphson formulation, BiCGSTAB restarts with a new shadow residual when
+  its `rho` vanishes at the rounding level (a breakdown). MODFLOW 6 has no restart. It
+  happens when the residual is nonzero in a few cells only, for example in the first outer
+  iteration of a Newton–Raphson steady state with the red–black ILU0 (`ex-gwf-zaidel`),
+  where the solve would otherwise diverge. Other models do not restart, as in MODFLOW 6.
 
 ## Outer iterations
 

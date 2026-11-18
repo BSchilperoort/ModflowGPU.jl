@@ -298,10 +298,9 @@ it. Underscore-prefixed helpers are omitted.
   `precond_apply`; CG's `r·z` fused by `_precond_apply_dot!` where the preconditioner
   does); `_precond_record!` / `_precond_retry!` after a solve (a failed solve is repeated
   once after an AMG rebuild); `KrylovSolver(...; colors)` passes a host colouring.
-  T6.2: BiCGSTAB restarts with `dhat = r` (`_bcgs_restart`) when `rho` vanishes at the
-  rounding level (`|rho| <= eps(Ta)·|dhat|·|r|`, `Ta` the accumulation type of the
-  reductions, `_acctype`; for Newton systems, `solve!(...; newton = true)`, `eps(Ts)`;
-  ex-gwf-zaidel with the red–black ILU0).
+  T6.2: in Newton–Raphson solves (`solve!(...; newton = true)`) BiCGSTAB restarts with
+  `dhat = r` (`_bcgs_restart`) when `rho` vanishes at the rounding level of the vectors
+  (`|rho| <= eps(Ts)·|dhat|·|r|`; ex-gwf-zaidel with the red–black ILU0, nwt-p02a `:single`).
 - **solver/precond/precond.jl** (T4.2, T4.3): preconditioner interface. `AbstractPreconditioner`,
   `precond_setup!(P, solver, amat)` (per `solve!`, after scaling), `precond_apply!(z, P, r)`,
   `JacobiPreconditioner` (wraps the solver's `minv`; fused path), `PRECONDITIONERS`

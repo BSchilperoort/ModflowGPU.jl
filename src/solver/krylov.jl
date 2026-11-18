@@ -417,8 +417,6 @@ function _reduce_stage1!(red::Reducer, backend, goff::Integer, f, ops, len, args
 end
 
 # The 4 values of the last reduction of `red`, on the host (after a synchronisation).
-_acctype(::Reducer{Ta}) where {Ta} = Ta
-
 function _reduced(red::Reducer)
     red.mapped || copyto!(red.host, red.out)
     h = red.host
@@ -1059,9 +1057,8 @@ same id, so the preconditioner may update only what depends on changed diagonal 
 (the red–black MC-ILU0 does; the results are bitwise those of a full setup). The default
 0 means "unknown": a full setup.
 
-T6.2: `newton` (a Newton–Raphson system) sets the BiCGSTAB breakdown threshold to the
-rounding level of the vectors, `eps(Ts)`, instead of that of the dot products (see
-`_solve_bcgs!`).
+T6.2: `newton` (a Newton–Raphson system): BiCGSTAB restarts when `rho` vanishes at the
+rounding level of the vectors (`_solve_bcgs!`); without it there is no restart, as in MF6.
 """
 function solve!(δ, solver::KrylovSolver{Ts}, amat, res; kstp::Integer = 1, diag = nothing, offdiag_id::Integer = 0, newton::Bool = false) where {Ts}
     st = solver.settings
@@ -1282,21 +1279,20 @@ function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res, rf, cf; newton::Bool
         alpha0 = alpha
         omega0 = omega
         rho = rho_next
-        if abs(rho) <= (newton ? eps(Ts) : eps(_acctype(red))) * dnorm * l2norm
-            # Breakdown (T6.2): `dhat·r` vanished at the rounding level, e.g. after a first
-            # iteration from a residual that is nonzero in a few cells only (the first outer
-            # iteration of a Newton steady state with the red–black ILU0; ex-gwf-zaidel:
-            # 3.7e-31·|dhat|·|r|), and the next step length would be noise. Restart from the
-            # current iterate with the shadow residual `dhat = r` (MF6's ims_base_bcgs has no
-            # restart; its natural-order ILU0 does not break down there). The rounding level:
-            # - Newton: that of the vectors, eps(Ts). In Float32, `dhat·r` of the Newton
-            #   systems falls to 1e-7 of |dhat|·|r| in long solves; without restarts there
-            #   ex-gwf-nwt-p02a `:single` does not converge (period 4), with them it does.
-            # - otherwise: that of the dot product, eps of its accumulation type (Float64
-            #   also for Float32 vectors, whose products are exact in Float64), so only true
-            #   breakdowns restart (hanic, hanir, curve-90). With eps(Float32), coupling_rde
-            #   with Chebyshev in `:single` restarted in every solve and no longer converged
-            #   (it does not with a single restart per solve either).
+        if newton && abs(rho) <= eps(Ts) * dnorm * l2norm
+            # Breakdown of a Newton–Raphson solve (T6.2): `dhat·r` vanished at the rounding
+            # level of the vectors, e.g. after a first iteration from a residual that is
+            # nonzero in a few cells only (the first outer iteration of a Newton steady state
+            # with the red–black ILU0; ex-gwf-zaidel: 3.7e-31·|dhat|·|r|), and the next step
+            # length would be noise. Restart from the current iterate with the shadow residual
+            # `dhat = r` (MF6's ims_base_bcgs has no restart; its natural-order ILU0 does not
+            # break down there). In Float32, `dhat·r` of the Newton systems also falls to
+            # 1e-7 of |dhat|·|r| in long solves; without restarts there ex-gwf-nwt-p02a
+            # `:single` does not converge (period 4), with them it does. Other systems do not
+            # restart, as in MF6: with eps(Float32), coupling_rde with Chebyshev in `:single`
+            # restarted in every solve and did not converge, and even a restart at true
+            # breakdowns only (rho = 0) doubles the outer iterations of rad_disu_confined
+            # `:single` (docs/dev/precision.md).
             @timed_section :update_reduce _reduce_async!(red, backend, _bcgs_restart, _SUM4, n, s.dhat, s.r; post = _SetRho{1}(), sa, ss)
             _sync(backend)
             rho = _reduced(red)[1]
