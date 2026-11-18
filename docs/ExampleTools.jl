@@ -885,8 +885,12 @@ examples documentation and status: the gallery page that runs it, or "planned" w
 unfinished Phase 6 feature it needs. Throws if an example that ModflowGPU supports has no
 page, or a page names an example that is not in scope, so the index cannot drift from
 validation/examples.toml.
+
+The links to the pages are written as URLs of the built site (Documenter does not rewrite
+`.md` links in the output of an `@eval` block): `prettyurls` must match the setting of
+`Documenter.HTML` in docs/make.jl (on in CI).
 """
-function gallery_index_table()
+function gallery_index_table(; prettyurls = get(ENV, "CI", "false") == "true")
     inv = TOML.parsefile(repo_path("validation", "examples.toml"))["examples"]
     pages = Dict(ex => (replace(script, ".jl" => ".md"), title) for (script, (title, exs)) in GALLERY for ex in exs)
     io = IOBuffer()
@@ -902,7 +906,8 @@ function gallery_index_table()
         needs = unique([lab for (f, lab) in PLANNED if f in v["requires"]])
         status = if haskey(pages, ex)
             isempty(needs) || error("$ex has a gallery page but needs $(join(needs, ", "))")
-            "[$(pages[ex][2])](examples/$(pages[ex][1]))"
+            page = replace(pages[ex][1], ".md" => "")
+            "[$(pages[ex][2])]($(prettyurls ? "$page/" : "examples/$page.html"))"
         else
             isempty(needs) && error("$ex is supported but has no gallery page (add one to ExampleTools.GALLERY)")
             "planned: needs " * join(needs, " and ")
