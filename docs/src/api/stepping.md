@@ -53,3 +53,17 @@ get_start_time
 get_end_time
 get_time_step
 ```
+
+## libmf6-compatible model
+
+[`MF6Model`](@ref) has the BMI of libmf6 as ModflowInterface.jl wraps it (see
+[BMI](../coupling/bmi.md)); the XMI functions above take it too. These functions exist for
+it only, under ModflowInterface.jl's names (not exported, call them qualified):
+
+```@docs
+MF6Model
+ModflowGPU.get_last_bmi_error
+ModflowGPU.get_var_rank
+ModflowGPU.get_var_shape
+ModflowGPU.get_subcomponent_count
+```

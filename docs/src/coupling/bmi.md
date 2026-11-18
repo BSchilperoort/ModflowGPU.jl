@@ -4,14 +4,25 @@
 CurrentModule = ModflowGPU
 ```
 
-ModflowGPU implements the [Basic Model Interface](https://bmi.csdms.io) (BMI) of
-[BasicModelInterface.jl](https://github.com/Deltares/BasicModelInterface.jl) (version
-0.1) for its [`Simulation`](@ref) type, so that a BMI host (a coupler that drives models
-through BMI calls only) can run it like any other BMI model. The methods are built on the
-[stepping API](stepping.md), and follow libmf6's BMI where the BMI specification allows:
-variable names are the libmf6 addresses of the stepping API. All 41 functions of the
-specification have a method; the [conformance table](@ref "Conformance") lists what each one
-does and the [deviations](@ref "Deviations from the specification") that remain.
+ModflowGPU has two Basic Model Interfaces ([BMI](https://bmi.csdms.io), the functions of
+[BasicModelInterface.jl](https://github.com/Deltares/BasicModelInterface.jl) version
+0.1), chosen by the model type:
+
+| | [`Simulation`](@ref) | [`MF6Model`](@ref) |
+| :--- | :--- | :--- |
+| Follows | the BMI specification | libmf6, the BMI of MODFLOW 6, as [ModflowInterface.jl](https://github.com/Deltares/ModflowInterface.jl) wraps it |
+| Use it for | a BMI host that drives models through BMI calls only | code written for libmf6 through ModflowInterface.jl, which runs unchanged after swapping `ModflowModel` for `MF6Model` |
+| Start | `BMI.initialize(Simulation, config_file)` ([configuration file](@ref "Configuration file")) | `m = MF6Model(path; backend, precision, ...)`, then `BMI.initialize(m)` |
+| Grids | real-world coordinates, units, a grid for every variable | libmf6's: one grid per model, DIS x and y are indices |
+| Functions | all 41 of the specification | the ones libmf6 has, and the XMI calls of ModflowInterface.jl |
+
+Both are built on the [stepping API](stepping.md) and use its variable names (libmf6
+addresses such as `"GWF/X"`). The sections below up to [A BMI loop](@ref) describe the BMI
+of `Simulation`; [libmf6's BMI: MF6Model](@ref "libmf6's BMI: MF6Model") describes the other.
+
+`Simulation` implements all 41 functions of the specification; the
+[conformance table](@ref "Conformance") lists what each one does and the
+[deviations](@ref "Deviations from the specification") that remain.
 
 The BMI functions belong to BasicModelInterface, not to ModflowGPU. Add the package to
 your environment (`import Pkg; Pkg.add("BasicModelInterface")`) and call them with its
@@ -235,7 +246,9 @@ Every function of the specification, as ModflowGPU implements it (BasicModelInte
     DISU grids give their vertices and faces, the units are UDUNITS strings (`"m3 d-1"`
     for `"L3/T"`), `get_time_units` gives `"none"` instead of `"undefined"`,
     `get_value_ptr` returns a flat `Vector` for `BOUND`, and `update_until` throws for
-    times that are not step ends instead of running past them.
+    times that are not step ends instead of running past them. These changes are to the
+    BMI of `Simulation`; the libmf6 behaviour (edge indices, a matrix `BOUND`, one grid
+    per model) is that of [`MF6Model`](@ref).
 
 ## A BMI loop
 
@@ -309,4 +322,176 @@ t = 20.0 d: well -200.0 m³/d, lowest head -0.667 m
 t = 30.0 d: well -300.0 m³/d, lowest head -1.001 m
 
 julia> BMI.finalize(sim)
+```
+
+## libmf6's BMI: MF6Model
+
+[`MF6Model`](@ref) gives the results of libmf6, the BMI of MODFLOW 6 (`srcbmi/` of
+MODFLOW 6.8.2), and is used as `ModflowModel` of
+[ModflowInterface.jl](https://github.com/Deltares/ModflowInterface.jl): a script written
+for libmf6 runs on ModflowGPU after changing the `using` line and the model type. Engine
+settings, which libmf6 does not have, are keywords of the constructor (those of
+[`initialize`](@ref)); without them the model runs on the CPU in the default precision.
+
+```julia
+import BasicModelInterface as BMI
+using ModflowGPU                   # was: using ModflowInterface
+const MF = ModflowGPU              # was: const MF = ModflowInterface
+
+m = MF6Model("path/to/simulation"; backend = select_backend("auto"))   # was: ModflowModel(...)
+BMI.initialize(m)
+head = BMI.get_value_ptr(m, "GWF/X")
+maxiter = BMI.get_value_ptr(m, "SLN_1/MXITER")[]
+while BMI.get_current_time(m) < BMI.get_end_time(m)
+    MF.prepare_time_step(m, 0.0)
+    rate = BMI.get_value_ptr(m, "GWF/WEL-1/BOUND")   # (ncolbnd, maxbound)
+    rate[1, :] .= -100.0
+    MF.prepare_solve(m, 1)
+    for _ in 1:maxiter
+        MF.solve(m, 1) && break
+    end
+    MF.finalize_solve(m, 1)
+    MF.finalize_time_step(m)
+end
+BMI.finalize(m)
+```
+
+### The calls side by side
+
+| ModflowInterface.jl (libmf6) | ModflowGPU | Result |
+| :--- | :--- | :--- |
+| `m = ModflowModel(path)` | `m = MF6Model(path; kwargs...)` | uninitialised handle; `path` is the simulation folder or its `mfsim.nam`; also `MF6Model(spec::SimulationSpec)` |
+| `BMI.initialize(m)` | same | returns `m`; on an initialised model it finalises and initialises again |
+| `BMI.initialize(ModflowModel)` | `BMI.initialize(MF6Model)` | the simulation in the current folder (default settings) |
+| `BMI.update(m)`, `BMI.finalize(m)` | same | return `m`; `update` does not throw when a step does not converge (libmf6 reports success), it warns and sets `get_last_bmi_error` |
+| `BMI.get_component_name(m)` | same | `"MODFLOW 6"` |
+| `BMI.get_start_time`, `get_current_time`, `get_end_time` | same | 0, the time at the end of the last step, the end time |
+| `BMI.get_time_step(m)` | same | the current step length (TDIS `DELT`) |
+| `BMI.get_input_var_names`, `get_output_var_names`, item counts | same | the same list for both: every address of [`var_addresses`](@ref) |
+| `BMI.get_var_grid(m, name)` | same | 1 (the model's grid) for every address of the model, -1 for `SLN_1/...` and `TDIS/...` |
+| `BMI.get_var_type(m, name)` | same | libmf6's memory type: `"DOUBLE (57)"`, `"INTEGER"`, `"DOUBLE (3,120)"` (dimensions in Julia order) |
+| `BMI.get_var_itemsize`, `get_var_nbytes` | same | 8 or 4; bytes of the whole variable |
+| `BMI.get_value_ptr(m, name)` | same | an array with libmf6's shape: 0-dimensional for a scalar (`ptr[]`), a vector, `BOUND` as a `(ncolbnd, maxbound)` matrix; valid until `finalize` |
+| `BMI.get_value(m, name)`, `BMI.get_value(m, name, dest)` | same | a copy; `dest` filled and returned |
+| — | `BMI.set_value(m, name, values)` | libmf6 has `set_value` (ModflowInterface.jl does not wrap it): [`set_value`](@ref) of the stepping API |
+| `BMI.get_grid_type(m, 1)` | same | `"rectilinear"` (DIS), `"unstructured"` (DISV, DISU) |
+| `BMI.get_grid_rank`, `BMI.get_grid_shape(m, 1)` | same | DIS only: 2 for one layer, else 3; shape as a Tuple `(ncol, nrow[, nlay])` |
+| `BMI.get_grid_size(m, 1)` | same | DIS: `nlay·nrow·ncol`; DISU: number of vertices |
+| `BMI.get_grid_x(m, 1, x)`, `get_grid_y` | same | DIS: the indices `0:ncol` and `nrow:-1:0`; DISV, DISU: the `VERTICES` as given (model coordinates) |
+| `BMI.get_grid_node_count`, `get_grid_face_count` | same | DISU only: number of vertices; number of model nodes |
+| `BMI.get_grid_nodes_per_face`, `get_grid_face_nodes` | same | DISU only: vertices per cell; the vertices of every cell, each closed by its first vertex (MF6's `JAVERT`) |
+| `MF.prepare_time_step(m, dt)` | same | returns `m`; `dt` is ignored, as in libmf6 |
+| `MF.prepare_solve(m, 1)`, `MF.finalize_solve(m, 1)` | same | return `m` |
+| `MF.solve(m, 1)` | same | `true` when the step converged |
+| `MF.do_time_step(m)`, `MF.finalize_time_step(m)` | same | return `m` |
+| `MF.get_subcomponent_count(m)` | same | 1 |
+| `MF.get_var_address(m, var, component; subcomponent_name)` | same | e.g. `"GWF/RIV-1/BOUND"` |
+| `MF.get_var_rank(m, name)`, `MF.get_var_shape(m, name)` | same | `ndims` and `size` of the `get_value_ptr` array |
+| `MF.get_last_bmi_error(m)` | same | the message of the last failed call or non-converged step |
+
+`MF.solve`, `MF.prepare_time_step` and the others are the stepping functions of
+ModflowGPU ([`prepare_time_step`](@ref), [`ModflowGPU.solve`](@ref), ...), which also take
+an `MF6Model`; [`ModflowGPU.get_last_bmi_error`](@ref), [`ModflowGPU.get_var_rank`](@ref),
+[`ModflowGPU.get_var_shape`](@ref) and [`ModflowGPU.get_subcomponent_count`](@ref) exist
+for it only. The simulation of an initialised model is `m.simulation`, a
+[`Simulation`](@ref) with the stepping API and the BMI of the specification.
+
+### Differences from libmf6
+
+The test group `bmi` runs one script written for ModflowInterface.jl on `MF6Model` and,
+through ModflowInterface.jl, on libmf6 6.3.0 (the `Modflow6_jll` that ModflowInterface.jl
+installs) and 6.8.2, and compares every result. These differ:
+
+- **Failures are errors.** Where libmf6 returns a failure status (which
+  ModflowInterface.jl ignores, returning 0, `""` or an unchanged buffer), `MF6Model`
+  throws an `ArgumentError` and keeps its message for `get_last_bmi_error`: an unknown
+  address, a grid id other than 1, and the grid functions libmf6 has only for some grid
+  types (`get_grid_rank` and `get_grid_shape` for DISV and DISU; `get_grid_size`,
+  `get_grid_node_count` and the face functions for DIS and DISV).
+- **`get_grid_y` of DIS** gives `nrow:-1:0`: a deliberate fix of a libmf6 bug. libmf6
+  6.8.2 gives `ncol:-1:0`, because `mf6bmiGrid.f90` takes the last entry of the grid
+  shape (`ncol`) instead of `nrow`:
+  `y_size = grid_shape_ptr(size(grid_shape_ptr - 1)) + 1` (the `- 1` is inside
+  `size`). It so writes past a buffer of `nrow + 1` values (sized from
+  `get_grid_shape`) when `ncol > nrow`.
+- **Destination buffers** of the grid functions (`get_grid_x`, `get_grid_y`,
+  `get_grid_shape`, `get_grid_nodes_per_face`, `get_grid_face_nodes`) are checked: a
+  buffer shorter than the values throws an `ArgumentError` with the length needed, and
+  nothing is written past its end (libmf6 does not check).
+- **`get_time_step`** gives the step length. ModflowInterface.jl's `get_time_step` calls
+  libmf6's `get_end_time` and gives the end time (and its `get_start_time` calls
+  `get_current_time`, which is 0 only before the first step).
+- **Before the first time step**, `TDIS/DELT` and `get_time_step` are the length of the
+  first step (libmf6: 0), `XOLD` is the starting head and `SIMVALS` are 0 (libmf6: not
+  initialised).
+- **`NODEUSER` and `NODEREDUCED`** of a model without excluded cells are, as in libmf6,
+  arrays of length 1; their value is 0 (libmf6: arbitrary).
+- **Addresses**: only those of [`var_addresses`](@ref) exist (libmf6 lists every array of
+  its memory manager); `<model>/HREF` exists only in ModflowGPU.
+- **`BOUND`** holds the package data as libmf6 up to 6.4 does (before the AUXMULTNAME
+  multiplier). libmf6 6.8 keeps them in separate arrays (`WEL/Q`, `CHD/HEAD`,
+  `RIV/STAGE`, ...) and leaves `BOUND` at 0, so writing `BOUND` has no effect there; see
+  [Differences from MODFLOW 6](../compatibility/differences.md).
+- **`get_value_ptr`** is a host mirror of the device data, synchronised at the stepping
+  calls, not the model's own memory; see [Host mirrors and device arrays](@ref).
+- **`get_grid_face_nodes` of DISU** with excluded cells works; libmf6 corrupts its memory
+  there (it sizes a buffer by the face count, the number of model nodes, and writes the
+  nodes per face of every cell).
+- **The handle** is finalised when garbage-collected, as ModflowInterface.jl's
+  `ModflowModel`. Because the garbage collector does not allow I/O or device
+  synchronisation, the finalizer finalises the simulation in a new task: output files are
+  closed and GPU memory is freed some time after the collection (not at all if Julia
+  exits first). Call `BMI.finalize(m)` to release them at a known point; a second call
+  does nothing. Several `MF6Model`s can be active at a time; libmf6 allows one per
+  process.
+
+### Functions libmf6 does not have
+
+`update_until`, `get_var_units`, `get_var_location`, `get_time_units`,
+`get_value_at_indices`, `set_value_at_indices`, `get_grid_z`, `get_grid_spacing`,
+`get_grid_origin`, `get_grid_edge_count`, `get_grid_edge_nodes` and `get_grid_face_edges`
+throw an `ArgumentError` for an `MF6Model` that points to the BMI of `Simulation`, which
+has them all (`m.simulation`, or `BMI.initialize(Simulation, config_file)`).
+
+### Example
+
+The model of [A BMI loop](@ref), run with the XMI calls of a ModflowInterface.jl script:
+
+```jldoctest bmi
+julia> const MF = ModflowGPU;
+
+julia> m = MF6Model(simdir; precision = :double, write_output = false)
+MF6Model("flow", uninitialized)
+
+julia> BMI.initialize(m);
+┌ Info: IMS preconditioner ILU0 is replaced by mc_ilu0 (multicolour ILU0: red–black on DIS grids, greedy colouring on DISV and DISU; the default, see the `preconditioner` option)
+└   ims.file = "flow.ims"
+
+julia> BMI.get_var_grid(m, "FLOW/X"), BMI.get_grid_type(m, 1), BMI.get_grid_shape(m, 1)
+(1, "rectilinear", (10, 5))
+
+julia> println(BMI.get_grid_x(m, 1, zeros(11)))
+[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+
+julia> BMI.get_var_type(m, "FLOW/WEL-1/BOUND"), BMI.get_var_type(m, "TDIS/NPER")
+("DOUBLE (1,1)", "INTEGER")
+
+julia> nper = BMI.get_value_ptr(m, "TDIS/NPER")
+0-dimensional Array{Int32, 0}:
+3
+
+julia> while BMI.get_current_time(m) < BMI.get_end_time(m)
+           MF.prepare_time_step(m, 0.0)
+           MF.prepare_solve(m, 1)
+           for _ in 1:BMI.get_value_ptr(m, "SLN_1/MXITER")[]
+               MF.solve(m, 1) && break
+           end
+           MF.finalize_solve(m, 1)
+           MF.finalize_time_step(m)
+       end
+
+julia> BMI.get_current_time(m), round.(BMI.get_value(m, "FLOW/WEL-1/SIMVALS"); digits = 6)
+(30.0, [-100.0])
+
+julia> BMI.finalize(m);
 ```

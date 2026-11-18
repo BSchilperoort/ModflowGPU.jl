@@ -27,7 +27,8 @@ anything, are the same functions as [`run_simulation`](@ref) and
 clash with `Base.run` and `Base.finalize`.
 
 The [BMI](https://bmi.csdms.io) functions are methods of BasicModelInterface's own
-functions for [`Simulation`](@ref) and are called qualified, for example
+functions for [`Simulation`](@ref) (the BMI specification) and [`MF6Model`](@ref)
+(libmf6's BMI, as ModflowInterface.jl) and are called qualified, for example
 `BasicModelInterface.update(sim)`; see [BMI](../coupling/bmi.md).
 
 ```@docs

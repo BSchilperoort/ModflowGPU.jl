@@ -12,7 +12,10 @@ through xmipy and modflowapi): the same calls in the same order, and the same va
 addresses. Code written for libmf6 can be ported call by call.
 
 The functions are listed in the [Stepping API reference](../api/stepping.md). The
-[BMI](bmi.md) page describes the Basic Model Interface methods built on them.
+[BMI](bmi.md) page describes the Basic Model Interface methods built on them, among them
+[`MF6Model`](@ref), which runs code written for libmf6 through ModflowInterface.jl
+unchanged: the stepping functions take an `MF6Model` too, and return it where
+ModflowInterface.jl does.
 
 ## The time-step loop
 
