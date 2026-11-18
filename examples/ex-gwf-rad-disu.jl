@@ -80,13 +80,13 @@ hf6 = open_head_file(only(filter(endswith(".hds"), readdir(mf6.dir; join = true)
 t = ModflowGPU.head_times(hf)
 series(file, n) = [vec(read_head(file, k))[n] for k in 1:length(file)]
 colors = (:green, :red, :blue)
-fig = Figure(; size = (560, 340))
+fig = Figure(; size = (720, 340))
 ax = Axis(fig[1, 1]; xlabel = "time (d)", ylabel = "head (ft)")
 for ((label, n), color) in zip(nodes, colors)
     lines!(ax, t, series(hf6, n); color, label = "MODFLOW 6 ($label)")
     scatter!(ax, t, series(hf, n); color = :transparent, strokecolor = color, strokewidth = 1, label = "ModflowGPU ($label)")
 end
-axislegend(ax; position = :rt, labelsize = 9)
+Legend(fig[1, 2], ax; labelsize = 9, framevisible = false)
 save_figure(fig, "ex-gwf-rad-disu-obs-head")
 
 # The same in dimensionless form, as in the MF6 example: the drawdown
@@ -94,7 +94,7 @@ save_figure(fig, "ex-gwf-rad-disu-obs-head")
 # the saturated thickness `b` = 50 ft, `Q` = 4000 ft³/d, `S_y` = 0.1 and `r` = 40 ft.
 
 K, b, Q, Sy, rad = 20.0, 50.0, 4000.0, 0.1, 40.0
-fig = Figure(; size = (560, 340))
+fig = Figure(; size = (720, 340))
 ax = Axis(fig[1, 1]; xscale = log10, yscale = log10, xlabel = "Dimensionless time, t_y", ylabel = "Dimensionless drawdown, s_d")
 ty = K * b .* t ./ (Sy * rad^2)
 sd(h) = 4π * K * b .* (50.0 .- h) ./ Q
@@ -103,7 +103,7 @@ for ((label, n), color) in zip(nodes, colors)
     scatter!(ax, ty, sd(series(hf, n)); color = :transparent, strokecolor = color, strokewidth = 1, label = "ModflowGPU ($label)")
 end
 limits!(ax, 1.0e-3, 100, 1.0e-3, 100)
-axislegend(ax; position = :lt, labelsize = 9)
+Legend(fig[1, 2], ax; labelsize = 9, framevisible = false)
 save_figure(fig, "ex-gwf-rad-disu-obs-dimensionless")
 
 # ## Comparison with MODFLOW 6
@@ -131,7 +131,7 @@ save_figure(fig, "ex-gwf-rad-disu-difference")
 # 6 gives a storage flow of 6 × 10⁻⁶ of the total inflow in the second time step (a very
 # short step with large storage coefficients); in `:single`, the difference beyond the
 # Float32 rounding of the flows, which the parity table shows. The raw `:single` budget
-# difference shown here is large (about 0.4 of the total inflow), while the heads agree
+# difference shown here is large (up to about 0.6 of the total inflow), while the heads agree
 # within a few micrometres: in the first, very short time steps (Δt = 6 × 10⁻⁵ d) the
 # storage coefficients `S_y × area / Δt` are so large that the rounding of the Float32
 # heads shows in the storage flows (see [What the presets mean for accuracy](@ref); use

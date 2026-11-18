@@ -126,9 +126,9 @@ for (n, (x, y, label)) in enumerate(obs)
     i, j = argmin(abs.(ycenters .- y)), argmin(abs.(xcenters .- x))       # as the MF6 example
     exact = [only(zhan_drawdown([xcenters[j]], [g.yc[i] - ywell], zc[kwell], tk)) for tk in t]
     lines!(ax, t, exact; color = colors[n], linewidth = 1, label = "Zhan and others (2001), $label")
-    for (file, marker, lab) in ((hf, :circle, "ModflowGPU"), (hf6, :cross, "MODFLOW 6"))
+    for (file, marker, size, lab) in ((hf, :circle, 12, "ModflowGPU"), (hf6, :xcross, 7, "MODFLOW 6"))
         s = [STRT - read_head(file, k)[j, i, kwell] for k in marks]
-        scatter!(ax, t[marks], s; marker, color = marker === :circle ? :transparent : colors[n], strokecolor = colors[n], strokewidth = 0.9, markersize = 8, label = n == 1 ? lab : nothing)
+        scatter!(ax, t[marks], s; marker, color = marker === :circle ? :transparent : colors[n], strokecolor = colors[n], strokewidth = 0.9, markersize = size, label = n == 3 ? lab : nothing)
     end
 end
 limits!(ax, 1.0e-3, 1.0, 6.0, 0.0)
@@ -140,9 +140,9 @@ save_figure(fig, "ex-gwf-hwell-comparison")
 # The drawdown in the layer of the well near the screen at t ≈ 0.1 d and t = 1 d: the
 # analytical solution with contours at 0.25, 0.5, 1, 2, 4 and 6 m, and the simulated
 # drawdown minus the analytical one, for ModflowGPU and for MODFLOW 6, as in the MF6
-# example (which shows the MAW and MODFLOW-USG results as well). The simulated drawdown
-# is too small next to the screen, where the cells cannot resolve the steep gradient of
-# the line sink.
+# example (which shows the MAW and MODFLOW-USG results as well). The differences are
+# largest next to the screen, where the cells cannot resolve the steep gradient of the
+# line sink.
 
 cols = findall(x -> abs(x) <= 110, g.xc)
 rows = findall(y -> abs(y - ywell) <= 70, g.yc)

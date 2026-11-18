@@ -91,7 +91,9 @@ save_figure(difference_map(g, d; xlabel = "x position (m)", ylabel = "y position
 # The largest head and budget differences over all layers, next to the values of the
 # [parity table](@ref "Parity table"), and the wall times (CPU: this build, including
 # compilation for the first run of the session; GPU: the parity table, AMD Radeon RX
-# 7800 XT).
+# 7800 XT). As in the parity tests, the `:double` head criterion is 10⁻⁶ m or 10⁻⁷ of
+# the head range, whichever is larger; for this large model the second applies.
 
 stats = Dict(p => (; cmp = compare_with_mf6(mf6.dir, runs[p]), runs[p].time) for p in (:double, :single))
-comparison_table("ex-gwf-lgrv-gr", stats)
+hrange = -(reverse(extrema(filter(!isnan, mask_inactive(h6))))...)
+comparison_table("ex-gwf-lgrv-gr", stats; dh_limit_double = max(1.0e-6, 1.0e-7 * hrange))

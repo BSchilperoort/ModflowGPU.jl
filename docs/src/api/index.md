@@ -19,7 +19,12 @@ The public API of ModflowGPU, one page per area:
   implements.
 
 Names written as `ModflowGPU.name` on these pages are public but not exported: write them
-qualified. All others are exported by `using ModflowGPU`.
+qualified. All others are exported by `using ModflowGPU`. The exported names are the entry
+points: running, backends and precision, the stepping calls, the builder functions and
+the output readers with their result types. Small helpers, such as
+[`ModflowGPU.oc_record`](@ref), the step and record lookups of the readers
+([`ModflowGPU.find_budget_records`](@ref), [`ModflowGPU.head_times`](@ref), ...) and
+[`ModflowGPU.percent_discrepancy`](@ref), are public but not exported.
 
 `ModflowGPU.run` and `ModflowGPU.finalize`, the names used before version 0.1 exported
 anything, are the same functions as [`run_simulation`](@ref) and
