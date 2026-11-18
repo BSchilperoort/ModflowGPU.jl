@@ -392,8 +392,10 @@ examples/               # T8.6: Literate scripts, runnable on their own
     second implementation.
   - Functions libmf6 does not implement (`update_until`, `get_var_units`,
     `get_var_location`, `get_grid_z`, spacing, origin, edges, `*_at_indices`, ...):
-    behave as libmf6 does (an error), unless T8.9's implementation is consistent with the
-    libmf6 grid above and the owner keeps it; list each case in the card report.
+    owner decision 2026-11-18: keep every T8.9 addition, as long as the functions libmf6
+    implements return libmf6's results (e.g. `get_var_grid` returns the model grid id
+    for every address; the extra T8.9 grid ids may stay queryable by id). List each
+    kept addition in the card report and on `bmi.md` as a ModflowGPU extension.
   - A test group (extend `bmi`) that runs the same script through ModflowInterface.jl's
     call sequence on the MF6 examples that libmf6 can run (DIS, DISV, DISU), compares
     every function's result with libmf6 itself where `Modflow6_jll` or the mf6 8.2
