@@ -177,3 +177,30 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
 - Done when: observation files of advtidal, fhb and rad-disu match within
   tolerance.
 - Docs: update `docs/src/compatibility/packages.md` (OBS) and `docs/src/getting_started.md` (CSV observation output); adds the observation output (CSV time series against mf6's) to the existing gallery pages `ex-gwf-fhb`, `ex-gwf-advtidal` and `ex-gwf-rad-disu`.
+
+**T6.8 Parallel test runner (S)**
+- Depends: no Phase 6 card (tooling). Added 2026-11-18 at the owner's request; schedule
+  it after T6.2 merges, because it changes `test/runtests.jl`, which every card uses.
+- Why: `test/runtests.jl` runs all groups in one Julia process, one file after another.
+  The full CPU suite takes about 22 minutes locally and used one of 16 cores (about
+  100 % CPU, machine 78 % idle, measured 2026-11-18 during the T6.2 run).
+- Measure first: wall time per test group (CPU, and rocm for the GPU groups) on main,
+  and the peak memory of one test process. Write the numbers into the card report.
+- Deliver: an opt-in parallel mode, e.g. `MFGPU_TEST_JOBS=N` (unset or 1 = today's
+  serial run, so `Pkg.test()` and every existing command keep working). The driver
+  starts N Julia worker processes; each runs a bin of groups through the existing
+  `MFGPU_TEST_GROUPS` filter, with bins balanced by the measured times. Results and
+  failures of every worker are reported, and the run fails if any worker fails.
+  Either a small hand-written driver or ParallelTestRunner.jl; choose by simplicity and
+  how well its output reads, and say why.
+  - If one group dominates (likely `run` or `assembly`), split it by model with the
+    `MFGPU_TEST_MODELS` filter (added in T6.2) so it does not set the floor.
+  - Check that tests do not write to shared fixed paths (output next to inputs,
+    fixed temp names, the libmf6 oracle's copies) and fix any that do.
+  - GPU run: workers share one GPU (16 GB); choose a safe default N for rocm (may be
+    lower than for CPU) and check memory.
+  - CI (4-core GitHub runners): use 2–3 jobs in `test.yml` if it is faster there;
+    measure on the first push.
+- Done when: the parallel run gives the same test counts and results as the serial run
+  on CPU and rocm, its wall time is reported against the serial time (local and CI),
+  and CLAUDE.md "Commands" plus the developer page list the new variable.
