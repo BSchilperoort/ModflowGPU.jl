@@ -10,8 +10,33 @@ ModflowGPU's output, and compares the results with MODFLOW 6 on the same input.
 | [Horizontal anisotropy](examples/ex-gwf-hani.md) | `ex-gwf-hanir`, `ex-gwf-hanic` | anisotropic K rotated with `ANGLE1`; drawdown maps |
 | [Flow and head boundaries from time series](examples/ex-gwf-fhb.md) | `ex-gwf-fhb` | a transient model with CHD and WEL time series; hydrographs |
 | [TWRI](examples/ex-gwf-twri01.md) | `ex-gwf-twri01` | five layers, a convertible top layer, wells, drains and recharge; heads and specific discharge |
+| [BCF2SS](examples/ex-gwf-bcf2ss.md) | `ex-gwf-bcf2ss-p01a` | two aquifers, a river and wells; dry cells and rewetting |
+| [Flow diversion around a high bottom](examples/ex-gwf-bump.md) | `ex-gwf-bump-p01b` | unconfined flow around dry cells on a bump of the bottom |
+| [A rising water table under a recharge pond](examples/ex-gwf-nwt-p02.md) | `ex-gwf-nwt-p02b` | 14 layers, transient, rewetting of dry cells; water-table sections |
+| [Highlands next to a tidal estuary](examples/ex-gwf-advtidal.md) | `ex-gwf-advtidal` | GHB, RIV, WEL, three RCH zones and EVT with time series, 361 steps; time series of heads and flows |
+| [A well screened across several layers](examples/ex-gwf-maw-p03.md) | `ex-gwf-maw-p03a`, `ex-gwf-maw-p03c` | a regional section and a local model with a high-conductivity well |
+| [A horizontal well](examples/ex-gwf-hwell.md) | `ex-gwf-hwell-a` | 153 164 cells, 60 steps, AMG; drawdown against an analytical solution |
 | [A valley aquifer with a river](examples/ex-gwf-lgrv-gc.md) | `ex-gwf-lgrv-gc` | 9 layers, RIV and RCH, K zones; maps and a cross-section |
+| [A valley aquifer: the refined model](examples/ex-gwf-lgrv-gr.md) | `ex-gwf-lgrv-gr` | the same at 672 525 cells |
+| [A nested grid with DISV](examples/ex-gwf-u1disv.md) | `ex-gwf-u1disv` | an unstructured grid with a refined block; heads and their error |
+| [Curvilinear grids with DISV](examples/ex-gwf-curvilinear.md) | `ex-gwf-curve-90`, `ex-gwf-curvilin` | curvilinear cells; heads against the radial-flow solution |
+| [An axisymmetric model with DISU](examples/ex-gwf-rad-disu.md) | `ex-gwf-rad-disu` | a radial model of rings with convertible storage; heads at three depths |
 | [A coupling-type model, step by step](examples/synthetic-coupling.md) | none | RIV, DRN, EVT and RCH on a synthetic island, run with the stepping API |
+
+## All MODFLOW 6 examples in scope
+
+The table lists every MODFLOW 6 groundwater-flow example that is in the scope of
+ModflowGPU (made from `validation/examples.toml` in the repository when the manual is
+built), smallest tier first. Every example that ModflowGPU supports has a page; the others
+need a feature that is planned (see [Supported packages](@ref)), and the card that adds
+the feature adds their page. Examples with the packages that are out of scope (SFR, LAK,
+MAW, UZF, CSUB, transport, ...) are not listed. The examples with observations (OBS) run,
+but ModflowGPU does not write observation files yet (planned, T6.7), so their pages read
+the same values from the head and budget files.
+
+```@eval
+Main.ExampleTools.gallery_index_table()
+```
 
 ## How the pages are made
 

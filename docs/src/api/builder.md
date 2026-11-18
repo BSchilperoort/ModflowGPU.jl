@@ -32,7 +32,7 @@ build_dis
 build_npf
 build_ic
 build_sto
-oc_record
+ModflowGPU.oc_record
 build_oc
 build_boundary
 build_array_boundary

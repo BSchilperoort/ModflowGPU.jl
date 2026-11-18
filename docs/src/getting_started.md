@@ -131,7 +131,7 @@ WEL-1  in: 0.0  out: 500.0
 RCH-1  in: 1900.0  out: 0.0
 CHD-1  in: 0.0  out: 1400.0
 
-julia> abs(percent_discrepancy(result.budgets[end])) < 0.01
+julia> abs(ModflowGPU.percent_discrepancy(result.budgets[end])) < 0.01
 true
 ```
 
@@ -160,7 +160,7 @@ per budget term and saved time step:
 ```jldoctest gs
 julia> bf = open_budget_file(joinpath(simdir, "flow.cbc"));
 
-julia> budget_texts(bf)
+julia> ModflowGPU.budget_texts(bf)
 4-element Vector{String}:
  "FLOW-JA-FACE"
  "WEL"

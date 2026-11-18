@@ -24,7 +24,7 @@ using SHA: sha256
 using TOML: TOML
 
 export example_run, mf6_run, quietly, cache_dir, repo_path, run_modflowgpu, compare_with_mf6, comparison_table, parity_row,
-    DisGrid, read_dis_grid, node, cell_of, layer_values, specific_discharge, budget_cells,
+    DisGrid, read_dis_grid, VertexGrid, read_vertex_grid, read_grid, input_nodes, node, cell_of, layer_values, specific_discharge, budget_cells,
     map_heatmap!, map_contour!, map_grid!, map_cells!, map_vectors!, section_heatmap!, section_grid!,
     section_contour!, budget_bars, difference_map, save_figure, intformat, expformat, BC_COLORS, mask_inactive
 
@@ -131,15 +131,21 @@ function mf6_executable()
     return exe
 end
 
-"Directory of the unmodified input of MF6 example `name` in the cache."
+"""
+Directory of the unmodified input of MF6 example `name` in the cache. `name` is the path
+of the example in `mf6examples.zip`, e.g. `"ex-gwf-toth"` or
+`"ex-gwf-hwell/ex-gwf-hwell-a"` (the `path` of validation/examples.toml).
+"""
 function example_input(name::AbstractString)
     zip = archive_path(:mf6examples)
     root = mkpath(joinpath(cache_dir(), "mf6examples-$(ARCHIVES.mf6examples.sha256[1:12])"))
     dest = joinpath(root, name)
     isdir(dest) && return dest
-    extract!(zip, joinpath(root, ".x-" * name), "$name/*")
-    mv(joinpath(root, ".x-" * name, name), dest)
-    rm(joinpath(root, ".x-" * name); recursive = true)
+    tmp = joinpath(root, ".x-" * replace(name, "/" => "_"))
+    extract!(zip, tmp, "$name/*")
+    mkpath(dirname(dest))
+    mv(joinpath(tmp, name), dest)
+    rm(tmp; recursive = true)
     return dest
 end
 
@@ -251,7 +257,7 @@ function compare_with_mf6(rundir::AbstractString, run)
         for (i, rec) in enumerate(bb.records)
             strip(rec.text) == "DATA-SPDIS" && continue
             pak = rec.imeth == 6 ? strip(rec.paknam2) : nothing
-            j = only(find_budget_records(ba; text = strip(rec.text), kstp = rec.kstp, kper = rec.kper, paknam2 = pak))
+            j = only(ModflowGPU.find_budget_records(ba; text = strip(rec.text), kstp = rec.kstp, kper = rec.kper, paknam2 = pak))
             qa, qb = read_budget(ba, j), read_budget(bb, i)
             va, vb = qa isa ModflowGPU.BudgetList ? (qa.q, qb.q) : (vec(qa), vec(qb))
             isempty(vb) && continue
@@ -268,7 +274,7 @@ function compare_with_mf6(rundir::AbstractString, run)
             dl = max(dl, max(abs(v - w) - _listing_round(v) - _listing_round(w), 0.0) / tb.total_rate_in)
         end
     end
-    pd = maximum(t -> abs(percent_discrepancy(t)), r.budgets)
+    pd = maximum(t -> abs(ModflowGPU.percent_discrepancy(t)), r.budgets)
     return (; dh, budget_cbc = dq, budget_listing = dl, budget = max(dq, dl), pd)
 end
 
@@ -302,9 +308,14 @@ to the values of the parity table (row `parity_name` of docs/src/assets/parity.t
 backend), and the wall times on the CPU (this build) and on the GPU (parity table, ROCm).
 `unit` is the length unit of the model.
 Throws if a difference of this build exceeds the acceptance limits of the parity tests
-(the head limit is relative to the head range where the parity tests make it so).
+(the head limit is relative to the head range where the parity tests make it so;
+`budget_limit_double` and `budget_limit_single` replace the budget limits for the models
+whose parity test uses other criteria, see `run_parity_options` in test/run_parity.jl).
 """
-function comparison_table(parity_name::AbstractString, stats; unit = "m", dh_limit_double = LIMITS.double.dh)
+function comparison_table(
+        parity_name::AbstractString, stats; unit = "m", dh_limit_double = LIMITS.double.dh,
+        budget_limit_double = LIMITS.double.budget, budget_limit_single = LIMITS.single.budget,
+    )
     row = parity_row(parity_name)
     res = row["results"]
     io = IOBuffer()
@@ -312,7 +323,7 @@ function comparison_table(parity_name::AbstractString, stats; unit = "m", dh_lim
     println(io, "| :-- | --: | --: | --: | --: | --: | --: |")
     for p in (:double, :single)
         s = stats[p]
-        lim = p === :double ? (; dh = dh_limit_double, budget = LIMITS.double.budget) : LIMITS.single
+        lim = p === :double ? (; dh = dh_limit_double, budget = budget_limit_double) : (; dh = LIMITS.single.dh, budget = budget_limit_single)
         s.cmp.dh < lim.dh || error("$parity_name :$p: max |Δh| = $(s.cmp.dh) exceeds $(lim.dh)")
         s.cmp.budget < lim.budget || error("$parity_name :$p: budget difference $(s.cmp.budget) exceeds $(lim.budget)")
         cpu = res["cpu"][string(p)]
@@ -389,19 +400,35 @@ mask_inactive(a) = map(v -> _inactive(v) ? NaN : v, a)
 
 "The `(ncol, nrow)` values of layer `l` of a head array `h[col, row, layer]`, masked."
 layer_values(h, l) = mask_inactive(h[:, :, l])
+layer_values(::DisGrid, h, l) = layer_values(h, l)
 
 """
     budget_cells(g, budget_file, text) -> Vector{NTuple{3, Int}}
 
 The cells `(layer, row, column)` of the list records with budget text `text` (e.g.
-`"CHD"`, `"WEL"`, `"DRN"`, `"RIV"`) of the first saved step, the boundary cells of that
-package.
+`"CHD"`, `"WEL"`, `"DRN"`, `"RIV"`) of the first saved step that has any, the boundary
+cells of the packages of that type.
 """
 function budget_cells(g::DisGrid, budget_file::AbstractString, text::AbstractString)
-    bf = open_budget_file(budget_file)
-    recs = read_budget(bf; text)
-    isempty(recs) && return NTuple{3, Int}[]
-    return [cell_of(g, Int(n)) for n in first(recs).id1]
+    return [cell_of(g, Int(n)) for n in _first_step_nodes(budget_file, text)]
+end
+
+"""
+    input_nodes(dir, ftype) -> Vector{Int}
+
+The user nodes of the list-based boundary packages of type `ftype` (e.g. `"CHD"`) of the
+simulation in `dir`, over all stress periods, read from the input with
+`load_simulation` (for models that write no budget file; this reads ModflowGPU's
+internal input structures, which may change).
+"""
+function input_nodes(dir::AbstractString, ftype::AbstractString)
+    m = only(load_simulation(dir).models)
+    nodes = Int[]
+    for b in m.boundaries
+        (b.schema !== nothing && lowercase(b.schema.package) == "gwf-" * lowercase(ftype)) || continue
+        foreach(p -> append!(nodes, p.nodeu), b.periods.data)
+    end
+    return sort!(unique!(nodes))
 end
 
 """
@@ -451,6 +478,186 @@ function specific_discharge(g::DisGrid, flowja, h)
     return qx, qy
 end
 
+# --- Unstructured grids (DISV and DISU) --------------------------------------------------
+
+"""
+    VertexGrid
+
+A DISV or DISU grid read from MF6's binary grid file (`read_vertex_grid`): `kind`
+(`"DISV"` or `"DISU"`), `nlay` and `ncpl` (cells per layer; for DISU `nlay = 1` and `ncpl`
+the number of nodes), the cell `polygons` and centres `xc`, `yc` of a layer (DISV: per
+cell2d; DISU: per node), and per node `top`, `bot`, `idomain` and `icelltype`, and the
+connectivity `ia`, `ja` (user nodes). DISV node `n` is cell2d `mod1(n, ncpl)` of layer
+`cld(n, ncpl)`.
+"""
+struct VertexGrid
+    kind::String
+    nlay::Int
+    ncpl::Int
+    polygons::Vector{Vector{Point2d}}
+    xc::Vector{Float64}
+    yc::Vector{Float64}
+    top::Vector{Float64}
+    bot::Vector{Float64}
+    idomain::Vector{Int32}
+    icelltype::Vector{Int32}
+    ia::Vector{Int32}
+    ja::Vector{Int32}
+end
+
+"Read the DISV or DISU grid of the simulation in `dir` from its `.disv.grb` or `.disu.grb` file."
+function read_vertex_grid(dir::AbstractString)
+    g = read_grb(_only_file(dir, ".grb"))
+    d = g.data
+    x0, y0 = d["XORIGIN"], d["YORIGIN"]
+    v = d["VERTICES"]
+    iav, jav = d["IAVERT"], d["JAVERT"]
+    polys = map(1:(length(iav) - 1)) do i
+        ids = Int.(jav[iav[i]:(iav[i + 1] - 1)])
+        length(ids) > 1 && first(ids) == last(ids) && pop!(ids)   # closed rings repeat the first vertex
+        [Point2d(x0 + v[1, k], y0 + v[2, k]) for k in ids]
+    end
+    if g.grid == "DISV"
+        nlay, ncpl = Int(d["NLAY"]), Int(d["NCPL"])
+        top = repeat(d["TOP"], nlay)
+        bot = d["BOTM"]
+        for l in 2:nlay, i in 1:ncpl
+            top[(l - 1) * ncpl + i] = bot[(l - 2) * ncpl + i]
+        end
+    elseif g.grid == "DISU"
+        nlay, ncpl = 1, Int(d["NODES"])
+        top, bot = d["TOP"], d["BOT"]
+    else
+        error("only DISV and DISU grids are supported here, got $(g.grid)")
+    end
+    return VertexGrid(g.grid, nlay, ncpl, polys, x0 .+ d["CELLX"], y0 .+ d["CELLY"], top, bot, d["IDOMAIN"], d["ICELLTYPE"], d["IA"], d["JA"])
+end
+
+"""
+    read_grid(dir) -> DisGrid or VertexGrid
+
+The grid of the simulation in `dir`, from its binary grid file: a [`DisGrid`](@ref) for
+DIS, a [`VertexGrid`](@ref) for DISV and DISU.
+"""
+read_grid(dir::AbstractString) = endswith(_only_file(dir, ".grb"), ".dis.grb") ? read_dis_grid(dir) : read_vertex_grid(dir)
+
+"The values of layer `l` of a DISV head array (`(ncpl, 1, nlay)`), masked, as a vector."
+layer_values(g::VertexGrid, h, l) = mask_inactive(vec(h)[((l - 1) * g.ncpl + 1):(l * g.ncpl)])
+
+"The nodes of the list records with budget text `text` of the first saved step that has any (all packages of that type)."
+function budget_cells(::VertexGrid, budget_file::AbstractString, text::AbstractString)
+    return Int.(_first_step_nodes(budget_file, text))
+end
+
+# The nodes of every list record with budget text `text` in the first saved step that has
+# a non-empty one.
+function _first_step_nodes(budget_file, text)
+    bf = open_budget_file(budget_file)
+    idx = ModflowGPU.find_budget_records(bf; text)
+    for step in unique((bf.records[i].kstp, bf.records[i].kper) for i in idx)
+        nodes = reduce(vcat, [read_budget(bf, i).id1 for i in idx if (bf.records[i].kstp, bf.records[i].kper) == step])
+        isempty(nodes) || return nodes
+    end
+    return Int32[]
+end
+
+# The edge that the polygons `p` and `q` share: its two end points, or `nothing`.
+function _shared_edge(p, q)
+    common = [a for a in p if any(b -> isapprox(a, b; atol = 1.0e-6 * max(1.0, maximum(abs, a))), q)]
+    return length(common) == 2 ? (common[1], common[2]) : nothing
+end
+
+"""
+    specific_discharge(g::VertexGrid, flowja, h) -> (qx, qy)
+
+The specific discharge at the cell centres of a DISV grid (vectors over the nodes), from
+the FLOW-JA-FACE record `flowja` and the heads `h`, as MF6 computes it for
+SAVE_SPECIFIC_DISCHARGE without XT3D (`calc_spdis` in gwf-npf.f90): per horizontal
+connection the face velocity `flowja / (face width × saturated thickness)` along the face
+normal, combined with MF6's distance weights. The face geometry (normal, width, the
+distances `cl1` and `cl2` from the cell centres to the face) comes from the cell polygons.
+"""
+function specific_discharge(g::VertexGrid, flowja, h)
+    g.kind == "DISV" || error("specific discharge is implemented for DISV grids only")
+    nn = length(g.ia) - 1
+    hv = vec(h)
+    qx, qy = zeros(nn), zeros(nn)
+    cell(n) = mod1(n, g.ncpl)
+    function sat(n)
+        t, b = g.top[n], g.bot[n]
+        g.icelltype[n] == 0 && return t - b
+        return _inactive(hv[n]) ? 0.0 : clamp(hv[n] - b, 0.0, t - b)
+    end
+    for n in 1:nn
+        nix, niy, di, vi = Float64[], Float64[], Float64[], Float64[]
+        cn = cell(n)
+        pc = Point2d(g.xc[cn], g.yc[cn])
+        for ii in g.ia[n]:(g.ia[n + 1] - 1)
+            m = Int(g.ja[ii])
+            (m == n || cld(m, g.ncpl) != cld(n, g.ncpl)) && continue
+            cm = cell(m)
+            e = _shared_edge(g.polygons[cn], g.polygons[cm])
+            e === nothing && continue
+            a, b = Float64.(e[1]), Float64.(e[2])
+            t = (b - a) / sqrt(sum(abs2, b - a))
+            nrm = [t[2], -t[1]]
+            pm = [g.xc[cm], g.yc[cm]]
+            p = Float64.(pc)
+            sum(nrm .* (pm - p)) < 0 && (nrm = -nrm)      # normal from n towards m
+            cl1 = abs(sum(nrm .* (a - p)))
+            cl2 = abs(sum(nrm .* (a - pm)))
+            dltot = sqrt(sum(abs2, pm - p))
+            area = sqrt(sum(abs2, b - a)) * (sat(n) + sat(m)) / 2
+            push!(nix, -nrm[1]); push!(niy, -nrm[2])
+            push!(di, dltot * cl1 / (cl1 + cl2))
+            push!(vi, area > 0 ? flowja[ii] / area : 0.0)
+        end
+        isempty(vi) && continue
+        wix, wiy = di .* abs.(nix), di .* abs.(niy)
+        sx, sy = sum(wix) * (1 + 1.0e-10), sum(wiy) * (1 + 1.0e-10)
+        wix, wiy = (sx .- wix) .* abs.(nix), (sy .- wiy) .* abs.(niy)
+        bix, biy = wix .* sign.(nix), wiy .* sign.(niy)
+        sx, sy = sum(wix .* abs.(nix)), sum(wiy .* abs.(niy))
+        sx > 0 && (bix ./= sx)
+        sy > 0 && (biy ./= sy)
+        axy, ayx = sum(bix .* niy), sum(biy .* nix)
+        vx = sum((bix .- axy .* biy) .* vi)
+        vy = sum((biy .- ayx .* bix) .* vi)
+        den = 1 - axy * ayx
+        qx[n], qy[n] = den != 0 ? (vx / den, vy / den) : (vx, vy)
+    end
+    return qx, qy
+end
+
+"Colour the cells of a layer of `g` with the values `a` (one per cell of the layer)."
+map_heatmap!(ax, g::VertexGrid, a; kwargs...) = poly!(ax, g.polygons; color = Float64.(vec(a)), strokewidth = 0, kwargs...)
+
+"The cell outlines of a layer of `g`."
+map_grid!(ax, g::VertexGrid; color = :black, linewidth = 0.5) = poly!(ax, g.polygons; color = :transparent, strokecolor = color, strokewidth = linewidth)
+
+"Fill the cells of the nodes `nodes` (of any layer) of `g`."
+map_cells!(ax, g::VertexGrid, nodes; color, kwargs...) = poly!(ax, [g.polygons[mod1(n, g.ncpl)] for n in nodes]; color, kwargs...)
+
+"""
+    map_vectors!(ax, g::VertexGrid, qx, qy; normalize = false, scale = 0.8)
+
+Arrows of the specific discharge `qx`, `qy` (one value per cell of the layer) at the cell
+centres; the longest arrow (or every arrow, with `normalize`) is `scale` times the median
+width (in x) of the cells.
+"""
+function map_vectors!(ax, g::VertexGrid, qx, qy; normalize = false, color = RGBf(0.75, 0.75, 0.75), scale = 0.8, kwargs...)
+    pts = [Point2f(g.xc[i], g.yc[i]) for i in 1:g.ncpl]
+    dirs = [Vec2f(qx[i], qy[i]) for i in 1:g.ncpl]
+    widths = sort([-(reverse(extrema(first.(p)))...) for p in g.polygons])
+    w = widths[cld(length(widths), 2)] * scale
+    if normalize
+        dirs = [sqrt(sum(abs2, d)) > 0 ? d / sqrt(sum(abs2, d)) * w : d for d in dirs]
+    else
+        dirs = dirs .* Float32(w / maximum(d -> sqrt(sum(abs2, d)), dirs))
+    end
+    return arrows2d!(ax, pts, dirs; color, align = :center, shaftwidth = 1, tipwidth = 5, tiplength = 5, kwargs...)
+end
+
 # --- Plot helpers --------------------------------------------------------------------------
 
 "Tick labels as whole numbers (`xtickformat = intformat`), instead of `5.0×10³`."
@@ -492,7 +699,7 @@ function map_vectors!(ax, g::DisGrid, qx, qy; normalize = true, color = RGBf(0.7
     d = minimum([g.delr; g.delc]) * lengthscale
     function arrow(v)
         s = sqrt(sum(abs2, v))
-        return normalize ? (s > 0 ? v / s * d : Vec2f(0, 0)) : v
+        return Vec2f(normalize ? (s > 0 ? v / s * d : zero(v)) : v)
     end
     dirs = vec([arrow(Vec2f(qx[c, r], qy[c, r])) for c in 1:g.ncol, r in 1:g.nrow])
     return arrows2d!(ax, pts, dirs; color, align = :center, shaftwidth = 1, tipwidth = 5, tiplength = 5, kwargs...)
@@ -585,20 +792,21 @@ function budget_bars(budgets; title = "", size = (640, 360), unit = "")
 end
 
 """
-    difference_map(g, panels; layer = 1, title) -> Figure
+    difference_map(g, panels; layer = 1, unit = "") -> Figure
 
-Maps of head differences, one panel per `label => Δh` pair (`Δh` a `(ncol, nrow, nlay)`
-array), each with its own symmetric colour range.
+Maps of head differences, one panel per `label => Δh` pair (`Δh` a head array as read
+from the head file of grid `g`, a [`DisGrid`](@ref) or a [`VertexGrid`](@ref)), each with
+its own symmetric colour range; `unit` labels the colour bars.
 """
-function difference_map(g::DisGrid, panels; layer = 1, size = (420 * length(panels), 380), xlabel = "x position", ylabel = "y position")
+function difference_map(g::Union{DisGrid, VertexGrid}, panels; layer = 1, unit = "", size = (420 * length(panels), 380), xlabel = "x position", ylabel = "y position")
     fig = Figure(; size)
     for (k, (lab, d)) in enumerate(panels)
-        a = layer_values(d, layer)
+        a = layer_values(g, d, layer)
         m = maximum(x -> isnan(x) ? 0.0 : abs(x), a)
         m = m == 0 ? 1.0e-12 : m
         ax = Axis(fig[1, 2k - 1]; aspect = DataAspect(), title = lab, xlabel, ylabel)
         hm = map_heatmap!(ax, g, a; colormap = :balance, colorrange = (-m, m))
-        Colorbar(fig[1, 2k], hm; label = "Δh", tickformat = expformat)
+        Colorbar(fig[1, 2k], hm; label = isempty(unit) ? "Δh" : "Δh ($unit)", tickformat = expformat)
     end
     return fig
 end
@@ -621,6 +829,92 @@ function save_figure(fig, name)
     path = joinpath(mkpath(joinpath(cache_dir(), "figures")), name * ".png")
     save(path, fig; px_per_unit = 2)
     return PNGFile(path)
+end
+
+# --- The gallery and its index ------------------------------------------------------------
+
+"""
+The pages of the gallery, in the order of the manual: the script in `examples/` =>
+`(title, MF6 examples the page runs)`. Used by docs/make.jl and by
+`gallery_index_table`.
+"""
+const GALLERY = [
+    "ex-gwf-toth.jl" => ("Tóth: flow systems in a basin", ["ex-gwf-toth"]),
+    "ex-gwf-hani.jl" => ("Horizontal anisotropy", ["ex-gwf-hanir", "ex-gwf-hanic"]),
+    "ex-gwf-fhb.jl" => ("Time-series boundaries", ["ex-gwf-fhb"]),
+    "ex-gwf-twri01.jl" => ("TWRI: layered aquifers", ["ex-gwf-twri01"]),
+    "ex-gwf-bcf2ss.jl" => ("BCF2SS: wetting and drying", ["ex-gwf-bcf2ss-p01a"]),
+    "ex-gwf-bump.jl" => ("Flow around a high bottom", ["ex-gwf-bump-p01b"]),
+    "ex-gwf-nwt-p02.jl" => ("Water table under a recharge pond", ["ex-gwf-nwt-p02b"]),
+    "ex-gwf-advtidal.jl" => ("Highlands next to a tidal estuary", ["ex-gwf-advtidal"]),
+    "ex-gwf-maw-p03.jl" => ("A well screened across layers", ["ex-gwf-maw-p03a", "ex-gwf-maw-p03c"]),
+    "ex-gwf-hwell.jl" => ("A horizontal well", ["ex-gwf-hwell-a"]),
+    "ex-gwf-lgrv-gc.jl" => ("Valley aquifer with a river", ["ex-gwf-lgrv-gc"]),
+    "ex-gwf-lgrv-gr.jl" => ("Valley aquifer: the refined model", ["ex-gwf-lgrv-gr"]),
+    "ex-gwf-u1disv.jl" => ("A nested grid (DISV)", ["ex-gwf-u1disv"]),
+    "ex-gwf-curvilinear.jl" => ("Curvilinear grids (DISV)", ["ex-gwf-curve-90", "ex-gwf-curvilin"]),
+    "ex-gwf-rad-disu.jl" => ("An axisymmetric model (DISU)", ["ex-gwf-rad-disu"]),
+    "synthetic-coupling.jl" => ("Coupling-type model, step by step", String[]),
+]
+
+# The page (notebook) of each in-scope example in the MODFLOW 6 examples documentation,
+# where it is not the example's own name.
+const NOTEBOOKS = Dict(
+    "ex-gwf-hanic" => "ex-gwf-hani", "ex-gwf-hanir" => "ex-gwf-hani", "ex-gwf-hanix" => "ex-gwf-hani",
+    "ex-gwf-hwell-a" => "ex-gwf-hwell", "ex-gwf-maw-p03a" => "ex-gwf-maw-p03", "ex-gwf-maw-p03c" => "ex-gwf-maw-p03",
+    "ex-gwf-bcf2ss-p01a" => "ex-gwf-bcf2ss", "ex-gwf-bcf2ss-p02a" => "ex-gwf-bcf2ss",
+    "ex-gwf-bump-p01a" => "ex-gwf-bump", "ex-gwf-bump-p01b" => "ex-gwf-bump", "ex-gwf-bump-p01c" => "ex-gwf-bump",
+    "ex-gwf-lgrv-gc" => "ex-gwf-lgrv", "ex-gwf-lgrv-gr" => "ex-gwf-lgrv", "ex-gwf-lgrv-lgr" => "ex-gwf-lgrv",
+    "ex-gwf-nwt-p02a" => "ex-gwf-nwt-p02", "ex-gwf-nwt-p02b" => "ex-gwf-nwt-p02",
+    "ex-gwf-nwt-p03a" => "ex-gwf-nwt-p03", "ex-gwf-nwt-p03b" => "ex-gwf-nwt-p03",
+    "ex-gwf-twri01" => "ex-gwf-twri", "ex-gwf-curve-90" => "ex-gwf-curvilinear-90", "ex-gwf-curvilin" => "ex-gwf-curvilinear",
+    "ex-gwf-u1disv-x" => "ex-gwf-u1disv",
+    "ex-gwf-u1gwfgwf-s1" => "ex-gwf-u1gwfgwf", "ex-gwf-u1gwfgwf-s2" => "ex-gwf-u1gwfgwf",
+    "ex-gwf-u1gwfgwf-s3" => "ex-gwf-u1gwfgwf", "ex-gwf-u1gwfgwf-s4" => "ex-gwf-u1gwfgwf",
+)
+
+# Features (`requires` of validation/examples.toml) of unfinished Phase 6 cards.
+const PLANNED = ["newton" => "Newton–Raphson (T6.2)", "xt3d" => "XT3D (T6.5)", "exchange" => "GWF–GWF exchanges (T6.6)", "multi_model" => "GWF–GWF exchanges (T6.6)"]
+
+"""
+    gallery_index_table() -> Markdown.MD
+
+The table of the gallery's overview page: every in-scope MODFLOW 6 example of
+validation/examples.toml (`in_plan = true`) with its grid, size, link to the MODFLOW 6
+examples documentation and status: the gallery page that runs it, or "planned" with the
+unfinished Phase 6 feature it needs. Throws if an example that ModflowGPU supports has no
+page, or a page names an example that is not in scope, so the index cannot drift from
+validation/examples.toml.
+
+The links to the pages are written as URLs of the built site (Documenter does not rewrite
+`.md` links in the output of an `@eval` block): `prettyurls` must match the setting of
+`Documenter.HTML` in docs/make.jl (on in CI).
+"""
+function gallery_index_table(; prettyurls = get(ENV, "CI", "false") == "true")
+    inv = TOML.parsefile(repo_path("validation", "examples.toml"))["examples"]
+    pages = Dict(ex => (replace(script, ".jl" => ".md"), title) for (script, (title, exs)) in GALLERY for ex in exs)
+    io = IOBuffer()
+    println(io, "| MODFLOW 6 example | Grid | Cells | Status |")
+    println(io, "| :-- | :-- | --: | :-- |")
+    names = sort([k for (k, v) in inv if get(v, "in_plan", false)]; by = k -> (inv[k]["tier"], k))
+    for ex in keys(pages)
+        ex in names || error("gallery page for $ex, which is not an in-scope example of validation/examples.toml")
+    end
+    for ex in names
+        v = inv[ex]
+        nb = get(NOTEBOOKS, ex, ex)
+        needs = unique([lab for (f, lab) in PLANNED if f in v["requires"]])
+        status = if haskey(pages, ex)
+            isempty(needs) || error("$ex has a gallery page but needs $(join(needs, ", "))")
+            page = replace(pages[ex][1], ".md" => "")
+            "[$(pages[ex][2])]($(prettyurls ? "$page/" : "examples/$page.html"))"
+        else
+            isempty(needs) && error("$ex is supported but has no gallery page (add one to ExampleTools.GALLERY)")
+            "planned: needs " * join(needs, " and ")
+        end
+        println(io, "| [`$ex`](https://modflow6-examples.readthedocs.io/en/latest/_notebooks/$nb.html) | ", v["grid"], " | ", v["ncells"], " | ", status, " |")
+    end
+    return Markdown.parse(String(take!(io)))
 end
 
 end # module ExampleTools

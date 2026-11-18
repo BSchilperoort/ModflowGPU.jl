@@ -40,5 +40,12 @@ pages, and Documenter runs them. They download `mf6examples.zip` and the mf6 6.8
 binary (pinned sha256 in `docs/ExampleTools.jl`) into `docs/.cache` (gitignored; CI keeps
 the downloads between runs). To use copies you already have, set
 `MFGPU_GALLERY_ARCHIVES` to a folder that holds them, for example the `reference/archives`
-folder made by `validation/fetch_reference.sh`. The build takes about 2.5 minutes on one
-CPU thread and 2.6 GB of memory.
+folder made by `validation/fetch_reference.sh`. The build takes about 11 minutes on one
+CPU thread (most of it in the larger examples: ex-gwf-hwell-a, ex-gwf-lgrv-gr and
+ex-gwf-nwt-p02b, with their MODFLOW 6 runs) and 4.3 GB of memory.
+
+A new gallery page is a script in `examples/` plus an entry in `ExampleTools.GALLERY`
+(script, title and the MODFLOW 6 examples it runs). The overview page lists every
+in-scope example of `validation/examples.toml` with its page, and the build fails when an
+example that ModflowGPU supports has no page: the card that adds a feature (Newton–Raphson,
+XT3D, exchanges) adds the pages of the examples it unlocks.

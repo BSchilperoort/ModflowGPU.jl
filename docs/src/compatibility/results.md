@@ -162,17 +162,17 @@ dh = maximum(maximum(abs.(read_head(ours, k) .- read_head(mf6, k))) for k in 1:l
 
 # A package's flows in the last saved step
 a, b = open_budget_file(r.budget_file), open_budget_file(joinpath(simdir, "model.cbc"))
-ia = last(find_budget_records(a; text = "RIV"))
-ib = last(find_budget_records(b; text = "RIV"))
+ia = last(ModflowGPU.find_budget_records(a; text = "RIV"))
+ib = last(ModflowGPU.find_budget_records(b; text = "RIV"))
 dq = maximum(abs.(read_budget(a, ia).q .- read_budget(b, ib).q))
 
 # The listing budget tables: rate in and out per package, and the percent discrepancy
-listing_rates(r.listing_file, "RIV"), listing_rates(joinpath(simdir, "model.lst"), "RIV")
+ModflowGPU.listing_rates(r.listing_file, "RIV"), ModflowGPU.listing_rates(joinpath(simdir, "model.lst"), "RIV")
 [t.rate_percent_discrepancy for t in read_listing_budgets(r.listing_file)]
 ```
 
 Dry cells hold the same `HDRY` value in both head files; leave them out of the
 difference. The readers are described on [Output files](../api/output.md):
 [`open_head_file`](@ref), [`read_head`](@ref), [`open_budget_file`](@ref),
-[`find_budget_records`](@ref), [`read_budget`](@ref), [`read_listing_budgets`](@ref),
-and [`listing_rates`](@ref).
+[`find_budget_records`](@ref ModflowGPU.find_budget_records), [`read_budget`](@ref), [`read_listing_budgets`](@ref),
+and [`listing_rates`](@ref ModflowGPU.listing_rates).

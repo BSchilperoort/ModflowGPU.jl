@@ -18,8 +18,10 @@ ModflowGPU`; also CUDA, oneAPI, Metal, OpenCL). The exported names cover:
   [`read_grb`](@ref), [`read_listing_budgets`](@ref).
 
 Other documented names are public but not exported, because their names are generic
-(`ModflowGPU.run`, `ModflowGPU.finalize`, `ModflowGPU.solve`, `ModflowGPU.update`) or they are for backend
-authors (`ModflowGPU.register_backend!`). BMI is implemented as methods of
+(`ModflowGPU.run`, `ModflowGPU.finalize`, `ModflowGPU.solve`, `ModflowGPU.update`), they
+are small helpers (`ModflowGPU.oc_record`, `ModflowGPU.head_times`,
+`ModflowGPU.find_budget_records`, `ModflowGPU.percent_discrepancy`, ...) or they are for
+backend authors (`ModflowGPU.register_backend!`). BMI is implemented as methods of
 BasicModelInterface's functions (`BasicModelInterface.update(sim)`), for [`Simulation`](@ref)
 (the BMI specification) and for [`MF6Model`](@ref) (libmf6's BMI, as ModflowInterface.jl).
 
@@ -35,13 +37,14 @@ module ModflowGPU
 # Public API (docs/src/api/). Exported: the names a user calls. `public` (Julia >= 1.11;
 # the package needs 1.12): documented names that stay qualified, because they clash with
 # Base (`run`, `finalize`), CommonSolve (`solve`) or CUDA (`update`), are exception or component types of
-# the exported ones, or are extension hooks for backend authors. test/unit/api_test.jl
+# the exported ones, are small helpers (T8.7: `oc_record`, the step and record lookups of
+# the output readers, the percent discrepancies), or are extension hooks for backend authors. test/unit/api_test.jl
 # checks that this list matches the @docs blocks of docs/src/api/.
 
 # Running
-export run_simulation, RunResult, ModelBudget, BudgetTerm, cum_percent_discrepancy,
-    ConvergenceError, load_simulation, MF6UnsupportedError
-public run, MF6InputError
+export run_simulation, RunResult, ModelBudget, BudgetTerm, ConvergenceError, load_simulation,
+    MF6UnsupportedError
+public run, MF6InputError, cum_percent_discrepancy
 # Backends and precision
 export select_backend, backend_options, backend_name, supports_float64, resolve_precision
 public PRECISION_PRESETS
@@ -55,15 +58,15 @@ public solve, update, finalize, device_bound!
 export MF6Model
 public get_last_bmi_error, get_var_rank, get_var_shape, get_subcomponent_count
 # Builder
-export SimulationSpec, build_dis, build_npf, build_ic, build_sto, oc_record, build_oc,
-    build_boundary, build_array_boundary, build_model, build_tdis, build_ims, build_simulation,
-    write_simulation
+export SimulationSpec, build_dis, build_npf, build_ic, build_sto, build_oc, build_boundary,
+    build_array_boundary, build_model, build_tdis, build_ims, build_simulation, write_simulation
+public oc_record
 # Output
-export open_head_file, HeadFile, read_head, find_head_step, head_kstpkper, head_times,
-    open_budget_file, BudgetFile, BudgetList, read_budget, find_budget_records, budget_texts,
-    budget_kstpkper, budget_times, read_grb, BinaryGridFile, read_listing_budgets,
-    ListingBudget, listing_rates, percent_discrepancy
-public HeadStep, BudgetRecord, GrbVariable, ListingBudgetTerm, MF6BinaryFileError, HNOFLO, HDRY
+export open_head_file, HeadFile, read_head, open_budget_file, BudgetFile, BudgetList, read_budget,
+    read_grb, BinaryGridFile, read_listing_budgets, ListingBudget
+public HeadStep, BudgetRecord, GrbVariable, ListingBudgetTerm, MF6BinaryFileError, HNOFLO, HDRY,
+    find_head_step, head_kstpkper, head_times, find_budget_records, budget_texts, budget_kstpkper,
+    budget_times, listing_rates, percent_discrepancy
 # For backend authors
 public register_backend!, pin_memory!, free_memory!, host_mapped_zeros, free_device_arrays!
 

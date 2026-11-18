@@ -140,7 +140,7 @@ discrepancy of the rates and of the cumulative volumes.
 ```julia
 b = run_simulation("path/to/simulation").budgets[end]
 [(t.name, t.rate_in, t.rate_out) for t in b.terms]
-percent_discrepancy(b)
+ModflowGPU.percent_discrepancy(b)
 ```
 """
 struct ModelBudget
@@ -156,7 +156,7 @@ total_cum_out(b::ModelBudget) = sum(t -> t.cum_out, b.terms; init = 0.0)
 percent_discrepancy(b::ModelBudget) = percent_discrepancy(total_rate_in(b), total_rate_out(b))
 
 """
-    cum_percent_discrepancy(b::ModelBudget) -> Float64
+    ModflowGPU.cum_percent_discrepancy(b::ModelBudget) -> Float64
 
 MF6's percent discrepancy (see [`percent_discrepancy`](@ref)) of the cumulative volumes
 of budget `b` since the start of the simulation.
