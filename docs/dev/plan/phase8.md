@@ -286,6 +286,15 @@ examples/               # T8.6: Literate scripts, runnable on their own
   feature adds the page (T8.1 rule).
 - Done when: every supported, passing example has a page or a recorded reason why not
   (for example too slow even to prebuild), and the index matches `validation/examples.toml`.
+- Added 2026-11-18 (owner, open issue from T8.2): small helpers are not exported. Keep
+  `export` for the user-facing entry points (running, backends and precision, the
+  stepping calls, `SimulationSpec` and the `build_*` functions, the output readers'
+  `open_*`/`read_*` functions and their result types); helpers such as `oc_record`,
+  `head_kstpkper`, `head_times`, `budget_kstpkper`, `budget_times`, `budget_texts`,
+  `find_head_step`, `find_budget_records`, `listing_rates`, `percent_discrepancy`,
+  `cum_percent_discrepancy` stay documented and `public` but not exported. Update every
+  use in `docs/`, `examples/`, `test/` and the ModflowCoupling patches that relies on the
+  export (qualify as `ModflowGPU.x`), and list the moved names in the card report.
 
 **T8.8 Performance page (S) ‖**
 - Depends: T8.1.
