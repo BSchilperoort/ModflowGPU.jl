@@ -51,6 +51,9 @@ more, cheaper, iterations; the [GPU guide](../gpu.md) helps to choose one.
   level (a breakdown). MODFLOW 6 has no restart. It happens when the residual is nonzero
   in a few cells only, for example in the first outer iteration of a Newton–Raphson steady
   state with the red–black ILU0 (`ex-gwf-zaidel`), where the solve would otherwise diverge.
+  It also applies without Newton–Raphson: `ex-gwf-hanic` with BiCGSTAB then needs 3 outer
+  iterations instead of 4 in `:double` (and 3 instead of 10 in `:single`) for the same
+  heads.
 
 ## Outer iterations
 
