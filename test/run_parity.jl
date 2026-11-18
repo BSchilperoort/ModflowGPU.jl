@@ -367,17 +367,19 @@ function run_parity_models()
         end
         push!(out, name => rundir)
     end
-    for name in RUN_PARITY_TEST_MODELS
+    for name in filter(test_model_selected, RUN_PARITY_TEST_MODELS)
         push!(out, name => (:test_model, name))
     end
     # DISU against MF6 (T6.4): ex-gwf-rad-disu with confined storage.
-    if isdir(joinpath(REFERENCE_DIR, "runs", "ex-gwf-rad-disu", "tight-relative"))
+    if !test_model_selected("rad_disu_confined")
+    elseif isdir(joinpath(REFERENCE_DIR, "runs", "ex-gwf-rad-disu", "tight-relative"))
         push!(out, "rad_disu_confined" => :rad_disu_confined)
     else
         @info "Skipping rad_disu_confined in the run parity test: reference/runs/ex-gwf-rad-disu not found"
     end
     # ex-gwf-capture (T6.2) saves no heads: run with an OC that saves them.
-    if isdir(joinpath(REFERENCE_DIR, "runs", "ex-gwf-capture", "tight"))
+    if !test_model_selected("capture_saved")
+    elseif isdir(joinpath(REFERENCE_DIR, "runs", "ex-gwf-capture", "tight"))
         push!(out, "capture_saved" => :capture_saved)
     else
         @info "Skipping capture_saved in the run parity test: reference/runs/ex-gwf-capture not found"

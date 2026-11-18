@@ -66,6 +66,19 @@ const EXTRA_PARITY_EXAMPLES = (
 )
 
 """
+    test_model_selected(name) -> Bool
+
+Whether the parity tests (groups assembly and run) include model `name`:
+`MFGPU_TEST_MODELS` (T6.2), a comma-separated list of model names, restricts them to those
+models; unset includes every model.
+"""
+function test_model_selected(name::AbstractString)
+    env = strip(get(ENV, "MFGPU_TEST_MODELS", ""))
+    isempty(env) && return true
+    return name in strip.(split(env, ','))
+end
+
+"""
 Tier 4 (Newton, T6.2) examples whose reference run saves no heads or budgets: ex-gwf-capture
 (OC prints the budget only). The parity tests run `capture_saved` instead
 (`capture_saved`, mf6 at test time).
@@ -94,6 +107,7 @@ function parity_examples()
         name in UNSAVED_REFERENCE_EXAMPLES || push!(out, name => dir)
     end
     append!(out, in_scope_examples(; tiers = 5:5))
+    filter!(x -> test_model_selected(first(x)), out)
     return sort!(out)
 end
 
