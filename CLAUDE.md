@@ -38,7 +38,7 @@ an error if any worker fails (logs: `MFGPU_TEST_LOGDIR`). Measured on this machi
 61 GB), full suite, identical counts and results: CPU 17.5 min serial, 9.7 min with N=4, 5.4 min
 with N=8 (floor: the slowest `run` models, about 4 min); rocm 23.9 min serial, 16.7 min with
 N=3. Use N=8 on CPU and N=3 on rocm (a worker uses about 1 GB of the 16 GB GPU; a process peaks
-at 1.5 to 4 GB of host memory). `Pkg.test()` stays serial.
+at 1.5 to 4 GB of host memory). `Pkg.test()` is serial unless the variable is set (CI sets 3).
 
 `test/` and `benchmark/` are workspace projects of the package (`[workspace]` in `Project.toml`), so there is
 one `Manifest.toml` at the root (not committed). It includes AMDGPU, so the GPU test command

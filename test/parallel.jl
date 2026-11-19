@@ -83,10 +83,14 @@ end
 
 "The work units for `groups`; `models` is the user's MFGPU_TEST_MODELS (empty: split as in `GROUP_SPLITS`)."
 function work_units(groups::Vector{String}, models::AbstractString)
+    reference = get(ENV, "REFERENCE_DIR", joinpath(@__DIR__, "..", "reference"))
     units = WorkUnit[]
     for g in groups
-        if isempty(models) && haskey(GROUP_SPLITS, g)
+        # Without reference/ (CI) the run group skips every model: one unit is enough.
+        if isempty(models) && haskey(GROUP_SPLITS, g) && isdir(reference)
             listed, rest = GROUP_SPLITS[g]
+            names = strip.(split(join(first.(listed), ','), ','))
+            allunique(names) || error("GROUP_SPLITS[\"$g\"] lists a model twice")
             for (i, (ms, w)) in enumerate(listed)
                 push!(units, WorkUnit("$g[$i]", g, ms, w))
             end
@@ -124,6 +128,7 @@ function run_parallel_tests(jobs::Int)
     runtests = joinpath(@__DIR__, "runtests.jl")
     julia = Base.julia_cmd()
     project = Base.active_project()
+    threads = "$(Threads.nthreads(:default)),$(Threads.nthreads(:interactive))"  # as Pkg.test
     results = Dict{String, NamedTuple}()
     queue = Channel{WorkUnit}(length(units))
     foreach(u -> put!(queue, u), units)
@@ -140,7 +145,7 @@ function run_parallel_tests(jobs::Int)
         cenv["MFGPU_TEST_GROUPS"] = u.group
         cenv["MFGPU_TEST_RESULT_FILE"] = counts
         isempty(u.models) ? delete!(cenv, "MFGPU_TEST_MODELS") : (cenv["MFGPU_TEST_MODELS"] = u.models)
-        cmd = setenv(`$julia --project=$project $runtests`, cenv)
+        cmd = setenv(`$julia --project=$project --threads=$threads $runtests`, cenv)
         t = time()
         ok = open(log, "w") do io
             success(pipeline(ignorestatus(cmd); stdout = io, stderr = io))

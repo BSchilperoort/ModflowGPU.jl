@@ -461,7 +461,7 @@ it. Underscore-prefixed helpers are omitted.
 
 - **test_groups.jl**: `TEST_GROUPS` (group => files). **parallel.jl** (T6.8):
   `run_parallel_tests`, the `MFGPU_TEST_JOBS=N` driver (work units, `GROUP_WEIGHTS`,
-  `GROUP_SPLITS` of run/assembly by model through `MFGPU_TEST_MODELS`, which accepts
+  `GROUP_SPLITS` of run by model through `MFGPU_TEST_MODELS`, which accepts
   `!a,b` = all but those).
 - **testutils.jl**: `for_each_precision`, `write_input`, `input_error_of`.
 - **input_files.jl**: `REFERENCE_DIR`, `in_scope_examples`, `simulation_input_files`,
