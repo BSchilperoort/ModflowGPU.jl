@@ -913,7 +913,9 @@ of 6400 cells below 1 cm and 127 within the quadratic smoothing interval (1e-6 o
 above the bottom), whose Float32 spacing is 1.9e-6 m: the saturated thicknesses, hence the
 transmissivities, carry 2–3 significant digits, the smoothing interval is about 80 rounding
 units and the OUTER_DVCLOSE floor (`eps(Float32)·max|h'|`, 2.4e-6 m) about one (review of
-T6.2). The run parity test and the parity table run `:mixed` and `:double` only.
+T6.2). The Float32 formulation itself is consistent: started from MF6's heads (STRT = the
+MF6 solution, so the offsets are near 0), `:single` converges in 2 outer iterations to
+6.4e-6 m of MF6. The run parity test and the parity table run `:mixed` and `:double` only.
 `FLOAT32_CLOSURES.dvclose_head_cap` (1 cm) keeps a diverging Float32 iteration (heads of
 1.6e27 m) from raising OUTER_DVCLOSE with its head resolution and ending the step as
 converged.
