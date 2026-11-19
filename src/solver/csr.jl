@@ -292,23 +292,26 @@ end
 # before) or, T4.7, `(kind, bound, area, hcof, rhs, nodeptr, noderec)`: its records are
 # formulated here (`formulate_record`, as `boundary_formulate_kernel!`: zeros unless
 # `ibound[n] > 0`) and `hcof`, `rhs` stored for the flows.
-@inline _add_package_terms(n, d, s, ::Tuple{}, h, ibound) = (d, s)
-@inline function _add_package_terms(n, d, s, pkgs::Tuple, h, ibound)
-    d, s = _package_terms(n, d, s, pkgs[1], h, ibound)
-    return _add_package_terms(n, d, s, Base.tail(pkgs), h, ibound)
+# T6.2: `j` accumulates the Newton–Raphson diagonal terms of the packages and storage
+# (`newton_record`, `storage_jacobian`; zero without the Newton formulation), which change
+# the matrix but not the residual.
+@inline _add_package_terms(n, d, s, j, ::Tuple{}, h, ibound) = (d, s, j)
+@inline function _add_package_terms(n, d, s, j, pkgs::Tuple, h, ibound)
+    d, s, j = _package_terms(n, d, s, j, pkgs[1], h, ibound)
+    return _add_package_terms(n, d, s, j, Base.tail(pkgs), h, ibound)
 end
 
-@inline function _package_terms(n, d, s, pkg::NTuple{4, Any}, h, ibound)
+@inline function _package_terms(n, d, s, j, pkg::NTuple{4, Any}, h, ibound)
     hcof, rhs, nodeptr, noderec = pkg
     @inbounds for k in nodeptr[n]:(nodeptr[n + 1] - Int32(1))
         i = noderec[k]
         d += hcof[i]
         s += rhs[i]
     end
-    return d, s
+    return d, s, j
 end
 
-@inline function _package_terms(n, d, s, pkg::NTuple{7, Any}, h, ibound)
+@inline function _package_terms(n, d, s, j, pkg::NTuple{7, Any}, h, ibound)
     kind, bound, area, hcof, rhs, nodeptr, noderec = pkg
     Th = eltype(hcof)
     @inbounds begin
@@ -319,6 +322,7 @@ end
             if active
                 hr = formulate_record(kind, i, n, bound, h, area)
                 hc, r = convert(Th, hr[1]), convert(Th, hr[2])
+                j += convert(Th, newton_record(kind, i, n, bound, h, area))
             end
             hcof[i] = hc
             rhs[i] = r
@@ -326,40 +330,42 @@ end
             s += r
         end
     end
-    return d, s
+    return d, s, j
 end
 
 # Storage (`storage_add_kernel!`): `nothing` in a steady-state period, `(rho, hold)` for
-# confined storage, `(rho, hold, conv)` with convertible cells (T6.1, `storage_terms`).
-@inline _add_storage_terms(n, d, s, ::Nothing, ibound, h) = (d, s)
-@inline function _add_storage_terms(n, d, s, sto::NTuple{2, Any}, ibound, h)
+# confined storage, `(rho, hold, conv)` with convertible cells (T6.1, `storage_terms`;
+# T6.2: the Newton formulation, with the Jacobian when `jac`).
+@inline _add_storage_terms(n, d, s, j, ::Nothing, ibound, h, jac) = (d, s, j)
+@inline function _add_storage_terms(n, d, s, j, sto::NTuple{2, Any}, ibound, h, jac)
     rho, hold = sto
     @inbounds if ibound[n] > 0
         r = rho[n]
         d = d - r
         s = s - r * hold[n]
     end
-    return d, s
+    return d, s, j
 end
-@inline function _add_storage_terms(n, d, s, sto::NTuple{3, Any}, ibound, h)
+@inline function _add_storage_terms(n, d, s, j, sto::NTuple{3, Any}, ibound, h, jac)
     rho, hold, conv = sto
     @inbounds if ibound[n] > 0
-        a1, r1, a2, r2 = storage_terms(rho, hold, conv, h, n)
+        a1, r1, a2, r2 = storage_terms(rho, hold, conv, h, n, jac)
         d = d + a1 + a2
         s = s + r1 + r2
+        jac && (j += storage_jacobian(rho, conv, h, n))
     end
-    return d, s
+    return d, s, j
 end
 
 @kernel function formulate_kernel!(
         amat, rhs, diag, bdiag, brhs, res, scale, @Const(ia), @Const(ja), @Const(jas), @Const(condsat), @Const(Δr),
-        @Const(h), @Const(ibound), pkgs, sto, symmetric::Bool, offdiag::Bool, terms::Bool, tiny,
+        @Const(h), @Const(ibound), pkgs, sto, symmetric::Bool, offdiag::Bool, terms::Bool, tiny, jac::Bool,
     )
     n = @index(Global)
     T = eltype(amat)
     @inbounds begin
-        bd, br = _add_package_terms(n, zero(T), zero(T), pkgs, h, ibound)
-        bd, br = _add_storage_terms(n, bd, br, sto, ibound, h)
+        bd, br, jd = _add_package_terms(n, zero(T), zero(T), zero(T), pkgs, h, ibound)
+        bd, br, jd = _add_storage_terms(n, bd, br, jd, sto, ibound, h, jac)
         if terms
             bdiag[n] = bd
             brhs[n] = br
@@ -376,7 +382,7 @@ end
             hn = h[n]
             for ii in (id + Int32(1)):i2
                 m = ja[ii]
-                a, dd, sb, q, _, _ = connection_terms(condsat, Δr, jas, ibound, h, n, m, ii)
+                a, dd, sb, q, _, _ = connection_terms(condsat, Δr, jas, ibound, h, n, m, ii, jac)
                 d -= dd
                 s += sb
                 rs, rc = _sum_add(rs, rc, -q)
@@ -389,6 +395,12 @@ end
                 end
             end
             d += bd
+            if jac
+                # Newton–Raphson diagonal terms (T6.2): `J` on the diagonal, `J·h'` on the
+                # right-hand side (`sto_fn`, `wel_fn`, `drn_fn`).
+                d += jd
+                s += jd * hn
+            end
             if abs(d) < tiny
                 d = -one(T)
                 s -= hn
@@ -417,7 +429,7 @@ end
 
 """
     formulate_system!(sys, res, csr, npf, h, ibound, packages, storage; symmetric = false,
-                      offdiag = true, terms = true, scale = nothing) -> sys
+                      offdiag = true, terms = true, scale = nothing, jac = false) -> sys
 
 `reset_terms!`, `add_terms!` of the boundary packages and storage, `assemble!` and
 `flux_residual!` in one kernel (T4.5), with bitwise the same results. `packages`: a tuple
@@ -429,15 +441,18 @@ storage, T6.1), otherwise `nothing`. `offdiag = false` skips writing the off-dia
 only when they were written by an earlier call with the same `ibound` and `symmetric` (they
 depend on nothing else). `sys.diag` is always written; `terms = false` (T4.7, the solver's
 path: nothing there reads them) skips writing `sys.rhs`, `sys.bdiag` and `sys.brhs`.
+`jac = true` (T6.2, the Newton formulation) adds the Newton–Raphson terms to the matrix
+and the right-hand side (`npf_fn`, `sto_fn`, `bnd_fn`; the residual is the same); `bdiag`
+and `brhs` keep the terms without them.
 """
 function formulate_system!(
         sys::LinearSystem, res, csr::CsrStructure, npf::NpfModel, h, ibound, packages::Tuple, storage;
-        symmetric::Bool = false, offdiag::Bool = true, terms::Bool = true, scale = nothing,
+        symmetric::Bool = false, offdiag::Bool = true, terms::Bool = true, scale = nothing, jac::Bool = false,
     )
     backend = get_backend(sys.amat)
     formulate_kernel!(backend, _WG)(
         sys.amat, sys.rhs, sys.diag, sys.bdiag, sys.brhs, res, scale, csr.ia, csr.ja, csr.jas, _cond_arg(npf), npf.Δr, h, ibound,
-        packages, storage, symmetric, offdiag, terms, eltype(sys)(1.0e-15); ndrange = csr.nodes,
+        packages, storage, symmetric, offdiag, terms, eltype(sys)(1.0e-15), jac; ndrange = csr.nodes,
     )
     return sys
 end

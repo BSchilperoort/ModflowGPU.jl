@@ -9,8 +9,7 @@
 # [ex-gwf-bump](https://modflow6-examples.readthedocs.io/en/latest/_notebooks/ex-gwf-bump.html)
 # solves the problem three ways: with the Newton–Raphson formulation (`-p01a`), with the
 # standard formulation and rewetting of dry cells (`-p01b`), and with Newton–Raphson on
-# a cylindrical bump (`-p01c`). This page runs `ex-gwf-bump-p01b`; the two Newton
-# variants are planned (see [Supported packages](@ref)).
+# a cylindrical bump (`-p01c`). This page runs all three, first `ex-gwf-bump-p01b`.
 #
 # ## Input and the MODFLOW 6 run
 #
@@ -89,3 +88,47 @@ save_figure(difference_map(g, d; unit = "m", xlabel = "x (m)", ylabel = "y (m)")
 
 stats = Dict(p => (; cmp = compare_with_mf6(mf6.dir, runs[p]), runs[p].time) for p in (:double, :single))
 comparison_table("ex-gwf-bump-p01b", stats)
+
+# ## The Newton–Raphson formulation (`-p01a` and `-p01c`)
+#
+# `ex-gwf-bump-p01a` solves the same problem with `NEWTON UNDER_RELAXATION` instead of
+# rewetting; `ex-gwf-bump-p01c` with a cylindrical bump whose top is flat. With
+# Newton–Raphson no cell is taken out of the model: a cell on the bump keeps a head below
+# its bottom, has no saturated thickness and passes no water on (white here, as the dry
+# cells above), and the flow goes around it.
+
+newton = Dict(name => example_run(name) for name in ("ex-gwf-bump-p01a", "ex-gwf-bump-p01c"))
+newton_runs = Dict(name => Dict(p => run_modflowgpu(newton[name].dir, p) for p in (:double, :single)) for name in keys(newton))
+fig = Figure(; size = (900, 520))
+for (i, name) in enumerate(("ex-gwf-bump-p01a", "ex-gwf-bump-p01c"))
+    local gn = read_dis_grid(newton[name].dir)
+    local botn = gn.botm[:, :, 1]
+    local rn = newton_runs[name][:double].result
+    local hn = read_head(open_head_file(rn.head_file), 1)
+    local flowjan = vec(only(read_budget(open_budget_file(rn.budget_file); text = "FLOW-JA-FACE")))
+    local qxn, qyn = specific_discharge(gn, flowjan, hn)
+    local hln = layer_values(hn, 1)
+    hln[hln .<= botn] .= NaN
+    local ax = Axis(fig[1, i]; aspect = DataAspect(), title = "$(('A':'B')[i]). $name", titlesize = 12, xlabel = "x-coordinate, in meters", ylabel = i == 1 ? "y-coordinate, in meters" : "")
+    map_contour!(ax, gn, botn; levels = 2:2:8, color = :black, linestyle = :dot, linewidth = 1)
+    local hmn = map_heatmap!(ax, gn, hln; colorrange = (2.5, 7.5))
+    map_contour!(ax, gn, hln; levels = 3:1:7, color = :black, linewidth = 0.5, labels = true, labelsize = 9)
+    map_cells!(ax, gn, budget_cells(gn, rn.budget_file, "CHD"); color = :cyan)
+    map_vectors!(ax, gn, qxn[:, :, 1], qyn[:, :, 1])
+    limits!(ax, 0, 100, 0, 100)
+    i == 2 && hideydecorations!(ax; grid = false)
+    i == 2 && Colorbar(fig[2, 1:2], hmn; vertical = false, label = "Head (m)", width = Relative(0.5))
+end
+save_figure(fig, "ex-gwf-bump-newton")
+
+# The comparison of the two Newton–Raphson variants with MODFLOW 6 (cells whose MODFLOW 6
+# head is below the cell bottom are dry and left out: their head is not unique, see
+# [Differences from MODFLOW 6](@ref "Newton–Raphson")).
+
+statsa = Dict(p => (; cmp = compare_with_mf6(newton["ex-gwf-bump-p01a"].dir, newton_runs["ex-gwf-bump-p01a"][p]), newton_runs["ex-gwf-bump-p01a"][p].time) for p in (:double, :single))
+comparison_table("ex-gwf-bump-p01a", statsa)
+
+#-
+
+statsc = Dict(p => (; cmp = compare_with_mf6(newton["ex-gwf-bump-p01c"].dir, newton_runs["ex-gwf-bump-p01c"][p]), newton_runs["ex-gwf-bump-p01c"][p].time) for p in (:double, :single))
+comparison_table("ex-gwf-bump-p01c", statsc)

@@ -48,6 +48,7 @@ const FEATURE_NAMES = Dict(
     :disu => "Unstructured grids (DISU6)",
     :convertible => "Convertible cells (NPF `ICELLTYPE` ≠ 0), with wetting and drying (`REWET`, `WETDRY`)",
     :convertible_storage => "Convertible storage (STO `ICONVERT` ≠ 0, specific yield) in transient periods",
+    :newton => "Newton–Raphson formulation (`NEWTON` and `NEWTON UNDER_RELAXATION` in the model name file)",
 )
 
 "Why each package or model of `UNSUPPORTED_PACKAGES` and `UNSUPPORTED_MODELS` is rejected."
@@ -162,6 +163,9 @@ end
 
 _budget(r) = max(r["max_budget_cbc"], r["max_budget_listing"])
 
+# `_e(_max(...))`, or "–" when no backend ran the presets `ps` (T6.2: ex-gwf-nwt-p03b has no `:single`).
+_ep(row, ps, f) = any(haskey(res, p) for (_, res) in row["results"] for p in ps) ? _e(_max(row, ps, f)) : "–"
+
 function _time(row, b)
     haskey(row["results"], b) || return "–"
     return @sprintf("%.2f", row["results"][b]["mixed"]["wall_time"])
@@ -206,8 +210,8 @@ function parity_table()
         backends = join(_backend.(sort(collect(keys(row["results"])))), ", ")
         println(
             io, "| $label | $grid | $(row["time_steps"]) | $pk | ",
-            _e(_max(row, dm, r -> r["max_dh"])), " | ", _e(_max(row, ("single",), r -> r["max_dh"])), " | ",
-            _e(_max(row, dm, _budget)), " | ", _e(_max(row, ("single",), _budget)), " | ",
+            _e(_max(row, dm, r -> r["max_dh"])), " | ", _ep(row, ("single",), r -> r["max_dh"]), " | ",
+            _e(_max(row, dm, _budget)), " | ", _ep(row, ("single",), _budget), " | ",
             join(("`:$p`" for p in presets), ", "), " | $backends | ", _time(row, "cpu"), " / ", _time(row, "rocm"), " |",
         )
     end

@@ -1,0 +1,16 @@
+BEGIN options
+  SAVE_FLOWS
+  NEWTON  UNDER_RELAXATION
+END options
+
+BEGIN packages
+  DIS6  nwt.dis  dis
+  NPF6  nwt.npf  npf
+  IC6  nwt.ic  ic
+  STO6  nwt.sto  sto
+  CHD6  nwt.chd  chd
+  DRN6  nwt.drn  drn
+  WEL6  nwt.wel  wel
+  RCH6  nwt.rch  rch
+  OC6  nwt.oc  oc
+END packages

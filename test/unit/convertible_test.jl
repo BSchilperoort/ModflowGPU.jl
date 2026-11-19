@@ -25,13 +25,13 @@ end
 # A ConvertibleNpf of two cells and one connection (host arrays).
 function _cv2(
         T; icelltype = Int32[1, 1], topoff, botoff, sat, condsat, hyl, hyh, cl1 = 50.0, cl2 = 50.0, hwva, ihcx,
-        ivarcv = false, idewatcv = false, iperched = false
+        ivarcv = false, idewatcv = false, iperched = false, newton = false, ihighcellsat = false,
     )
     v(x...) = T[x...]
     thk = T.(topoff .- botoff)
     return ConvertibleNpf(
         icelltype, T.(topoff), T.(botoff), thk, T.(sat), v(condsat), v(0.0), v(hyl), v(hyh), v(cl1), v(cl2), v(hwva), Int32[ihcx],
-        ivarcv, idewatcv, iperched, Int32(0),
+        ivarcv, idewatcv, iperched, Int32(0), newton, ihighcellsat,
     )
 end
 
@@ -65,6 +65,18 @@ end
         # DEWATERED with a partly saturated lower cell: its saturation becomes 0, bovk = 2.5.
         cvd = _cv2(T; topoff = [5.0, 5.0], botoff = [-5.0, -5.0], sat = [0.5, 0.8], condsat = 7.0, hyl = 1.0, hyh = 2.0, hwva = 1000.0, ihcx = 4, ivarcv = true, idewatcv = true)
         @test connection_terms(cvd, dr, jas, ib, T[0, 0], 1, 2, 1)[5] ≈ T(400)
+        # T6.2 (from T6.1): DEWATERED with the upper cell at its bottom. The offsets resolve
+        # a saturation of 1e-30 (MF6's absolute heads give exactly 0); without the guard
+        # `hwva/denom` overflowed to Inf and the flows became NaN
+        # (reference/issues/T6.1-perched-dewatered-nan, VARIABLECV DEWATERED PERCHED).
+        for s in (T(1.0e-30), floatmin(T), nextfloat(zero(T)))
+            cvz = _cv2(T; topoff = [5.0, 5.0], botoff = [-5.0, -5.0], sat = [Float64(s), 0.8], condsat = 7.0, hyl = 1.0, hyh = 2.0, hwva = 1000.0, ihcx = 4, ivarcv = true, idewatcv = true)
+            tz = connection_terms(cvz, dr, jas, ib, T[-5, 0], 1, 2, 1)
+            @test all(isfinite, tz) && tz[5] == zero(T)
+        end
+        # Just above eps(T) the conductance is that of the saturation.
+        cve = _cv2(T; topoff = [5.0, 5.0], botoff = [-5.0, -5.0], sat = [2 * Float64(eps(T)), 0.8], condsat = 7.0, hyl = 1.0, hyh = 2.0, hwva = 1000.0, ihcx = 4, ivarcv = true, idewatcv = true)
+        @test connection_terms(cve, dr, jas, ib, T[-5, 0], 1, 2, 1)[5] ≈ T(1000) / (2 * eps(T) * T(5))
         # PERCHED: lower cell below its top: flow C·(h_1 − bot_1) from cell 1, not A·h.
         cvp = _cv2(T; topoff = [5.0, 5.0], botoff = [-5.0, -5.0], sat = [1.0, 0.8], condsat = 7.0, hyl = 1.0, hyh = 2.0, hwva = 1000.0, ihcx = 4, iperched = true)
         hp = T[2, 3]
@@ -79,7 +91,7 @@ end
     for_each_precision() do p
         T = p.T
         # rho1 = 2, rho2 = 10; top' 5, bot' −5, thk 10; hold' 0 (sn 0.5), h' −2.5 (sn 0.25).
-        cs(iconf) = ConvertibleStorage(Int32[1], T[5], T[-5], T[10], T[10], iconf)
+        cs(iconf) = ConvertibleStorage(Int32[1], T[5], T[-5], T[10], T[10], iconf, false)
         rho, hold, h = T[2], T[0], T[-2.5]
         a1, r1, a2, r2 = storage_terms(rho, hold, cs(false), h, 1)
         # SsTerms: aterm = −2·0.25; zold = −2.5, znew = −3.75; rhs = −2·0.5·2.5 − 2·0.25·(−3.75).
@@ -96,7 +108,7 @@ end
         @test b1 == T(-2) && b2 == zero(T) && s2 == zero(T)
         @test b1 * T(7) - s1 ≈ T(2) * (T(6) - T(7))
         # ICONVERT 0: −rho, −rho·hold.
-        c0 = ConvertibleStorage(Int32[0], T[5], T[-5], T[10], T[10], false)
+        c0 = ConvertibleStorage(Int32[0], T[5], T[-5], T[10], T[10], false, false)
         @test storage_terms(rho, hold, c0, h, 1) == (T(-2), -T(2) * T(0), zero(T), zero(T))
     end
 end

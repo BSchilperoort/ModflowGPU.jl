@@ -866,3 +866,93 @@ step equal `main` for coupling_rde (MC-ILU0 and Jacobi), ts_tas, wetdry, disu_st
 afr, ex-gwf-u1disv and ex-gwf-advtidal in `:single`, `:mixed` and `:double`, on CPU and
 ROCm (24 of 24 cases each). Cost on global5m: benchmark/results/2026-11-16-T6.2a.md
 (ModflowCoupling's COMPLEX IMS: +1 ms per daily step, no reduction ever applied).
+
+## Newton–Raphson: the Tier 4 examples (T6.2)
+
+Models: ex-gwf-bcf2ss-p02a, ex-gwf-bump-p01a and -p01c, ex-gwf-nwt-p02a, ex-gwf-nwt-p03a and
+-p03b, ex-gwf-zaidel, `capture_saved` (ex-gwf-capture with an OC that saves heads; the
+reference run saves none) and the synthetic test/models/newton (convertible storage, WEL
+AUTO_FLOW_REDUCE, DRN AUXDEPTHNAME, RCH, CHD; mf6 run at test time). Parity table
+(docs/src/assets/parity.toml, commit e719f66, MC-ILU0 BiCGSTAB in every preset): max
+|Δh| against MF6 (m, ft for bcf2ss and nwt-p02a; cells whose MF6 head is below the bottom
+are dry and left out, see below), the budget difference (the larger of CBC and listing,
+× total in), and outer iterations ours/MF6. CPU and ROCm give the same numbers (ROCm vs
+CPU heads: 0 in every preset).
+
+| Model | `:double` \|Δh\| / budget / outer | `:mixed` \|Δh\| / budget | `:single` \|Δh\| / budget / outer |
+| --- | --- | --- | --- |
+| ex-gwf-bcf2ss-p02a | 7.5e-11 / 3.3e-13 / 14 (17) | 7.5e-11 / 3.3e-13 | 1.3e-5 / 6.5e-8 / 13 |
+| ex-gwf-bump-p01a | 8.4e-8 / 9.5e-12 / 22 (23) | 8.4e-8 / 9.5e-12 | 1.1e-6 / 3.5e-7 / 17 |
+| ex-gwf-bump-p01c | 2.6e-9 / 4.5e-11 / 8 (10) | 2.6e-9 / 4.4e-11 | 1.5e-5 / 8.7e-6 / 7 |
+| ex-gwf-nwt-p02a (1 + 11 steps) | 3.5e-10 / 0 / 456 (464) | 3.8e-10 / 0 | 1.7e-4 / 4.6e-5 / 282 |
+| ex-gwf-nwt-p03a | 1.2e-9 / 1.1e-16 / 9 (10) | 1.1e-9 / 1.1e-16 | 2.6e-5 / 3.4e-7 / 8 |
+| ex-gwf-nwt-p03b | 1.8e-8 / 0 / 96 (159) | 1.7e-8 / 0 | does not converge |
+| ex-gwf-zaidel | 6.8e-8 / 0 / 27 (21) | 7.3e-8 / 0 | 1.6e-4 / 0 (rounding bound) / 21 |
+| capture_saved | 4.2e-7 / 2.5e-9 / 6 (8) | 4.2e-7 / 2.5e-9 | 3.8e-6 / 1.1e-6 / 7 |
+| newton (test model) | 3.1e-12 / 7.7e-12 / 91 (100) | 3.1e-12 / 7.7e-12 | 9.4e-6 / 1.8e-6 / 60 |
+
+Criteria as for the other run parity tests (`:double`/`:mixed` 1e-6 m and 1e-6 × total
+in, `:single` 1e-3 m and 1e-4 × total in); budget 0 means MF6 writes no budget file and
+the listing tables agree within their printed digits.
+
+**Dry cells.** With Newton–Raphson a cell whose head is below its bottom keeps that head
+(no HDRY) and has no outflow; any head between the bottom and the highest wet neighbour
+solves its row, so MF6 and ModflowGPU stop at different such heads (e.g. 1e-8 m and 1e-6 m
+below the bottom). The parity test checks that a cell below its bottom in MF6 is below its
+bottom in ours, and leaves its head out of |Δh| (also out of the ROCm vs CPU and `:single`
+vs `:double` comparisons).
+
+**ex-gwf-nwt-p03b `:single`.** The Newton iterations do not converge in Float32 (500
+outer iterations, with MC-ILU0 and with AMG). MF6's own path is erratic (inner solves at
+INNER_MAXIMUM in outer iterations 1–3, head changes up to 1420 m, 159 outer iterations in
+`:double`); in Float32 the unconverged inner solves end far off and the iterations wander
+between states with changes of 10–1000 m. With recharge 1000 times that of p03a, MF6's
+solution is a water table just above the bottom: median saturated thickness 0.55 mm, 4077
+of 6400 cells below 1 cm and 127 within the quadratic smoothing interval (1e-6 of the
+150–165 m cell thickness, 1.6e-4 m). The head offsets are about −20 m there (STRT is 20 m
+above the bottom), whose Float32 spacing is 1.9e-6 m: the saturated thicknesses, hence the
+transmissivities, carry 2–3 significant digits, the smoothing interval is about 80 rounding
+units and the OUTER_DVCLOSE floor (`eps(Float32)·max|h'|`, 2.4e-6 m) about one (review of
+T6.2). The Float32 formulation itself is consistent: started from MF6's heads (STRT = the
+MF6 solution, so the offsets are near 0), `:single` converges in 2 outer iterations to
+6.4e-6 m of MF6. The run parity test and the parity table run `:mixed` and `:double` only.
+`FLOAT32_CLOSURES.dvclose_head_cap` (1 cm) keeps a diverging Float32 iteration (heads of
+1.6e27 m) from raising OUTER_DVCLOSE with its head resolution and ending the step as
+converged.
+
+**ex-gwf-zaidel `:single` budget.** K = 1e-4 m/d, head differences of 6 cm per cell next
+to heads of 13 m: the raw percent discrepancy is 1.3e-2 % and the raw flow differences
+exceed 1e-4 × total in; the criterion applies to the part beyond the Float32 rounding of
+the cell flows (`single_rounding_bound`, as for rad-disu, maw-p03c and advtidal; MF6
+writes no budget file, so the bound takes C = condsat).
+
+**BiCGSTAB restart (Newton only).** In Newton–Raphson solves, when `rho = dhat·r`
+vanishes at the rounding level of the vectors (`|rho| <= eps(Ts)·|dhat|·|r|`), BiCGSTAB
+restarts with `dhat = r` (MF6 has no restart). It was added for the first outer iteration
+of the zaidel steady state with the red–black ILU0 (`rho` at 3.7e-31·|dhat|·|r| in
+`:double`, exactly 0 in `:single`; after that the next step length is noise and the solve
+diverges). In Float32, `rho` of the Newton systems also falls to 1e-7 of |dhat|·|r| in
+long solves: with these restarts ex-gwf-nwt-p02a `:single` converges (282 outer
+iterations; 14 restarts in 282 solves, at most 2 per solve), without them step 1 of period
+4 does not (500 outer iterations). nwt-p03b `:double` restarts 3 times (ratios
+3.6e-18–2.1e-16). The check uses the `rho` BiCGSTAB already reduces (no extra reduction).
+
+Other systems do not restart, as in MF6 and `main`. Two variants that also restarted them
+were tried and dropped: with `eps(Ts)`, coupling_rde with Chebyshev in `:single` restarted
+about 10 times per solve (ratios 8e-11–1.2e-7) and step 1 no longer converged in 25 outer
+iterations (nor with at most one restart per solve), and rad-disu `:single` changed (110 →
+109 outer iterations); with the rounding level of the dot product (`eps(Float64)`, true
+breakdowns only: hanic 1.4e-22 `:single` / 5.8e-17 `:double`, hanir 0 / 9.9e-17,
+curve-90 `:single` 0), hanic and hanir needed fewer iterations (`:double` 4/270 → 3/100
+and 5/368 → 3/94) but one restart at `rho = 0` in rad_disu_confined `:single` (AMG,
+nearly singular, most inner solves unconverged) took it from 180 to 341 outer iterations.
+
+**Non-Newton models.** The Newton terms, PTC, NEWTON UNDER_RELAXATION and the BiCGSTAB
+restart apply only with NEWTON. Heads (sha256 of the head file), budget files and
+outer/inner iterations equal `main` (d0ba506) for coupling_rde, wetdry, disu_staggered,
+ex-gwf-u1disv (DISV), ex-gwf-rad-disu (DISU), ex-gwf-twri01, ex-gwf-hanic, ex-gwf-hanir and
+ex-gwf-curve-90 in `:single`, `:mixed` and `:double` with the default preconditioner
+(MC-ILU0), on CPU and ROCm (ROCm equal to CPU), and every non-Newton row of the parity
+table equals the previous table (cf78ba7) or, where T6.2a changed it, a run of
+docs/parity/collect.jl on `main`. Cost on global5m: none
+(benchmark/results/2026-11-18-T6.2.md).

@@ -22,11 +22,12 @@ The package is under development and not yet registered; install it from its Git
 - NPF (confined and convertible cells, wetting and drying, anisotropy), STO, IC and OC;
 - the boundary packages CHD, WEL, GHB, RIV, DRN, RCH and EVT, with time series (TS) and
   time-array series (TAS);
-- the Picard outer iteration with CG or BiCGSTAB inner solvers, in double, mixed or single
+- the Picard outer iteration and the Newton–Raphson formulation, with backtracking and
+  under-relaxation, and CG or BiCGSTAB inner solvers, in double, mixed or single
   precision, with volumetric budgets;
 - the stepping API and BMI for coupling.
 
-Not supported yet: Newton-Raphson, XT3D, several models with exchanges, and observation
+Not supported yet: XT3D, several models with exchanges, and observation
 (OBS) output. Input that uses something unsupported is rejected with an error that names it,
 never silently ignored. Packages for other processes (SFR, LAK, MAW, UZF, MVR, CSUB and the
 transport models) are out of scope. See [Supported packages](compatibility/packages.md).

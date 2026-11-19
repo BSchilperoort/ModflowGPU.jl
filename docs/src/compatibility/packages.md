@@ -56,7 +56,29 @@ Main.CompatTables.features_table()
 
 Both the standard formulation of convertible cells and wetting and drying (`REWET` with
 `WETDRY`, `WETFCT`, `IWETIT`, `IHDWET`) are supported, as are `THICKSTRT`, `VARIABLECV`
-(with `DEWATERED`) and `PERCHED`. The Newton–Raphson formulation is not (see below).
+(with `DEWATERED`) and `PERCHED`.
+
+The Newton–Raphson formulation (`NEWTON` in the options of the model name file) is
+supported as in MODFLOW 6:
+
+- the saturation of convertible cells is the quadratic smoothing of MODFLOW 6 (`SATOMEGA`
+  1e-6), horizontal conductances use the saturation of the upstream cell, cells do not dry
+  (a cell whose head falls below its bottom keeps that head and has no outflow), and the
+  matrix gets the Newton terms of NPF, STO (convertible storage), WEL with
+  `AUTO_FLOW_REDUCE` and DRN with `AUXDEPTHNAME` (which then scales the conductance with
+  MODFLOW 6's cubic function);
+- NPF `HIGHEST_CELL_SATURATION` is supported; `PERCHED`, `VARIABLECV` and `REWET` are input
+  errors with `NEWTON`, as in MODFLOW 6;
+- `NEWTON UNDER_RELAXATION` limits heads that fall below the bottom of the lowest
+  convertible cell;
+- in steady-state stress periods the pseudo-transient continuation of IMS is applied
+  (turned off with the IMS option `NO_PTC ALL`, or `NO_PTC FIRST` for the first period);
+- the matrix is not symmetric: IMS must use `LINEAR_ACCELERATION BICGSTAB` (the default of
+  `COMPLEXITY MODERATE` and `COMPLEX`); `CG` is an input error, as in MODFLOW 6.
+
+Backtracking with Newton–Raphson works on the system without the Newton terms, as in
+MODFLOW 6. How the results compare with MODFLOW 6 is on
+[Differences from MODFLOW 6](@ref "Newton–Raphson") and [Comparing results](results.md).
 
 ## Packages and models that are rejected
 
@@ -91,7 +113,6 @@ input is accepted.
 
 | Feature | Status |
 | :-- | :-- |
-| Newton–Raphson formulation (`NEWTON` in the model name file) | planned |
 | XT3D (NPF `XT3D`) | planned |
 | More than one model or solution, GWF–GWF exchanges | planned |
 | Observation output (OBS6) | planned; the files are accepted, no output is written |

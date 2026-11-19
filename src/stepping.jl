@@ -192,6 +192,14 @@ function initialize(
         throw(MF6UnsupportedError(sim.simdir, "unsupported: $(length(sim.models)) models and $(length(sim.exchanges)) exchanges (only one model is supported)"))
     spec = only(sim.models)
     ims = only(only(sim.solution_groups).solutions)
+    write_output && _check_output_dir(outdir)
+    # NumericalSolution.f90 `sln_ar`: the Newton formulation (T6.2) gives a nonsymmetric matrix.
+    spec.newton && ims.linear_acceleration === :cg && throw(
+        MF6InputError(
+            ims.file, 0,
+            "MODEL **$(uppercase(spec.name))** PRODUCES AN ASYMMETRIC COEFFICIENT MATRIX, BUT THE CONJUGATE GRADIENT METHOD WAS SELECTED. USE BICGSTAB INSTEAD.",
+        ),
+    )
     T, Ts, Tp = resolve_precision(backend, precision)
     steps = time_steps(sim.tdis)
     m = GwfModel(backend, T, spec, nper(sim.tdis))
@@ -204,6 +212,23 @@ function initialize(
     )
     isnothing(out) || _listing_header(out.listing, m, ps, T, Ts, Tp, backend)
     return s
+end
+
+# T6.2 (from T6.1): output written next to the inputs (the default `outdir`) once overwrote
+# an MF6 reference run of the parity tests. With the environment variable REFERENCE_DIR set
+# (the reference tree of validation/fetch_reference.sh) an `outdir` inside it is an error.
+function _check_output_dir(outdir::AbstractString)
+    ref = get(ENV, "REFERENCE_DIR", "")
+    (isempty(ref) || !isdir(ref)) && return nothing
+    r = realpath(ref)
+    o = abspath(outdir)
+    o = ispath(o) ? realpath(o) : o
+    (o == r || startswith(o, joinpath(r, ""))) && throw(
+        ArgumentError(
+            "refusing to write output into $outdir: it is inside REFERENCE_DIR ($ref), the MF6 reference runs; pass another `outdir` or `write_output = false`",
+        ),
+    )
+    return nothing
 end
 
 function _check_stage(s::Simulation, f::Symbol, allowed::Symbol...)

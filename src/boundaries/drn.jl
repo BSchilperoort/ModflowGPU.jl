@@ -5,7 +5,9 @@
 # it). With DDRN ≠ 0 the conductance is scaled linearly between the drain elevation and
 # elevation + DDRN (`sQuadraticSaturation` with `eps = 0`, SmoothingFunctions.f90).
 # DEV_CUBIC_SCALING (`sQSaturation`) is a developer option and is rejected by the loader.
-# The Newton terms (`drn_fn`) arrive with T6.2.
+# With the Newton formulation (T6.2) a package with AUXDEPTHNAME scales with the cubic
+# `sQSaturation(..., c1 = −1, c2 = 2)` (`icubic_scaling`) and adds the Jacobian of `drn_fn`
+# (record kind `DrnNewton`, `record_kind`).
 
 bound_columns(::BoundaryKind{:DRN}) = ("elev", "cond")
 head_columns(::BoundaryKind{:DRN}) = (1,)
@@ -77,4 +79,48 @@ end
     end
     fc = f * c
     return (-fc, -fc * bot)
+end
+
+"""
+    DrnNewton
+
+The record kind of a DRN package with AUXDEPTHNAME in a model with the Newton formulation
+(T6.2; `drn_allocate_scalars` sets `icubic_scaling`): the conductance is scaled with
+`sq_saturation(top, bot, h, −1, 2)` between the drain elevation and elevation + DDRN
+(`get_drain_factor`), and `drn_fn` adds `S'·C·(drnbot − h)` to the diagonal
+(`newton_record`). Records without a drainage depth are as without Newton.
+"""
+struct DrnNewton end
+
+@inline function formulate_record(::DrnNewton, i, n, bound, h, area)
+    elev = bound[1, i]
+    c = bound[2, i]
+    ddrn = bound[3, i]
+    x = h[n]
+    T = eltype(bound)
+    if ddrn != zero(ddrn)
+        e = elev + ddrn
+        top = max(e, elev)
+        bot = min(e, elev)
+        f = sq_saturation(top, bot, x, T(-1), T(2))
+    else
+        bot = elev
+        f = x <= bot ? zero(c) : one(c)
+    end
+    fc = f * c
+    return (-fc, -fc * bot)
+end
+
+@inline function newton_record(::DrnNewton, i, n, bound, h, area)
+    T = eltype(bound)
+    @inbounds begin
+        ddrn = bound[3, i]
+        ddrn == zero(T) && return zero(T)
+        elev = bound[1, i]
+        e = elev + ddrn
+        top = max(e, elev)
+        bot = min(e, elev)
+        x = h[n]
+        return sq_saturation_derivative(top, bot, x, T(-1), T(2)) * bound[2, i] * (bot - x)
+    end
 end

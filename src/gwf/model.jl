@@ -20,7 +20,12 @@ A GWF model ready to run on a device in precision `T` (state and assembly):
   `nothing`), `area` (cell areas, for RCH/EVT), `ibound`, the offset heads `h` and the
   heads at the start of the step `hold`, the residual `res`, the correction `δ`, `flowja`
   (`nja`), `wd` (T6.1: the `WetDry` state of a model with convertible cells, else
-  `nothing`).
+  `nothing`; also `nothing` with the Newton formulation, which does not dry cells);
+- T6.2: `newton` (the NEWTON option), `nurbot` (NEWTON UNDER_RELAXATION: per node the bottom
+  of the lowest cell below it as an offset, `npf_nur`'s `ibotnode`; `-Inf` where it does
+  not apply; empty without it), `vol` (cell volumes at full saturation, for the
+  pseudo-transient continuation of steady-state Newton periods; empty without NEWTON) and
+  `delt` (the length of the current time step, host).
 
 With convertible cells IBOUND changes during the outer iterations (`wetdry!`: dry cells get
 0); `ibound_host` follows it.
@@ -49,31 +54,71 @@ mutable struct GwfModel{T <: AbstractFloat, B <: Backend, C <: CsrStructure, N <
     offdiag::Union{Nothing, Bool}
     offdiag_id::Int
     const wd::Any
+    const newton::Bool
+    const nurbot::V
+    const vol::V
+    delt::Float64
 end
 
 function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) where {T <: AbstractFloat}
-    spec.newton && throw(MF6UnsupportedError(spec.file, "unsupported: NEWTON in model $(spec.name) (Newton-Raphson is not supported yet)"))
+    newton = spec.newton
     conn = build_connectivity(spec)
     setup = npf_setup(spec, conn)
     csr = CsrStructure(backend, conn)
-    npf = NpfModel(backend, T, setup; options = spec.npf, conn)
+    npf = NpfModel(backend, T, setup; options = spec.npf, conn, newton)
     sys = LinearSystem(backend, T, csr)
     packages = BoundaryPackage[BoundaryPackage(backend, T, b, conn, spec.dis; icelltype = setup.properties.icelltype) for b in spec.boundaries]
-    sto = isnothing(spec.sto) ? nothing : StoragePackage(backend, T, spec.sto, conn, nper; r = setup.r)
-    z() = KernelAbstractions.zeros(backend, T, conn.nodes)
+    sto = isnothing(spec.sto) ? nothing : StoragePackage(backend, T, spec.sto, conn, nper; r = setup.r, newton)
+    z(k = conn.nodes) = KernelAbstractions.zeros(backend, T, k)
     ibh = ones(Int32, conn.nodes)
     h = initial_heads(backend, T, spec.ic, conn, setup.r)
     hold = _device_copy(backend, Array(h))
-    wd = isnothing(npf.cv) ? nothing : WetDry(backend, T, setup.properties, spec.npf, conn.nodes)
+    # The Newton formulation does not dry or rewet cells (`npf_cf`, `preprocess_input`).
+    wd = (isnothing(npf.cv) || newton) ? nothing : WetDry(backend, T, setup.properties, spec.npf, conn.nodes)
+    nurbot = newton && spec.newton_under_relaxation ? _device_copy(backend, T.(newton_ur_bottoms(conn, setup))) : z(0)
+    # gwf_ptc: `get_cell_volume(n, top(n))`, the volume at full saturation.
+    vol = newton ? _device_copy(backend, T.(conn.area .* (conn.top .- conn.bot))) : z(0)
     m = GwfModel(
         spec, backend, conn, setup, csr, npf, sys, packages, sto, _device_copy(backend, T.(conn.area)),
         _device_copy(backend, ibh), ibh, h, hold, z(), z(), KernelAbstractions.zeros(backend, T, conn.nja), 0,
-        nothing, 0, wd,
+        nothing, 0, wd, newton, nurbot, vol, 0.0,
     )
     # `preprocess_input`: `wd(0, hnew)` with the starting heads (IBOUND without the
     # constant heads, which `chd_rp` sets later).
     isnothing(wd) || wetdry!(m, 0)
     return m
+end
+
+"""
+    newton_ur_bottoms(conn::Connectivity, setup::NpfSetup) -> Vector{Float64}
+
+The bottom NEWTON UNDER_RELAXATION uses (gwf-npf.f90 `npf_nur`, with the `ibotnode` search
+of `preprocess_input`) per reduced node, as an offset from the node's reference head: the
+bottom of the cell reached by following, from the node, the vertical connection to the
+higher-numbered cell with the lowest bottom below the current minimum, as long as there is
+one. `-Inf` (never applied) unless the node and that cell are convertible. Host, Float64.
+"""
+function newton_ur_bottoms(conn::Connectivity, setup::NpfSetup)
+    ict = setup.properties.icelltype
+    out = fill(-Inf, Int(conn.nodes))
+    for n in 1:conn.nodes
+        minbot = conn.bot[n]
+        nn = n
+        while true
+            nextn = 0
+            for ii in (conn.ia[nn] + 1):(conn.ia[nn + 1] - 1)
+                m = conn.ja[ii]
+                if conn.ihc[conn.jas[ii]] == 0 && m > nn && conn.bot[m] < minbot
+                    nextn = m
+                    minbot = conn.bot[m]
+                end
+            end
+            nextn > 0 || break
+            nn = nextn
+        end
+        (ict[n] > 0 && ict[nn] > 0) && (out[n] = conn.bot[nn] - setup.r[n])
+    end
+    return out
 end
 
 # Adapt, e.g. `adapt(backend, m)`: every device array moves (and `backend` becomes the
@@ -84,7 +129,7 @@ function Adapt.adapt_structure(to, m::GwfModel)
         m.spec, get_backend(h), m.conn, m.setup, adapt(to, m.csr), adapt(to, m.npf), adapt(to, m.sys),
         BoundaryPackage[adapt(to, p) for p in m.packages], adapt(to, m.sto), adapt(to, m.area), adapt(to, m.ibound),
         copy(m.ibound_host), h, adapt(to, m.hold), adapt(to, m.res), adapt(to, m.δ), adapt(to, m.flowja), m.kper,
-        nothing, 0, adapt(to, m.wd),
+        nothing, 0, adapt(to, m.wd), m.newton, adapt(to, m.nurbot), adapt(to, m.vol), m.delt,
     )
 end
 
@@ -150,6 +195,7 @@ Start a time step of length `delt` (Float64, host): `rho = SC/delt` (`set_timest
 the constant heads applied to both (`chd_ad`).
 """
 function start_timestep!(m::GwfModel, delt::Float64)
+    m.delt = delt
     isnothing(m.sto) || set_timestep!(m.sto, delt)
     copyto!(m.hold, m.h)
     # npf_ad (T6.1): the old head of a dry cell that can rewet is its bottom.
@@ -167,7 +213,7 @@ end
 const _OFFDIAG_IDS = Threads.Atomic{Int}(0)
 
 """
-    formulate!(m::GwfModel; symmetric = false, terms = true, scale = nothing) -> m
+    formulate!(m::GwfModel; symmetric = false, terms = true, scale = nothing, jac = m.newton) -> m
 
 Formulate and assemble the system of an outer iteration from the current offset heads
 (`bnd_cf`/`bnd_fc` of every stress package except CHD, `sto_fc`, `npf_fc`, `sln_ls`), then
@@ -176,14 +222,16 @@ row sums `Σ |terms|`, see `flux_residual!`). Device work only: `formulate_syste
 since T4.7 it also formulates the package records), which rewrites the off-diagonal entries of the
 matrix only when `ibound` or `symmetric` changed since they were last written.
 `terms = false` (the outer iterations, T4.7) leaves `sys.rhs`, `sys.bdiag` and `sys.brhs`
-unwritten (see `formulate_system!`).
+unwritten (see `formulate_system!`). With the Newton formulation (T6.2) `jac` adds the
+Newton–Raphson terms (`sln_buildsystem(kiter, inewton = 1)`; `jac = false` is the system
+backtracking evaluates, `inewton = 0`).
 """
-function formulate!(m::GwfModel; symmetric::Bool = false, terms::Bool = true, scale = nothing)
+function formulate!(m::GwfModel; symmetric::Bool = false, terms::Bool = true, scale = nothing, jac::Bool = m.newton)
     # The package records are formulated in the row kernel (T4.7; `formulate!` per package
     # did it in a kernel of its own). Records without a cell keep their `hcof`/`rhs`; no
     # reader uses them (`calc_simvals!` skips them).
     pkgs = Tuple(
-        (record_kind(p, m.npf.cv), p.bound, m.area, p.hcof, p.rhs, p.nodeptr, p.noderec)
+        (record_kind(p, m.npf.cv; newton = m.newton), p.bound, m.area, p.hcof, p.rhs, p.nodeptr, p.noderec)
             for p in m.packages if boundary_kind(p) !== :CHD && p.nbound > 0
     )
     storage = nothing
@@ -203,7 +251,7 @@ function formulate!(m::GwfModel; symmetric::Bool = false, terms::Bool = true, sc
     end
     offdiag = m.offdiag !== symmetric
     offdiag && (m.offdiag_id = Threads.atomic_add!(_OFFDIAG_IDS, 1) + 1)
-    formulate_system!(m.sys, m.res, m.csr, m.npf, m.h, m.ibound, pkgs, storage; symmetric, offdiag, terms, scale)
+    formulate_system!(m.sys, m.res, m.csr, m.npf, m.h, m.ibound, pkgs, storage; symmetric, offdiag, terms, scale, jac = jac && m.newton)
     m.offdiag = symmetric
     return m
 end

@@ -853,6 +853,16 @@ current offset heads `h` and the cell areas `area`. Device-safe; one method per 
 """
 function formulate_record end
 
+"""
+    newton_record(kind, i, n, bound, h, area) -> J
+
+The Newton–Raphson term of record `i` in active cell `n` on the diagonal (the package `*_fn`
+routine, T6.2; the right-hand side gets `J·h'`, so the residual does not change): 0 for
+every kind except those of a Newton model with head-dependent terms (WEL
+AUTO_FLOW_REDUCE, DRN AUXDEPTHNAME). Device-safe.
+"""
+@inline newton_record(kind, i, n, bound, h, area) = zero(eltype(bound))
+
 @kernel function boundary_formulate_kernel!(hcof, rhs, kind, @Const(nodelist), @Const(bound), @Const(h), @Const(ibound), @Const(area))
     i = @index(Global)
     @inbounds begin

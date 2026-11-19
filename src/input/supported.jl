@@ -81,7 +81,7 @@ DFN name (`"gwf-npf"`) and block. Anything else in that block is
 const SUPPORTED_OPTIONS = Dict{Tuple{String, String}, Vector{String}}(
     ("sim-nam", "OPTIONS") => ["CONTINUE", "NOCHECK", "MEMORY_PRINT_OPTION", "PROFILE_OPTION", "MAXERRORS", "PRINT_INPUT"],
     ("sim-tdis", "OPTIONS") => ["TIME_UNITS", "START_DATE_TIME"],
-    ("gwf-nam", "OPTIONS") => ["LIST", "PRINT_INPUT", "PRINT_FLOWS", "SAVE_FLOWS"],
+    ("gwf-nam", "OPTIONS") => ["LIST", "PRINT_INPUT", "PRINT_FLOWS", "SAVE_FLOWS", "NEWTON"],  # T6.2: NEWTON [UNDER_RELAXATION]
     ("gwf-dis", "OPTIONS") => ["LENGTH_UNITS", "NOGRB", "GRB6", "XORIGIN", "YORIGIN", "ANGROT", "CRS"],
     # T6.4: vertex and unstructured grids.
     ("gwf-disv", "OPTIONS") => ["LENGTH_UNITS", "NOGRB", "GRB6", "XORIGIN", "YORIGIN", "ANGROT", "CRS"],
@@ -90,6 +90,7 @@ const SUPPORTED_OPTIONS = Dict{Tuple{String, String}, Vector{String}}(
     ("gwf-npf", "OPTIONS") => [
         "SAVE_FLOWS", "PRINT_FLOWS", "ALTERNATIVE_CELL_AVERAGING", "SAVE_SPECIFIC_DISCHARGE", "K22OVERK", "K33OVERK",
         "THICKSTRT", "VARIABLECV", "DEWATERED", "PERCHED", "REWET", "WETFCT", "IWETIT", "IHDWET",  # T6.1
+        "HIGHEST_CELL_SATURATION",  # T6.2
     ],
     ("gwf-sto", "OPTIONS") => ["SAVE_FLOWS", "STORAGECOEFFICIENT", "SS_CONFINED_ONLY"],
     ("gwf-ic", "OPTIONS") => String[],
@@ -103,7 +104,7 @@ const SUPPORTED_OPTIONS = Dict{Tuple{String, String}, Vector{String}}(
     ("gwf-rcha", "OPTIONS") => [_STRESS_OPTIONS; "FIXED_CELL"; "READASARRAYS"; "TAS6"],  # T6.3: TAS6
     ("gwf-evt", "OPTIONS") => [_STRESS_OPTIONS; "FIXED_CELL"; "SURF_RATE_SPECIFIED"],
     ("gwf-evta", "OPTIONS") => [_STRESS_OPTIONS; "FIXED_CELL"; "READASARRAYS"; "TAS6"],  # T6.3: TAS6
-    ("sln-ims", "OPTIONS") => ["PRINT_OPTION", "COMPLEXITY"],
+    ("sln-ims", "OPTIONS") => ["PRINT_OPTION", "COMPLEXITY", "NO_PTC"],  # T6.2: NO_PTC
     ("sln-ims", "NONLINEAR") => [
         "OUTER_DVCLOSE", "OUTER_MAXIMUM", "UNDER_RELAXATION", "UNDER_RELAXATION_GAMMA",
         "UNDER_RELAXATION_THETA", "UNDER_RELAXATION_KAPPA", "UNDER_RELAXATION_MOMENTUM", "LINEAR_SOLVER",
@@ -140,7 +141,7 @@ field of `validation/examples.toml`). Supported: `:disv`, `:disu` (DISV6 / DISU6
 T6.4), `:convertible` (NPF ICELLTYPE /= 0 in an active cell) and `:convertible_storage`
 (STO ICONVERT /= 0 with a transient period), T6.1. Features not in the set are rejected:
 
-- `:newton`: NEWTON in the model name file (T6.2);
+- `:newton`: NEWTON in the model name file (supported since T6.2);
 - `:multi_model`: more than one GWF model, or more than one solution (T6.6);
 - `:exchange`: GWF6-GWF6 exchanges (T6.6);
 - `:timeseries`: list values given as TS6 time-series names, or TIMEARRAYSERIES arrays
@@ -149,7 +150,7 @@ T6.4), `:convertible` (NPF ICELLTYPE /= 0 in an active cell) and `:convertible_s
 ATS6, TVK6, TVS6 and HPC6 files are options (`ATS6 FILEIN ...`) and are rejected
 through `SUPPORTED_OPTIONS`.
 """
-const SUPPORTED_FEATURES = Set{Symbol}([:timeseries, :disv, :disu, :convertible, :convertible_storage])
+const SUPPORTED_FEATURES = Set{Symbol}([:timeseries, :disv, :disu, :convertible, :convertible_storage, :newton])
 
 """
     check_options(o::OptionSet, dfn_name, ftype, ctx)

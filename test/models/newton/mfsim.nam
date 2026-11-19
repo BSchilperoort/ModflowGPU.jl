@@ -1,0 +1,18 @@
+# Synthetic Newton-Raphson model (T6.2): NEWTON UNDER_RELAXATION, HIGHEST_CELL_SATURATION, convertible storage (steady state, then transient), DRN with AUXDEPTHNAME, WEL AUTO_FLOW_REDUCE, COMPLEXITY COMPLEX (backtracking, DBD).
+BEGIN options
+END options
+
+BEGIN timing
+  TDIS6  nwt.tdis
+END timing
+
+BEGIN models
+  gwf6  nwt.nam  nwt
+END models
+
+BEGIN exchanges
+END exchanges
+
+BEGIN solutiongroup  1
+  ims6  nwt.ims  nwt
+END solutiongroup  1

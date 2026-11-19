@@ -27,22 +27,35 @@ end
 _only_file(dir, ext) = (f = filter(x -> endswith(x, ext), readdir(dir; join = true)); length(f) == 1 ? only(f) : "")
 
 # Max |Δh| over all saved steps (the files must hold the same steps) and the head range;
-# dry cells (HDRY, T6.1) must be the same and are left out of both.
-function _head_difference(ours, mf6)
+# dry cells (HDRY, T6.1) must be the same and are left out of both. With `bot` (the cell
+# bottoms by user node, Newton models, T6.2) cells whose MF6 head is below the bottom are
+# dry in the Newton sense: no saturation, no outflow, and a head that any value between the
+# highest neighbouring wet head and the bottom satisfies (MF6 ends where its iterations
+# stop, e.g. ex-gwf-bump-p01c 1.25e-8 m below the bottom, ModflowGPU 1.25e-6 m). Ours must
+# be below the bottom too (within `drytol`); they are left out of the difference and the
+# range. Returns also the number of such cell-steps.
+function _head_difference(ours, mf6; bot = nothing, drytol = 0.0)
     a, b = open_head_file(ours), open_head_file(mf6)
     @test length(a) == length(b)
     @test [(s.kstp, s.kper) for s in a.steps] == [(s.kstp, s.kper) for s in b.steps]
     @test [s.totim for s in a.steps] ≈ [s.totim for s in b.steps] rtol = 1.0e-12
     d, lo, hi = 0.0, Inf, -Inf
+    ndry = 0
     for k in 1:min(length(a), length(b))
         ha, hb = vec(read_head(a, k)), vec(read_head(b, k))
         act = (hb .!= 1.0e30) .& (hb .!= -1.0e30)
         @test (ha .== 1.0e30) == (hb .== 1.0e30)
         @test (ha .== -1.0e30) == (hb .== -1.0e30)
+        if !isnothing(bot)
+            dry = act .& (hb .< bot)
+            ndry += count(dry)
+            @test all(ha[dry] .< bot[dry] .+ drytol)
+            act .&= .!dry
+        end
         d = max(d, maximum(abs.(ha[act] .- hb[act]); init = 0.0))
         any(act) && ((lo, hi) = (min(lo, minimum(hb[act])), max(hi, maximum(hb[act]))))
     end
-    return d, hi - lo
+    return d, hi - lo, ndry
 end
 
 # --- `:single` budget bound from Float32 rounding of the cell flows (T6.1, docs/dev/precision.md)
@@ -92,8 +105,9 @@ function _rounding_bounds(rundir, ours_hds, mf6_hds)
         end
         return bnd
     end
-    # flowja bound of step `key` with MF6's flows `q` (nja); the diagonal (the cell's net
-    # flow) also gets the cell's storage bound (`delt`: the step length)
+    # flowja bound of step `key` with MF6's flows `q` (nja; `nothing` when MF6 saved no
+    # budget, T6.2: C = condsat, an upper bound without VARIABLECV); the diagonal (the
+    # cell's net flow) also gets the cell's storage bound (`delt`: the step length)
     function flowja_bound(key, q, delt)
         haskey(heads, key) || return nothing
         ho, hm = heads[key]
@@ -102,7 +116,7 @@ function _rounding_bounds(rundir, ours_hds, mf6_hds)
             mm = conn.ja[ii]
             (hm[n] == -1.0e30 || hm[mm] == -1.0e30) && continue
             dh = hm[mm] - hm[n]
-            C = dh != 0 ? abs(q[ii] / dh) : s.condsat[conn.jas[ii]]
+            C = (!isnothing(q) && dh != 0) ? abs(q[ii] / dh) : s.condsat[conn.jas[ii]]
             dr = s.r[mm] - s.r[n]
             bnd[ii] = C * (ε * (abs(hm[n] - s.r[n]) + abs(hm[mm] - s.r[mm]) + abs(dr)) + abs(ho[n] - hm[n]) + abs(ho[mm] - hm[mm]))
         end
@@ -113,7 +127,7 @@ function _rounding_bounds(rundir, ours_hds, mf6_hds)
         end
         return bnd
     end
-    return (; flowja_bound, storage_bound, idiag = conn.ia[1:conn.nodes])
+    return (; flowja_bound, storage_bound, idiag = conn.ia[1:conn.nodes], nodesuser = Int(conn.nodesuser))
 end
 
 # Max |Δq| over the MF6 budget records that we write (all but DATA-SPDIS), per step
@@ -218,15 +232,23 @@ _backtracked_iterations(steps::AbstractVector) =
 # in `:single` (T6.0: ex-gwf-lgrv-gr). `single_budget_tol` replaces the `:single` budget
 # criterion 1e-4 × total in (T6.4: rad_disu_confined, docs/dev/precision.md).
 # `backtracking = true` (T6.2a) also checks that the run backtracks in the same (time
-# step, outer iteration)s as MF6.
+# step, outer iteration)s as MF6. `presets` (T6.2): the presets to run (ex-gwf-nwt-p03b
+# leaves out `:single`, see `run_parity_options`). Newton models (T6.2): cells whose MF6
+# head is below the bottom are compared as dry (`_head_difference`), and also left out of
+# the GPU vs CPU and `:single` vs `:double` head comparisons (their heads depend on the
+# iteration path).
 function _run_parity(
         name, rundir; preconditioner::Symbol = RUN_PRECONDITIONER, precond_options::NamedTuple = (;),
         single_preconditioner::Symbol = preconditioner, single_budget_tol::Float64 = 1.0e-4,
         double_budget_tol::Float64 = 1.0e-6, single_rounding_bound::Bool = false,
-        backtracking::Bool = false,
+        backtracking::Bool = false, presets = SOLVER_TEST_PRESETS,
     )
     sim = load_simulation(rundir)
     m = only(sim.models)
+    # Newton models: the cell bottoms by user node (dry cells) and by reduced node.
+    conn = m.newton ? ModflowGPU.build_connectivity(m) : nothing
+    botu = m.newton ? (b = fill(-Inf, Int(conn.nodesuser)); b[conn.nodeuser] .= conn.bot; b) : nothing
+    wet(h) = isnothing(conn) ? trues(length(h)) : h .>= conn.bot
     mf6_hds = _only_file(rundir, ".hds")
     mf6_cbc = isempty(m.oc.budget_file) ? "" : joinpath(rundir, m.oc.budget_file)
     mf6_lst = joinpath(rundir, isempty(m.list_file) ? splitext(basename(m.file))[1] * ".lst" : m.list_file)
@@ -237,7 +259,7 @@ function _run_parity(
     mf6_bt = backtracking ? _backtracked_iterations(read(joinpath(rundir, "mfsim.lst"), String)) : nothing
     heads = Dict{Symbol, Vector{Float64}}()
     stats = Dict{Symbol, Any}()
-    for_each_precision(; presets = SOLVER_TEST_PRESETS) do p
+    for_each_precision(; presets) do p
         pcname = p.preset === :single ? single_preconditioner : preconditioner
         pc = (; preconditioner = pcname, precond_options)
         mktempdir() do out
@@ -245,7 +267,7 @@ function _run_parity(
             @test r.converged
             @test r.T === p.T
             heads[p.preset] = r.heads
-            dh, range = _head_difference(r.head_file, mf6_hds)
+            dh, range, ndry = _head_difference(r.head_file, mf6_hds; bot = botu, drytol = p.T === Float64 ? 1.0e-6 : 1.0e-3)
             hdtol = p.T === Float64 ? max(1.0e-6, 1.0e-7 * range) : 1.0e-3
             @test dh < hdtol
             tin = Dict((b.kstp, b.kper) => ModflowGPU.total_rate_in(b) for b in r.budgets)
@@ -253,8 +275,19 @@ function _run_parity(
             # `:single` with `single_rounding_bound` (T6.1, named models only): budget
             # differences beyond the Float32 rounding of the flows and the head difference
             # (`_rounding_bounds`); otherwise the raw differences.
-            rb = p.T === Float32 && single_rounding_bound && !isempty(mf6_cbc) ? _rounding_bounds(rundir, r.head_file, mf6_hds) : nothing
+            rb = p.T === Float32 && single_rounding_bound ? _rounding_bounds(rundir, r.head_file, mf6_hds) : nothing
             dq, nrec, btot = isempty(mf6_cbc) ? (0.0, 0, Dict{Tuple{Int, Int}, Float64}()) : _budget_difference(r.budget_file, mf6_cbc, tin; bounds = rb)
+            if !isnothing(rb) && isempty(mf6_cbc)
+                # No MF6 budget file (T6.2, ex-gwf-zaidel): the bound of each step from the
+                # connections (C = condsat) and storage, for the listing and the imbalance.
+                for st in ModflowGPU.time_steps(sim.tdis)
+                    key = (st.kstp, st.kper)
+                    tolv = rb.flowja_bound(key, nothing, st.delt)
+                    isnothing(tolv) && continue
+                    sb = rb.storage_bound(key, st.delt, rb.nodesuser)
+                    btot[key] = (sum(tolv) - sum(tolv[ii] for ii in rb.idiag)) / 2 + (isnothing(sb) ? 0.0 : sum(sb))
+                end
+            end
             @test dq < btol
             dl, ntab, nmf6 = _listing_difference(r.listing_file, mf6_lst; extra = btot)
             @test dl < btol
@@ -271,21 +304,25 @@ function _run_parity(
                 @test bt == mf6_bt
                 @info "Backtracking: $name, :$(p.preset), $(backend_name(TEST_BACKEND)): (step, outer iteration) $bt (MF6 $mf6_bt)"
             end
-            @info "Run parity: $name, :$(p.preset), $(backend_name(TEST_BACKEND)) ($pcname), $nsteps step(s), $(round(t; digits = 1)) s: max |Δh| = $(round(dh; sigdigits = 3)) m (tol $(round(hdtol; sigdigits = 2))), CBC max |Δq| / total in = $(round(dq; sigdigits = 3)) ($nrec records), listing $(round(dl; sigdigits = 3)) ($ntab tables), max |percent discrepancy| = $(round(pd; sigdigits = 3))$(p.T === Float32 ? " (beyond the rounding bound $(round(pdx; sigdigits = 3)))" : ""); outer/inner iterations $outer/$inner (MF6 $mf6_outer/$mf6_inner)"
+            @info "Run parity: $name, :$(p.preset), $(backend_name(TEST_BACKEND)) ($pcname), $nsteps step(s), $(round(t; digits = 1)) s: max |Δh| = $(round(dh; sigdigits = 3)) m (tol $(round(hdtol; sigdigits = 2))$(ndry > 0 ? "; $ndry Newton-dry cell-steps" : "")), CBC max |Δq| / total in = $(round(dq; sigdigits = 3)) ($nrec records), listing $(round(dl; sigdigits = 3)) ($ntab tables), max |percent discrepancy| = $(round(pd; sigdigits = 3))$(p.T === Float32 ? " (beyond the rounding bound $(round(pdx; sigdigits = 3)))" : ""); outer/inner iterations $outer/$inner (MF6 $mf6_outer/$mf6_inner)"
             stats[p.preset] = (; dh, dq, dl, pd, outer, inner, time = t, mf6_outer, mf6_inner, backend_vs_cpu = NaN)
             if !(TEST_BACKEND isa CPU)
                 rc = ModflowGPU.run(rundir; backend = CPU(), precision = p.preset, write_output = false, pc...)
-                d = maximum(abs.(r.heads .- rc.heads))
+                w = wet(rc.heads)
+                d = maximum(abs.(r.heads[w] .- rc.heads[w]); init = 0.0)
                 p.T === Float64 ? (@test d <= 1.0e-10 * maximum(abs, rc.heads)) : (@test d < 1.0e-4)
                 @info "Run $(backend_name(TEST_BACKEND)) vs CPU: $name, :$(p.preset): max |Δh| = $(round(d; sigdigits = 3)) m"
                 stats[p.preset] = merge(stats[p.preset], (; backend_vs_cpu = d))
             end
         end
     end
-    d = maximum(abs.(heads[:single] .- heads[:double]))
-    @test d < 1.0e-3
-    @info "Run :single vs :double: $name, max |Δh| = $(round(d; sigdigits = 3)) m (final heads)"
-    stats[:single_vs_double] = d
+    if haskey(heads, :single) && haskey(heads, :double)
+        w = wet(heads[:double])
+        d = maximum(abs.(heads[:single][w] .- heads[:double][w]); init = 0.0)
+        @test d < 1.0e-3
+        @info "Run :single vs :double: $name, max |Δh| = $(round(d; sigdigits = 3)) m (final heads)"
+        stats[:single_vs_double] = d
+    end
     return stats
 end
 
@@ -296,7 +333,7 @@ end
 const SYNTHETIC_PARITY_MODELS = ("tiny", "indus")
 
 "Synthetic models in test/models/ that the run parity test runs with mf6 at test time."
-const RUN_PARITY_TEST_MODELS = ("ts_tas", "coupling_rde", "wetdry", "disu_staggered", "afr")
+const RUN_PARITY_TEST_MODELS = ("ts_tas", "coupling_rde", "wetdry", "disu_staggered", "afr", "newton")
 
 """
     run_parity_models() -> Vector{Pair{String, Any}}
@@ -304,9 +341,9 @@ const RUN_PARITY_TEST_MODELS = ("ts_tas", "coupling_rde", "wetdry", "disu_stagge
 The models of the run parity test, in run order: `name => source`, where `source` is the
 reference run directory of an MF6 example (a `String`; `parity_examples()` with a
 converged reference run that strict loading accepts), `(:test_model, name)` for
-`RUN_PARITY_TEST_MODELS` or `:rad_disu_confined` (when its reference run exists). The
-last two need mf6 (`RUN_MF6`); `with_parity_rundir` prepares them. Examples left out
-are logged with the reason.
+`RUN_PARITY_TEST_MODELS`, `:rad_disu_confined` or `:capture_saved` (T6.2; when their
+reference runs exist). The last three need mf6 (`RUN_MF6`); `with_parity_rundir` prepares
+them. Examples left out are logged with the reason.
 """
 function run_parity_models()
     hwell = get(ENV, "MFGPU_TEST_HWELL", "1") != "0"
@@ -330,14 +367,22 @@ function run_parity_models()
         end
         push!(out, name => rundir)
     end
-    for name in RUN_PARITY_TEST_MODELS
+    for name in filter(test_model_selected, RUN_PARITY_TEST_MODELS)
         push!(out, name => (:test_model, name))
     end
     # DISU against MF6 (T6.4): ex-gwf-rad-disu with confined storage.
-    if isdir(joinpath(REFERENCE_DIR, "runs", "ex-gwf-rad-disu", "tight-relative"))
+    if !test_model_selected("rad_disu_confined")
+    elseif isdir(joinpath(REFERENCE_DIR, "runs", "ex-gwf-rad-disu", "tight-relative"))
         push!(out, "rad_disu_confined" => :rad_disu_confined)
     else
         @info "Skipping rad_disu_confined in the run parity test: reference/runs/ex-gwf-rad-disu not found"
+    end
+    # ex-gwf-capture (T6.2) saves no heads: run with an OC that saves them.
+    if !test_model_selected("capture_saved")
+    elseif isdir(joinpath(REFERENCE_DIR, "runs", "ex-gwf-capture", "tight"))
+        push!(out, "capture_saved" => :capture_saved)
+    else
+        @info "Skipping capture_saved in the run parity test: reference/runs/ex-gwf-capture not found"
     end
     return out
 end
@@ -359,6 +404,8 @@ function with_parity_rundir(f, name, source)
         rundir = joinpath(tmp, name)
         if source === :rad_disu_confined
             rad_disu_confined(rundir)
+        elseif source === :capture_saved
+            capture_saved(rundir)
         else
             cp(joinpath(@__DIR__, "models", last(source)), rundir)
         end
@@ -402,11 +449,24 @@ function run_parity_options(name)
     # other model keeps the raw criteria. Raw `:single` values there: rad-disu CBC 0.39 ×
     # total in and pd 48.5 %, maw-p03c 1.0e-3 and 0.60 %, advtidal pd 1.9e-2 %
     # (docs/dev/precision.md).
-    srb = name in ("rad_disu_confined", "ex-gwf-rad-disu", "ex-gwf-maw-p03c", "ex-gwf-advtidal")
+    # T6.2: ex-gwf-zaidel (K = 1e-4 m/d, head differences of 6 cm per cell next to heads of
+    # 13 m: pd 1.3e-2 % raw, no MF6 budget file, so the bound takes C = condsat).
+    srb = name in ("rad_disu_confined", "ex-gwf-rad-disu", "ex-gwf-maw-p03c", "ex-gwf-advtidal", "ex-gwf-zaidel")
     # ex-gwf-rad-disu in :double/:mixed: STO-SY of cell 21 in step 2 (Sy·area/delt is
     # large: Δt = 9.4e-5 d; heads at the cell top) turns the 2.5e-10 ft head difference
     # to MF6's tight-relative reference into 6.0e-6 × total in; criterion 1e-5 there
     # (docs/dev/precision.md).
     dbt = name == "ex-gwf-rad-disu" ? 1.0e-5 : 1.0e-6
-    return (; preconditioner = pc, single_preconditioner = spc, double_budget_tol = dbt, single_rounding_bound = srb)
+    # T6.2: test/models/newton (COMPLEXITY COMPLEX with NEWTON) backtracks in the same outer
+    # iterations as MF6.
+    bt = name == "newton"
+    # ex-gwf-nwt-p03b in :single (T6.2): the Newton iterations do not converge in Float32
+    # (500 outer iterations, with MC-ILU0 and with AMG). MF6's own path is erratic (inner
+    # solves at INNER_MAXIMUM in outer iterations 1–3, changes up to 1420 m, 159 outer
+    # iterations in :double); in Float32 the unconverged inner solves end far off and the
+    # iterations wander between states with changes of 10–1000 m (docs/dev/precision.md).
+    # :mixed and :double converge.
+    presets = name == "ex-gwf-nwt-p03b" ? (:mixed, :double) : SOLVER_TEST_PRESETS
+    name == "ex-gwf-nwt-p03b" && @info "Run parity: $name without :single (the Newton iterations do not converge in Float32; docs/dev/precision.md)"
+    return (; preconditioner = pc, single_preconditioner = spc, double_budget_tol = dbt, single_rounding_bound = srb, backtracking = bt, presets)
 end

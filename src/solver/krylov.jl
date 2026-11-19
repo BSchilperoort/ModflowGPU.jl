@@ -1007,6 +1007,16 @@ end
     end
 end
 
+# Restart after a breakdown (T6.2): the shadow residual becomes the current residual,
+# `dhat = r`; returns (r·r, 0, 0, 0), the new rho.
+@inline function _bcgs_restart(::Type{Ta}, n, dhat, r) where {Ta}
+    @inbounds begin
+        rn = r[n]
+        dhat[n] = rn
+        return (Ta(rn) * Ta(rn), zero(Ta), zero(Ta), zero(Ta))
+    end
+end
+
 @inline function _bcgs_true_residual(::Type{Ta}, n, r, dhat, x, b0, amat, ia, ja, rowfac, colfac) where {Ta}
     @inbounds begin
         rn = b0[n] - _op_row(n, amat, ia, ja, rowfac, colfac, x)
@@ -1031,7 +1041,7 @@ const _CG_UPDATE_OPS = (_MaxAbsOp(), _MaxAbsOp(), _SumOp(), _SumOp())
 @inline _safe_div(num::T, d::T) where {T <: AbstractFloat} = num / (d + copysign(max(eps(T) * abs(num), floatmin(T)), d))
 
 """
-    solve!(δ, solver::KrylovSolver, amat, res; kstp = 1, diag = nothing, offdiag_id = 0) -> KrylovResult
+    solve!(δ, solver::KrylovSolver, amat, res; kstp = 1, diag = nothing, offdiag_id = 0, newton = false) -> KrylovResult
 
 Solve the correction system `A·δ = res` (PLAN.md section 3.7, rule 3) with a zero
 initial guess: `amat` is MF6's matrix in the CSR layout of `solver.csr` (a
@@ -1046,8 +1056,11 @@ setup read it instead of the strided diagonal of `amat`. `offdiag_id` (`GwfModel
 same id, so the preconditioner may update only what depends on changed diagonal entries
 (the red–black MC-ILU0 does; the results are bitwise those of a full setup). The default
 0 means "unknown": a full setup.
+
+T6.2: `newton` (a Newton–Raphson system): BiCGSTAB restarts when `rho` vanishes at the
+rounding level of the vectors (`_solve_bcgs!`); without it there is no restart, as in MF6.
 """
-function solve!(δ, solver::KrylovSolver{Ts}, amat, res; kstp::Integer = 1, diag = nothing, offdiag_id::Integer = 0) where {Ts}
+function solve!(δ, solver::KrylovSolver{Ts}, amat, res; kstp::Integer = 1, diag = nothing, offdiag_id::Integer = 0, newton::Bool = false) where {Ts}
     st = solver.settings
     csr = solver.csr
     backend = get_backend(solver)
@@ -1064,14 +1077,14 @@ function solve!(δ, solver::KrylovSolver{Ts}, amat, res; kstp::Integer = 1, diag
         scaling == 2 && _map!(backend, _setup_l2col, n, solver.colfac, solver.rowfac, amat, csr.ia, csr.ja, csr.isym)
         _precond_setup!(solver.precond, solver, amat, usediag ? diag : nothing, Int(offdiag_id))
     end
-    result = cg ? _solve_cg!(solver, amat, kstp, res) : _solve_bcgs!(solver, amat, kstp, res)
+    result = cg ? _solve_cg!(solver, amat, kstp, res) : _solve_bcgs!(solver, amat, kstp, res; newton)
     _precond_record!(solver.precond, result)
     if !result.converged && _precond_retry!(solver.precond)
         # A preconditioner set up from an earlier matrix (AMG hierarchy reuse): rebuild it
         # and solve again from zero; the iterations of both attempts count.
         @timed_section :precond_setup precond_setup!(solver.precond, solver, amat)
         first = result
-        result = cg ? _solve_cg!(solver, amat, kstp, res) : _solve_bcgs!(solver, amat, kstp, res)
+        result = cg ? _solve_cg!(solver, amat, kstp, res) : _solve_bcgs!(solver, amat, kstp, res; newton)
         _precond_record!(solver.precond, result)
         result = KrylovResult(
             result.converged, first.iterations + result.iterations, result.status, result.dvmax, result.rmax,
@@ -1186,9 +1199,9 @@ function _solve_cg!(s::KrylovSolver{Ts}, amat, kstp, res, rf, cf) where {Ts}
     return KrylovResult(icnvg == 1, innerit, _status(icnvg, innerit, st.maxiter), abs(deltax), abs(rmax), l2norm0, l2norm)
 end
 
-_solve_bcgs!(s::KrylovSolver, amat, kstp, res) = _solve_bcgs!(s, amat, kstp, res, _op_factors(s)...)
+_solve_bcgs!(s::KrylovSolver, amat, kstp, res; newton::Bool = false) = _solve_bcgs!(s, amat, kstp, res, _op_factors(s)...; newton)
 
-function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res, rf, cf) where {Ts}
+function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res, rf, cf; newton::Bool = false) where {Ts}
     st = s.settings
     csr = s.csr
     backend = get_backend(s)
@@ -1213,9 +1226,12 @@ function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res, rf, cf) where {Ts}
     innerit = 0
     deltax = rmax = 0.0
     l2norm = l2norm0
+    dnorm = l2norm0  # |dhat|
+    restart = true
     for iiter in 1:itmax
         innerit += 1
-        beta = iiter == 1 ? 0.0 : (rho / rho0) * (alpha0 / omega0)
+        beta = restart ? 0.0 : (rho / rho0) * (alpha0 / omega0)
+        restart = false
         if jac
             @timed_section :vector_update _map!(backend, _bcgs_direction, n, s.p, s.phat, s.r, s.v, s.minv, Ts(beta), Ts(omega0))
         else
@@ -1263,6 +1279,26 @@ function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res, rf, cf) where {Ts}
         alpha0 = alpha
         omega0 = omega
         rho = rho_next
+        if newton && abs(rho) <= eps(Ts) * dnorm * l2norm
+            # Breakdown of a Newton–Raphson solve (T6.2): `dhat·r` vanished at the rounding
+            # level of the vectors, e.g. after a first iteration from a residual that is
+            # nonzero in a few cells only (the first outer iteration of a Newton steady state
+            # with the red–black ILU0; ex-gwf-zaidel: 3.7e-31·|dhat|·|r|), and the next step
+            # length would be noise. Restart from the current iterate with the shadow residual
+            # `dhat = r` (MF6's ims_base_bcgs has no restart; its natural-order ILU0 does not
+            # break down there). In Float32, `dhat·r` of the Newton systems also falls to
+            # 1e-7 of |dhat|·|r| in long solves; without restarts there ex-gwf-nwt-p02a
+            # `:single` does not converge (period 4), with them it does. Other systems do not
+            # restart, as in MF6: with eps(Float32), coupling_rde with Chebyshev in `:single`
+            # restarted in every solve and did not converge, and even a restart at true
+            # breakdowns only (rho = 0) doubles the outer iterations of rad_disu_confined
+            # `:single` (docs/dev/precision.md).
+            @timed_section :update_reduce _reduce_async!(red, backend, _bcgs_restart, _SUM4, n, s.dhat, s.r; post = _SetRho{1}(), sa, ss)
+            _sync(backend)
+            rho = _reduced(red)[1]
+            dnorm = sqrt(rho)
+            restart = true
+        end
     end
     return KrylovResult(icnvg == 1, innerit, _status(icnvg, innerit, st.maxiter), abs(deltax), abs(rmax), l2norm0, l2norm)
 end

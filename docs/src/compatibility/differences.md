@@ -47,6 +47,11 @@ more, cheaper, iterations; the [GPU guide](../gpu.md) helps to choose one.
   models, ModflowGPU stops earlier.
 - When an ILU pivot is too small, ModflowGPU keeps the unfactorised diagonal; MODFLOW 6
   restarts the factorisation with a larger shift.
+- With the Newton–Raphson formulation, BiCGSTAB restarts with a new shadow residual when
+  its `rho` vanishes at the rounding level (a breakdown). MODFLOW 6 has no restart. It
+  happens when the residual is nonzero in a few cells only, for example in the first outer
+  iteration of a Newton–Raphson steady state with the red–black ILU0 (`ex-gwf-zaidel`),
+  where the solve would otherwise diverge. Other models do not restart, as in MODFLOW 6.
 
 ## Outer iterations
 
@@ -59,6 +64,25 @@ more, cheaper, iterations; the [GPU guide](../gpu.md) helps to choose one.
   output and stops with an error message). With the `CONTINUE` option in `mfsim.nam`
   ModflowGPU warns and continues, as MODFLOW 6 does.
 
+## Newton–Raphson
+
+The Newton–Raphson formulation, its pseudo-transient continuation, `NEWTON
+UNDER_RELAXATION` and backtracking follow MODFLOW 6 (the first matrix of a run equals
+libmf6's), but:
+
+- **Heads of dry cells differ.** A cell whose head is below its bottom has no saturation
+  and no outflow, and any head between the highest wet neighbour and the bottom solves its
+  equation. MODFLOW 6 and ModflowGPU stop at different such heads (for example 1e-8 m and
+  1e-6 m below the bottom). Both are below the bottom, and the flows are the same.
+- **Iteration counts differ more** than with the standard formulation: the iterations of
+  a Newton steady state depend on the preconditioner through the pseudo-transient
+  continuation (`ex-gwf-nwt-p03b`: 96 outer iterations, MODFLOW 6 159).
+- **`:single` may not converge** on hard Newton problems: `ex-gwf-nwt-p03b` does not
+  converge in Float32, while `:mixed` and `:double` do ([Comparing results](results.md)).
+  Its water table lies a fraction of a millimetre above the cell bottoms in most cells,
+  20 m below the starting heads: in Float32 those saturated thicknesses carry only 2–3
+  significant digits.
+
 ## Precision
 
 The `:double` and `:mixed` presets give MODFLOW 6's accuracy. `:single` computes in
@@ -67,7 +91,7 @@ Float32, which MODFLOW 6 cannot:
 - **Closures are raised** to what Float32 can resolve: `OUTER_DVCLOSE` and
   `INNER_DVCLOSE` to at least 1e-6 m (an `Info` message says when this happens),
   `OUTER_DVCLOSE` also to the resolution of the heads of the model (with heads 1000 m
-  from their reference that is about 1e-4 m), and an absolute `INNER_RCLOSE` to the
+  from their reference that is about 1e-4 m; at most 1 cm), and an absolute `INNER_RCLOSE` to the
   rounding level of the residual. Once a
   step's head change meets `OUTER_DVCLOSE` but its linear solve did not converge, the
   inner `INNER_DVCLOSE` is raised to the head resolution for the rest of that step.

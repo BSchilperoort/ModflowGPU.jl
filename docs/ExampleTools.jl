@@ -236,17 +236,32 @@ saved steps (inactive and dry cells left out); `budget_cbc`, the largest differe
 budget-file flow (all records but DATA-SPDIS) relative to the total inflow of its step;
 `budget_listing`, the same for the rates of the listing budget tables (beyond their
 printed rounding); `budget`, the larger of the two; and `pd`, the largest percent
-discrepancy of ModflowGPU's budgets.
+discrepancy of ModflowGPU's budgets. With the Newton–Raphson formulation, cells whose
+mf6 head is below the cell bottom are dry (their head is not unique) and left out of `dh`,
+as in the parity tests; `ndry` counts them (cell-steps).
 """
 function compare_with_mf6(rundir::AbstractString, run)
     r = run.result
     a, b = open_head_file(r.head_file), open_head_file(_only_file(rundir, ".hds"))
     length(a) == length(b) || error("the head files have $(length(a)) and $(length(b)) steps")
+    m = only(ModflowGPU.load_simulation(rundir).models)
+    bot = nothing
+    if m.newton
+        conn = ModflowGPU.build_connectivity(m)
+        bot = fill(-Inf, Int(conn.nodesuser))
+        bot[conn.nodeuser] .= conn.bot
+    end
     dh = 0.0
+    ndry = 0
     for k in eachindex(b.steps)
-        ha, hb = read_head(a, k), read_head(b, k)
+        ha, hb = vec(read_head(a, k)), vec(read_head(b, k))
         for i in eachindex(hb)
-            _inactive(hb[i]) || (dh = max(dh, abs(ha[i] - hb[i])))
+            _inactive(hb[i]) && continue
+            if !isnothing(bot) && hb[i] < bot[i]
+                ndry += 1
+                continue
+            end
+            dh = max(dh, abs(ha[i] - hb[i]))
         end
     end
     tin = Dict((t.kstp, t.kper) => ModflowGPU.total_rate_in(t) for t in r.budgets)
@@ -275,7 +290,7 @@ function compare_with_mf6(rundir::AbstractString, run)
         end
     end
     pd = maximum(t -> abs(ModflowGPU.percent_discrepancy(t)), r.budgets)
-    return (; dh, budget_cbc = dq, budget_listing = dl, budget = max(dq, dl), pd)
+    return (; dh, budget_cbc = dq, budget_listing = dl, budget = max(dq, dl), pd, ndry)
 end
 
 # The model listing file of mf6 in `dir` (not mfsim.lst).
@@ -321,9 +336,10 @@ function comparison_table(
     io = IOBuffer()
     println(io, "| Preset | max \\|Δh\\| ($unit), this build | max \\|Δh\\| ($unit), parity table | Budget, this build | Budget, parity table | CPU time, this build (s) | GPU time, parity table (s) |")
     println(io, "| :-- | --: | --: | --: | --: | --: | --: |")
-    for p in (:double, :single)
+    for p in (:double, :mixed, :single)
+        haskey(stats, p) || continue
         s = stats[p]
-        lim = p === :double ? (; dh = dh_limit_double, budget = budget_limit_double) : (; dh = LIMITS.single.dh, budget = budget_limit_single)
+        lim = p === :single ? (; dh = LIMITS.single.dh, budget = budget_limit_single) : (; dh = dh_limit_double, budget = budget_limit_double)
         s.cmp.dh < lim.dh || error("$parity_name :$p: max |Δh| = $(s.cmp.dh) exceeds $(lim.dh)")
         s.cmp.budget < lim.budget || error("$parity_name :$p: budget difference $(s.cmp.budget) exceeds $(lim.budget)")
         cpu = res["cpu"][string(p)]
@@ -843,9 +859,12 @@ const GALLERY = [
     "ex-gwf-hani.jl" => ("Horizontal anisotropy", ["ex-gwf-hanir", "ex-gwf-hanic"]),
     "ex-gwf-fhb.jl" => ("Time-series boundaries", ["ex-gwf-fhb"]),
     "ex-gwf-twri01.jl" => ("TWRI: layered aquifers", ["ex-gwf-twri01"]),
-    "ex-gwf-bcf2ss.jl" => ("BCF2SS: wetting and drying", ["ex-gwf-bcf2ss-p01a"]),
-    "ex-gwf-bump.jl" => ("Flow around a high bottom", ["ex-gwf-bump-p01b"]),
-    "ex-gwf-nwt-p02.jl" => ("Water table under a recharge pond", ["ex-gwf-nwt-p02b"]),
+    "ex-gwf-bcf2ss.jl" => ("BCF2SS: wetting and drying, and Newton–Raphson", ["ex-gwf-bcf2ss-p01a", "ex-gwf-bcf2ss-p02a"]),
+    "ex-gwf-bump.jl" => ("Flow around a high bottom", ["ex-gwf-bump-p01a", "ex-gwf-bump-p01b", "ex-gwf-bump-p01c"]),
+    "ex-gwf-nwt-p02.jl" => ("Water table under a recharge pond", ["ex-gwf-nwt-p02a", "ex-gwf-nwt-p02b"]),
+    "ex-gwf-nwt-p03.jl" => ("Water table over a rough bottom (Newton–Raphson)", ["ex-gwf-nwt-p03a", "ex-gwf-nwt-p03b"]),
+    "ex-gwf-zaidel.jl" => ("Zaidel: a water table over steps (Newton–Raphson)", ["ex-gwf-zaidel"]),
+    "ex-gwf-capture.jl" => ("Capture fraction of a river (Newton–Raphson)", ["ex-gwf-capture"]),
     "ex-gwf-advtidal.jl" => ("Highlands next to a tidal estuary", ["ex-gwf-advtidal"]),
     "ex-gwf-maw-p03.jl" => ("A well screened across layers", ["ex-gwf-maw-p03a", "ex-gwf-maw-p03c"]),
     "ex-gwf-hwell.jl" => ("A horizontal well", ["ex-gwf-hwell-a"]),
@@ -874,7 +893,7 @@ const NOTEBOOKS = Dict(
 )
 
 # Features (`requires` of validation/examples.toml) of unfinished Phase 6 cards.
-const PLANNED = ["newton" => "Newton–Raphson (T6.2)", "xt3d" => "XT3D (T6.5)", "exchange" => "GWF–GWF exchanges (T6.6)", "multi_model" => "GWF–GWF exchanges (T6.6)"]
+const PLANNED = ["xt3d" => "XT3D (T6.5)", "exchange" => "GWF–GWF exchanges (T6.6)", "multi_model" => "GWF–GWF exchanges (T6.6)"]
 
 """
     gallery_index_table() -> Markdown.MD

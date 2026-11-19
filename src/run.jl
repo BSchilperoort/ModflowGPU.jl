@@ -83,7 +83,9 @@ Keywords:
 - `backend = CPU()`: the KernelAbstractions backend, e.g. from [`select_backend`](@ref);
 - `precision = :auto`: a precision preset, see [`resolve_precision`](@ref) (`:auto` is
   `:mixed` on backends with Float64, else `:single`);
-- `outdir = simdir`: the directory for the output files (`spec.simdir` for a spec);
+- `outdir = simdir`: the directory for the output files (`spec.simdir` for a spec); a
+  directory inside the one named by the environment variable `REFERENCE_DIR` (the MF6
+  reference runs of the parity tests) is an `ArgumentError`;
 - `write_output = true`: `false` writes no files;
 - `closures = nothing`: a `NamedTuple` that overrides IMS settings, with any of
   `outer_dvclose`, `outer_maximum`, `inner_dvclose`, `inner_rclose`, `inner_maximum`

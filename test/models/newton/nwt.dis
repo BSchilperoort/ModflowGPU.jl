@@ -1,0 +1,27 @@
+BEGIN options
+  LENGTH_UNITS  meters
+END options
+
+BEGIN dimensions
+  NLAY  2
+  NROW  3
+  NCOL  12
+END dimensions
+
+BEGIN griddata
+  delr
+    CONSTANT  100.0
+  delc
+    CONSTANT  100.0
+  top
+    INTERNAL
+      30.0 29.5 29.0 28.5 28.0 27.5 27.0 26.5 26.0 25.5 25.0 24.5
+      30.0 29.5 29.0 28.5 28.0 27.5 27.0 26.5 26.0 25.5 25.0 24.5
+      30.0 29.5 29.0 28.5 28.0 27.5 27.0 26.5 26.0 25.5 25.0 24.5
+  botm  LAYERED
+    INTERNAL
+      15.0 15.5 16.0 17.0 18.5 19.0 18.0 17.0 16.0 15.0 14.5 14.0
+      15.0 15.5 16.2 17.5 19.0 19.5 18.2 17.0 16.0 15.0 14.5 14.0
+      15.0 15.5 16.0 17.0 18.5 19.0 18.0 17.0 16.0 15.0 14.5 14.0
+    CONSTANT  0.0
+END griddata

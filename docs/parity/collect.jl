@@ -146,7 +146,7 @@ function main()
                 row["passed"] &= passed
                 isnothing(stats) && return nothing
                 res = Dict{String, Any}(string(p) => preset_record(stats[p]) for p in (:single, :mixed, :double) if haskey(stats, p))
-                res["single_vs_double"] = r3(stats[:single_vs_double])
+                haskey(stats, :single_vs_double) && (res["single_vs_double"] = r3(stats[:single_vs_double]))
                 pc = get(opts, :preconditioner, :auto)
                 spc = get(opts, :single_preconditioner, pc)
                 res["preconditioner"] = string(pc)

@@ -267,7 +267,7 @@ function _assembly_models(f)
         @info "Skipping the synthetic models in the assembly test: mf6 not found at $ASM_MF6 (set REFERENCE_DIR or MF6)"
         return nothing
     end
-    for name in ("ts_tas", "coupling_rde", "wetdry", "disu_staggered", "afr")
+    for name in filter(test_model_selected, ["ts_tas", "coupling_rde", "wetdry", "disu_staggered", "afr", "newton"])
         dir = joinpath(@__DIR__, "..", "models", name)
         mktempdir() do tmp
             rundir = joinpath(tmp, name)
@@ -279,7 +279,7 @@ function _assembly_models(f)
         end
     end
     # DISU against MF6 (T6.4): ex-gwf-rad-disu with confined storage.
-    mktempdir() do tmp
+    test_model_selected("rad_disu_confined") && mktempdir() do tmp
         rundir, inputdir = joinpath(tmp, "rad_disu_confined"), joinpath(tmp, "inputs")
         if !(rad_disu_confined(rundir) && rad_disu_confined(inputdir))
             @info "Skipping rad_disu_confined in the assembly test: reference/runs/ex-gwf-rad-disu not found"
@@ -288,6 +288,17 @@ function _assembly_models(f)
         out = read(Cmd(`$ASM_MF6`; dir = rundir), String)
         @test occursin("Normal termination", out)
         f("rad_disu_confined", rundir, load_simulation(rundir; strict = true), inputdir)
+    end
+    # T6.2: ex-gwf-capture with saved heads (its reference run saves none).
+    test_model_selected("capture_saved") && mktempdir() do tmp
+        rundir, inputdir = joinpath(tmp, "capture_saved"), joinpath(tmp, "inputs")
+        if !(capture_saved(rundir) && capture_saved(inputdir))
+            @info "Skipping capture_saved in the assembly test: reference/runs/ex-gwf-capture not found"
+            return nothing
+        end
+        out = read(Cmd(`$ASM_MF6`; dir = rundir), String)
+        @test occursin("Normal termination", out)
+        f("capture_saved", rundir, load_simulation(rundir; strict = true), inputdir)
     end
     return nothing
 end
@@ -337,7 +348,11 @@ end
 # 1e-10 RELATIVE_RCLOSE; the strict tight run does not converge), whose converged heads
 # leave a residual of 2.9e-8 of the row magnitudes; our formulation matches libmf6's first
 # AMAT/RHS to 0 and 6e-17 (the oracle below).
-const UNIVERSAL_TOL = Dict("ex-gwf-maw-p03c" => 1.0e-7)
+# T6.2: ex-gwf-zaidel (K = 1e-4 m/d): MF6 ends on its absolute INNER_RCLOSE 1e-10 (STRICT;
+# the last outer iteration changes nothing), which is 3e-8 of the largest row magnitude: the
+# residual of its heads is 3.1e-8 (node 121, a linear-saturation cell); the oracle below
+# matches libmf6's Newton matrix to 5e-20.
+const UNIVERSAL_TOL = Dict("ex-gwf-maw-p03c" => 1.0e-7, "ex-gwf-zaidel" => 1.0e-7)
 
 function _universal_residual_model(name, rundir, m, sim)
     conn = build_connectivity(m)
@@ -413,15 +428,26 @@ function _oracle_model(name, simdir, m, sim)
         ModflowGPU.start_timestep!(model, o.delt)
         ModflowGPU.wetdry!(model, 1)
         ModflowGPU.formulate!(model; symmetric)
+        # Newton (T6.2): the first outer iteration of a steady-state period adds the
+        # pseudo-transient continuation term to the diagonal (`sln_ls`), and `−ptcval·x` to
+        # MF6's RHS, i.e. `−ptcval·h'` to b'.
+        ims = only(only(sim.solution_groups).solutions)
+        ptcval = 0.0
+        if model.newton && (isnothing(model.sto) || !model.sto.transient) && ModflowGPU.ptc_allowed(ims.no_ptc, 1)
+            red = ModflowGPU.Reducer(TEST_BACKEND, Int(conn.nodes), ModflowGPU.accumulation_type(TEST_BACKEND, T))
+            ptcval = ModflowGPU.apply_ptc!(ModflowGPU.PtcState(), red, model, 1, 1)
+        end
         KernelAbstractions.synchronize(TEST_BACKEND)
         act = model.ibound_host .!= 0
-        @test maximum(abs.(r[act] .+ Float64.(Array(model.h))[act] .- o.x0[act]); init = 0.0) <= 4 * eps(T) * maximum(abs, o.x0)
+        hoff = Float64.(Array(model.h))
+        @test maximum(abs.(r[act] .+ hoff[act] .- o.x0[act]); init = 0.0) <= 4 * eps(T) * maximum(abs, o.x0)
         ea = maximum(abs.(Float64.(Array(model.sys.amat)) .- o.amat)) / maximum(abs, o.amat)
-        eb = maximum(abs.(Float64.(Array(model.sys.rhs)) .- bmf)[act]) / maximum(bscale)
+        bours = Float64.(Array(model.sys.rhs)) .- ptcval .* hoff .* (model.ibound_host .> 0)
+        eb = maximum(abs.(bours .- bmf)[act]) / maximum(bscale)
         tol = T === Float64 ? 1.0e-12 : 1.0e-6
         @test ea < tol
         @test eb < tol
-        @info "Assembly oracle vs libmf6 (first solve, GwfModel): $name, :$(p.preset), symmetric = $symmetric, $(count(==(0), model.ibound_host)) dry cells: amat max |Δ| / max |a| = $(round(ea; sigdigits = 3)), b' max |Δ| / max(|RHS| + Σ|a·r|) = $(round(eb; sigdigits = 3))"
+        @info "Assembly oracle vs libmf6 (first solve, GwfModel): $name, :$(p.preset), symmetric = $symmetric, $(count(==(0), model.ibound_host)) dry cells$(model.newton ? ", Newton, PTC $(round(ptcval; sigdigits = 3))" : ""): amat max |Δ| / max |a| = $(round(ea; sigdigits = 3)), b' max |Δ| / max(|RHS| + Σ|a·r|) = $(round(eb; sigdigits = 3))"
     end
     return nothing
 end

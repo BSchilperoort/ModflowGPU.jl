@@ -165,6 +165,14 @@ it. Underscore-prefixed helpers are omitted.
   assembly/residual/flow kernel), `_cond_arg`, `npf_cf!` (`npf_sat_kernel!`), `WetDry` (state),
   `npf_rewet_kernel!` (Jacobi passes equal to MF6's sequential loop), `npf_rewet_apply_kernel!`,
   `npf_dry_kernel!`, `wetdry_device!`, `npf_ad!`. Tests: convertible, assembly, run.
+  T6.2 (Newton–Raphson; gwf-npf.f90 `fn_default_flow`, `highest_cell_saturation`,
+  `sgwf_npf_thksat`; SmoothingFunctions.f90): `ConvertibleNpf.newton`/`ihighcellsat` (`ihcx`
+  bit 8: bottoms differ by ≥ 0.01), `newton_saturation`, `newton_saturation_derivative`
+  (`sQuadraticSaturation[Derivative]`, SATOMEGA 1e-6), `_newton_conductance` (upstream
+  saturation × condsat; ties at the offsets' rounding level go to the higher-numbered cell),
+  `_newton_jacobian`, `connection_terms(...; jac)` (the Jacobian term of the upstream cell in
+  `a`/`dd`/`sb`; `q` unchanged); DEWATERED guard: a saturation below eps(T) is 0 (T6.1
+  follow-up). Tests: newton (FD Jacobian), convertible, assembly (libmf6 oracle), run.
 - **gwf/ic.jl**: IC (gwf-ic.f90 `ic_ar`). `initial_heads` (starting heads per reduced
   node as offsets, Float64 host or device copy in `T`). Tests: sto.
 - **gwf/sto.jl**: storage (gwf-sto.f90 `sto_rp`/`sto_fc`/`sto_cq`/`sto_bd`,
@@ -175,6 +183,10 @@ it. Underscore-prefixed helpers are omitted.
   (`rho` from Float64 `delt`), `add_to_system!` (diagonal and `b`), `calc_storage_rates!`
   (STO-SS), `add_storage_flowja!`, `storage_budget` (rin/rout, host Float64). Tests: sto
   (parity: residual test on fhb with constant stresses, mf6 run at test time).
+  T6.2 (`fn_default_sto`): `ConvertibleStorage.newton`, `newton_satthk` (thk·S without the
+  division), `storage_terms(...; jac)` (Newton: quadratic saturations; with `jac` the SY term
+  as `rho2·(thk·sn − thk·snold)` on the right-hand side, without it MF6's `SyTerms`),
+  `storage_jacobian` (the diagonal Newton term). Tests: newton, convertible, run.
 
 ## Boundary packages
 
@@ -204,7 +216,8 @@ it. Underscore-prefixed helpers are omitted.
   `staging` buffer, one `copyto!` (Float64 pass-through columns are copied directly);
   `bound_user!` fills `bound_user` on demand; `bound_version` counts value changes;
   `bound_values(pkg, r)` (Float64 `bound`, replaces the `bound_host` field). Tests:
-  boundaries (fast path vs full application).
+  boundaries (fast path vs full application). T6.2: `newton_record` (the diagonal Newton
+  term of a record, `*_fn`; 0 for every kind but `WelAfr` with `newton` and `DrnNewton`).
   T6.3 (time series): a PERIOD block with `TsRef`s or TIMEARRAYSERIES is applied through a
   working copy (`tsblock`, `_ts_working_copy`, `_block_data`) whose linked entries hold the
   series values of the step (`apply_period!(...; window)`); `advance_time_series!(pkg,
@@ -216,13 +229,16 @@ it. Underscore-prefixed helpers are omitted.
 - **boundaries/wel.jl**, **rch.jl**, **ghb.jl**: WEL, RCH (list and RCHA arrays, cell
   area), GHB formulations (`formulate_record` methods). Tests: boundaries. T6.1: WEL
   AUTO_FLOW_REDUCE (`WelAfr` record kind, `sq_saturation`, `record_kind`; tests: run, model
-  test/models/afr), `ghb_ck` (`check_records`).
+  test/models/afr), `ghb_ck` (`check_records`). T6.2: `record_kind(pkg, cv; newton)`,
+  `WelAfr.newton` and `sq_saturation_derivative` (`wel_fn`); `sq_saturation(..., c1, c2)`.
 - **boundaries/riv.jl**, **drn.jl**, **evt.jl** (T2.4): RIV (`riv_cf`, stage/rbot as
   offsets, `riv_ck`), DRN (`drn_cf` with AUXDEPTHNAME drainage depth, device-safe
   `linear_saturation` = `sQuadraticSaturation` with eps 0), EVT/EVTA (`evt_cf`: NSEG
   segments, PETM0 / SURF_RATE_SPECIFIED, `check_pxdp`; `bound` = surface, rate, depth,
   petm0, pxdp…, petm…). Tests: riv_drn_evt (parity: residual and CBC flows on
-  test/models/coupling_rde, mf6 run at test time).
+  test/models/coupling_rde, mf6 run at test time). T6.2: `DrnNewton` (DRN AUXDEPTHNAME in a
+  Newton model: cubic scaling `sq_saturation(…, −1, 2)` and the `drn_fn` term; tests: newton,
+  run on test/models/newton).
 
 ## Assembly and residual
 
@@ -244,7 +260,9 @@ it. Underscore-prefixed helpers are omitted.
   `formulate_system!`); `formulate_system!` keywords `terms = false` (no `rhs`/`bdiag`/`brhs`
   writes, the solver path) and package tuples `(kind, bound, area, hcof, rhs, nodeptr,
   noderec)` whose records are formulated in the row kernel (`_package_terms`); tests:
-  assembly.
+  assembly. T6.2: `formulate_system!(...; jac)` (Newton terms of NPF, storage and packages
+  on the diagonal/off-diagonals and the right-hand side; `bdiag`/`brhs` and the residual
+  without them).
 
 ## Linear solvers
 
@@ -280,6 +298,9 @@ it. Underscore-prefixed helpers are omitted.
   `precond_apply`; CG's `r·z` fused by `_precond_apply_dot!` where the preconditioner
   does); `_precond_record!` / `_precond_retry!` after a solve (a failed solve is repeated
   once after an AMG rebuild); `KrylovSolver(...; colors)` passes a host colouring.
+  T6.2: in Newton–Raphson solves (`solve!(...; newton = true)`) BiCGSTAB restarts with
+  `dhat = r` (`_bcgs_restart`) when `rho` vanishes at the rounding level of the vectors
+  (`|rho| <= eps(Ts)·|dhat|·|r|`; ex-gwf-zaidel with the red–black ILU0, nwt-p02a `:single`).
 - **solver/precond/precond.jl** (T4.2, T4.3): preconditioner interface. `AbstractPreconditioner`,
   `precond_setup!(P, solver, amat)` (per `solve!`, after scaling), `precond_apply!(z, P, r)`,
   `JacobiPreconditioner` (wraps the solver's `minv`; fused path), `PRECONDITIONERS`
@@ -326,7 +347,9 @@ it. Underscore-prefixed helpers are omitted.
   `sgwf_npf_wetdry` per outer iteration, IBOUND to the host, RCH/EVT moves), field `wd`
   (per-package formulation, then `formulate_system!`; off-diagonals rewritten only when
   `ibound` or `symmetric` changed, field `offdiag`, T4.5), `absolute_heads` (host Float64 `r + h'`; HDRY for dry cells, T6.1). Tests:
-  picard, run.
+  picard, run. T6.2: fields `newton`, `nurbot` (`newton_ur_bottoms`: `npf_nur`'s `ibotnode`
+  bottom as an offset, −Inf where it does not apply), `vol` (PTC), `delt`; `wd = nothing` with
+  NEWTON (no drying); `formulate!(m; jac = m.newton)`.
 - **solver/underrelax.jl**: `sln_underrelax`. `UnderRelaxation` (SIMPLE, COOLEY host
   scalars, DBD device state), `underrelax!` (`relax_update_kernel!`,
   `dbd_update_kernel!`); Adapt. Tests: picard (vs a host port), run (variants vs MF6).
@@ -336,6 +359,11 @@ it. Underscore-prefixed helpers are omitted.
   Float64 accumulation), `backtrack_update!` (`backtrack_update_kernel!`,
   `apply_backtracking`), `save_hprev!` (`save_hprev_kernel!`: `xtemp` with HDRY for dry
   cells). Tests: picard (unit and vs mf6), run (coupling_rde COMPLEX).
+- **solver/newton.jl** (T6.2): outer-iteration parts of Newton–Raphson. `PtcState`
+  (`ptcdel`, `l2norm0`, kept across steps), `ptc_allowed` (IMS NO_PTC), `apply_ptc!`
+  (`sln_calc_ptc`/`gwf_ptc`/`sln_ls`: one reduction of max |res|/V and the L2 norm, then
+  `−1/ptcdel` on the active diagonal), `newton_ur!` (`npf_nur` + `sln_nur_has_converged` in one
+  reduction). Tests: newton, run.
 - **solver/picard.jl**: outer loop (`sln_ca`/`solve`; PLAN.md 3.7 rule 3). `PicardSettings`
   (from `ImsSpec`, `closures` overrides, Float32 floors `FLOAT32_CLOSURES`),
   `PicardSolver` (KrylovSolver, UnderRelaxation, Reducer, `hprev` for backtracking; Adapt), `solve_timestep!` →
@@ -347,6 +375,10 @@ it. Underscore-prefixed helpers are omitted.
   holds INNER_DVCLOSE >= `OuterState.dvfloor` = eps32·max|h'| for the rest of the step;
   T6.1: `wetdry!` before each formulation, and with convertible cells the Float32 rclose
   floor is the maximum over the step's iterations).
+  T6.2: Newton formulation (`jac`; with backtracking first the formulation without the
+  Newton terms), PTC in steady-state Newton periods, NEWTON UNDER_RELAXATION after the
+  update, `PicardSolver.ptc`; `FLOAT32_CLOSURES.dvclose_head_cap` (the head-resolution
+  OUTER_DVCLOSE floor is at most 1 cm).
   Tests: picard, run, stepping.
 - **budget.jl**: `gwf_cq`/`gwf_bd`. `npf_flowja!` (one work item per entry, T4.5; T6.1 `connection_terms`, STO-SY term), `calc_flows!` (NPF, STO, packages with
   `bnd_cf` + `simvals`, CHD `calc_chd_rate!`, `csr_diagsum`), `BudgetTerm`, `ModelBudget`

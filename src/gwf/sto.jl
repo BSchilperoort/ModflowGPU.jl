@@ -21,6 +21,17 @@
 # the cell reference (`top' = top − r`, `bot' = bot − r`, computed on the host in Float64).
 # TVS (`integratechanges`) and the developer option of the original SS formulation are
 # not supported.
+#
+# Newton–Raphson (T6.2; `sto_fn`, `fn_default_sto`): the saturations are
+# `sQuadraticSaturation` with SATOMEGA 1e-6 (`newton_saturation`), and the Jacobian adds
+# `−rho1·S'·(h − bot) + rho1·thk·sn·S'` (SS, unless SS_CONFINED_ONLY) and, for `0 < sn < 1`,
+# `rho2 − rho2·thk·S'` (SY) to the diagonal. The SY right-hand side of `fn_default_sto`
+# changes the residual too: with the Jacobian the SY term is `rho2·thk·(sn − snold)`, the
+# rate of `cq_default_sto` (`storage_terms` returns it as a right-hand side with a zero
+# diagonal, and `storage_jacobian` the diagonal), without it (the formulation of
+# backtracking, `sln_buildsystem(inewton = 0)`) it is MF6's `SyTerms`. Saturated
+# thicknesses `thk·sn` are computed without the division (`newton_satthk`), so the
+# differences of nearly full cells do not cancel in Float32.
 
 """
     storage_capacity(sto::StoSpec, conn::Connectivity) -> Vector{Float64}
@@ -56,7 +67,8 @@ end
 
 Device data of the convertible cells of STO6 (T6.1): `iconvert` (`Int32` by node),
 `topoff`, `botoff` (`top − r`, `bot − r`), `thk` (`top − bot`), `rho2` (`sy · area / delt`,
-set by `set_timestep!`) and the option `iconf_ss` (SS_CONFINED_ONLY).
+set by `set_timestep!`), the option `iconf_ss` (SS_CONFINED_ONLY) and `newton` (T6.2: the
+model's NEWTON option; quadratic saturations and the Jacobian terms).
 """
 struct ConvertibleStorage{T <: AbstractFloat, V <: AbstractVector{T}, VI <: AbstractVector{Int32}}
     iconvert::VI
@@ -65,6 +77,7 @@ struct ConvertibleStorage{T <: AbstractFloat, V <: AbstractVector{T}, VI <: Abst
     thk::V
     rho2::V
     iconf_ss::Bool
+    newton::Bool
 end
 
 Adapt.@adapt_structure ConvertibleStorage
@@ -78,7 +91,8 @@ Storage (STO6) on the device in precision `T`, after `check_storage_spec`.
 Device arrays by reduced node: `rho` (`SsCapacity / delt`, computed in Float64 and cast to
 `T` by `set_timestep!`), `strgss` (STO-SS rate per cell, `calc_storage_rates!`) and
 `strgsy` (STO-SY; empty without convertible cells); `conv`, a `ConvertibleStorage` when a
-cell has ICONVERT /= 0 (needs the reference heads `r`), else `nothing`.
+cell has ICONVERT /= 0 (needs the reference heads `r`; `newton`: the model's NEWTON
+option, T6.2), else `nothing`.
 Host fields: `spec`, `conn`, `sc` (`storage_capacity`, Float64), `sc2` (`sy · area`, empty
 without convertible cells), `delt` (time step length of `rho`, 0 before the first
 `set_timestep!`), `kper` (period of the last `apply_period!`, 0 before) and `transient`
@@ -100,6 +114,7 @@ end
 
 function StoragePackage{T}(
         backend::Backend, sto::StoSpec, conn::Connectivity, nper::Integer; r::Union{Nothing, AbstractVector{Float64}} = nothing,
+        newton::Bool = false,
     ) where {T <: AbstractFloat}
     check_storage_spec(sto, conn, nper)
     z(k) = KernelAbstractions.zeros(backend, T, k)
@@ -113,7 +128,7 @@ function StoragePackage{T}(
         top, bot = conn.top, conn.bot
         dev(x) = _device_copy(backend, x)
         conv = ConvertibleStorage(
-            dev(iconvert), dev(T.(top .- r)), dev(T.(bot .- r)), dev(T.(top .- bot)), z(nodes), sto.ss_confined_only,
+            dev(iconvert), dev(T.(top .- r)), dev(T.(bot .- r)), dev(T.(top .- bot)), z(nodes), sto.ss_confined_only, newton,
         )
         sc2 = Float64[sto.sy[conn.nodeuser[n]] * conn.area[n] for n in 1:nodes]  # SyCapacity
     end
@@ -188,23 +203,51 @@ end
 end
 
 """
-    storage_terms(rho, hold, conv, h, n) -> (ss_aterm, ss_rhs, sy_aterm, sy_rhs)
+    newton_satthk(top, bot, thk, x) -> thk·S
+
+The saturated thickness `thk·newton_saturation(top, bot, x)` (`tthk·sn` of
+`fn_default_sto`/`SyTerms` with SATOMEGA 1e-6, T6.2), computed without dividing by `thk`
+where the saturation is linear or quadratic, so differences of two of them keep the
+precision of the head difference. Offsets; device-safe.
+"""
+@inline function newton_satthk(tp::T, bt::T, thk::T, x::T) where {T}
+    teps = T(1.0e-6)
+    thk > zero(T) || return x < bt ? zero(T) : thk
+    br = x < bt ? zero(T) : (x > tp ? one(T) : (x - bt) / thk)
+    av = one(T) / (one(T) - teps)
+    if br < teps
+        w = x < bt ? zero(T) : x - bt
+        return av * T(0.5) * (w * w) / (teps * thk)
+    elseif br < one(T) - teps
+        return av * (x - bt) + T(0.5) * thk * (one(T) - av)
+    elseif br < one(T)
+        wi = tp - x
+        return thk - av * T(0.5) * (wi * wi) / (teps * thk)
+    end
+    return thk
+end
+
+"""
+    storage_terms(rho, hold, conv, h, n[, jac]) -> (ss_aterm, ss_rhs, sy_aterm, sy_rhs)
 
 The storage terms of active cell `n` (`fc_default_sto`: `SsTerms`, and `SyTerms` for a
 convertible cell), with the right-hand sides for offset heads (see the header of
-src/gwf/sto.jl). `conv` is `nothing` (confined storage) or a `ConvertibleStorage`.
-Device-safe.
+src/gwf/sto.jl). `conv` is `nothing` (confined storage) or a `ConvertibleStorage`. With the
+Newton formulation (T6.2, `conv.newton`) the saturations are quadratic, and with `jac`
+(the Jacobian is added, `storage_jacobian`) the SY terms are those with `fn_default_sto`'s
+right-hand side: a zero diagonal and `rho2·(thk·sn − thk·snold)`. Device-safe.
 """
-@inline function storage_terms(rho, hold, ::Nothing, h, n)
+@inline function storage_terms(rho, hold, ::Nothing, h, n, jac::Bool = true)
     @inbounds r = rho[n]
     T = eltype(rho)
     return -r, -r * hold[n], zero(T), zero(T)
 end
 
-@inline function storage_terms(rho, hold, cs::ConvertibleStorage{T}, h, n) where {T}
+@inline function storage_terms(rho, hold, cs::ConvertibleStorage{T}, h, n, jac::Bool = true) where {T}
     @inbounds begin
         r = rho[n]
         cs.iconvert[n] == Int32(0) && return -r, -r * hold[n], zero(T), zero(T)
+        cs.newton && return _newton_storage_terms(r, hold, cs, h, n, jac)
         tp, bt, tthk = cs.topoff[n], cs.botoff[n], cs.thk[n]
         ho = hold[n]
         snold = storage_saturation(ho, tp, bt, tthk)
@@ -242,6 +285,65 @@ end
             yr = rho2 * (tp - hoc)
         end
         return aterm, rhsterm, ya, yr
+    end
+end
+
+# The Newton formulation of `storage_terms` (T6.2): SsTerms with the quadratic saturations;
+# SyTerms as MF6's (`jac = false`) or with `fn_default_sto`'s right-hand side (`jac`).
+@inline function _newton_storage_terms(r::T, hold, cs::ConvertibleStorage{T}, h, n, jac::Bool) where {T}
+    @inbounds begin
+        tp, bt, tthk = cs.topoff[n], cs.botoff[n], cs.thk[n]
+        ho = hold[n]
+        hn = h[n]
+        snold = newton_saturation(tp, bt, ho)
+        snnew = newton_saturation(tp, bt, hn)
+        aterm = -r * snnew
+        if !cs.iconf_ss
+            zold = bt + T(0.5) * tthk * snold
+            znew = bt + T(0.5) * tthk * snnew
+            rhsterm = -r * snold * (ho - zold) - r * snnew * znew
+        else
+            rhsterm = zero(T)
+            snold == one(T) && (rhsterm = rhsterm - r * (ho - tp))
+            if snnew == one(T)
+                rhsterm = rhsterm - r * tp
+            else
+                aterm = zero(T)
+            end
+        end
+        rho2 = cs.rho2[n]
+        sold = newton_satthk(tp, bt, tthk, ho)
+        if jac || !(zero(T) < snnew < one(T))
+            ya = zero(T)
+            yr = rho2 * (newton_satthk(tp, bt, tthk, hn) - sold)
+        else
+            ya = -rho2
+            yr = -rho2 * (sold + bt)
+        end
+        return aterm, rhsterm, ya, yr
+    end
+end
+
+"""
+    storage_jacobian(rho, conv, h, n) -> J
+
+The Newton–Raphson term of active cell `n` on the diagonal (`fn_default_sto`, T6.2; the
+right-hand side gets `J·h'`, so the residual does not change): 0 without the Newton
+formulation or for a confined cell. Device-safe.
+"""
+@inline storage_jacobian(rho, ::Nothing, h, n) = zero(eltype(rho))
+@inline function storage_jacobian(rho, cs::ConvertibleStorage{T}, h, n) where {T}
+    @inbounds begin
+        (cs.newton && cs.iconvert[n] != Int32(0)) || return zero(T)
+        tp, bt, tthk = cs.topoff[n], cs.botoff[n], cs.thk[n]
+        hn = h[n]
+        snnew = newton_saturation(tp, bt, hn)
+        derv = newton_saturation_derivative(tp, bt, hn)
+        r = rho[n]
+        j = zero(T)
+        cs.iconf_ss || (j = -r * derv * (hn - bt) + r * tthk * snnew * derv)
+        (zero(T) < snnew < one(T)) && (j = j - cs.rho2[n] * tthk * derv)
+        return j
     end
 end
 
@@ -296,9 +398,15 @@ end
                 a1, r1, _, _ = storage_terms(rho, hold, conv, hnew, n)
                 q = a1 * hnew[n] - r1
                 # SyTerms rate: rho2·thk·snold − rho2·thk·snnew, as rho2·(clamp(hold) − clamp(h))
-                # (the same, without the cancellation near sn = 1 in Float32; T6.1).
+                # (the same, without the cancellation near sn = 1 in Float32; T6.1); with
+                # the Newton formulation from the quadratic saturations (T6.2).
                 tp, bt = conv.topoff[n], conv.botoff[n]
-                qy = conv.rho2[n] * (clamp(hold[n], bt, tp) - clamp(hnew[n], bt, tp))
+                if conv.newton
+                    tk = conv.thk[n]
+                    qy = conv.rho2[n] * (newton_satthk(tp, bt, tk, hold[n]) - newton_satthk(tp, bt, tk, hnew[n]))
+                else
+                    qy = conv.rho2[n] * (clamp(hold[n], bt, tp) - clamp(hnew[n], bt, tp))
+                end
             end
         end
         strgss[n] = q
