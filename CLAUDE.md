@@ -26,6 +26,7 @@ before starting.
 julia --project -e 'using Pkg; Pkg.test()'                    # CPU tests (this is what CI runs)
 MFGPU_TEST_BACKEND=rocm julia --project=test test/runtests.jl # GPU tests, local machine only
 MFGPU_TEST_GROUPS=connectivity,npf julia --project=test test/runtests.jl # only these test groups
+MFGPU_TEST_JOBS=4 julia --project=test test/runtests.jl       # groups in 4 parallel processes (opt-in; T6.8)
 julia --project=@runic -m Runic --inplace .                   # format (or `runic --inplace .`)
 julia --project=benchmark benchmark/hardware.jl rocm          # hardware baseline (T0.4), also `cpu`
 ```

@@ -58,8 +58,11 @@ function _ur_ims(opts, nonlin)
     """
 end
 
+# Gated on the model name like the models of the loop below, so that the parallel driver
+# (test/parallel.jl) runs it in one worker only.
 @testset "Run parity vs MF6: under-relaxation and COMPLEXITY on coupling_rde" begin
-    if !isfile(RUN_MF6)
+    if !test_model_selected("coupling_rde")
+    elseif !isfile(RUN_MF6)
         @info "Skipping the under-relaxation run parity test: mf6 not found at $RUN_MF6"
     else
         for (name, opts, nonlin) in _UR_VARIANTS
@@ -90,7 +93,7 @@ end
 
 # flopy reads our HDS and CBC files (opt-in: MFGPU_FLOPY=1, needs `uv`; like the flopy
 # testset of test/unit/output_test.jl). Every value flopy returns equals our readers'.
-if get(ENV, "MFGPU_FLOPY", "") == "1"
+if get(ENV, "MFGPU_FLOPY", "") == "1" && test_model_selected("coupling_rde")
     @testset "flopy reads ModflowGPU.run output (coupling_rde)" begin
         mktempdir() do out
             r = ModflowGPU.run(joinpath(@__DIR__, "..", "models", "coupling_rde"); backend = TEST_BACKEND, precision = :single, outdir = out)
