@@ -70,11 +70,13 @@ const EXTRA_PARITY_EXAMPLES = (
 
 Whether the parity tests (groups assembly and run) include model `name`:
 `MFGPU_TEST_MODELS` (T6.2), a comma-separated list of model names, restricts them to those
-models; unset includes every model.
+models; unset includes every model. A leading `!` (`!a,b`) selects every model except those
+(the parallel test driver uses it to split the groups by model, test/parallel.jl).
 """
 function test_model_selected(name::AbstractString)
     env = strip(get(ENV, "MFGPU_TEST_MODELS", ""))
     isempty(env) && return true
+    startswith(env, '!') && return !(name in strip.(split(env[2:end], ',')))
     return name in strip.(split(env, ','))
 end
 

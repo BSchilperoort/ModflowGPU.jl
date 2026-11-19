@@ -26,9 +26,19 @@ before starting.
 julia --project -e 'using Pkg; Pkg.test()'                    # CPU tests (this is what CI runs)
 MFGPU_TEST_BACKEND=rocm julia --project=test test/runtests.jl # GPU tests, local machine only
 MFGPU_TEST_GROUPS=connectivity,npf julia --project=test test/runtests.jl # only these test groups
+MFGPU_TEST_JOBS=8 julia --project=test test/runtests.jl       # CPU suite in 8 parallel processes (opt-in, T6.8)
+MFGPU_TEST_JOBS=3 MFGPU_TEST_BACKEND=rocm julia --project=test test/runtests.jl # GPU suite, 3 workers share the GPU
 julia --project=@runic -m Runic --inplace .                   # format (or `runic --inplace .`)
 julia --project=benchmark benchmark/hardware.jl rocm          # hardware baseline (T0.4), also `cpu`
 ```
+
+`MFGPU_TEST_JOBS=N` (N > 1) runs the groups in N worker processes (`test/parallel.jl`), the
+long `run` group split by model, and prints a combined summary with test counts; it exits with
+an error if any worker fails (logs: `MFGPU_TEST_LOGDIR`). Measured on this machine (16 cores,
+61 GB), full suite, identical counts and results: CPU 17.5 min serial, 9.7 min with N=4, 5.4 min
+with N=8 (floor: the slowest `run` models, about 4 min); rocm 23.9 min serial, 16.7 min with
+N=3. Use N=8 on CPU and N=3 on rocm (a worker uses about 1 GB of the 16 GB GPU; a process peaks
+at 1.5 to 4 GB of host memory). `Pkg.test()` is serial unless the variable is set (CI sets 3).
 
 `test/` and `benchmark/` are workspace projects of the package (`[workspace]` in `Project.toml`), so there is
 one `Manifest.toml` at the root (not committed). It includes AMDGPU, so the GPU test command

@@ -20,8 +20,17 @@ the manual; it lives in the repository.
 julia --project -e 'using Pkg; Pkg.test()'                    # CPU tests (what CI runs)
 MFGPU_TEST_BACKEND=rocm julia --project=test test/runtests.jl # GPU tests, on a machine with a GPU
 MFGPU_TEST_GROUPS=connectivity,npf julia --project=test test/runtests.jl # selected groups
+MFGPU_TEST_JOBS=4 julia --project=test test/runtests.jl       # groups in 4 parallel processes
 julia --project=@runic -m Runic --check .                     # formatting
 ```
+
+`MFGPU_TEST_JOBS=N` (N > 1) runs the test groups in N worker processes, each running the
+serial suite on its share of the groups, and prints a combined summary with the test counts;
+the run fails if any worker fails. Unset or 1 is the serial run (also for `Pkg.test()`; CI sets 3). The
+GPU workers share one GPU (about 1 GB each), so use N=3 with `MFGPU_TEST_BACKEND=rocm`; N=8 suits
+the CPU suite on a 16-core machine (17.5 min serial, 5.4 min with N=8). `MFGPU_TEST_LOGDIR` keeps
+the worker logs. The long `run` group is split by model (`MFGPU_TEST_MODELS`, which also accepts
+`!a,b` for all but those); the weights that order the units are in `test/parallel.jl`.
 
 ## Building this manual
 
