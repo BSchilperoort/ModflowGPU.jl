@@ -31,3 +31,6 @@ jobs:
       - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
+        env:
+          # T6.8: three parallel test processes on the 4-core runner (test/parallel.jl).
+          MFGPU_TEST_JOBS: '3'
