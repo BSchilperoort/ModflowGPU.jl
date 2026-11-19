@@ -906,9 +906,14 @@ vs `:double` comparisons).
 outer iterations, with MC-ILU0 and with AMG). MF6's own path is erratic (inner solves at
 INNER_MAXIMUM in outer iterations 1–3, head changes up to 1420 m, 159 outer iterations in
 `:double`); in Float32 the unconverged inner solves end far off and the iterations wander
-between states with changes of 10–1000 m. The quadratic saturation next to a cell bottom
-is smoothed over 1e-6 of the cell thickness, a few Float32 rounding units of the head
-offsets. The run parity test and the parity table run `:mixed` and `:double` only.
+between states with changes of 10–1000 m. With recharge 1000 times that of p03a, MF6's
+solution is a water table just above the bottom: median saturated thickness 0.55 mm, 4077
+of 6400 cells below 1 cm and 127 within the quadratic smoothing interval (1e-6 of the
+150–165 m cell thickness, 1.6e-4 m). The head offsets are about −20 m there (STRT is 20 m
+above the bottom), whose Float32 spacing is 1.9e-6 m: the saturated thicknesses, hence the
+transmissivities, carry 2–3 significant digits, the smoothing interval is about 80 rounding
+units and the OUTER_DVCLOSE floor (`eps(Float32)·max|h'|`, 2.4e-6 m) about one (review of
+T6.2). The run parity test and the parity table run `:mixed` and `:double` only.
 `FLOAT32_CLOSURES.dvclose_head_cap` (1 cm) keeps a diverging Float32 iteration (heads of
 1.6e27 m) from raising OUTER_DVCLOSE with its head resolution and ending the step as
 converged.

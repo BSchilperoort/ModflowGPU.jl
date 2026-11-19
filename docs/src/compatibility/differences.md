@@ -79,8 +79,9 @@ libmf6's), but:
   continuation (`ex-gwf-nwt-p03b`: 96 outer iterations, MODFLOW 6 159).
 - **`:single` may not converge** on hard Newton problems: `ex-gwf-nwt-p03b` does not
   converge in Float32, while `:mixed` and `:double` do ([Comparing results](results.md)).
-  In Float32 the quadratic smoothing interval of the saturation next to a cell bottom
-  (1e-6 of the cell thickness) is only a few rounding units wide.
+  Its water table lies a fraction of a millimetre above the cell bottoms in most cells,
+  20 m below the starting heads: in Float32 those saturated thicknesses carry only 2–3
+  significant digits.
 
 ## Precision
 
