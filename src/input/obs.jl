@@ -93,6 +93,8 @@ const OBS_TYPES = Dict{Symbol, Vector{String}}(
     :GHB => ["GHB", "TO-MVR"],
     :RCH => ["RCH"],
     :EVT => ["EVT"],
+    # T6.6: GWF-GWF exchanges (exg-gwfgwf.f90 `gwf_gwf_df_obs`).
+    :GWFGWF => ["FLOW-JA-FACE"],
 )
 
 # Dis.f90 `nodeu_from_string` (urword ncode 2) for the cellid at word `i` of `words`:
@@ -117,8 +119,9 @@ end
 """
     read_obs_file(path, owner, dis; simdir = dirname(path), file = path) -> ObsSpec
 
-Read the OBS6 file `path` of `owner` (`:GWF` for the model, else the package kind, e.g.
-`:GHB`) on the grid of `dis` (Obs.f90 `obs_ar`): the OPTIONS block (DIGITS, PRINT_INPUT),
+Read the OBS6 file `path` of `owner` (`:GWF` for the model, `:GWFGWF` for a GWF-GWF
+exchange (T6.6: `cells` holds the exchange number), else the package kind, e.g. `:GHB`) on
+the grid of `dis` (Obs.f90 `obs_ar`): the OPTIONS block (DIGITS, PRINT_INPUT),
 then CONTINUOUS blocks, one output file each. Each observation's type must be one of
 `OBS_TYPES[owner]` and its ID string a cellid of an active cell (two for
 `FLOW-JA-FACE`); package observations may name a boundary instead (BOUNDNAMES). Errors
@@ -175,6 +178,10 @@ function read_obs_file(
             if owner === :GWF
                 push!(cells, _obs_cellid(words, 3, g, idom, l))
                 type == "FLOW-JA-FACE" && push!(cells, _obs_cellid(words, 3 + length(g.mshape), g, idom, l))
+            elseif owner === :GWFGWF && !isnothing(parse_int(words[3]))
+                # T6.6, exg-gwfgwf.f90 `gwf_gwf_process_obsID`: the exchange number (checked
+                # against NEXG by the loader, `gwf_gwf_rp_obs`), or a boundary name.
+                push!(cells, parse_int(words[3]))
             elseif isnothing(parse_int(words[3]))
                 # DefaultObsIdProcessor: not an integer, a boundary name (upper case).
                 boundname = first(uppercase(words[3]), LENOBSNAME)

@@ -19,7 +19,8 @@ What [`run_simulation`](@ref) returns. Fields:
   not written); with several models those of the first model;
 - `obs_files`: the paths of the observation output files (OBS6 `CONTINUOUS FILEOUT`; the
   model's, then the stress packages'), empty without observations or output; read them
-  with [`read_observations`](@ref); with several models those of every model;
+  with [`read_observations`](@ref); with several models those of every model, then those
+  of the GWF-GWF exchanges;
 - `models`: per model (T6.6; one entry for a single model) a `NamedTuple` with `name`,
   `nodes` (its range in `heads`), `head_file`, `budget_file`, `listing_file` and
   `obs_files`;
@@ -162,6 +163,7 @@ function run_simulation(
     allconv = all(r -> r.outer.converged, s.results)
     _obs_paths(o) = (isnothing(o) || isnothing(o.obs)) ? String[] : copy(o.obs.paths)
     obs = reduce(vcat, (_obs_paths(o) for o in s.outputs); init = String[])
+    isnothing(s.exobs) || append!(obs, s.exobs.paths)
     models = map(enumerate(s.views)) do (k, v)
         o = get(s.outputs, k, nothing)
         f = isnothing(o) ? ("", "", "") : (o.head_path, o.budget_path, o.listing_path)

@@ -194,3 +194,65 @@ function write_exchange_budget(o::ModelOutput, v::ModelView, step::TimeStep, x::
     end
     return nothing
 end
+
+"""
+    ExchangeObservations
+
+The observation output of the GWF-GWF exchanges with OBS6 (T6.6; exg-gwfgwf.f90
+`gwf_gwf_rp_obs`, `gwf_gwf_save_simvals`): the output files (`paths`) and per observation
+its exchange (`exg`) and exchange connections (`idx`: the connection given, or every
+connection with the boundary name). The value of an observation is the sum of their
+flows (FLOW-JA-FACE, into the model-1 cell; MF6 accumulates over the boundaries).
+"""
+struct ExchangeObservations
+    files::Vector{_ObsFile}
+    paths::Vector{String}
+    exg::Vector{Int}
+    idx::Vector{Vector{Int}}
+end
+
+function ExchangeObservations(sol::SolutionSetup, simdir::AbstractString, outdir::AbstractString)
+    any(ex -> !isnothing(ex.spec.obs), sol.exchanges) || return nothing
+    exg = Int[]
+    idx = Vector{Int}[]
+    opens = Tuple{ObsOutputSpec, Int, Vector{Int}}[]
+    for (ie, ex) in enumerate(sol.exchanges)
+        os = ex.spec.obs
+        isnothing(os) && continue
+        for o in os.outputs
+            cols = Int[]
+            for e in o.observations
+                push!(exg, ie)
+                push!(idx, isempty(e.boundname) ? [e.cells[1]] : findall(==(e.boundname), ex.spec.data.boundname))
+                push!(cols, length(exg))
+            end
+            push!(opens, (o, os.digits, cols))
+        end
+    end
+    files = _ObsFile[_obs_open(simdir, outdir, o, digits, cols) for (o, digits, cols) in opens]
+    return ExchangeObservations(files, [f.path for f in files], exg, idx)
+end
+
+Base.close(o::ExchangeObservations) = foreach(f -> close(f.io), o.files)
+
+"""
+    write_exchange_observations(o::ExchangeObservations, x::ExchangeFlows, totim)
+
+Append the exchange observations of the time step that ends at `totim` (the flows of the
+last `exchange_flows!`) to their files, as `write_observations`.
+"""
+function write_exchange_observations(o::ExchangeObservations, x::ExchangeFlows, totim::Float64)
+    v = [sum(exchange_simvals(x, o.exg[i])[o.idx[i]]; init = 0.0) for i in eachindex(o.exg)]
+    for f in o.files
+        if f.binary
+            write(f.io, totim)
+            foreach(i -> write(f.io, v[i]), f.cols)
+        else
+            print(f.io, obs_format(totim, 13; lead0 = true))
+            foreach(i -> print(f.io, ",", _obs_value_text(v[i], f.fmt)), f.cols)
+            println(f.io)
+        end
+        flush(f.io)
+    end
+    return v
+end

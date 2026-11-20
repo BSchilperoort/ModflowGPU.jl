@@ -366,7 +366,16 @@ function _run_parity(
             @test r.T === p.T
             heads[p.preset] = r.heads
             @test length(r.models) == length(models)
-            @test length(r.obs_files) == sum(x -> length(_obs_outputs(x)), models)
+            # T6.6: then the observation files of the GWF-GWF exchanges.
+            exobs = [o.file for ex in sim.exchanges if !isnothing(ex.obs) for o in ex.obs.outputs]
+            @test length(r.obs_files) == sum(x -> length(_obs_outputs(x)), models) + length(exobs)
+            for file in exobs
+                a, b = ModflowGPU.read_observations(joinpath(out, file)), ModflowGPU.read_observations(joinpath(rundir, file))
+                @test a.names == b.names
+                @test a.times ≈ b.times rtol = 1.0e-12
+                sc = max(maximum(abs, b.values; init = 0.0), floatmin())
+                @test maximum(abs.(a.values .- b.values); init = 0.0) / sc < (p.T === Float64 ? 1.0e-6 : single_obs_tol)
+            end
             dh = dq = dl = pd = pdx = hshift = 0.0
             ndry = nrec = ntab = 0
             obs = nothing

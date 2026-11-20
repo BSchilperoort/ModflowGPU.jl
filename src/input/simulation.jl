@@ -602,7 +602,7 @@ end
 # Exchanges
 # ---------------------------------------------------------------------------------------
 
-function _load_exchange(ld::_Loader, fname, m1::GwfSpec, m2::GwfSpec)
+function _load_exchange(ld::_Loader, fname, m1::GwfSpec, m2::GwfSpec, id::Integer)
     f = _read_package(ld, fname, "GWF6-GWF6", "EXG")
     o = read_options(f, "OPTIONS")
     ld.strict && check_options(o, f.dfn.name, "GWF6-GWF6", "exchange $(m1.name) - $(m2.name)")
@@ -618,6 +618,24 @@ function _load_exchange(ld::_Loader, fname, m1::GwfSpec, m2::GwfSpec)
             idom[n] > 0 || input_error(b.lines[r], "$(m.name) Cell is outside active grid domain $(_shape_string(cellid(g, n))).")
         end
     end
+    # T6.6: OBS6 (Obs.f90: at most one file; exg-gwfgwf.f90 gwf_gwf_rp_obs: every
+    # observation names an exchange connection or a boundary name of one).
+    obs_files = _filein(ld, o, "obs6_filename", "OBS6")
+    length(obs_files) > 1 && input_error(option_line(o, "OBS6"), "Multiple OBS6 keywords detected in OPTIONS block. Only one OBS6 entry allowed.")
+    obs = isempty(obs_files) ? nothing :
+        read_obs_file(_resolve_path(only(obs_files), ld.simdir), :GWFGWF, m1.dis; simdir = ld.simdir, file = only(obs_files))
+    if !isnothing(obs)
+        nexg = length(data.nodem1)
+        for out in obs.outputs, e in out.observations
+            if isempty(e.boundname)
+                1 <= e.cells[1] <= nexg ||
+                    throw(MF6InputError(obs.file, e.line, "Exchange id \"$(e.cells[1])\" for observation \"$(e.type)\" is invalid in package \"GWF-GWF_$id\""))
+            else
+                e.boundname in data.boundname ||
+                    throw(MF6InputError(obs.file, e.line, "Exchange \"$(e.boundname)\" for observation \"$(e.type)\" is invalid in package \"GWF-GWF_$id\""))
+            end
+        end
+    end
     return ExchangeSpec(;
         model1 = m1.name, model2 = m2.name, auxnames = data.auxnames, boundnames = option(o, "boundnames", false),
         print_input = option(o, "print_input", false), print_flows = option(o, "print_flows", false),
@@ -625,7 +643,7 @@ function _load_exchange(ld::_Loader, fname, m1::GwfSpec, m2::GwfSpec)
         cell_averaging = _CELL_AVERAGING[option(o, "cell_averaging", "HARMONIC")],
         variablecv = option(o, "variablecv", false), dewatered = option(o, "dewatered", false),
         newton = option(o, "newton", false), xt3d = option(o, "xt3d", false),
-        obs_files = _filein(ld, o, "obs6_filename", "OBS6"), data, file = _rel(ld, f.path),
+        obs_files, obs, data, file = _rel(ld, f.path),
     )
 end
 
@@ -917,7 +935,7 @@ function load_simulation(simdir::AbstractString; strict::Bool = true)
     np = nper(tdis)
     models = GwfSpec[_load_gwf(ld, fname, mname, np) for (fname, mname) in models_in]
     byname = Dict(m.name => m for m in models)
-    exchanges = ExchangeSpec[_load_exchange(ld, fname, byname[n1], byname[n2]) for (fname, n1, n2) in exg_in]
+    exchanges = ExchangeSpec[_load_exchange(ld, fname, byname[n1], byname[n2], id) for (id, (fname, n1, n2)) in enumerate(exg_in)]
     groups = SolutionGroupSpec[
         SolutionGroupSpec(; mxiter, solutions = ImsSpec[_load_ims(ld, fname, names) for (fname, names) in sols])
             for (mxiter, sols) in groups_in

@@ -175,7 +175,7 @@ end
 # --- Unit tests on a small simulation written here: two 1-layer DIS models side by side
 # (left: 3×4, right: 3×4), connected along their shared edge by an exchange, CHD at the
 # outer columns.
-function _write_two_models(dir; exg_options = "", aux = true, k22 = false, xt3d_npf = false, solutions = 1, icelltype = 0, extra_exchange = "")
+function _write_two_models(dir; exg_options = "", aux = true, k22 = false, xt3d_npf = false, solutions = 1, icelltype = 0, extra_exchange = "", obs = false)
     mkpath(dir)
     nam(m) = """
     BEGIN options
@@ -243,7 +243,19 @@ function _write_two_models(dir; exg_options = "", aux = true, k22 = false, xt3d_
         write(joinpath(dir, "$m.oc"), "BEGIN options\n  HEAD FILEOUT $m.hds\n  BUDGET FILEOUT $m.cbc\nEND options\nBEGIN period 1\n  SAVE HEAD ALL\n  SAVE BUDGET ALL\nEND period 1\n")
     end
     auxline = aux ? "  AUXILIARY ANGLDEGX CDIST\n" : ""
-    rows = join(["  1 $i 4  1 $i 1  1  50.0  50.0  100.0" * (aux ? "  0.0  100.0" : "") for i in 1:3], "\n")
+    bnames = ("north", "south", "south")
+    rows = join(["  1 $i 4  1 $i 1  1  50.0  50.0  100.0" * (aux ? "  0.0  100.0" : "") * (obs ? "  $(bnames[i])" : "") for i in 1:3], "\n")
+    if obs
+        exg_options *= "\n  BOUNDNAMES\n  OBS6 FILEIN sim.gwfgwf.obs"
+        write(
+            joinpath(dir, "sim.gwfgwf.obs"), """
+            BEGIN continuous FILEOUT sim.gwfgwf.obs.csv
+              q2 FLOW-JA-FACE 2
+              qsouth FLOW-JA-FACE south
+            END continuous
+            """,
+        )
+    end
     write(
         joinpath(dir, "sim.gwfgwf"), """
         BEGIN options
@@ -398,5 +410,30 @@ end
             err
         end
         @test e isa MF6UnsupportedError
+
+        # Against mf6 (run at test time): heads, budgets and listing tables of both models
+        # (`_run_parity`), and the exchange observations (by number and by boundary name).
+        if isfile(RUN_MF6)
+            odir = _write_two_models(joinpath(tmp, "obs"); obs = true)
+            out = read(Cmd(`$RUN_MF6`; dir = odir), String)
+            @test occursin("Normal termination", out)
+            _run_parity("two models (exchange test)", odir)
+            mktempdir() do o2
+                r = ModflowGPU.run(odir; backend = TEST_BACKEND, precision = :double, outdir = o2)
+                f = only(filter(endswith("sim.gwfgwf.obs.csv"), r.obs_files))
+                a, b = ModflowGPU.read_observations(f), ModflowGPU.read_observations(joinpath(odir, "sim.gwfgwf.obs.csv"))
+                @test a.names == b.names == ["Q2", "QSOUTH"]
+                @test a.times == b.times
+                @test a.values ≈ b.values rtol = 1.0e-10
+                @test b.values[1, 2] ≈ 2 * b.values[1, 1] rtol = 1.0e-6
+            end
+            # gwf_gwf_rp_obs: an exchange number beyond NEXG.
+            bad = _write_two_models(joinpath(tmp, "obsbad"); obs = true)
+            write(joinpath(bad, "sim.gwfgwf.obs"), "BEGIN continuous FILEOUT x.csv\n  q7 FLOW-JA-FACE 7\nEND continuous\n")
+            e = input_error_of(() -> load_simulation(bad))
+            @test occursin("Exchange id \"7\" for observation \"FLOW-JA-FACE\" is invalid in package \"GWF-GWF_1\"", e.msg)
+        else
+            @info "Skipping the exchange test against mf6: mf6 not found at $RUN_MF6"
+        end
     end
 end

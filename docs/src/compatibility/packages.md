@@ -2,9 +2,9 @@
 
 ModflowGPU runs MODFLOW 6 groundwater flow (GWF) models: one IMS solution with one GWF
 model, or with several GWF models connected by GWF–GWF exchanges (see
-[Several models and GWF–GWF exchanges](@ref)). This page lists what it reads and runs. The tables in the first three sections
-are generated from the checks in the code when this manual is built, so they are always
-current.
+[Several models and GWF–GWF exchanges](@ref)). This page lists what it reads and runs.
+The tables in the first three sections are generated from the checks in the code when
+this manual is built, so they are always current.
 
 Reading is strict: anything outside these tables stops the run with an
 [`MF6UnsupportedError`](@ref) that names the file, the package and the option, before
@@ -57,7 +57,8 @@ its own variables in the stepping API and BMI (`"<model>/X"`, see
 
 - Exchange options: `AUXILIARY` (`ANGLDEGX` and `CDIST` as MODFLOW 6 uses them),
   `BOUNDNAMES`, `SAVE_FLOWS` (the exchange flows in each model's budget file),
-  `CELL_AVERAGING` (`HARMONIC`, `LOGARITHMIC`, `AMT-LMK`) and `XT3D`. `PRINT_INPUT` and
+  `CELL_AVERAGING` (`HARMONIC`, `LOGARITHMIC`, `AMT-LMK`), `XT3D` and `OBS6 FILEIN`
+  (observations of the exchange flows). `PRINT_INPUT` and
   `PRINT_FLOWS` are accepted and print nothing; `VARIABLECV`, `DEWATERED` and `NEWTON`
   are accepted and, as in MODFLOW 6, change nothing between confined cells.
 - Each model's budget has MODFLOW 6's exchange terms: `FLOW-JA-FACE` (the flow across the
@@ -67,8 +68,9 @@ its own variables in the stepping API and BMI (`"<model>/X"`, see
   also next to models with or without XT3D themselves.
 - The models must be confined (`ICELLTYPE` 0, storage without `ICONVERT`, no `NEWTON`) and
   in one solution; models with storage must agree on the steady-state and transient
-  periods. Observations of exchanges (`OBS6` in the exchange file), ghost nodes (`GNC6`) and
-  movers (`MVR6`) are not supported.
+  periods. Ghost nodes (`GNC6`) and movers (`MVR6`) on exchanges are not supported.
+- Exchange observations (`OBS6 FILEIN` in the exchange file) are written as MODFLOW 6 does
+  (see [Observations (OBS6)](@ref)).
 
 ## Observations (OBS6)
 
@@ -84,6 +86,7 @@ observation types are MODFLOW 6's:
 | | `FLOW-JA-FACE` (flow from the second cell into the first) | two cellids |
 | `CHD`, `WEL`, `DRN`, `RIV`, `GHB`, `RCH`, `EVT` | the package type (`CHD`, `WEL`, ...): the flow of the package, positive into the model | a cellid, or a boundary name (`BOUNDNAMES`) |
 | `WEL` | `WEL-REDUCTION`: the rate taken off by `AUTO_FLOW_REDUCE` | a cellid or a boundary name |
+| GWF–GWF exchange (`OBS6 FILEIN` in its OPTIONS) | `FLOW-JA-FACE`: the flow across the exchange, positive into the cell of the first model | an exchange number (its line in `EXCHANGEDATA`), or a boundary name (the sum over its connections) |
 | `WEL`, `DRN`, `RIV`, `GHB` | `TO-MVR` | accepted; always `3.0e30` (MVR is not supported) |
 
 A package observation sums the records that match it (all records of a boundary name,
@@ -179,7 +182,6 @@ input is accepted.
 | :-- | :-- |
 | XT3D with convertible cells (`ICELLTYPE` ≠ 0) or with `NEWTON` | not planned at the moment |
 | More than one solution; several models with convertible cells or `NEWTON` | not planned at the moment |
-| Observations of GWF–GWF exchanges (`OBS6` in the exchange file) | not planned at the moment |
 | Horizontal flow barriers (HFB6) | not planned at the moment |
 | Ghost-node correction (GNC6) | not planned at the moment |
 | Time-varying hydraulic conductivity and storage (TVK6, TVS6) | not planned at the moment |

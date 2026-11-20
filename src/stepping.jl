@@ -152,6 +152,8 @@ mutable struct Simulation{M <: GwfModel, P <: PicardSolver, A <: BudgetAccumulat
     const outputs::Vector{ModelOutput}
     const accs::Vector{BudgetAccumulator}
     const exflows::Any
+    # T6.6: the observation output of the exchanges (`ExchangeObservations`), or `nothing`.
+    const exobs::Any
 end
 
 Base.show(io::IO, s::Simulation) = print(
@@ -225,7 +227,6 @@ function initialize(
                 "MODEL **$(ex.model1)** PRODUCES AN ASYMMETRIC COEFFICIENT MATRIX, BUT THE CONJUGATE GRADIENT METHOD WAS SELECTED. USE BICGSTAB INSTEAD.",
             ),
         )
-        isempty(ex.obs_files) || unsupported(ex.file, "OBS6 observations of a GWF6-GWF6 exchange (not implemented)")
     end
     T, Ts, Tp = resolve_precision(backend, precision)
     steps = time_steps(sim.tdis)
@@ -244,9 +245,10 @@ function initialize(
     end
     out = isempty(outs) ? nothing : first(outs)
     exflows = multi ? ExchangeFlows(m) : nothing
+    exobs = (multi && write_output) ? ExchangeObservations(m.solution, sim.simdir, outdir) : nothing
     s = Simulation(
         sim, m, ps, first(accs), out, T, Ts, Tp, steps, 0, :initialized, OuterState(ps), StepResult[], ModelBudget[],
-        Dict{String, _Mirror}(), Int[], nothing, views, String[_vname(v) for v in views], outs, accs, exflows,
+        Dict{String, _Mirror}(), Int[], nothing, views, String[_vname(v) for v in views], outs, accs, exflows, exobs,
     )
     for (v, o) in zip(views, outs)
         _listing_header(o.listing, v, ps, T, Ts, Tp, backend)
@@ -410,6 +412,7 @@ function finalize_time_step(s::Simulation)
         b = s.budgets[end - nv + k]
         @timed_section :output _write_step(o, v, r.step, r.outer, b, s.spec; exflows = s.exflows)
     end
+    isnothing(s.exobs) || write_exchange_observations(s.exobs, s.exflows, r.step.totim)
     s.stage = :finalized_time_step
     ok = r.outer.converged || s.spec.continue_on_nonconvergence
     if !r.outer.converged && s.spec.continue_on_nonconvergence
@@ -496,6 +499,7 @@ finalize_simulation(sim)
 function finalize_simulation(s::Simulation; free::Bool = true)
     s.stage === :freed && return s
     foreach(close, s.outputs)
+    isnothing(s.exobs) || close(s.exobs)
     s.stage = :finalized
     if free
         backend = get_backend(s.model.h)

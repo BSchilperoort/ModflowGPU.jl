@@ -191,6 +191,8 @@ an exchange of a model with itself, such as `ex-gwf-spbc`).
 - Options: `auxnames`, `boundnames`, `print_input`, `print_flows`, `save_flows`,
   `cell_averaging` (`:harmonic` (default), `:logarithmic`, `:amt_lmk`), `variablecv`,
   `dewatered`, `newton`, `xt3d`, `obs_files` (OBS6 FILEIN). GNC6 and MVR6 are rejected.
+- `obs`: the OBS6 file read (`ObsSpec`, owner `:GWFGWF`: `FLOW-JA-FACE` by exchange number or
+  boundary name; T6.6), or `nothing`.
 - `data::ExchangeData`: the EXCHANGEDATA (`read_exchange_data`), cellids as user nodes of
   each model; cells outside the active domain have been rejected.
 """
@@ -209,6 +211,7 @@ Base.@kwdef struct ExchangeSpec
     newton::Bool = false
     xt3d::Bool = false
     obs_files::Vector{String} = String[]
+    obs::Union{Nothing, ObsSpec} = nothing
     data::ExchangeData
     file::String = ""
 end

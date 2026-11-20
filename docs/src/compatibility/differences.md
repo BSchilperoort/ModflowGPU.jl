@@ -124,7 +124,7 @@ reported:
   `mfsim.lst`) are not written. The budget file of a model with an exchange with
   `SAVE_FLOWS` has MODFLOW 6's `FLOW-JA-FACE` list of the exchange.
 - **Scope.** Only confined models (`ICELLTYPE` 0, no `ICONVERT`, no `NEWTON`) in one
-  solution; exchange observations, `GNC6` and `MVR6` are not supported.
+  solution; `GNC6` and `MVR6` on exchanges are not supported.
 
 ## Precision
 
@@ -187,8 +187,7 @@ differences:
   records in the cells given in the input, ModflowGPU in the highest active cell the record
   was moved to. The values differ only when that cell (usually in layer 1) is dry at the
   start of the period; observations by boundary name are not affected;
-- observations of GWF–GWF exchanges (`OBS6` in the exchange file) are not supported: a
-  simulation with them is rejected with an `MF6UnsupportedError`.
+- the observation files of GWF–GWF exchanges are written after those of the models.
 
 ## Stepping API and BMI
 
