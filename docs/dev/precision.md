@@ -818,6 +818,14 @@ STRICT inner test then failed in every outer iteration while the heads changed b
 500 outer iterations); it is now the maximum over the step's iterations for convertible
 models (confined models unchanged).
 
+**Float32 rclose floor with XT3D (T6.5).** The same rule (maximum over the step's
+iterations) applies to XT3D models, and their per-row scale is Σ|c_t·(h_a − h_b + Δr_t)|
+over the flux terms of every face (`_xt3d_flux`), not |q| per face: the XT3D terms of a face
+cancel, so |q| understates the rounding of the residual, and a model starting from flat
+heads (ex-gwf-whirl) has no flow terms in the first formulation. Without it ex-gwf-whirl did
+not converge in `:single`. Only `:single` (the floor factor is 0 otherwise), only XT3D models
+(`m.xt3d !== nothing`), only the inner INNER_RCLOSE: OUTER_DVCLOSE is unchanged.
+
 **Confined models unchanged.** ICELLTYPE 0 models keep the constant-`condsat` kernels
 (`NpfModel.cv === nothing`): the final heads (bits) and the outer/inner iterations of every
 step are identical to main (79b2447) for ex-gwf-hanic, -hanir, -toth, -fhb, -lgrv-gc,
