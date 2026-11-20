@@ -173,6 +173,18 @@ it. Underscore-prefixed helpers are omitted.
   `_newton_jacobian`, `connection_terms(...; jac)` (the Jacobian term of the upstream cell in
   `a`/`dd`/`sb`; `q` unchanged); DEWATERED guard: a saturation below eps(T) is 0 (T6.1
   follow-up). Tests: newton (FD Jacobian), convertible, assembly (libmf6 oracle), run.
+- **gwf/xt3d.jl** (T6.5; included after gwf/convertible.jl): XT3D for confined models
+  (Xt3dAlgorithm.f90 `qconds`, `abhats`, `getrot`, `tranvc`, `abwts`; Xt3dInterface.f90
+  `xt3d_load`, `xt3d_areas`, `xt3d_ac`, `xt3d_fcpc`/`xt3d_fc`, `xt3d_rhs`, `xt3d_flowja`;
+  `connection_vector` of Dis/Disv/Disu.f90). `check_xt3d` (DISU without vertices/ANGLDEGX:
+  MF6's errors; convertible cells or NEWTON: unsupported), host `Xt3dSetup` / `xt3d_setup`
+  (Float64 coefficients as flux terms `c·(h_a − h_b)` per symmetric connection, the
+  extended stencil `_xt3d_structure` with neighbours of neighbours, the constant XT3D matrix
+  and `sb = −Σ a·Δr`), device `Xt3dNpf{T}` (Adapt), `CsrStructure(backend, ::Xt3dSetup)`,
+  `_xt3d_flux` (compensated face flow), `xt3d_formulate_system!` (`xt3d_formulate_kernel!`:
+  packages, storage, matrix row, flux-form residual; RHS option: matrix of the primary terms),
+  `xt3d_flowja!` (`xt3d_flowja_kernel!`). Tests: xt3d (K-orthogonal reduction, libmf6 oracle,
+  universal residual, RHS and test/models/xt3d run parity), run.
 - **gwf/ic.jl**: IC (gwf-ic.f90 `ic_ar`). `initial_heads` (starting heads per reduced
   node as offsets, Float64 host or device copy in `T`). Tests: sto.
 - **gwf/sto.jl**: storage (gwf-sto.f90 `sto_rp`/`sto_fc`/`sto_cq`/`sto_bd`,
@@ -349,7 +361,10 @@ it. Underscore-prefixed helpers are omitted.
   `ibound` or `symmetric` changed, field `offdiag`, T4.5), `absolute_heads` (host Float64 `r + h'`; HDRY for dry cells, T6.1). Tests:
   picard, run. T6.2: fields `newton`, `nurbot` (`newton_ur_bottoms`: `npf_nur`'s `ibotnode`
   bottom as an offset, −Inf where it does not apply), `vol` (PTC), `delt`; `wd = nothing` with
-  NEWTON (no drying); `formulate!(m; jac = m.newton)`.
+  NEWTON (no drying); `formulate!(m; jac = m.newton)`. T6.5: fields `xt3d` (`Xt3dNpf` or
+  `nothing`) and `scsr` (the system/solver CSR: `csr`, or the extended XT3D stencil; `sys`,
+  the Krylov solver, the colouring and PTC use it; `csr` stays the connectivity for flows);
+  `formulate!` calls `xt3d_formulate_system!` for XT3D models.
 - **solver/underrelax.jl**: `sln_underrelax`. `UnderRelaxation` (SIMPLE, COOLEY host
   scalars, DBD device state), `underrelax!` (`relax_update_kernel!`,
   `dbd_update_kernel!`); Adapt. Tests: picard (vs a host port), run (variants vs MF6).
@@ -374,7 +389,8 @@ it. Underscore-prefixed helpers are omitted.
   correction meets OUTER_DVCLOSE and only the inner test failed, `OuterState.noise_floor`
   holds INNER_DVCLOSE >= `OuterState.dvfloor` = eps32·max|h'| for the rest of the step;
   T6.1: `wetdry!` before each formulation, and with convertible cells the Float32 rclose
-  floor is the maximum over the step's iterations).
+  floor is the maximum over the step's iterations; T6.5: also with XT3D, whose rclose scale
+  is the sum of the face terms' magnitudes; the Krylov solver and its colouring use `m.scsr`).
   T6.2: Newton formulation (`jac`; with backtracking first the formulation without the
   Newton terms), PTC in steady-state Newton periods, NEWTON UNDER_RELAXATION after the
   update, `PicardSolver.ptc`; `FLOAT32_CLOSURES.dvclose_head_cap` (the head-resolution
@@ -473,14 +489,17 @@ it. Underscore-prefixed helpers are omitted.
   `EXTRA_PARITY_EXAMPLES`; `rad_disu_confined` (T6.4:
   ex-gwf-rad-disu with ICONVERT 0, written from the reference run at test time).
 - **libmf6_oracle.jl**: libmf6 subprocess oracle. `LIBMF6_ENV`, `libmf6_available`,
-  `run_libmf6_script` (validation/libmf6_connectivity.jl, libmf6_first_solve.jl), `libmf6_connectivity`, `write_dis_simulation` (synthetic DIS sims; DISV/DISU since T6.4).
+  `run_libmf6_script` (validation/libmf6_connectivity.jl, libmf6_first_solve.jl), `libmf6_connectivity`, `write_dis_simulation` (synthetic DIS sims; DISV/DISU since T6.4),
+  `_libmf6_first_solve` (T6.5: moved from the assembly test; SLN_1 IA/JA/AMAT/RHS/X0 after the first solve).
 - **grids.jl**: `_synthetic_coupling_dis`, `_synthetic_passthrough_dis`, `_rel_close`,
   `_dis`, `_Lcg`/`_next!`; T6.4: `_dis_as_disv`, `_dis_as_disu` (the DISV/DISU description of
   a DIS grid, same user node numbers).
 - **run_parity.jl** (T3.4, moved from parity/run_test.jl): `_run_parity(name, rundir)`
   (ModflowGPU vs MF6 output in `rundir`: heads, CBC, listing tables, both presets, GPU vs
   CPU; returns the numbers per preset; `single_preconditioner` for `:single`, T6.0; `single_budget_tol` and list records matched by package, T6.4; T6.1: `double_budget_tol`, dry cells compared, `_rounding_bounds` for the `:single` budgets), `_mf6_iterations`, `_head_difference`,
-  `_budget_difference`, `_listing_difference`, `RUN_MF6`. Used by groups run, synthetic.
+  `_budget_difference`, `_listing_difference`, `RUN_MF6`; T6.5: `_null_space_model` (steady state
+with WEL/RCH only: heads compared after removing the mean difference, `_head_difference(...; shift)`,
+`_maxdiff`). Used by groups run, synthetic.
 - **residual.jl**: `to_test_device`, `flux_residual` (device `flux_residual!` → (rel, rounding
   bound)), `residual_stats`, `host_flux_residual` (the T2.3 host loop, validates the kernel).
 - **models/coupling_rde/**: synthetic coupling-like model (2 × 12 × 15, confined, steady +
@@ -491,6 +510,9 @@ it. Underscore-prefixed helpers are omitted.
   DEWATERED, PERCHED, REWET, convertible storage, RCH moving to layer 2), DISU with staggered
   horizontal connections (IHC 2) and convertible cells, WEL AUTO_FLOW_REDUCE (fraction and
   FLOW_REDUCTION_LENGTH with AUTO_FLOW_REDUCE_AUXNAME).
+- **models/xt3d/** (T6.5): synthetic XT3D model (3×6×7 DIS, uneven layers, an IDOMAIN 0 cell,
+  K/K22/K33 with ANGLE1–3, CHD, WEL, GHB, RCH, steady + transient STO); `generate.jl` writes
+  it; run with mf6 at test time (group xt3d; also the kernel-hygiene workload).
 - **models/ts_tas/** (T6.3, replaces models/fhb_const): synthetic time-series model (1×5×10,
   3 transient periods): TS6 LINEAR/STEPWISE/LINEAREND with SFACS, DNODATA and several series
   per file (CHD heads, WEL rate and AUXMULTNAME multiplier, GHB conductance), TAS6 RCHA

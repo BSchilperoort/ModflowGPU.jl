@@ -56,8 +56,8 @@ for (k, l) in enumerate((1, 10))
 end
 save_figure(fig, "ex-gwf-whirl-head")
 
-# The north–south flow in a cross-section through the middle column (column 26), from
-# north (left) to south (right): north in the upper layers, south in the lower ones. The
+# The north–south flow (qy, positive north) in a cross-section through the middle column
+# (column 26), south on the left: north in the upper layers, south in the lower ones. The
 # vertical flow that closes the whirl is in the FLOW-JA-FACE record too.
 
 fig = Figure(; size = (700, 360))
