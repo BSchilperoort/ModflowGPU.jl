@@ -141,7 +141,7 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
   `ExampleTools.PLANNED`; the index build then fails until every example the card unlocks
   has a page. The docs build must stay warning-free; report its CI time.
 
-**T6.6 Multi-model solutions and GWF–GWF exchanges (L)**
+**T6.6 Multi-model solutions and GWF–GWF exchanges (L) (done 2026-11-20)**
 - Depends: T6.5 for `ex-gwf-u1gwfgwf-s2`, `-s3` and `-s4` (XT3D in NPF or on the
   exchange). `-s1`, `ex-gwf-lgrv-lgr` and `ex-gwf-spbc` need no other Phase 6 card: all
   Tier 7 models are DIS, so T6.4 is not a dependency.
@@ -157,6 +157,11 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
   in differences.md. Refresh the parity.toml header at the next full collection.
 - From T6.7 (merge fe162b9): read OBS6 on GWF-GWF exchanges (`gwf_gwf_rp_obs`,
   bd_obs); the OBS engine is in src/input/obs.jl and src/output/obs.jl.
+- Still open after the T6.6 merge (no card owns them): multi-model runs are confined
+  only (convertible/ICONVERT/NEWTON rejected), one solution, no GNC6/MVR6 on exchanges,
+  no XT3D exchange next to DISU without vertices; exchange PRINT_FLOWS tables not
+  written; builder and write_simulation without exchanges; strict=false with several
+  solutions gives ArgumentError; no unit test for FLOW-JA-FACE-CHD on exchange cells.
 - Docs: update `docs/src/compatibility/packages.md` (multi-model solutions, GWF-GWF exchanges) and `docs/src/coupling/stepping.md` (addresses of several models); adds gallery pages for `ex-gwf-lgrv-lgr`, `ex-gwf-spbc`, `ex-gwf-u1gwfgwf-s1` to `-s4` (`-s2` to `-s4` need T6.5 too: if T6.5 is not merged yet, keep those three planned and leave them to T6.5). The plot helpers must draw several models on one figure.
   Gallery (T8.1 rule; T8.7 is done, so this card adds the pages itself): a Literate script per
   MF6 example page in `examples/`, registered in `ExampleTools.GALLERY` (`docs/ExampleTools.jl`),

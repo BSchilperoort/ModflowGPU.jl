@@ -504,7 +504,7 @@ marked; their merge commits on `main` hold the card reports.
   - T6.3 Time series and time-array series (done 2026-11-16)
   - T6.4 DISV and DISU (done 2026-11-16)
   - T6.5 XT3D (done 2026-11-20)
-  - T6.6 Multi-model solutions and GWF–GWF exchanges
+  - T6.6 Multi-model solutions and GWF–GWF exchanges (done 2026-11-20)
   - T6.7 OBS for GWF heads and flows (done 2026-11-20)
   - T6.8 Parallel test runner (done 2026-11-19)
 - **Phase 7: beyond MF6 parity (build after Milestone B)**: [docs/dev/plan/phase7.md](docs/dev/plan/phase7.md)
