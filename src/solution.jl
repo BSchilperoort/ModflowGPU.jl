@@ -256,3 +256,60 @@ function write_exchange_observations(o::ExchangeObservations, x::ExchangeFlows, 
     end
     return v
 end
+
+# T6.9: `UWWORD` of a real in a centred table column of width `w` (TableModule, `1PGw.d`
+# with `d = w - 7`; a non-negative value gets one leading blank).
+function _table_real(x::Float64, w::Integer)
+    d = w - 7
+    s = x == 0 ? "0." * "0"^(d - 1) : obs_format(x, d; lead0 = true)
+    occursin('E', s) && (s = @sprintf("%.*E", d, x))
+    return x >= 0 ? " " * s : s
+end
+
+"""
+    write_exchange_flow_tables(io, v::ModelView, step, x::ExchangeFlows)
+
+The flow tables of the GWF-GWF exchanges of model `v` with PRINT_FLOWS in its listing
+(exg-gwfgwf.f90 `gwf_gwf_bdsav_model`, TableModule): per exchange a table titled
+`EXG <name>   PERIOD <kper>   STEP <kstp>` with the exchange number, the model's cell,
+the flow into it and, with BOUNDNAMES, the name; rows for connections with both cells
+active. MF6 prints them in the steps whose budget OC saves.
+"""
+function write_exchange_flow_tables(io::IO, v::ModelView, step::TimeStep, x::ExchangeFlows)
+    mm = v.model
+    sol = mm.solution
+    ib = mm.ibound_host
+    for (ie, ex) in enumerate(sol.exchanges)
+        ex.spec.print_flows || continue
+        q = exchange_simvals(x, ie)
+        bnames = ex.spec.boundnames
+        for side in (1, 2)
+            (side == 1 ? ex.m1 : ex.m2) == v.index || continue
+            part = sol.models[side == 1 ? ex.m1 : ex.m2]
+            nodes = side == 1 ? ex.node1 : ex.node2
+            rows = [i for i in eachindex(nodes) if ib[ex.g1[i]] != 0 && ib[ex.g2[i]] != 0]
+            isempty(rows) && continue
+            widths = bnames ? (10, 20, 15, 20) : (10, 20, 15)
+            width = sum(widths) + length(widths) - 1
+            line(cols) = " " * join((rpad(c, w) for (c, w) in zip(cols, widths)), " ")
+            centre(s, w) = " "^((w - length(s)) ÷ 2) * s
+            @printf(io, "\n %s   PERIOD %6d   STEP %8d\n", "EXG " * ex.name, step.kper, step.kstp)
+            println(io, " ", "-"^width)
+            hdr = Any[centre("NUMBER", 10), "CELLID", centre("RATE", 15)]
+            bnames && push!(hdr, "NAME")
+            println(io, line(hdr))
+            println(io, " ", "-"^width)
+            g = grid_dims(part.spec.dis)
+            for i in rows
+                cell = "(" * join(cellid(g, part.conn.nodeuser[nodes[i]]), ",") * ")"
+                r = side == 1 ? Float64(q[i]) : -Float64(q[i])
+                cols = Any[centre(string(i), 10), cell, _table_real(r, 15)]
+                bnames && push!(cols, i <= length(ex.spec.data.boundname) ? ex.spec.data.boundname[i] : "")
+                println(io, line(cols))
+            end
+            println(io, " ", "-"^width)
+            print(io, "\n\n")
+        end
+    end
+    return nothing
+end

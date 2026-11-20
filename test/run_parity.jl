@@ -435,6 +435,30 @@ function _conversion_blocks(path)
     return out
 end
 
+# T6.9: the exchange PRINT_FLOWS tables of a listing (`gwf_gwf_bdsav_model`): title =>
+# (header lines, rows (number, cellid, rate, name)).
+function _exchange_tables(path)
+    lines = readlines(path)
+    out = Pair{String, Tuple{Vector{String}, Vector{Tuple{Int, String, Float64, String}}}}[]
+    i = 1
+    while i <= length(lines)
+        if startswith(lines[i], " EXG GWF-GWF_")
+            title = lines[i]
+            hdr = lines[(i + 1):(i + 3)]
+            rows = Tuple{Int, String, Float64, String}[]
+            i += 4
+            while i <= length(lines) && !startswith(lines[i], " ---")
+                w = split(lines[i])
+                push!(rows, (parse(Int, w[1]), String(w[2]), parse(Float64, w[3]), length(w) > 3 ? String(w[4]) : ""))
+                i += 1
+            end
+            push!(out, title => (hdr, rows))
+        end
+        i += 1
+    end
+    return out
+end
+
 function _run_parity(
         name, rundir; preconditioner::Symbol = RUN_PRECONDITIONER, precond_options::NamedTuple = (;),
         single_preconditioner::Symbol = preconditioner, single_budget_tol::Float64 = 1.0e-4,
@@ -543,6 +567,17 @@ function _run_parity(
                 @test ntabk == nmf6
                 # T6.9: the cell-conversion messages as MF6 writes them (`:double`: the same
                 # iterations convert the same cells; `:single` reported).
+                # T6.9: the exchange PRINT_FLOWS tables (titles, header, cells, names; rates
+                # within the budget criterion of the largest rate).
+                ta, tb = _exchange_tables(mo.listing_file), _exchange_tables(f.lst)
+                @test first.(ta) == first.(tb)
+                for ((_, (ha, ra)), (_, (hb, rb))) in zip(ta, tb)
+                    @test ha == hb
+                    @test [(r[1], r[2], r[4]) for r in ra] == [(r[1], r[2], r[4]) for r in rb]
+                    sc = maximum(r -> abs(r[3]), rb; init = 0.0)
+                    @test maximum(((a, b),) -> abs(a[3] - b[3]), zip(ra, rb); init = 0.0) <= max(sc * (p.T === Float64 ? 1.0e-6 : 1.0e-3), 1.0e-6 * sc + 5.0e-8 * sc)
+                end
+                isempty(tb) || @info "Exchange flow tables: $name/$(x.name), :$(p.preset): $(length(ta)) tables (MF6 $(length(tb)))"
                 cva, cvb = _conversion_blocks(mo.listing_file), _conversion_blocks(f.lst)
                 p.T === Float64 && @test cva == cvb
                 (isempty(cva) && isempty(cvb)) || @info "Cell conversions: $name/$(x.name), :$(p.preset): $(length(cva)) blocks (MF6 $(length(cvb))), identical: $(cva == cvb)"

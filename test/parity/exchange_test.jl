@@ -175,7 +175,7 @@ end
 # --- Unit tests on a small simulation written here: two 1-layer DIS models side by side
 # (left: 3×4, right: 3×4), connected along their shared edge by an exchange, CHD at the
 # outer columns.
-function _write_two_models(dir; exg_options = "", aux = true, k22 = false, xt3d_npf = false, solutions = 1, icelltype = 0, extra_exchange = "", obs = false)
+function _write_two_models(dir; exg_options = "", aux = true, k22 = false, xt3d_npf = false, solutions = 1, icelltype = 0, extra_exchange = "", obs = false, chdcol = 1)
     mkpath(dir)
     nam(m) = """
     BEGIN options
@@ -227,7 +227,7 @@ function _write_two_models(dir; exg_options = "", aux = true, k22 = false, xt3d_
             """,
         )
         write(joinpath(dir, "$m.ic"), "BEGIN griddata\n  strt\n    CONSTANT 5.0\nEND griddata\n")
-        col = m == "left" ? 1 : 4
+        col = m == "left" ? chdcol : 4
         write(
             joinpath(dir, "$m.chd"), """
             BEGIN dimensions
@@ -404,6 +404,13 @@ end
             err
         end
         @test e isa MF6UnsupportedError && occursin("more than one solution", e.msg)
+        # T6.9: also when loaded without `strict` (initialize).
+        e = try
+            initialize(load_simulation(_write_two_models(joinpath(tmp, "two_sol2"); solutions = 2); strict = false); write_output = false)
+        catch err
+            err
+        end
+        @test e isa MF6UnsupportedError && occursin("more than one solution", e.msg)
         e = try
             load_simulation(_write_two_models(joinpath(tmp, "gnc"); exg_options = "  GNC6 FILEIN sim.gnc"))
         catch err
@@ -426,6 +433,29 @@ end
                 @test a.times == b.times
                 @test a.values ≈ b.values rtol = 1.0e-10
                 @test b.values[1, 2] ≈ 2 * b.values[1, 1] rtol = 1.0e-6
+            end
+            # T6.9: FLOW-JA-FACE-CHD (`gwf_gwf_chd_bd`): the left model's exchange cells are
+            # constant-head cells, so its FLOW-JA-FACE-CHD holds the exchange flow (as the
+            # constant heads see it: the flow out of the left model is an inflow there), the
+            # right model has none; and the PRINT_FLOWS tables of both models.
+            cdir = _write_two_models(joinpath(tmp, "chdx"); chdcol = 4, exg_options = "  PRINT_FLOWS")
+            out = read(Cmd(`$RUN_MF6`; dir = cdir), String)
+            @test occursin("Normal termination", out)
+            _run_parity("two models, CHD on the exchange cells", cdir)
+            for_each_precision() do p
+                r = ModflowGPU.run(cdir; backend = TEST_BACKEND, precision = p.preset, write_output = false)
+                bl, br = r.budgets
+                term(b, n) = only(t for t in b.terms if t.name == n)
+                q = term(bl, "FLOW-JA-FACE-CHD").rate_in
+                @test q > 0 && term(bl, "FLOW-JA-FACE-CHD").rate_out == 0
+                @test term(br, "FLOW-JA-FACE").rate_in ≈ q rtol = (p.T === Float64 ? 1.0e-12 : 1.0e-5)
+                @test term(br, "FLOW-JA-FACE-CHD").rate_in == term(br, "FLOW-JA-FACE-CHD").rate_out == 0
+            end
+            mktempdir() do o3
+                r = ModflowGPU.run(cdir; backend = TEST_BACKEND, precision = :double, outdir = o3)
+                tl = _exchange_tables(r.models[1].listing_file)
+                @test length(tl) == 1 && first(only(tl)) == " EXG GWF-GWF_1   PERIOD      1   STEP        1"
+                @test [x[2] for x in last(only(tl))[2]] == ["(1,1,4)", "(1,2,4)", "(1,3,4)"]
             end
             # gwf_gwf_rp_obs: an exchange number beyond NEXG.
             bad = _write_two_models(joinpath(tmp, "obsbad"); obs = true)

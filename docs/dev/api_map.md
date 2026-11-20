@@ -522,6 +522,10 @@ it. Underscore-prefixed helpers are omitted.
   FLOW-JA-FACE-CHD per exchange in MF6's order, `_exchange_rows`), `write_exchange_budget`
   (the IMETH 6 lists of exchanges with SAVE_FLOWS), `ExchangeObservations` /
   `write_exchange_observations` (exchange OBS6). Tests: exchange, run.
+  T6.9: `write_exchange_flow_tables` (PRINT_FLOWS tables in the model listings,
+  `gwf_gwf_bdsav_model` / TableModule layout, `_table_real`), from `_write_step`; tests: run
+  (`_exchange_tables` vs MF6's listing), exchange (FLOW-JA-FACE-CHD on exchange cells,
+  several solutions without `strict`).
 
 ## Running a simulation
 

@@ -120,8 +120,9 @@ reported:
   (for example a refined child grid) they colour the whole solution greedily, with more
   colours.
 - **Output.** Each model's listing file has the budget table with MODFLOW 6's exchange
-  terms; the exchange flow tables of `PRINT_FLOWS` (in the model listings and in
-  `mfsim.lst`) are not written. The budget file of a model with an exchange with
+  terms and, with the exchange's `PRINT_FLOWS`, its flow table (`EXG GWF-GWF_1 ...`, in
+  the steps whose budget OC saves, after the step's summary); the exchange rate summary
+  that MODFLOW 6 writes to `mfsim.lst` is not written (there is no `mfsim.lst`). The budget file of a model with an exchange with
   `SAVE_FLOWS` has MODFLOW 6's `FLOW-JA-FACE` list of the exchange.
 - **Scope.** Only confined models (`ICELLTYPE` 0, no `ICONVERT`, no `NEWTON`) in one
   solution; `GNC6` and `MVR6` on exchanges are not supported.

@@ -58,8 +58,8 @@ its own variables in the stepping API and BMI (`"<model>/X"`, see
 - Exchange options: `AUXILIARY` (`ANGLDEGX` and `CDIST` as MODFLOW 6 uses them),
   `BOUNDNAMES`, `SAVE_FLOWS` (the exchange flows in each model's budget file),
   `CELL_AVERAGING` (`HARMONIC`, `LOGARITHMIC`, `AMT-LMK`), `XT3D` and `OBS6 FILEIN`
-  (observations of the exchange flows). `PRINT_INPUT` and
-  `PRINT_FLOWS` are accepted and print nothing; `VARIABLECV`, `DEWATERED` and `NEWTON`
+  (observations of the exchange flows), `PRINT_FLOWS` (the flow table of the exchange in
+  each model's listing file). `PRINT_INPUT` is accepted and prints nothing; `VARIABLECV`, `DEWATERED` and `NEWTON`
   are accepted and, as in MODFLOW 6, change nothing between confined cells.
 - Each model's budget has MODFLOW 6's exchange terms: `FLOW-JA-FACE` (the flow across the
   exchange) and `FLOW-JA-FACE-CHD` (the part into constant-head cells), with the

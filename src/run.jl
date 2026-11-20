@@ -226,6 +226,8 @@ function _write_step(out::ModelOutput, m::Union{GwfModel, ModelView}, step::Time
     isnothing(out.obs) || write_observations(out.obs, _vmodel(m), step.totim)
     r.converged || @printf(io, "\n         ****FAILED TO MEET SOLVER CONVERGENCE CRITERIA IN TIME STEP %d OF STRESS PERIOD %d****\n", step.kstp, step.kper)
     @printf(io, "\n TIME STEP LENGTH = %.6g, STRESS PERIOD TIME = %.6g, TOTAL SIMULATION TIME = %.6g\n", step.delt, step.pertim, step.totim)
+    # T6.9: the exchange PRINT_FLOWS tables (`gwf_gwf_bdsav_model`: when OC saves the budget).
+    (m isa ModelView && !isnothing(exflows) && oc_selected(oc, :save, "BUDGET", step)) && write_exchange_flow_tables(io, m, step, exflows)
     flush(io)
     return nothing
 end
