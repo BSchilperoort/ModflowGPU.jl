@@ -166,15 +166,17 @@ function _xt3d_residual(name, rundir)
         # the XT3D terms, Σ_t |c_t|·(|h'_a| + |h'_b| + |Δr_t|) over the row's connections.
         x = xt3d_setup(conn, m.setup.properties, m.setup.r; rhs = spec.npf.xt3d_rhs)
         hoff = Float64.(Array(m.h))
-        rb = zeros(conn.nodes)
+        # plus the boundary and storage terms |brhs| + |bdiag·h'|.
+        rb = abs.(Float64.(Array(m.sys.brhs))) .+ abs.(Float64.(Array(m.sys.bdiag)) .* hoff)
         for n in 1:conn.nodes, ii in (conn.ia[n] + 1):(conn.ia[n + 1] - 1), t in x.tptr[conn.jas[ii]]:(x.tptr[conn.jas[ii] + 1] - 1)
             rb[n] += abs(x.tc[t]) * (abs(hoff[x.ta[t]]) + abs(hoff[x.tb[t]]) + abs(x.tdr[t]))
         end
-        rbound = maximum(abs.(res) ./ (rb .+ floatmin()))
-        # As the universal residual test (group assembly): 1e-8 of the row magnitudes, or in
-        # `:single` the rounding bound (ex-gwf-whirl, -disvmesh: 1.6e-6 and 1.2e-6 relative,
-        # at most 0.4 eps of the per-row rounding scale).
-        @test rel < 1.0e-8 || (T === Float32 && rbound <= 4 * eps(T))
+        # As the universal residual test (group assembly): 1e-8 of the largest row magnitude
+        # (MF6's heads leave that much), in `:single` plus 4 eps of each row's rounding scale
+        # (ex-gwf-whirl, -disvmesh: 1.6e-6 and 1.2e-6 relative to the largest row).
+        excess = maximum((abs.(res) .- 1.0e-8 * maximum(sc)) ./ (rb .+ floatmin()))
+        @test T === Float64 ? rel < 1.0e-8 : excess <= 4 * eps(T)
+        rbound = excess
         # rhs − A·h' (Float64) against the residual.
         ia, ja = Array(m.scsr.ia), Array(m.scsr.ja)
         a, b, h = Float64.(Array(m.sys.amat)), Float64.(Array(m.sys.rhs)), Float64.(Array(m.h))
@@ -191,7 +193,7 @@ function _xt3d_residual(name, rundir)
         dq = maximum(abs.(ours[offd] .- fj[offd])) / maximum(abs, fj[offd])
         @test dq < (T === Float64 ? 1.0e-10 : 1.0e-4)
         @test all(ours[offd] .== .-ours[conn.isym[offd]])
-        @info "XT3D universal residual: $name, :$(p.preset), $(backend_name(TEST_BACKEND)), $(conn.nodes) nodes, stencil $(length(ja)) entries (connectivity $(conn.nja)): max |res| / max Σ|terms| = $(round(rel; sigdigits = 3)) (|res| / rounding scale ≤ $(round(rbound / eps(T); sigdigits = 3)) eps), rhs − A·h' vs res $(round(cons / maximum(sc); sigdigits = 3)), FLOW-JA-FACE vs MF6 $(round(dq; sigdigits = 3))"
+        @info "XT3D universal residual: $name, :$(p.preset), $(backend_name(TEST_BACKEND)), $(conn.nodes) nodes, stencil $(length(ja)) entries (connectivity $(conn.nja)): max |res| / max Σ|terms| = $(round(rel; sigdigits = 3)) (|res| beyond 1e-8: ≤ $(round(max(rbound, 0.0) / eps(T); sigdigits = 3)) eps of the rounding scale), rhs − A·h' vs res $(round(cons / maximum(sc); sigdigits = 3)), FLOW-JA-FACE vs MF6 $(round(dq; sigdigits = 3))"
     end
 end
 
