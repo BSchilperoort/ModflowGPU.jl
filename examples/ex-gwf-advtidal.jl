@@ -100,7 +100,7 @@ save_figure(fig, "ex-gwf-advtidal-obs")
 # The largest difference of each observation between ModflowGPU and MODFLOW 6 over all
 # time steps:
 
-obs_difference_table(mf6.dir, runs, obs_names; unit = "m or m³/d")
+obs_difference_table(mf6.dir, runs, obs_names; unit = "m or m³/d", flows = obs_names[2:3])
 
 # ## Comparison with MODFLOW 6
 #

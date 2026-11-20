@@ -801,6 +801,10 @@ large coefficients meet small flows: rad-disu (the STO-SY coefficient of the fir
 one Float32 offset rounding is thousands of ft³/d against 4000 ft³/d in; raw pd 48.5 %),
 maw-p03c (total inflow 18 m³/d; raw CBC 1.0e-3, pd 0.60 %), advtidal (raw pd 1.9e-2 %).
 Use `:mixed` where such cell-by-cell flows or budgets matter.
+The observed flows of maw-p03c (OBS6, T6.7: flows next to the former well, heads flat at
+10.0001 m, large conductances) differ by up to 2.2e-4 × the total inflow in `:single`
+(heads 1.6e-6 m); their parity criterion is 1e-3 × total inflow instead of 1e-4
+(`single_obs_tol`, test/run_parity.jl).
 
 **ex-gwf-rad-disu `:double` / `:mixed` budget: criterion 1e-5 instead of 1e-6.** The
 largest difference is the STO-SY rate of cell 21 in step 2 (MF6 0.0241 ft³/d, ours 0):

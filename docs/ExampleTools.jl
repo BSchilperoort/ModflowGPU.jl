@@ -403,27 +403,49 @@ function obs_plot!(ax, pair, names; colors = Makie.wong_colors(), stride::Intege
 end
 
 """
-    obs_difference_table(mf6dir, runs, files; unit = "m") -> Markdown.MD
+    obs_difference_table(mf6dir, runs, files; unit = "m", flows = (), dh_limit_double = LIMITS.double.dh,
+                         flow_limit_double = LIMITS.double.budget, flow_limit_single = LIMITS.single.budget) -> Markdown.MD
 
 The largest absolute difference between the observations of the ModflowGPU runs `runs` (a
 `Dict` precision => run) and of mf6, over all time steps, for every observation of every file
 in `files` (steps where either has no data are left out). `unit` is the unit of the values.
-Throws if the time steps or the observation names differ.
+The observations of the files in `flows` are flows, the others heads.
+Throws if the time steps or the observation names differ, or if a difference exceeds the
+limits of [`comparison_table`](@ref): heads `dh_limit_double` (`:double`, `:mixed`) and
+`LIMITS.single.dh` (`:single`) in length units; flows relative to the largest |value| of the
+observation in mf6's file, `flow_limit_double` and `flow_limit_single` (the budget limits; the
+parity tests scale the flow observations by the total inflow of the step, which is larger).
 """
-function obs_difference_table(mf6dir::AbstractString, runs, files; unit = "m")
+function obs_difference_table(
+        mf6dir::AbstractString, runs, files; unit = "m", flows = (), dh_limit_double = LIMITS.double.dh,
+        flow_limit_double = LIMITS.double.budget, flow_limit_single = LIMITS.single.budget,
+    )
     precs = [p for p in (:double, :mixed, :single) if haskey(runs, p)]
     io = IOBuffer()
     println(io, "| File | Observation | ", join(("max \\|difference\\| ($unit), `:$p`" for p in precs), " | "), " |")
     println(io, "| :-- | :-- | ", join(("--:" for _ in precs), " | "), " |")
     for file in files
         pairs = Dict(p => obs_pair(mf6dir, runs[p], file) for p in precs)
+        isflow = file in flows
         for (k, name) in enumerate(pairs[first(precs)].mf6.names)
             ds = map(precs) do p
                 pr = pairs[p]
                 pr.gpu.names == pr.mf6.names && length(pr.gpu.times) == length(pr.mf6.times) || error("$file: observations of ModflowGPU and mf6 differ")
                 a, b = obs_masked(pr.gpu, name), obs_masked(pr.mf6, name)
+                isnan.(a) == isnan.(b) || error("$file, $name, :$p: ModflowGPU and mf6 have no data in different time steps")
                 d = [abs(x - y) for (x, y) in zip(a, b) if !isnan(x) && !isnan(y)]
-                isempty(d) ? NaN : maximum(d)
+                isempty(d) && return NaN
+                dmax = maximum(d)
+                if isflow
+                    scale = maximum(abs, filter(!isnan, b))
+                    lim = p === :single ? flow_limit_single : flow_limit_double
+                    rel = scale == 0 ? dmax : dmax / scale
+                    rel < lim || error("$file, $name, :$p: max |difference| $dmax is $rel of the largest |value| $scale, exceeds $lim")
+                else
+                    lim = p === :single ? LIMITS.single.dh : dh_limit_double
+                    dmax < lim || error("$file, $name, :$p: max |difference| $dmax exceeds $lim")
+                end
+                dmax
             end
             println(io, "| `", file, "` | `", name, "` | ", join((_e(d) for d in ds), " | "), " |")
         end

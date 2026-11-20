@@ -96,7 +96,7 @@ save_figure(fig, "ex-gwf-fhb-difference")
 
 # The largest difference of each observation over all time steps:
 
-obs_difference_table(mf6.dir, runs, (head_file, flow_file))
+obs_difference_table(mf6.dir, runs, (head_file, flow_file); flows = (flow_file,))
 
 # The largest head and budget differences over all cells and time steps, next to the
 # values of the [parity table](@ref "Parity table"), and the wall times (CPU: this build,

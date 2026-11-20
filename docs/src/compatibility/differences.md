@@ -150,6 +150,20 @@ It does not contain the echo of the input (`PRINT_INPUT`), the flow tables of
 that become dry or wet, the memory and timing reports, or the warnings and notes that
 MODFLOW 6 writes there. ModflowGPU reports warnings and notes in the Julia log instead.
 
+### Observation files
+
+The observation files have MODFLOW 6's header, times and number format, with these
+differences:
+
+- they are written only when the run writes output (`write_output = true`);
+- an observation value of zero is written as `0.000000000000000`;
+- `RCH` and `EVT` observations by cell, in a model with convertible cells: at the start of
+  a stress period that reads new recharge (evapotranspiration) data, MODFLOW 6 matches the
+  records in the cells given in the input, ModflowGPU in the highest active cell the record
+  was moved to. The values differ only when that cell (usually in layer 1) is dry at the
+  start of the period; observations by boundary name are not affected;
+- observations of GWF–GWF exchanges are not read (exchanges are not supported).
+
 ## Stepping API and BMI
 
 The stepping API works as libmf6 and its XMI/BMI interface do, with these differences:
