@@ -216,8 +216,10 @@ function grb_file(dis::AbstractDisSpec, conn::Connectivity, icelltype::AbstractV
     dis isa DisuSpec && dis.nvert > 0 && _vertex_vars!(arr, dis)
     # Disv: VERTICES ... JAVERT come before IA (`write_grb` order).
     if dis isa DisvSpec
-        order = ["NCELLS", "NLAY", "NCPL", "NVERT", "NJAVERT", "NJA", "XORIGIN", "YORIGIN", "ANGROT", "TOP", "BOTM",
-            "VERTICES", "CELLX", "CELLY", "IAVERT", "JAVERT", "IA", "JA", "IDOMAIN", "ICELLTYPE"]
+        order = [
+            "NCELLS", "NLAY", "NCPL", "NVERT", "NJAVERT", "NJA", "XORIGIN", "YORIGIN", "ANGROT", "TOP", "BOTM",
+            "VERTICES", "CELLX", "CELLY", "IAVERT", "JAVERT", "IA", "JA", "IDOMAIN", "ICELLTYPE",
+        ]
         vars = [vars[findfirst(v -> v[1] == name, vars)] for name in order]
     end
     lentxt = 100

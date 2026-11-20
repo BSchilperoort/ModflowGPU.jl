@@ -274,8 +274,10 @@ end
             hwva = 50.0, aux = (; ANGLDEGX = 0.0, CDIST = 50.0), boundnames = ["a", "b", "c"], save_flows = true, print_flows = true,
         )
         @test exg.model1 == "LEFT" && exg.data.nodem1 == Int32[4, 8, 12] && exg.data.auxnames == ["ANGLDEGX", "CDIST"]
-        sim = build_simulation([left, right]; tdis = build_tdis(; perlen = 1.0), exchanges = [exg],
-            ims = build_ims(; outer_dvclose = 1.0e-9, inner_dvclose = 1.0e-10, inner_rclose = 1.0e-7))
+        sim = build_simulation(
+            [left, right]; tdis = build_tdis(; perlen = 1.0), exchanges = [exg],
+            ims = build_ims(; outer_dvclose = 1.0e-9, inner_dvclose = 1.0e-10, inner_rclose = 1.0e-7)
+        )
         @test length(sim.exchanges) == 1
         @test_throws ArgumentError build_simulation([left]; tdis = build_tdis(; perlen = 1.0), exchanges = [exg])
         @test_throws ArgumentError build_exchange(left, right; cells1 = [(1, 1, 4)], cells2 = [(1, 1, 1), (1, 2, 1)], ihc = 1, cl1 = 1.0, cl2 = 1.0, hwva = 1.0)
