@@ -155,6 +155,8 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
   Still unported: XT3D with convertible cells/Newton, TVK, HFB. The XT3D RHS outer-count
   gap (hanix 409 vs MF6 183) is probably inner-solve accuracy; correct the explanation
   in differences.md. Refresh the parity.toml header at the next full collection.
+- From T6.7 (merge fe162b9): read OBS6 on GWF-GWF exchanges (`gwf_gwf_rp_obs`,
+  bd_obs); the OBS engine is in src/input/obs.jl and src/output/obs.jl.
 - Docs: update `docs/src/compatibility/packages.md` (multi-model solutions, GWF-GWF exchanges) and `docs/src/coupling/stepping.md` (addresses of several models); adds gallery pages for `ex-gwf-lgrv-lgr`, `ex-gwf-spbc`, `ex-gwf-u1gwfgwf-s1` to `-s4` (`-s2` to `-s4` need T6.5 too: if T6.5 is not merged yet, keep those three planned and leave them to T6.5). The plot helpers must draw several models on one figure.
   Gallery (T8.1 rule; T8.7 is done, so this card adds the pages itself): a Literate script per
   MF6 example page in `examples/`, registered in `ExampleTools.GALLERY` (`docs/ExampleTools.jl`),
@@ -163,7 +165,7 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
   `ExampleTools.PLANNED`; the index build then fails until every example the card unlocks
   has a page. The docs build must stay warning-free; report its CI time.
 
-**T6.7 OBS for GWF heads and flows (S)**
+**T6.7 OBS for GWF heads and flows (S) (done 2026-11-20)**
 - Depends: T6.3 for fhb; T6.1 and T6.3 for advtidal; T6.1 and T6.4 for rad-disu
   (DISU with convertible storage). The OBS code itself can be written and unit-tested
   on the Milestone A models before those cards.
@@ -181,6 +183,10 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
   to the listing.
 - Done when: observation files of advtidal, fhb and rad-disu match within
   tolerance.
+- Still open after the T6.7 merge (fe162b9): the T6.4 and T6.1 items above; also
+  `write_simulation` rejects OBS6, `_obs_plan!` reallocates device buffers every period,
+  and observations are written only with `write_output` (none in BMI/stepping runs
+  without output). No card owns these yet.
 - Docs: update `docs/src/compatibility/packages.md` (OBS) and `docs/src/getting_started.md` (CSV observation output); adds the observation output (CSV time series against mf6's) to the existing gallery pages `ex-gwf-fhb`, `ex-gwf-advtidal` and `ex-gwf-rad-disu`.
 
 **T6.8 Parallel test runner (S)**
