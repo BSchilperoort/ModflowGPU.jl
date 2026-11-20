@@ -1,0 +1,9 @@
+BEGIN options
+  BUDGET  FILEOUT  xt3d.cbc
+  HEAD  FILEOUT  xt3d.hds
+END options
+
+BEGIN period  1
+  SAVE  HEAD  ALL
+  SAVE  BUDGET  ALL
+END period  1

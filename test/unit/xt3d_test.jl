@@ -17,8 +17,10 @@
 #    - oracle: libmf6's first-solve system (validation/libmf6_first_solve.jl): the system
 #      structure (MF6's extended stencil with XT3D, the connectivity with RHS) equals ours,
 #      and AMAT and `b' = RHS − AMAT·r` match within 1e-12 (`:double`) or 1e-6 (`:single`).
-# 4. Run parity of the RHS variant against mf6 (the Tier 6 examples themselves are in the
-#    run parity test, group run).
+#    The same for the synthetic model test/models/xt3d (ANGLE1–3, so horizontal connections
+#    have a z component; uneven layers, an excluded cell, transient storage; mf6 at test time).
+# 4. Run parity of the RHS variant and of test/models/xt3d against mf6 (the Tier 6 examples
+#    themselves are in the run parity test, group run).
 using ModflowGPU: load_simulation, build_connectivity, npf_setup, npf_properties, xt3d_setup, GwfModel, apply_period!,
     start_timestep!, formulate!, calc_flows!, time_steps, time_step_window, MF6UnsupportedError, MF6InputError,
     open_head_file, read_head, open_budget_file, read_budget, find_budget_records, backend_name
@@ -145,6 +147,8 @@ function _xt3d_residual(name, rundir)
     conn = build_connectivity(spec)
     hf = open_head_file(only(filter(f -> endswith(f, ".hds"), readdir(rundir; join = true))))
     habs = vec(read_head(hf, length(hf)))[conn.nodeuser]
+    # The old heads of a transient last step: the step before (every step saved).
+    hprev = vec(read_head(hf, max(length(hf) - 1, 1)))[conn.nodeuser]
     bf = open_budget_file(only(filter(f -> endswith(f, ".cbc"), readdir(rundir; join = true))))
     fj = vec(read_budget(bf, last(find_budget_records(bf; text = "FLOW-JA-FACE"))))
     steps = time_steps(sim.tdis)
@@ -152,10 +156,12 @@ function _xt3d_residual(name, rundir)
     return for_each_precision() do p
         T = p.T
         m = GwfModel(TEST_BACKEND, T, spec, length(sim.tdis.perlen))
-        apply_period!(m, st.kper; window = time_step_window(steps, length(steps)))
+        for kper in 1:st.kper
+            apply_period!(m, kper; window = time_step_window(steps, findfirst(s -> s.kper == kper, steps)))
+        end
         start_timestep!(m, st.delt)
         copyto!(m.h, T.(habs .- m.setup.r))
-        copyto!(m.hold, T.(habs .- m.setup.r))
+        copyto!(m.hold, T.(hprev .- m.setup.r))
         scale = KernelAbstractions.zeros(TEST_BACKEND, T, conn.nodes)
         formulate!(m; scale)
         calc_flows!(m)
@@ -243,6 +249,27 @@ end
         @testset "$name" begin
             _xt3d_residual(name, rundir)
             have_libmf6 && _xt3d_oracle(name, rundir)
+        end
+    end
+    # The synthetic model test/models/xt3d (ANGLE1-3, uneven layers, IDOMAIN 0, storage).
+    name = "xt3d"
+    if !test_model_selected(name)
+    elseif !isfile(XT3D_MF6)
+        @info "Skipping $name: mf6 not found at $XT3D_MF6"
+    else
+        mktempdir() do tmp
+            dir = joinpath(tmp, name)
+            cp(joinpath(@__DIR__, "..", "models", name), dir)
+            chmod(dir, 0o755; recursive = true)
+            inputs = joinpath(tmp, "inputs")
+            cp(dir, inputs)
+            out = read(Cmd(`$XT3D_MF6`; dir), String)
+            @test occursin("Normal termination", out)
+            @testset "$name" begin
+                _xt3d_residual(name, dir)
+                have_libmf6 && _xt3d_oracle(name, inputs)
+                _run_parity(name, dir; presets = TEST_PRESETS)
+            end
         end
     end
     name = "ex-gwf-hanix-rhs"
