@@ -507,6 +507,7 @@ marked; their merge commits on `main` hold the card reports.
   - T6.6 Multi-model solutions and GWF–GWF exchanges (done 2026-11-20)
   - T6.7 OBS for GWF heads and flows (done 2026-11-20)
   - T6.8 Parallel test runner (done 2026-11-19)
+  - T6.9 Phase 6 open issues
 - **Phase 7: beyond MF6 parity (build after Milestone B)**: [docs/dev/plan/phase7.md](docs/dev/plan/phase7.md)
   - T7.1 Longitude wrap-around for global grids (dropped 2026-11-16)
   - T7.2 Spherical geometry

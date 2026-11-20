@@ -220,3 +220,35 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
 - Done when: the parallel run gives the same test counts and results as the serial run
   on CPU and rocm, its wall time is reported against the serial time (local and CI),
   and CLAUDE.md "Commands" plus the developer page list the new variable.
+
+**T6.9 Phase 6 open issues (M)**
+- Depends: T6.1–T6.7 (all merged). Added 2026-11-20 at the owner's request: bundles the
+  issues left open by the Phase 6 merges (see "Still open" notes in T6.6 and T6.7).
+- Part A (this card, in this order; WIP commit per item):
+  1. Partial restage (from T6.1): time-series packages restaged every step and
+     `move_to_highest_active!` restaging RCH/EVT overwrite device-only BOUND writes
+     (`device_bound!`); restage only the host-owned columns/records.
+  2. Record checks on time-series values (from T6.1): use MF6's value (time 0 in
+     period 1, previous step's average later), not the first step's average.
+  3. Cell-conversion messages in the listing (from T6.1), as MF6 writes them.
+  4. Verify the `:single` cell-by-cell budgets of advtidal, maw-p03c and rad-disu (from
+     T6.1; `docs/dev/precision.md`) and add tests.
+  5. Output (from T6.4): write GRB files for DIS/DISV/DISU, write DATA-SPDIS
+     (SAVE_SPECIFIC_DISCHARGE) for all grids; BMI grid x/y for DISV/DISU.
+  6. `write_simulation` (from T6.4/T6.6/T6.7): DISV/DISU, OBS6 and GWF-GWF exchanges;
+     the builder supports exchanges (several models in one simulation).
+  7. Observations (from T6.7): written also when `write_output` is false (BMI/stepping
+     runs) if OBS6 is present, as MF6 does; reuse `_obs_plan!` device buffers across
+     periods.
+  8. Exchanges (from T6.6): exchange PRINT_FLOWS tables in the listing; `strict=false`
+     with several solutions raises `MF6UnsupportedError`; unit test for
+     FLOW-JA-FACE-CHD on exchange cells.
+  9. Refresh the parity.toml header with a full collection run (cpu and rocm).
+- Part B (backlog, not in this card; a later card if the owner wants them): multi-model
+  runs with convertible cells/ICONVERT/NEWTON and several solutions; GNC6 and MVR6 (also
+  on exchanges); XT3D with convertible cells/Newton, TVK, HFB; XT3D exchange next to a
+  DISU model without vertices.
+- Done when: every Part A item is fixed or has a written reason why not, with tests in
+  `:single` and `:double`; non-affected models bitwise unchanged; global5m no regression.
+- Docs: update the user pages each item touches (output, getting_started, bmi,
+  differences, packages) and `docs/dev/api_map.md`.
