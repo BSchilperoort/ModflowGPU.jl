@@ -125,7 +125,7 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
   ellipse, and HDS/CBC layouts for these grids.
 - Done when: Tier 5 examples pass parity.
 
-**T6.5 XT3D (L)**
+**T6.5 XT3D (L) (done 2026-11-20)**
 - Depends: T6.4 for the DISV examples only (`ex-gwf-u1disv-x`, `ex-gwf-disvmesh`).
   `ex-gwf-hanix` and `ex-gwf-whirl` are DIS models and need no other Phase 6 card, so
   the card can start on DIS before T6.4 is merged.
@@ -150,6 +150,11 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
 - Deliver: several GWF models in one solution, exchanges with `CDIST`, `ANGLDEGX`,
   `IHC`, `XT3D` on the exchange, and a self-exchange (spbc).
 - Done when: Tier 7 examples pass parity.
+- From T6.5 (merge d6592ba): XT3D is per model (`GwfModel.scsr` extended stencil,
+  `Xt3dNpf`); XT3D across GWF-GWF exchanges needs a global stencil across models.
+  Still unported: XT3D with convertible cells/Newton, TVK, HFB. The XT3D RHS outer-count
+  gap (hanix 409 vs MF6 183) is probably inner-solve accuracy; correct the explanation
+  in differences.md. Refresh the parity.toml header at the next full collection.
 - Docs: update `docs/src/compatibility/packages.md` (multi-model solutions, GWF-GWF exchanges) and `docs/src/coupling/stepping.md` (addresses of several models); adds gallery pages for `ex-gwf-lgrv-lgr`, `ex-gwf-spbc`, `ex-gwf-u1gwfgwf-s1` to `-s4` (`-s2` to `-s4` need T6.5 too: if T6.5 is not merged yet, keep those three planned and leave them to T6.5). The plot helpers must draw several models on one figure.
   Gallery (T8.1 rule; T8.7 is done, so this card adds the pages itself): a Literate script per
   MF6 example page in `examples/`, registered in `ExampleTools.GALLERY` (`docs/ExampleTools.jl`),
