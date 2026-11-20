@@ -1,4 +1,4 @@
-# # A nested grid with DISV
+# # A nested grid with DISV, and XT3D
 #
 # The first example of the MODFLOW-USG documentation (Panday and others, 2013): a square
 # aquifer of 700 m × 700 m in one layer, with a block of finer cells nested in its
@@ -8,15 +8,14 @@
 #
 # This is the MODFLOW 6 example
 # [ex-gwf-u1disv](https://modflow6-examples.readthedocs.io/en/latest/_notebooks/ex-gwf-u1disv.html).
-# It also runs the same grid with XT3D (`ex-gwf-u1disv-x`), which removes the errors
-# around the nested block; ModflowGPU does not support XT3D yet (see
-# [Supported packages](@ref)), so this page runs `ex-gwf-u1disv` only.
+# It also runs the same grid with the XT3D formulation of NPF (`ex-gwf-u1disv-x`), which
+# removes the errors around the nested block.
 #
-# ## Input and the MODFLOW 6 run
+# ## Input and the MODFLOW 6 runs
 #
 # `ExampleTools` (`docs/ExampleTools.jl` in the repository) takes the input from the
 # released `mf6examples.zip`, sets the tight closures of the [parity tests](@ref
-# "Comparing results") in the IMS file, and runs MODFLOW 6.8.2.
+# "Comparing results") in the IMS files, and runs MODFLOW 6.8.2.
 
 isdefined(Main, :ExampleTools) || Base.include(Main, joinpath(@__DIR__, "..", "docs", "ExampleTools.jl")) #hide
 using Main.ExampleTools #hide
@@ -24,15 +23,18 @@ using ModflowGPU, CairoMakie
 CairoMakie.activate!(; type = "png") #hide
 
 mf6 = example_run("ex-gwf-u1disv")
-mf6.mode, mf6.mf6_time
+mf6x = example_run("ex-gwf-u1disv-x")
+(mf6.mode, mf6.mf6_time), (mf6x.mode, mf6x.mf6_time)
 
-# ## The ModflowGPU run
+# ## The ModflowGPU runs
 #
 # In `:double` and in `:single` precision on the CPU, with the default options.
 
 runs = Dict(p => run_modflowgpu(mf6.dir, p) for p in (:double, :single))
+runsx = Dict(p => run_modflowgpu(mf6x.dir, p) for p in (:double, :single))
 r = runs[:double].result
-r.converged
+rx = runsx[:double].result
+r.converged, rx.converged
 
 # ## The grid
 #
@@ -81,6 +83,34 @@ save_figure(fig, "ex-gwf-u1disv-head")
 spdis = only(read_budget(open_budget_file(only(filter(endswith(".cbc"), readdir(mf6.dir; join = true)))); text = "DATA-SPDIS"))
 maximum(abs.(qx .- spdis.aux[1, :])), maximum(abs.(qy .- spdis.aux[2, :]))
 
+# ## With XT3D
+#
+# The same grid with the NPF option `XT3D` (`ex-gwf-u1disv-x`). XT3D computes the flow
+# across a face from the full gradient near the face, estimated from the heads of the
+# neighbouring cells, so the coarse–fine connections no longer distort the flow: the
+# error (B) is at the level of the solver closure instead of centimetres. The matrix of
+# an XT3D model also couples each cell to the neighbours of its neighbours (1557 matrix
+# entries here instead of 601).
+
+hx = read_head(open_head_file(rx.head_file), 1)
+flowjax = vec(only(read_budget(open_budget_file(rx.budget_file); text = "FLOW-JA-FACE")))
+qxx, qyx = specific_discharge(g, flowjax, hx)
+fig = Figure(; size = (900, 430))
+ax = Axis(fig[1, 1]; aspect = DataAspect(), xlabel = "x position (m)", ylabel = "y position (m)", title = "A. Simulated head (XT3D)")
+hm = map_heatmap!(ax, g, layer_values(g, hx, 1); colormap = :jet)
+map_grid!(ax, g)
+map_vectors!(ax, g, qxx, qyx)
+Colorbar(fig[1, 2], hm; label = "Head (m)", height = Relative(0.5))
+ax = Axis(fig[1, 3]; aspect = DataAspect(), xlabel = "x position (m)", ylabel = "y position (m)", title = "B. Error (XT3D)")
+hm = map_heatmap!(ax, g, layer_values(g, hx, 1) .- exact; colormap = :jet)
+map_grid!(ax, g)
+Colorbar(fig[1, 4], hm; label = "Error (m)", height = Relative(0.5), tickformat = expformat)
+save_figure(fig, "ex-gwf-u1disv-x-head")
+
+# The largest error of each formulation (m):
+
+maximum(abs, vec(h) .- exact), maximum(abs, vec(hx) .- exact)
+
 # ## Comparison with MODFLOW 6
 #
 # The head differences between ModflowGPU and MODFLOW 6, in both precisions.
@@ -95,3 +125,14 @@ save_figure(difference_map(g, d; unit = "m", xlabel = "x position (m)", ylabel =
 
 stats = Dict(p => (; cmp = compare_with_mf6(mf6.dir, runs[p]), runs[p].time) for p in (:double, :single))
 comparison_table("ex-gwf-u1disv", stats)
+
+# With XT3D (`ex-gwf-u1disv-x`):
+
+h6x = read_head(open_head_file(only(filter(endswith(".hds"), readdir(mf6x.dir; join = true)))), 1)
+d = [":$p − MODFLOW 6" => read_head(open_head_file(runsx[p].result.head_file), 1) .- h6x for p in (:double, :single)]
+save_figure(difference_map(g, d; unit = "m", xlabel = "x position (m)", ylabel = "y position (m)"), "ex-gwf-u1disv-x-difference")
+
+#-
+
+statsx = Dict(p => (; cmp = compare_with_mf6(mf6x.dir, runsx[p]), runsx[p].time) for p in (:double, :single))
+comparison_table("ex-gwf-u1disv-x", statsx)

@@ -7,13 +7,16 @@
 # angle `ANGLE1`:
 #
 # - `ex-gwf-hanir`: `ANGLE1` = 0°, the principal direction along the rows (x);
-# - `ex-gwf-hanic`: `ANGLE1` = 90°, the principal direction along the columns (y).
+# - `ex-gwf-hanic`: `ANGLE1` = 90°, the principal direction along the columns (y);
+# - `ex-gwf-hanix`: `ANGLE1` = 25°, a direction across the grid, with the XT3D formulation
+#   of NPF (option `XT3D`), which uses the full conductivity tensor and the heads of the
+#   neighbouring cells for the flow across each face.
 #
-# The cone of depression is stretched along the principal direction. These are two of
-# the three simulations of the MODFLOW 6 example
-# [ex-gwf-hani](https://modflow6-examples.readthedocs.io/en/latest/_notebooks/ex-gwf-hani.html);
-# the third, `ex-gwf-hanix` (25° with XT3D), needs XT3D, which ModflowGPU does not
-# support (see [Supported packages](@ref "Supported packages")).
+# The cone of depression is stretched along the principal direction. With the standard
+# formulation that only works when the principal direction follows the grid; at 25° the
+# flow across a face also depends on the head gradient along the face, which XT3D adds.
+# These are the three simulations of the MODFLOW 6 example
+# [ex-gwf-hani](https://modflow6-examples.readthedocs.io/en/latest/_notebooks/ex-gwf-hani.html).
 #
 # ## Input and the MODFLOW 6 runs
 #
@@ -26,7 +29,7 @@ using Main.ExampleTools #hide
 using ModflowGPU, CairoMakie
 CairoMakie.activate!(; type = "png") #hide
 
-sims = ("ex-gwf-hanir", "ex-gwf-hanic")
+sims = ("ex-gwf-hanir", "ex-gwf-hanic", "ex-gwf-hanix")
 mf6 = Dict(n => example_run(n) for n in sims)
 [(n, mf6[n].mode, mf6[n].mf6_time) for n in sims]
 
@@ -75,6 +78,10 @@ drawdown_figure("ex-gwf-hanir")
 
 drawdown_figure("ex-gwf-hanic")
 
+# With XT3D, the cone follows the principal direction at 25°:
+
+drawdown_figure("ex-gwf-hanix")
+
 # ## Comparison with MODFLOW 6
 #
 # The head differences between ModflowGPU and MODFLOW 6 in both precisions.
@@ -90,6 +97,10 @@ difference_figure("ex-gwf-hanir")
 
 difference_figure("ex-gwf-hanic")
 
+#-
+
+difference_figure("ex-gwf-hanix")
+
 # The largest head and budget differences, next to the values of the [parity
 # table](@ref "Parity table"), and the wall times (CPU: this build, including compilation
 # for the first run of the session; GPU: the parity table, AMD Radeon RX 7800 XT). For
@@ -101,3 +112,7 @@ comparison_table("ex-gwf-hanir", stats("ex-gwf-hanir"))
 # For `ex-gwf-hanic`:
 
 comparison_table("ex-gwf-hanic", stats("ex-gwf-hanic"))
+
+# For `ex-gwf-hanix` (XT3D):
+
+comparison_table("ex-gwf-hanix", stats("ex-gwf-hanix"))

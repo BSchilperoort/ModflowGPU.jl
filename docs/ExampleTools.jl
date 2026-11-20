@@ -238,9 +238,12 @@ budget-file flow (all records but DATA-SPDIS) relative to the total inflow of it
 printed rounding); `budget`, the larger of the two; and `pd`, the largest percent
 discrepancy of ModflowGPU's budgets. With the Newton–Raphson formulation, cells whose
 mf6 head is below the cell bottom are dry (their head is not unique) and left out of `dh`,
-as in the parity tests; `ndry` counts them (cell-steps).
+as in the parity tests; `ndry` counts them (cell-steps). With `shift = true` (a model whose
+heads are defined only up to a constant, e.g. ex-gwf-whirl: steady state with wells only)
+the mean head difference of each step is removed first, as in the parity tests, and the
+largest such shift is returned as `shift`.
 """
-function compare_with_mf6(rundir::AbstractString, run)
+function compare_with_mf6(rundir::AbstractString, run; shift::Bool = false)
     r = run.result
     a, b = open_head_file(r.head_file), open_head_file(_only_file(rundir, ".hds"))
     length(a) == length(b) || error("the head files have $(length(a)) and $(length(b)) steps")
@@ -253,8 +256,15 @@ function compare_with_mf6(rundir::AbstractString, run)
     end
     dh = 0.0
     ndry = 0
+    cmax = 0.0
     for k in eachindex(b.steps)
         ha, hb = vec(read_head(a, k)), vec(read_head(b, k))
+        if shift
+            act = findall(i -> !_inactive(hb[i]), eachindex(hb))
+            c = sum(ha[act] .- hb[act]) / length(act)
+            cmax = max(cmax, abs(c))
+            ha = ha .- c
+        end
         for i in eachindex(hb)
             _inactive(hb[i]) && continue
             if !isnothing(bot) && hb[i] < bot[i]
@@ -290,7 +300,7 @@ function compare_with_mf6(rundir::AbstractString, run)
         end
     end
     pd = maximum(t -> abs(ModflowGPU.percent_discrepancy(t)), r.budgets)
-    return (; dh, budget_cbc = dq, budget_listing = dl, budget = max(dq, dl), pd, ndry)
+    return (; dh, budget_cbc = dq, budget_listing = dl, budget = max(dq, dl), pd, ndry, shift = cmax)
 end
 
 # The model listing file of mf6 in `dir` (not mfsim.lst).
@@ -856,7 +866,7 @@ The pages of the gallery, in the order of the manual: the script in `examples/` 
 """
 const GALLERY = [
     "ex-gwf-toth.jl" => ("Tóth: flow systems in a basin", ["ex-gwf-toth"]),
-    "ex-gwf-hani.jl" => ("Horizontal anisotropy", ["ex-gwf-hanir", "ex-gwf-hanic"]),
+    "ex-gwf-hani.jl" => ("Horizontal anisotropy", ["ex-gwf-hanir", "ex-gwf-hanic", "ex-gwf-hanix"]),
     "ex-gwf-fhb.jl" => ("Time-series boundaries", ["ex-gwf-fhb"]),
     "ex-gwf-twri01.jl" => ("TWRI: layered aquifers", ["ex-gwf-twri01"]),
     "ex-gwf-bcf2ss.jl" => ("BCF2SS: wetting and drying, and Newton–Raphson", ["ex-gwf-bcf2ss-p01a", "ex-gwf-bcf2ss-p02a"]),
@@ -870,8 +880,10 @@ const GALLERY = [
     "ex-gwf-hwell.jl" => ("A horizontal well", ["ex-gwf-hwell-a"]),
     "ex-gwf-lgrv-gc.jl" => ("Valley aquifer with a river", ["ex-gwf-lgrv-gc"]),
     "ex-gwf-lgrv-gr.jl" => ("Valley aquifer: the refined model", ["ex-gwf-lgrv-gr"]),
-    "ex-gwf-u1disv.jl" => ("A nested grid (DISV)", ["ex-gwf-u1disv"]),
+    "ex-gwf-u1disv.jl" => ("A nested grid (DISV, XT3D)", ["ex-gwf-u1disv", "ex-gwf-u1disv-x"]),
     "ex-gwf-curvilinear.jl" => ("Curvilinear grids (DISV)", ["ex-gwf-curve-90", "ex-gwf-curvilin"]),
+    "ex-gwf-disvmesh.jl" => ("A triangular mesh (DISV, XT3D)", ["ex-gwf-disvmesh"]),
+    "ex-gwf-whirl.jl" => ("Whirl: a rotated conductivity tensor (XT3D)", ["ex-gwf-whirl"]),
     "ex-gwf-rad-disu.jl" => ("An axisymmetric model (DISU)", ["ex-gwf-rad-disu"]),
     "synthetic-coupling.jl" => ("Coupling-type model, step by step", String[]),
 ]
@@ -893,7 +905,7 @@ const NOTEBOOKS = Dict(
 )
 
 # Features (`requires` of validation/examples.toml) of unfinished Phase 6 cards.
-const PLANNED = ["xt3d" => "XT3D (T6.5)", "exchange" => "GWF–GWF exchanges (T6.6)", "multi_model" => "GWF–GWF exchanges (T6.6)"]
+const PLANNED = ["exchange" => "GWF–GWF exchanges (T6.6)", "multi_model" => "GWF–GWF exchanges (T6.6)"]
 
 """
     gallery_index_table() -> Markdown.MD
