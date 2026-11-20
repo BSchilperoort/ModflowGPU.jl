@@ -80,6 +80,22 @@ Backtracking with Newton–Raphson works on the system without the Newton terms,
 MODFLOW 6. How the results compare with MODFLOW 6 is on
 [Differences from MODFLOW 6](@ref "Newton–Raphson") and [Comparing results](results.md).
 
+The XT3D formulation of NPF (the NPF option `XT3D`, with or without `RHS`) is supported for
+models whose cells are all confined (`ICELLTYPE` 0), on DIS, DISV and DISU grids (DISU with
+vertices and `ANGLDEGX`, as MODFLOW 6 requires):
+
+- the flow across each face uses the full conductivity tensor (`K`, `K22`, `K33` and
+  `ANGLE1` to `ANGLE3`; `ANGLE1` is 0 when not given) and the heads of the neighbours of
+  both cells, as in MODFLOW 6; the coefficients are computed once, as MODFLOW 6 does for
+  permanently confined cells;
+- without `RHS` the matrix holds every XT3D term, so a row also has entries for the
+  neighbours of the cell's neighbours; with `RHS` the matrix holds only the terms of the
+  direct connection and the other terms enter through the residual, which takes more outer
+  iterations but gives the same heads;
+- the matrix is not symmetric: IMS must use `LINEAR_ACCELERATION BICGSTAB`; `CG` is an input
+  error, as in MODFLOW 6;
+- XT3D with convertible cells or with `NEWTON` is rejected (see below).
+
 ## Packages and models that are rejected
 
 These file types always give an [`MF6UnsupportedError`](@ref), also when reading with
@@ -113,7 +129,7 @@ input is accepted.
 
 | Feature | Status |
 | :-- | :-- |
-| XT3D (NPF `XT3D`) | planned |
+| XT3D with convertible cells (`ICELLTYPE` ≠ 0) or with `NEWTON` | not planned at the moment |
 | More than one model or solution, GWF–GWF exchanges | planned |
 | Observation output (OBS6) | planned; the files are accepted, no output is written |
 | Horizontal flow barriers (HFB6) | not planned at the moment |

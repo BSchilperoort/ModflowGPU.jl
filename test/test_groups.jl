@@ -20,6 +20,7 @@ const TEST_GROUPS = [
     "sto" => ["unit/sto_test.jl", "parity/sto_test.jl"],
     "convertible" => ["unit/convertible_test.jl"],
     "newton" => ["unit/newton_test.jl"],
+    "xt3d" => ["unit/xt3d_test.jl"],
     "riv_drn_evt" => ["unit/riv_drn_evt_test.jl", "parity/riv_drn_evt_test.jl"],
     "assembly" => ["parity/assembly_test.jl"],
     "krylov" => ["unit/krylov_test.jl", "unit/precond_test.jl"],

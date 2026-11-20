@@ -84,7 +84,11 @@ the `simvals` of every stress package (CHD: also `ratein`, `rateout`). Device wo
 function calc_flows!(m::GwfModel)
     backend = m.backend
     csr = m.csr
-    npf_flowja!(m.flowja, csr, m.npf, m.h, m.ibound)
+    if isnothing(m.xt3d)
+        npf_flowja!(m.flowja, csr, m.npf, m.h, m.ibound)
+    else
+        xt3d_flowja!(m.flowja, csr, m.xt3d, m.h, m.ibound)
+    end
     if !isnothing(m.sto)
         calc_storage_rates!(m.sto, m.h, m.hold, m.ibound)
         add_storage_flowja!(m.flowja, csr.idiag, m.sto)

@@ -305,7 +305,7 @@ julia> gwf = build_model("flow"; dis, npf = build_npf(dis; k = 10.0), ic = build
 julia> spec = build_simulation(gwf; tdis = build_tdis(; perlen = fill(10.0, 3), time_units = :days));
 
 julia> sim = initialize(spec; precision = :double, write_output = false)
-┌ Info: IMS preconditioner ILU0 is replaced by mc_ilu0 (multicolour ILU0: red–black on DIS grids, greedy colouring on DISV and DISU; the default, see the `preconditioner` option)
+┌ Info: IMS preconditioner ILU0 is replaced by mc_ilu0 (multicolour ILU0: red–black on DIS grids, greedy colouring on DISV and DISU and with XT3D; the default, see the `preconditioner` option)
 └   ims.file = "flow.ims"
 Simulation("FLOW", T = Float64, step 0 of 3, initialized)
 

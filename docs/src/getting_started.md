@@ -83,7 +83,7 @@ and writes the output that the OC package asks for into the same folder:
 
 ```jldoctest gs
 julia> result = run_simulation(simdir);
-┌ Info: IMS preconditioner ILU0 is replaced by mc_ilu0 (multicolour ILU0: red–black on DIS grids, greedy colouring on DISV and DISU; the default, see the `preconditioner` option)
+┌ Info: IMS preconditioner ILU0 is replaced by mc_ilu0 (multicolour ILU0: red–black on DIS grids, greedy colouring on DISV and DISU and with XT3D; the default, see the `preconditioner` option)
 └   ims.file = "flow.ims"
 
 julia> result.converged
@@ -229,7 +229,7 @@ The same model in single precision, without writing output:
 julia> backend = select_backend("cpu");   # select_backend("auto") to use a GPU
 
 julia> r32 = run_simulation(simdir; backend, precision = :single, write_output = false);
-┌ Info: IMS preconditioner ILU0 is replaced by mc_ilu0 (multicolour ILU0: red–black on DIS grids, greedy colouring on DISV and DISU; the default, see the `preconditioner` option)
+┌ Info: IMS preconditioner ILU0 is replaced by mc_ilu0 (multicolour ILU0: red–black on DIS grids, greedy colouring on DISV and DISU and with XT3D; the default, see the `preconditioner` option)
 └   ims.file = "flow.ims"
 
 julia> r32.T, r32.Ts, r32.Tp   # state, linear solver, preconditioner
@@ -261,18 +261,20 @@ The [GPU guide](gpu.md) explains the presets, their accuracy and memory use in m
 
 ModflowGPU never ignores input silently. Input that it does not support stops the run
 with an [`MF6UnsupportedError`](@ref) that names the file, the package and the option,
-before anything runs. For example, after adding the XT3D option (not supported yet) to the
-NPF file:
+before anything runs. For example, after adding adaptive time stepping (the TDIS option
+`ATS6`, not supported) to the TDIS file:
 
-```jldoctest gs; filter = r"\(/.*flow\.npf\)" => "(flow.npf)"
-julia> npf_file = joinpath(simdir, "flow.npf");
+```jldoctest gs; filter = r"\(/.*flow\.tdis\)" => "(flow.tdis)"
+julia> tdis_file = joinpath(simdir, "flow.tdis");
 
-julia> original = read(npf_file, String);
+julia> original = read(tdis_file, String);
 
-julia> write(npf_file, replace(original, "BEGIN OPTIONS" => "BEGIN OPTIONS\n  XT3D"));
+julia> write(tdis_file, replace(original, "BEGIN OPTIONS" => "BEGIN OPTIONS\n  ATS6  FILEIN  flow.ats"));
+
+julia> touch(joinpath(simdir, "flow.ats"));
 
 julia> run_simulation(simdir)
-ERROR: MF6UnsupportedError: unsupported: NPF6 option XT3D (model 'FLOW') (/tmp/jl_A1b2C3/flow/flow.npf)
+ERROR: MF6UnsupportedError: unsupported: TDIS6 option ATS6 (simulation) (/tmp/jl_A1b2C3/flow/flow.tdis)
 [...]
 ```
 
@@ -291,10 +293,12 @@ julia> spec = load_simulation(simdir; strict = false)
 SimulationSpec(1 model(s): FLOW; 1 period(s); 0 exchange(s))
 
 julia> run_simulation(spec; write_output = false)
-ERROR: MF6UnsupportedError: unsupported: NPF6 option XT3D (flow.npf)
+ERROR: MF6UnsupportedError: unsupported: ATS6 (adaptive time stepping) in TDIS (flow.tdis)
 [...]
 
-julia> write(npf_file, original);   # restore the NPF file
+julia> write(tdis_file, original);   # restore the TDIS file
+
+julia> rm(joinpath(simdir, "flow.ats"));
 ```
 
 ### IMS options that are replaced
@@ -309,7 +313,7 @@ julia> ims = build_ims(; complexity = :complex);
 julia> sim_complex = build_simulation(gwf; tdis = build_tdis(; perlen = 1.0, time_units = :days), ims);
 
 julia> r = run_simulation(sim_complex; write_output = false);
-┌ Info: IMS preconditioner ILUT is replaced by mc_ilu0 (multicolour ILU0: red–black on DIS grids, greedy colouring on DISV and DISU; the default, see the `preconditioner` option)
+┌ Info: IMS preconditioner ILUT is replaced by mc_ilu0 (multicolour ILU0: red–black on DIS grids, greedy colouring on DISV and DISU and with XT3D; the default, see the `preconditioner` option)
 └   ims.file = "flow.ims"
 
 julia> r.converged

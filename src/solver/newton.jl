@@ -83,7 +83,7 @@ function apply_ptc!(ptc::PtcState, red::Reducer, m::GwfModel{T}, kiter::Integer,
         ptc.ptcdel = l2norm > 0.0 ? ptc.ptcdel * (ptc.l2norm0 / l2norm) : 0.0
     end
     ptcval = ptc.ptcdel > 0.0 ? 1.0 / ptc.ptcdel : 1.0
-    _map!(backend, _ptc_diag, n, m.sys.amat, m.sys.diag, m.csr.ia, m.ibound, T(ptcval))
+    _map!(backend, _ptc_diag, n, m.sys.amat, m.sys.diag, m.scsr.ia, m.ibound, T(ptcval))
     ptc.l2norm0 = l2norm
     return ptcval
 end

@@ -1,0 +1,18 @@
+# Synthetic XT3D model (T6.5): full K tensor with ANGLE1-3, uneven layers, CHD, WEL, GHB, RCH, STO.
+BEGIN options
+END options
+
+BEGIN timing
+  TDIS6  xt3d.tdis
+END timing
+
+BEGIN models
+  gwf6  xt3d.nam  xt3d
+END models
+
+BEGIN exchanges
+END exchanges
+
+BEGIN solutiongroup  1
+  ims6  xt3d.ims  xt3d
+END solutiongroup  1

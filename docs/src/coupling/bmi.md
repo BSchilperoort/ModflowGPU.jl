@@ -284,7 +284,7 @@ julia> write(config, """
            """);
 
 julia> sim = BMI.initialize(Simulation, config);
-┌ Info: IMS preconditioner ILU0 is replaced by mc_ilu0 (multicolour ILU0: red–black on DIS grids, greedy colouring on DISV and DISU; the default, see the `preconditioner` option)
+┌ Info: IMS preconditioner ILU0 is replaced by mc_ilu0 (multicolour ILU0: red–black on DIS grids, greedy colouring on DISV and DISU and with XT3D; the default, see the `preconditioner` option)
 └   ims.file = "flow.ims"
 
 julia> BMI.get_time_units(sim), BMI.get_end_time(sim), BMI.get_var_units(sim, "FLOW/WEL-1/SIMVALS")
@@ -464,7 +464,7 @@ julia> m = MF6Model(simdir; precision = :double, write_output = false)
 MF6Model("flow", uninitialized)
 
 julia> BMI.initialize(m);
-┌ Info: IMS preconditioner ILU0 is replaced by mc_ilu0 (multicolour ILU0: red–black on DIS grids, greedy colouring on DISV and DISU; the default, see the `preconditioner` option)
+┌ Info: IMS preconditioner ILU0 is replaced by mc_ilu0 (multicolour ILU0: red–black on DIS grids, greedy colouring on DISV and DISU and with XT3D; the default, see the `preconditioner` option)
 └   ims.file = "flow.ims"
 
 julia> BMI.get_var_grid(m, "FLOW/X"), BMI.get_grid_type(m, 1), BMI.get_grid_shape(m, 1)

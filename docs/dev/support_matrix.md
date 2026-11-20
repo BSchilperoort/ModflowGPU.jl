@@ -51,7 +51,7 @@ Accepted with a different behaviour (logged warnings, not errors):
 | DIS6 | LENGTH_UNITS, NOGRB, GRB6 FILEOUT (accepted; GRB files are not written), XORIGIN, YORIGIN, ANGROT, CRS; IDOMAIN 0, 1 and −1 (pass-through) | – |
 | DISV6 (T6.4) | as DIS6; VERTICES, CELL2D (vertex lists closed as in MF6); IDOMAIN 0, 1 and −1 (pass-through) | – |
 | DISU6 (T6.4) | as DIS6, plus VERTICAL_OFFSET_TOLERANCE; CONNECTIONDATA IAC, JA, IHC (0, 1, 2), CL12, HWVA, ANGLDEGX (optional); VERTICES, CELL2D (optional); IDOMAIN 0 and 1 (MF6 rejects −1) | READASARRAYS stress input (MF6 rejects it too) |
-| NPF6 | ICELLTYPE 0 (confined) and ≠ 0 (convertible, standard formulation, T6.1), THICKSTRT, VARIABLECV [DEWATERED], PERCHED, REWET (WETFCT, IWETIT, IHDWET) with WETDRY (T6.1), K, K22, K33, ANGLE1–3, K22OVERK, K33OVERK (on DISV/DISU the K ellipse uses the connection angles, `anglex`, T6.4; DISU K22 or SAVE_SPECIFIC_DISCHARGE without ANGLDEGX, or with inconsistent ANGLDEGX, is MF6's error), ALTERNATIVE_CELL_AVERAGING (LOGARITHMIC, AMT-LMK, AMT-HMK; harmonic default), SAVE_FLOWS, PRINT_FLOWS, SAVE_SPECIFIC_DISCHARGE | XT3D (T6.5), TVK6 (T6.x), other options; HIGHEST_CELL_SATURATION is supported with NEWTON (T6.2), PERCHED, VARIABLECV and REWET with NEWTON are MF6's input errors |
+| NPF6 | ICELLTYPE 0 (confined) and ≠ 0 (convertible, standard formulation, T6.1), THICKSTRT, VARIABLECV [DEWATERED], PERCHED, REWET (WETFCT, IWETIT, IHDWET) with WETDRY (T6.1), K, K22, K33, ANGLE1–3, K22OVERK, K33OVERK (on DISV/DISU the K ellipse uses the connection angles, `anglex`, T6.4; DISU K22 or SAVE_SPECIFIC_DISCHARGE without ANGLDEGX, or with inconsistent ANGLDEGX, is MF6's error), ALTERNATIVE_CELL_AVERAGING (LOGARITHMIC, AMT-LMK, AMT-HMK; harmonic default), SAVE_FLOWS, PRINT_FLOWS, SAVE_SPECIFIC_DISCHARGE, XT3D [RHS] with confined cells (T6.5) | XT3D with convertible cells or NEWTON, TVK6 (T6.x), other options; HIGHEST_CELL_SATURATION is supported with NEWTON (T6.2), PERCHED, VARIABLECV and REWET with NEWTON are MF6's input errors |
 | STO6 | SS, SY, ICONVERT 0 and ≠ 0 (convertible storage, STO-SY, T6.1), STORAGECOEFFICIENT, SS_CONFINED_ONLY, SAVE_FLOWS, STEADY-STATE / TRANSIENT periods | TVS6 (*engine*) |
 | IC6 | STRT | – |
 | OC6 | HEAD and BUDGET FILEOUT, HEAD PRINT_FORMAT; SAVE / PRINT HEAD / BUDGET with ALL, FIRST, LAST, FREQUENCY, STEPS | BUDGETCSV (and other options) |
@@ -104,7 +104,7 @@ ex-gwf-curvilin (864) (CHD, STO steady state, BiCGSTAB), and `rad_disu_confined`
 (ex-gwf-rad-disu, DISU with vertices, 550 cells, transient WEL, with STO ICONVERT 0; built
 from the reference run at test time, AMG preconditioner) in the universal residual test
 and the run parity test, `:single`, `:mixed` and `:double`, CPU and ROCm (docs/dev/precision.md,
-T6.4). ex-gwf-u1disv-x and ex-gwf-disvmesh need XT3D (T6.5).
+T6.4). ex-gwf-u1disv-x and ex-gwf-disvmesh (XT3D) run since T6.5.
 
 T6.1 adds convertible cells: ex-gwf-twri01, ex-gwf-bcf2ss-p01a, ex-gwf-bump-p01b,
 ex-gwf-nwt-p02b (Tier 3), ex-gwf-advtidal, ex-gwf-maw-p03a, ex-gwf-maw-p03c (Tier 2 with

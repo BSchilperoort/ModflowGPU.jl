@@ -83,6 +83,24 @@ libmf6's), but:
   20 m below the starting heads: in Float32 those saturated thicknesses carry only 2–3
   significant digits.
 
+## XT3D
+
+The XT3D coefficients and the matrix of the first solve equal libmf6's (to 1e-15), but:
+
+- **With the `RHS` option** MODFLOW 6 moves the XT3D terms of the neighbours to the
+  right-hand side with the current heads. ModflowGPU keeps them in the residual (it solves
+  for head corrections), with the same matrix of the direct terms: the converged heads are
+  the same, the outer iteration counts differ (ex-gwf-hanix with `XT3D RHS`: 409 outer
+  iterations, MODFLOW 6 183).
+- **The matrix couples each cell to the neighbours of its neighbours**, so on a DIS grid
+  the multicolour ILU0 preconditioner uses more colours than the red–black ordering of
+  the standard formulation.
+- **Heads defined up to a constant.** A steady-state model whose only boundaries are
+  wells and recharge (ex-gwf-whirl) has a singular matrix: adding a constant to every
+  head changes no flow. MODFLOW 6 and ModflowGPU end at heads that differ by such a
+  constant (ex-gwf-whirl: 8e-6 m); the flows are the same. This holds with or without
+  XT3D.
+
 ## Precision
 
 The `:double` and `:mixed` presets give MODFLOW 6's accuracy. `:single` computes in

@@ -24,8 +24,8 @@
 # - `preprocess_input`'s conversion to no-flow of cells with K = 0 (prepcheck already
 #   rejects K <= 0), its negative-thickness check (`check_dis_grid`), wetting and drying
 #   (T6.1), and the Newton bottom-node search (T6.2);
-# - XT3D (T6.5; MF6 does not compute condsat with XT3D) and THICKSTRT (T6.1) are rejected
-#   with an `MF6UnsupportedError`;
+# - XT3D: since T6.5 in src/gwf/xt3d.jl (MF6 does not compute condsat with XT3D; it is
+#   computed here but not used);
 # - VSC/TVK modifications of K (out of scope / T6.x).
 
 # GwfConductanceUtils.f90 CCOND_* (the ICELLAVG values).
@@ -202,7 +202,7 @@ The NPF properties by reduced node, after MF6's checks of the NPF input
 (gwf-npf.f90 `prepcheck`, then `check_options`; each throws an `MF6InputError` for
 `npf.file` with MF6's messages, all errors of one routine in one message). With
 `newton = true` the NEWTON option combinations are checked (the model's NEWTON option).
-THICKSTRT (T6.1) and XT3D (T6.5) are an `MF6UnsupportedError`.
+XT3D with convertible cells or NEWTON is an `MF6UnsupportedError` (`check_xt3d`, T6.5).
 """
 function npf_properties(
         npf::NpfSpec, dis::AbstractDisSpec, conn::Connectivity; newton::Bool = false,
@@ -258,7 +258,6 @@ function npf_properties(
 
     _check_disu_angldegx(npf, dis, ik22)
 
-    npf.xt3d && unsupported(file, "NPF6 option XT3D")
 
     # gwf-npf.f90 `preprocess_input`: without THICKSTRT, negative ICELLTYPE means 1; with
     # it, such a cell is confined (ICELLTYPE 0) with the saturation of the starting head
@@ -286,6 +285,8 @@ function npf_properties(
         end
     end
     isempty(errors) || throw(MF6InputError(file, 0, join(errors, "\n")))
+    # T6.5: XT3D (src/gwf/xt3d.jl) for confined models.
+    check_xt3d(npf, dis, icelltype; newton)
     wetdry = npf.rewet && !isnothing(npf.wetdry) ? npf.wetdry[nu] : nothing
     return NpfProperties(
         icelltype, k11, k22, k33, angle1, angle2, angle3, ik22, ik33, _ICELLAVG[npf.cell_averaging], thickstart, sat0, wetdry,

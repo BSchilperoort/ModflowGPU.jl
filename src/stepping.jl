@@ -193,8 +193,9 @@ function initialize(
     spec = only(sim.models)
     ims = only(only(sim.solution_groups).solutions)
     write_output && _check_output_dir(outdir)
-    # NumericalSolution.f90 `sln_ar`: the Newton formulation (T6.2) gives a nonsymmetric matrix.
-    spec.newton && ims.linear_acceleration === :cg && throw(
+    # NumericalSolution.f90 `sln_ar`: the Newton formulation (T6.2) and XT3D (T6.5, `gwf_get_iasym`)
+    # give a nonsymmetric matrix.
+    (spec.newton || spec.npf.xt3d) && ims.linear_acceleration === :cg && throw(
         MF6InputError(
             ims.file, 0,
             "MODEL **$(uppercase(spec.name))** PRODUCES AN ASYMMETRIC COEFFICIENT MATRIX, BUT THE CONJUGATE GRADIENT METHOD WAS SELECTED. USE BICGSTAB INSTEAD.",

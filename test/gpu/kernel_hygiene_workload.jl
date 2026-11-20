@@ -152,6 +152,11 @@ function workload(dir)
         isnothing(m.sto) || M.add_terms!(m.sys, m.csr, m.sto, m.hold, m.ibound; h = m.h)
         M.assemble!(m.sys, m.csr, m.npf, m.h, m.ibound)
     end
+    # XT3D (T6.5): the formulation and flow kernels (test/models/xt3d).
+    d = joinpath(dir, "xt3d")
+    cp(joinpath(MODELS, "xt3d"), d)
+    chmod(d, 0o755; recursive = true)
+    M.run(d; backend = BACKEND, precision = :single, outdir = joinpath(dir, "out_xt3d"))
     # AMG (T4.3) with several levels: fused and generic finest level, CG and BiCGSTAB.
     for method in (:cg, :bicgstab), fine_degree in (0, 1)
         ims = M.ImsSpec(; linear_acceleration = method, outer_dvclose = 1.0e-5, inner_dvclose = 1.0e-6, inner_rclose = 1.0e-4)
