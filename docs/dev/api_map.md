@@ -494,6 +494,8 @@ it. Underscore-prefixed helpers are omitted.
   observation files, `_obs_difference` in test/run_parity.jl).
   T6.6: `ObservationOutput(::ModelView, ...)` (nodes, connections and packages of the
   merged model, `_obs_node`, `_obs_ja`).
+  T6.9: `ObservationOutput.hostidx`: `_obs_plan!` keeps the plan when a period gives the
+  same records and reuses the device index vectors and value buffers of the same length.
 - **output/oc.jl** (T2.8): output control and run output. `oc_selected` (OC PERIOD
   blocks, ALL/FIRST/LAST/FREQUENCY/STEPS), `ModelOutput` (open HDS/CBC/listing files),
   `write_heads`, `write_budget` (STO-SS, FLOW-JA-FACE, package lists as MF6),
@@ -554,6 +556,8 @@ it. Underscore-prefixed helpers are omitted.
   (T8.5: "addresses documented" checks that `var_addresses` of a model with every stress
   package matches the address table of `docs/src/coupling/stepping.md`; a new address
   needs a row there).
+  T6.9: `Simulation.obsonly` (the `ObservationOutput`s of a run without `write_output`:
+  OBS6 files are written in every run, into `outdir`; `RunResult.obs_files` lists them).
   T6.6: several models in one solution: `Simulation` fields `views`, `models` (names),
   `outputs`, `accs`, `exflows`, `exobs`; `initialize` builds the merged model
   (`solution_setup`) when the simulation has several models or exchanges; addresses of every

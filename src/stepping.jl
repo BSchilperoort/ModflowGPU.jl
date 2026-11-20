@@ -154,6 +154,9 @@ mutable struct Simulation{M <: GwfModel, P <: PicardSolver, A <: BudgetAccumulat
     const exflows::Any
     # T6.6: the observation output of the exchanges (`ExchangeObservations`), or `nothing`.
     const exobs::Any
+    # T6.9: without `write_output`, the observation output of each model (`ObservationOutput`
+    # or `nothing`): MF6 writes OBS6 output in every run.
+    const obsonly::Vector{Any}
 end
 
 Base.show(io::IO, s::Simulation) = print(
@@ -245,10 +248,24 @@ function initialize(
     end
     out = isempty(outs) ? nothing : first(outs)
     exflows = multi ? ExchangeFlows(m) : nothing
-    exobs = (multi && write_output) ? ExchangeObservations(m.solution, sim.simdir, outdir) : nothing
+    # T6.9: observations are written also without `write_output` (MF6 writes OBS6 output in
+    # every run, e.g. through libmf6), into `outdir`.
+    hasobs = any(v -> _has_obs(_vspec(v)), views) || (multi && any(ex -> !isnothing(ex.spec.obs), m.solution.exchanges))
+    !write_output && hasobs && _check_output_dir(outdir)
+    obsonly = Any[]
+    try
+        write_output || for v in views
+            push!(obsonly, ObservationOutput(v, sim.simdir, outdir))
+        end
+    catch
+        foreach(o -> isnothing(o) || close(o), obsonly)
+        rethrow()
+    end
+    exobs = multi ? ExchangeObservations(m.solution, sim.simdir, outdir) : nothing
     s = Simulation(
         sim, m, ps, first(accs), out, T, Ts, Tp, steps, 0, :initialized, OuterState(ps), StepResult[], ModelBudget[],
         Dict{String, _Mirror}(), Int[], nothing, views, String[_vname(v) for v in views], outs, accs, exflows, exobs,
+        obsonly,
     )
     for (v, o) in zip(views, outs)
         _listing_header(o.listing, v, ps, T, Ts, Tp, backend)
@@ -315,6 +332,9 @@ function prepare_time_step(s::Simulation, dt::Real = 0.0)
     if step.kstp == 1
         for o in s.outputs
             isnothing(o.obs) || obs_rp!(o.obs, s.model)
+        end
+        for o in s.obsonly
+            isnothing(o) || obs_rp!(o, s.model)
         end
     end
     # Time series (T6.3): `idm_ts_advance` after `tdis_set_timestep`.
@@ -412,6 +432,10 @@ function finalize_time_step(s::Simulation)
         b = s.budgets[end - nv + k]
         @timed_section :output _write_step(o, v, r.step, r.outer, b, s.spec; exflows = s.exflows)
     end
+    # T6.9: the observations of a run without output (`gwf_ot_obs`).
+    for o in s.obsonly
+        isnothing(o) || write_observations(o, s.model, r.step.totim)
+    end
     isnothing(s.exobs) || write_exchange_observations(s.exobs, s.exflows, r.step.totim)
     s.stage = :finalized_time_step
     ok = r.outer.converged || s.spec.continue_on_nonconvergence
@@ -499,12 +523,13 @@ finalize_simulation(sim)
 function finalize_simulation(s::Simulation; free::Bool = true)
     s.stage === :freed && return s
     foreach(close, s.outputs)
+    foreach(o -> isnothing(o) || close(o), s.obsonly)
     isnothing(s.exobs) || close(s.exobs)
     s.stage = :finalized
     if free
         backend = get_backend(s.model.h)
         backend isa CPU || KernelAbstractions.synchronize(backend)
-        free_device_arrays!((s.model, s.solver, s.accs, s.check, s.outer, s.outputs, s.exflows))
+        free_device_arrays!((s.model, s.solver, s.accs, s.check, s.outer, s.outputs, s.exflows, s.obsonly))
         s.stage = :freed
     end
     return s

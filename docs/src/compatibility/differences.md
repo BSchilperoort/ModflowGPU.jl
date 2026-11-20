@@ -183,7 +183,6 @@ MODFLOW 6 writes there. ModflowGPU reports warnings and notes in the Julia log i
 The observation files have MODFLOW 6's header, times and number format, with these
 differences:
 
-- they are written only when the run writes output (`write_output = true`);
 - an observation value of zero is written as `0.000000000000000`;
 - `RCH` and `EVT` observations by cell, in a model with convertible cells: at the start of
   a stress period that reads new recharge (evapotranspiration) data, MODFLOW 6 matches the

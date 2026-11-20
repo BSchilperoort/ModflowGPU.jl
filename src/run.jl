@@ -106,7 +106,8 @@ Keywords:
 - `outdir = simdir`: the directory for the output files (`spec.simdir` for a spec); a
   directory inside the one named by the environment variable `REFERENCE_DIR` (the MF6
   reference runs of the parity tests) is an `ArgumentError`;
-- `write_output = true`: `false` writes no files;
+- `write_output = true`: `false` writes no head, budget, grid or listing files (T6.9:
+  the OBS6 observation files are written in every run, as MF6 does);
 - `closures = nothing`: a `NamedTuple` that overrides IMS settings, with any of
   `outer_dvclose`, `outer_maximum`, `inner_dvclose`, `inner_rclose`, `inner_maximum`
   (closures in the model's units); in `:single`, closures below what Float32 can reach
@@ -164,11 +165,14 @@ function run_simulation(
     allconv = all(r -> r.outer.converged, s.results)
     _obs_paths(o) = (isnothing(o) || isnothing(o.obs)) ? String[] : copy(o.obs.paths)
     obs = reduce(vcat, (_obs_paths(o) for o in s.outputs); init = String[])
+    foreach(o -> isnothing(o) || append!(obs, o.paths), s.obsonly)   # T6.9: without write_output
     isnothing(s.exobs) || append!(obs, s.exobs.paths)
     models = map(enumerate(s.views)) do (k, v)
         o = get(s.outputs, k, nothing)
         f = isnothing(o) ? ("", "", "", "") : (o.head_path, o.budget_path, o.listing_path, o.grb_path)
-        (; name = _vname(v), nodes = _vrange(v), head_file = f[1], budget_file = f[2], listing_file = f[3], obs_files = _obs_paths(o), grb_file = f[4])
+        oo = get(s.obsonly, k, nothing)
+        of = isnothing(oo) ? _obs_paths(o) : copy(oo.paths)
+        (; name = _vname(v), nodes = _vrange(v), head_file = f[1], budget_file = f[2], listing_file = f[3], obs_files = of, grb_file = f[4])
     end
     return RunResult(s.model, s.T, s.Ts, s.Tp, s.results, s.budgets, absolute_heads(s.model), allconv, paths..., obs, models)
 end

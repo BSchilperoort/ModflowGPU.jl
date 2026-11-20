@@ -118,7 +118,8 @@ The output files have the names given in the input:
   model has none), one row per time step, as MODFLOW 6 writes them.
 
 To write the output somewhere else, pass `outdir = "path/to/output"`; to write nothing,
-`write_output = false`.
+`write_output = false` (the observation files of OBS6 input, if any, are still written
+into `outdir`, as MODFLOW 6 writes them in every run).
 
 ## Read the results
 
@@ -243,7 +244,7 @@ that you are most likely to need:
 | `preconditioner` | `:auto` (= `:mc_ilu0`) | the preconditioner that replaces IMS's ILU0, MILU0 or ILUT: `:mc_ilu0`, `:amg`, `:jacobi`, `:mc_sgs`, `:chebyshev` |
 | `precond_options` | none | settings of the preconditioner, e.g. `(; relax = 0.97)` for MILU with `:mc_ilu0` |
 | `outdir` | the input folder | where the output files go |
-| `write_output` | `true` | `false` writes no output files |
+| `write_output` | `true` | `false` writes no head, budget, grid or listing files (observation files of OBS6 input are still written, as MODFLOW 6 does) |
 | `closures` | the IMS values | override IMS closures, e.g. `(; outer_dvclose = 1e-4, inner_maximum = 200)` |
 
 Note that the default backend is the CPU: to run on a GPU, pass

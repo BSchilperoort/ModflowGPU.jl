@@ -202,15 +202,33 @@ end
             mktempdir() do ours
                 sim = initialize(rundir; backend = TEST_BACKEND, precision = :double, outdir = ours)
                 ModflowGPU.update(sim)
+                # T6.9: a new period with the same records keeps the gather plan and its
+                # device buffers (`_obs_plan!`).
+                o = only(sim.outputs).obs
+                idx, vals = o.idx, o.vals
+                ModflowGPU.obs_rp!(o, sim.model)
+                @test o.idx === idx && o.vals === vals
                 ModflowGPU.update(sim)
                 f = joinpath(ours, "afr.obs.csv")
                 @test length(readlines(f)) == 3
                 finalize_simulation(sim)
                 @test length(read_observations(f).times) == 2
             end
-            # write_output = false writes no observation files.
-            r = run_simulation(rundir; backend = TEST_BACKEND, precision = :double, write_output = false)
-            @test isempty(r.obs_files)
+            # T6.9: write_output = false still writes the observation files (MF6 writes OBS6
+            # output in every run), the same as with output.
+            mktempdir() do ours
+                r0 = run_simulation(rundir; backend = TEST_BACKEND, precision = :double, outdir = joinpath(ours, "a"))
+                r = run_simulation(rundir; backend = TEST_BACKEND, precision = :double, write_output = false, outdir = joinpath(ours, "b"))
+                @test length(r.obs_files) == length(r0.obs_files) > 0 && only(r.models).obs_files == r.obs_files
+                @test basename.(r.obs_files) == basename.(r0.obs_files)
+                @test all(((a, b),) -> read(a) == read(b), zip(r.obs_files, r0.obs_files))
+                @test !isfile(joinpath(ours, "b", "afr.lst")) && isempty(only(r.models).head_file)
+                # The stepping API without output (BMI-like), one row per time step.
+                sim = initialize(rundir; backend = TEST_BACKEND, precision = :double, write_output = false, outdir = joinpath(ours, "c"))
+                ModflowGPU.update(sim)
+                finalize_simulation(sim)
+                @test length(read_observations(joinpath(ours, "c", "afr.obs.csv")).times) == 1
+            end
         end
     end
     # FLOW-JA-FACE between cells without a connection (gwf_process_intercell_obs_id).
