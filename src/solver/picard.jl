@@ -173,8 +173,15 @@ end
 function PicardSolver(m::GwfModel{T}, settings::PicardSettings; Ts::Type = T, Tp::Type = Ts) where {T}
     backend = m.backend
     n = Int(m.conn.nodes)
-    colors = settings.krylov.preconditioner in (:mc_sgs, :mc_ilu0) ? grid_colors(m.conn, m.spec.dis) : nothing
-    krylov = KrylovSolver(backend, m.csr, settings.krylov; Ts, Tp, colors)
+    colors = if !(settings.krylov.preconditioner in (:mc_sgs, :mc_ilu0))
+        nothing
+    elseif m.scsr === m.csr
+        grid_colors(m.conn, m.spec.dis)
+    else
+        # T6.5: the extended XT3D stencil (neighbours of neighbours) is not two-colourable.
+        greedy_colors(Array(m.scsr.ia), Array(m.scsr.ja))
+    end
+    krylov = KrylovSolver(backend, m.scsr, settings.krylov; Ts, Tp, colors)
     ur = UnderRelaxation(backend, T, settings.ims, n)
     red = Reducer(backend, n, accumulation_type(backend, T))
     scale = KernelAbstractions.zeros(backend, T, settings.rclose_floor_factor > 0 ? n : 0)
@@ -247,7 +254,9 @@ function outer_iteration!(state::OuterState, ps::PicardSolver, m::GwfModel{T}, k
     it = state.kiter += 1
     # Float32 rclose floor: from the first formulation; with convertible cells (T6.1) the
     # terms change with the saturations, so it is the maximum over the step's iterations.
-    floor_step = (it == 1 || !isnothing(m.npf.cv)) && st.rclose_floor_factor > 0
+    # T6.5: also with XT3D, whose terms per face cancel and grow with the head differences
+    # (a model starting from flat heads has none in the first formulation).
+    floor_step = (it == 1 || !isnothing(m.npf.cv) || !isnothing(m.xt3d)) && st.rclose_floor_factor > 0
     # Wetting and drying of convertible cells (T6.1; `npf_cf` → `sgwf_npf_wetdry`), then
     # the formulation (the saturations, `npf_cf!`, are computed in `formulate!`).
     scale = floor_step ? ps.scale : nothing

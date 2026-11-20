@@ -183,19 +183,8 @@ function _universal_residual(name, rundir, m, sim)
     return nothing
 end
 
-# Oracle: libmf6's first-solve system vs ours.
-function _libmf6_first_solve(simdir)
-    return mktempdir() do tmp
-        outdir = joinpath(tmp, "out")
-        run_libmf6_script("libmf6_first_solve.jl", simdir, outdir)
-        index = TOML.parsefile(joinpath(outdir, "index.toml"))
-        rd(a, T) = (v = Vector{T}(undef, index[a]["length"]); read!(joinpath(outdir, "$a.bin"), v); v)
-        x0 = Vector{Float64}(undef, index["X"]["length"])
-        read!(joinpath(outdir, "X0.bin"), x0)
-        (; ia = rd("IA", Int32), ja = rd("JA", Int32), amat = rd("AMAT", Float64), rhs = rd("RHS", Float64), x0, delt = index["delt"])
-    end
-end
-
+# Oracle: libmf6's first-solve system vs ours (`_libmf6_first_solve` is in
+# test/libmf6_oracle.jl).
 function _oracle(name, simdir, m, sim)
     conn = build_connectivity(m)
     s = npf_setup(m, conn)
@@ -259,6 +248,11 @@ function _assembly_models(f)
         catch err
             err isa MF6UnsupportedError || rethrow()
             @info "Skipping $name in the assembly test (not loadable): $(sprint(showerror, err))"
+            continue
+        end
+        if only(sim.models).npf.xt3d
+            # T6.5: the XT3D formulation has its own residual and oracle tests (group xt3d).
+            @info "Skipping $name in the assembly test: XT3D, tested in group xt3d (test/unit/xt3d_test.jl)"
             continue
         end
         f(name, rundir, sim, rundir)

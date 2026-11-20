@@ -34,13 +34,17 @@ _only_file(dir, ext) = (f = filter(x -> endswith(x, ext), readdir(dir; join = tr
 # stop, e.g. ex-gwf-bump-p01c 1.25e-8 m below the bottom, ModflowGPU 1.25e-6 m). Ours must
 # be below the bottom too (within `drytol`); they are left out of the difference and the
 # range. Returns also the number of such cell-steps.
-function _head_difference(ours, mf6; bot = nothing, drytol = 0.0)
+#
+# `shift = true` (T6.5, `_null_space_model`): heads are defined up to a constant, so the
+# mean difference of each step is removed first (and returned as the largest such shift).
+function _head_difference(ours, mf6; bot = nothing, drytol = 0.0, shift::Bool = false)
     a, b = open_head_file(ours), open_head_file(mf6)
     @test length(a) == length(b)
     @test [(s.kstp, s.kper) for s in a.steps] == [(s.kstp, s.kper) for s in b.steps]
     @test [s.totim for s in a.steps] ≈ [s.totim for s in b.steps] rtol = 1.0e-12
     d, lo, hi = 0.0, Inf, -Inf
     ndry = 0
+    cmax = 0.0
     for k in 1:min(length(a), length(b))
         ha, hb = vec(read_head(a, k)), vec(read_head(b, k))
         act = (hb .!= 1.0e30) .& (hb .!= -1.0e30)
@@ -52,10 +56,32 @@ function _head_difference(ours, mf6; bot = nothing, drytol = 0.0)
             @test all(ha[dry] .< bot[dry] .+ drytol)
             act .&= .!dry
         end
-        d = max(d, maximum(abs.(ha[act] .- hb[act]); init = 0.0))
+        c = shift && any(act) ? sum(ha[act] .- hb[act]) / count(act) : 0.0
+        cmax = max(cmax, abs(c))
+        d = max(d, maximum(abs.(ha[act] .- hb[act] .- c); init = 0.0))
         any(act) && ((lo, hi) = (min(lo, minimum(hb[act])), max(hi, maximum(hb[act]))))
     end
-    return d, hi - lo, ndry
+    return d, hi - lo, ndry, cmax
+end
+
+_spec_kind(::ModflowGPU.BoundarySpec{K}) where {K} = K
+
+# Max |a − b| (`shift`: after removing the mean difference).
+_maxdiff(a, b, shift) = (c = shift ? sum(a .- b) / length(a) : 0.0; maximum(abs.(a .- b .- c); init = 0.0))
+
+"""
+    _null_space_model(m::GwfSpec, nper) -> Bool
+
+Whether the heads of model `m` are defined only up to a constant (T6.5, ex-gwf-whirl): every
+period steady state and no head-dependent boundary (WEL and RCH only), so the matrix is
+singular and its null space is the constant heads. MF6's heads and ours differ by the
+constant the linear solves leave in that direction (ex-gwf-whirl: 8.0e-6 m, with a spread
+of 1e-10 m); the parity test compares them after removing the mean difference.
+"""
+function _null_space_model(m, nper)
+    all(b -> _spec_kind(b) in (:WEL, :RCH), m.boundaries) || return false
+    isnothing(m.sto) && return true
+    return !any(k -> ModflowGPU.is_transient(m.sto, k), 1:nper)
 end
 
 # --- `:single` budget bound from Float32 rounding of the cell flows (T6.1, docs/dev/precision.md)
@@ -249,6 +275,7 @@ function _run_parity(
     conn = m.newton ? ModflowGPU.build_connectivity(m) : nothing
     botu = m.newton ? (b = fill(-Inf, Int(conn.nodesuser)); b[conn.nodeuser] .= conn.bot; b) : nothing
     wet(h) = isnothing(conn) ? trues(length(h)) : h .>= conn.bot
+    shift = _null_space_model(m, ModflowGPU.nper(sim.tdis))
     mf6_hds = _only_file(rundir, ".hds")
     mf6_cbc = isempty(m.oc.budget_file) ? "" : joinpath(rundir, m.oc.budget_file)
     mf6_lst = joinpath(rundir, isempty(m.list_file) ? splitext(basename(m.file))[1] * ".lst" : m.list_file)
@@ -267,7 +294,7 @@ function _run_parity(
             @test r.converged
             @test r.T === p.T
             heads[p.preset] = r.heads
-            dh, range, ndry = _head_difference(r.head_file, mf6_hds; bot = botu, drytol = p.T === Float64 ? 1.0e-6 : 1.0e-3)
+            dh, range, ndry, hshift = _head_difference(r.head_file, mf6_hds; bot = botu, drytol = p.T === Float64 ? 1.0e-6 : 1.0e-3, shift)
             hdtol = p.T === Float64 ? max(1.0e-6, 1.0e-7 * range) : 1.0e-3
             @test dh < hdtol
             tin = Dict((b.kstp, b.kper) => ModflowGPU.total_rate_in(b) for b in r.budgets)
@@ -304,12 +331,12 @@ function _run_parity(
                 @test bt == mf6_bt
                 @info "Backtracking: $name, :$(p.preset), $(backend_name(TEST_BACKEND)): (step, outer iteration) $bt (MF6 $mf6_bt)"
             end
-            @info "Run parity: $name, :$(p.preset), $(backend_name(TEST_BACKEND)) ($pcname), $nsteps step(s), $(round(t; digits = 1)) s: max |Δh| = $(round(dh; sigdigits = 3)) m (tol $(round(hdtol; sigdigits = 2))$(ndry > 0 ? "; $ndry Newton-dry cell-steps" : "")), CBC max |Δq| / total in = $(round(dq; sigdigits = 3)) ($nrec records), listing $(round(dl; sigdigits = 3)) ($ntab tables), max |percent discrepancy| = $(round(pd; sigdigits = 3))$(p.T === Float32 ? " (beyond the rounding bound $(round(pdx; sigdigits = 3)))" : ""); outer/inner iterations $outer/$inner (MF6 $mf6_outer/$mf6_inner)"
+            @info "Run parity: $name, :$(p.preset), $(backend_name(TEST_BACKEND)) ($pcname), $nsteps step(s), $(round(t; digits = 1)) s: max |Δh| = $(round(dh; sigdigits = 3)) m$(shift ? " after removing a constant shift of $(round(hshift; sigdigits = 3)) m (null space)" : "") (tol $(round(hdtol; sigdigits = 2))$(ndry > 0 ? "; $ndry Newton-dry cell-steps" : "")), CBC max |Δq| / total in = $(round(dq; sigdigits = 3)) ($nrec records), listing $(round(dl; sigdigits = 3)) ($ntab tables), max |percent discrepancy| = $(round(pd; sigdigits = 3))$(p.T === Float32 ? " (beyond the rounding bound $(round(pdx; sigdigits = 3)))" : ""); outer/inner iterations $outer/$inner (MF6 $mf6_outer/$mf6_inner)"
             stats[p.preset] = (; dh, dq, dl, pd, outer, inner, time = t, mf6_outer, mf6_inner, backend_vs_cpu = NaN)
             if !(TEST_BACKEND isa CPU)
                 rc = ModflowGPU.run(rundir; backend = CPU(), precision = p.preset, write_output = false, pc...)
                 w = wet(rc.heads)
-                d = maximum(abs.(r.heads[w] .- rc.heads[w]); init = 0.0)
+                d = _maxdiff(r.heads[w], rc.heads[w], shift)
                 p.T === Float64 ? (@test d <= 1.0e-10 * maximum(abs, rc.heads)) : (@test d < 1.0e-4)
                 @info "Run $(backend_name(TEST_BACKEND)) vs CPU: $name, :$(p.preset): max |Δh| = $(round(d; sigdigits = 3)) m"
                 stats[p.preset] = merge(stats[p.preset], (; backend_vs_cpu = d))
@@ -318,7 +345,7 @@ function _run_parity(
     end
     if haskey(heads, :single) && haskey(heads, :double)
         w = wet(heads[:double])
-        d = maximum(abs.(heads[:single][w] .- heads[:double][w]); init = 0.0)
+        d = _maxdiff(heads[:single][w], heads[:double][w], shift)
         @test d < 1.0e-3
         @info "Run :single vs :double: $name, max |Δh| = $(round(d; sigdigits = 3)) m (final heads)"
         stats[:single_vs_double] = d

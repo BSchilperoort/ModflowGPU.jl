@@ -245,3 +245,18 @@ function write_dis_simulation(
     end
     return dir
 end
+
+# libmf6's system after the first `solve` call of `simdir` (validation/libmf6_first_solve.jl):
+# SLN_1 `ia`, `ja`, `amat`, `rhs`, the heads `x0` it was assembled with and `delt`. Used by
+# the assembly oracle tests (groups assembly and xt3d).
+function _libmf6_first_solve(simdir)
+    return mktempdir() do tmp
+        outdir = joinpath(tmp, "out")
+        run_libmf6_script("libmf6_first_solve.jl", simdir, outdir)
+        index = TOML.parsefile(joinpath(outdir, "index.toml"))
+        rd(a, T) = (v = Vector{T}(undef, index[a]["length"]); read!(joinpath(outdir, "$a.bin"), v); v)
+        x0 = Vector{Float64}(undef, index["X"]["length"])
+        read!(joinpath(outdir, "X0.bin"), x0)
+        (; ia = rd("IA", Int32), ja = rd("JA", Int32), amat = rd("AMAT", Float64), rhs = rd("RHS", Float64), x0, delt = index["delt"])
+    end
+end

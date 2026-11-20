@@ -25,14 +25,18 @@ A GWF model ready to run on a device in precision `T` (state and assembly):
   of the lowest cell below it as an offset, `npf_nur`'s `ibotnode`; `-Inf` where it does
   not apply; empty without it), `vol` (cell volumes at full saturation, for the
   pseudo-transient continuation of steady-state Newton periods; empty without NEWTON) and
-  `delt` (the length of the current time step, host).
+  `delt` (the length of the current time step, host);
+- T6.5: `xt3d` (the `Xt3dNpf` of a model with the NPF XT3D option, else `nothing`) and
+  `scsr`, the CSR structure of the system `sys` and the linear solver: `csr` itself, or with
+  XT3D (without its RHS option) the stencil extended with the neighbours of neighbours.
+  `csr` stays the connectivity (flows, `flowja`).
 
 With convertible cells IBOUND changes during the outer iterations (`wetdry!`: dry cells get
 0); `ibound_host` follows it.
 
     GwfModel(backend, T, spec::GwfSpec, nper)
 """
-mutable struct GwfModel{T <: AbstractFloat, B <: Backend, C <: CsrStructure, N <: NpfModel{T}, S <: LinearSystem{T}, ST, V <: AbstractVector{T}, VI <: AbstractVector{Int32}}
+mutable struct GwfModel{T <: AbstractFloat, B <: Backend, C <: CsrStructure, N <: NpfModel{T}, S <: LinearSystem{T}, ST, V <: AbstractVector{T}, VI <: AbstractVector{Int32}, X}
     const spec::GwfSpec
     const backend::B
     const conn::Connectivity
@@ -58,6 +62,8 @@ mutable struct GwfModel{T <: AbstractFloat, B <: Backend, C <: CsrStructure, N <
     const nurbot::V
     const vol::V
     delt::Float64
+    const xt3d::X
+    const scsr::C
 end
 
 function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) where {T <: AbstractFloat}
@@ -66,7 +72,11 @@ function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) whe
     setup = npf_setup(spec, conn)
     csr = CsrStructure(backend, conn)
     npf = NpfModel(backend, T, setup; options = spec.npf, conn, newton)
-    sys = LinearSystem(backend, T, csr)
+    # T6.5: XT3D (confined models; checked by `npf_setup`).
+    xs = spec.npf.xt3d ? xt3d_setup(conn, setup.properties, setup.r; rhs = spec.npf.xt3d_rhs) : nothing
+    xt3d = isnothing(xs) ? nothing : Xt3dNpf(backend, T, xs)
+    scsr = (isnothing(xs) || xs.rhs) ? csr : CsrStructure(backend, xs)
+    sys = LinearSystem(backend, T, scsr)
     packages = BoundaryPackage[BoundaryPackage(backend, T, b, conn, spec.dis; icelltype = setup.properties.icelltype) for b in spec.boundaries]
     sto = isnothing(spec.sto) ? nothing : StoragePackage(backend, T, spec.sto, conn, nper; r = setup.r, newton)
     z(k = conn.nodes) = KernelAbstractions.zeros(backend, T, k)
@@ -81,7 +91,7 @@ function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) whe
     m = GwfModel(
         spec, backend, conn, setup, csr, npf, sys, packages, sto, _device_copy(backend, T.(conn.area)),
         _device_copy(backend, ibh), ibh, h, hold, z(), z(), KernelAbstractions.zeros(backend, T, conn.nja), 0,
-        nothing, 0, wd, newton, nurbot, vol, 0.0,
+        nothing, 0, wd, newton, nurbot, vol, 0.0, xt3d, scsr,
     )
     # `preprocess_input`: `wd(0, hnew)` with the starting heads (IBOUND without the
     # constant heads, which `chd_rp` sets later).
@@ -125,11 +135,13 @@ end
 # backend of the adapted heads); the host setup is shared with `m`.
 function Adapt.adapt_structure(to, m::GwfModel)
     h = adapt(to, m.h)
+    csr = adapt(to, m.csr)
+    scsr = m.scsr === m.csr ? csr : adapt(to, m.scsr)
     return GwfModel(
-        m.spec, get_backend(h), m.conn, m.setup, adapt(to, m.csr), adapt(to, m.npf), adapt(to, m.sys),
+        m.spec, get_backend(h), m.conn, m.setup, csr, adapt(to, m.npf), adapt(to, m.sys),
         BoundaryPackage[adapt(to, p) for p in m.packages], adapt(to, m.sto), adapt(to, m.area), adapt(to, m.ibound),
         copy(m.ibound_host), h, adapt(to, m.hold), adapt(to, m.res), adapt(to, m.δ), adapt(to, m.flowja), m.kper,
-        nothing, 0, adapt(to, m.wd), m.newton, adapt(to, m.nurbot), adapt(to, m.vol), m.delt,
+        nothing, 0, adapt(to, m.wd), m.newton, adapt(to, m.nurbot), adapt(to, m.vol), m.delt, adapt(to, m.xt3d), scsr,
     )
 end
 
@@ -251,7 +263,12 @@ function formulate!(m::GwfModel; symmetric::Bool = false, terms::Bool = true, sc
     end
     offdiag = m.offdiag !== symmetric
     offdiag && (m.offdiag_id = Threads.atomic_add!(_OFFDIAG_IDS, 1) + 1)
-    formulate_system!(m.sys, m.res, m.csr, m.npf, m.h, m.ibound, pkgs, storage; symmetric, offdiag, terms, scale, jac = jac && m.newton)
+    if isnothing(m.xt3d)
+        formulate_system!(m.sys, m.res, m.csr, m.npf, m.h, m.ibound, pkgs, storage; symmetric, offdiag, terms, scale, jac = jac && m.newton)
+    else
+        # T6.5: XT3D (no CG, no Newton: `initialize`, `check_xt3d`).
+        xt3d_formulate_system!(m.sys, m.res, m.csr, m.scsr, m.xt3d, m.h, m.ibound, pkgs, storage; offdiag, terms, scale)
+    end
     m.offdiag = symmetric
     return m
 end

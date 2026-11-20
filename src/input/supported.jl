@@ -91,6 +91,7 @@ const SUPPORTED_OPTIONS = Dict{Tuple{String, String}, Vector{String}}(
         "SAVE_FLOWS", "PRINT_FLOWS", "ALTERNATIVE_CELL_AVERAGING", "SAVE_SPECIFIC_DISCHARGE", "K22OVERK", "K33OVERK",
         "THICKSTRT", "VARIABLECV", "DEWATERED", "PERCHED", "REWET", "WETFCT", "IWETIT", "IHDWET",  # T6.1
         "HIGHEST_CELL_SATURATION",  # T6.2
+        "XT3D", "RHS",  # T6.5
     ],
     ("gwf-sto", "OPTIONS") => ["SAVE_FLOWS", "STORAGECOEFFICIENT", "SS_CONFINED_ONLY"],
     ("gwf-ic", "OPTIONS") => String[],
