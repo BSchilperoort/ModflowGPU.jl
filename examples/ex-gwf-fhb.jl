@@ -11,8 +11,8 @@
 # This is the MODFLOW 6 example
 # [ex-gwf-fhb](https://modflow6-examples.readthedocs.io/en/latest/_notebooks/ex-gwf-fhb.html).
 # The example records the heads in the first and last cells of the middle row and the
-# flow between the first two cells with the OBS package; ModflowGPU does not run OBS,
-# so the same values are read here from its head and budget files.
+# flow between the first two cells with the OBS package; ModflowGPU writes the same
+# observation files (CSV), which this page reads.
 #
 # ## Input and the MODFLOW 6 run
 #
@@ -52,59 +52,51 @@ map_grid!(ax, g)
 limits!(ax, extrema(g.xe)..., extrema(g.ye)...)
 save_figure(fig, "ex-gwf-fhb-grid")
 
-# ## Heads and flow over time
+# ## Observations over time
 #
 # The observations of the MF6 example: `h1_2_1` and `h1_2_10`, the heads in layer 1,
 # row 2, columns 1 and 10, and `icf1`, the flow into cell (1, 2, 2) from cell (1, 2, 1),
-# at the end of every time step.
+# at the end of every time step. ModflowGPU writes them as CSV files
+# (`result.obs_files`; [`read_observations`](@ref) reads them): lines are MODFLOW 6's
+# files, circles ModflowGPU's.
 
-function series(run_or_dir)
-    hds, cbc = run_or_dir isa AbstractString ?
-        (only(filter(endswith(".hds"), readdir(run_or_dir; join = true))), only(filter(endswith(".cbc"), readdir(run_or_dir; join = true)))) :
-        (run_or_dir.head_file, run_or_dir.budget_file)
-    hf = open_head_file(hds)
-    t = [s.totim for s in hf.steps]
-    h1 = [read_head(hf, k)[1, 2, 1] for k in eachindex(t)]
-    h10 = [read_head(hf, k)[10, 2, 1] for k in eachindex(t)]
-    n, m = node(g, 1, 2, 2), node(g, 1, 2, 1)
-    ii = findfirst(i -> g.ja[i] == m, g.ia[n]:(g.ia[n + 1] - 1)) + g.ia[n] - 1
-    q = [vec(f)[ii] for f in read_budget(open_budget_file(cbc); text = "FLOW-JA-FACE")]
-    return (; t, h1, h10, q)
-end
-s = series(r)
-
+head_file, flow_file = "ex-gwf-fhb.obs.head.csv", "ex-gwf-fhb.obs.flow.csv"
+ph, pq = obs_pair(mf6.dir, runs[:double], head_file), obs_pair(mf6.dir, runs[:double], flow_file)
 fig = Figure(; size = (600, 360))
 ax = Axis(fig[1, 1]; xlabel = "time (d)", ylabel = "head (m)")
-scatterlines!(ax, s.t, s.h1; label = "h1_2_1")
-scatterlines!(ax, s.t, s.h10; label = "h1_2_10")
-axislegend(ax; position = :lt, framevisible = false)
+obs_plot!(ax, ph, ["h1_2_1", "h1_2_10"])
+axislegend(ax; position = :lt, framevisible = false, labelsize = 9)
 save_figure(fig, "ex-gwf-fhb-obs-head")
 
 #-
 
 fig = Figure(; size = (600, 360))
 ax = Axis(fig[1, 1]; xlabel = "time (d)", ylabel = "flow (m³/d)")
-scatterlines!(ax, s.t, s.q; label = "icf1")
-axislegend(ax; position = :lt, framevisible = false)
+obs_plot!(ax, pq, ["icf1"])
+axislegend(ax; position = :lt, framevisible = false, labelsize = 9)
 save_figure(fig, "ex-gwf-fhb-obs-flow")
 
 # ## Comparison with MODFLOW 6
 #
-# The differences of the three series between ModflowGPU and MODFLOW 6, at every time
-# step, in both precisions.
+# The differences of the three observation series between ModflowGPU and MODFLOW 6, at
+# every time step, in both precisions.
 
-s6 = series(mf6.dir)
 fig = Figure(; size = (900, 560))
 for (k, p) in enumerate((:double, :single))
-    sp = series(runs[p].result)
+    gh, gq = obs_pair(mf6.dir, runs[p], head_file), obs_pair(mf6.dir, runs[p], flow_file)
     local ax = Axis(fig[1, k]; title = ":$p − MODFLOW 6", ylabel = "head difference (m)", ytickformat = expformat)
-    scatterlines!(ax, s6.t, sp.h1 .- s6.h1; label = "h1_2_1")
-    scatterlines!(ax, s6.t, sp.h10 .- s6.h10; label = "h1_2_10")
+    for name in ("h1_2_1", "h1_2_10")
+        scatterlines!(ax, gh.mf6.times, obs_masked(gh.gpu, name) .- obs_masked(gh.mf6, name); label = name)
+    end
     k == 2 && axislegend(ax; position = :lb, framevisible = false)
     ax = Axis(fig[2, k]; xlabel = "time (d)", ylabel = "icf1 difference (m³/d)", ytickformat = expformat)
-    scatterlines!(ax, s6.t, sp.q .- s6.q; color = Makie.wong_colors()[3])
+    scatterlines!(ax, gq.mf6.times, obs_masked(gq.gpu, "icf1") .- obs_masked(gq.mf6, "icf1"); color = Makie.wong_colors()[3])
 end
 save_figure(fig, "ex-gwf-fhb-difference")
+
+# The largest difference of each observation over all time steps:
+
+obs_difference_table(mf6.dir, runs, (head_file, flow_file))
 
 # The largest head and budget differences over all cells and time steps, next to the
 # values of the [parity table](@ref "Parity table"), and the wall times (CPU: this build,

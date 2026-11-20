@@ -68,23 +68,22 @@ save_figure(fig, "ex-gwf-rad-disu-grid")
 #
 # The heads at 40 ft from the well, at the top (layer 1), the middle (layer 13) and the
 # bottom (layer 25) of the aquifer, the observations `H_TOP`, `H_MID` and `H_BOT` of the
-# MF6 example: ModflowGPU (circles) and MODFLOW 6 (lines), read from the head files.
+# MF6 example: ModflowGPU (circles) and MODFLOW 6 (lines), read from the observation
+# files (CSV) of both.
 
 nodes = ("Top" => 12, "Middle" => 276, "Bottom" => 540)
 grb.data["CELLX"][last.(collect(nodes))]
 
 #-
 
-hf = open_head_file(r.head_file)
-hf6 = open_head_file(only(filter(endswith(".hds"), readdir(mf6.dir; join = true))))
-t = ModflowGPU.head_times(hf)
-series(file, n) = [vec(read_head(file, k))[n] for k in 1:length(file)]
+head_file = "ex-gwf-rad-disu.obs.head.csv"
+pair = obs_pair(mf6.dir, runs[:double], head_file)
+t = pair.mf6.times
 colors = (:green, :red, :blue)
 fig = Figure(; size = (720, 340))
 ax = Axis(fig[1, 1]; xlabel = "time (d)", ylabel = "head (ft)")
-for ((label, n), color) in zip(nodes, colors)
-    lines!(ax, t, series(hf6, n); color, label = "MODFLOW 6 ($label)")
-    scatter!(ax, t, series(hf, n); color = :transparent, strokecolor = color, strokewidth = 1, label = "ModflowGPU ($label)")
+for ((label, _), name, color) in zip(nodes, ("h_top", "h_mid", "h_bot"), colors)
+    obs_plot!(ax, pair, [name]; colors = [color], labels = ["($label)"])
 end
 Legend(fig[1, 2], ax; labelsize = 9, framevisible = false)
 save_figure(fig, "ex-gwf-rad-disu-obs-head")
@@ -98,9 +97,9 @@ fig = Figure(; size = (720, 340))
 ax = Axis(fig[1, 1]; xscale = log10, yscale = log10, xlabel = "Dimensionless time, t_y", ylabel = "Dimensionless drawdown, s_d")
 ty = K * b .* t ./ (Sy * rad^2)
 sd(h) = 4π * K * b .* (50.0 .- h) ./ Q
-for ((label, n), color) in zip(nodes, colors)
-    lines!(ax, ty, sd(series(hf6, n)); color, label = "MODFLOW 6 ($label)")
-    scatter!(ax, ty, sd(series(hf, n)); color = :transparent, strokecolor = color, strokewidth = 1, label = "ModflowGPU ($label)")
+for ((label, _), name, color) in zip(nodes, ("h_top", "h_mid", "h_bot"), colors)
+    lines!(ax, ty, sd(obs_masked(pair.mf6, name)); color, label = "MODFLOW 6 ($label)")
+    scatter!(ax, ty, sd(obs_masked(pair.gpu, name)); color = :transparent, strokecolor = color, strokewidth = 1, label = "ModflowGPU ($label)")
 end
 limits!(ax, 1.0e-3, 100, 1.0e-3, 100)
 Legend(fig[1, 2], ax; labelsize = 9, framevisible = false)
@@ -111,6 +110,7 @@ save_figure(fig, "ex-gwf-rad-disu-obs-dimensionless")
 # The head differences between ModflowGPU and MODFLOW 6 in every cell at the end of the
 # run, by radius and layer, in both precisions.
 
+hf6 = open_head_file(only(filter(endswith(".hds"), readdir(mf6.dir; join = true))))
 h6 = vec(read_head(hf6, length(hf6)))
 fig = Figure(; size = (840, 360))
 for (k, p) in enumerate((:double, :single))
@@ -122,6 +122,10 @@ for (k, p) in enumerate((:double, :single))
     Colorbar(fig[1, 2k], hm; label = "Δh (ft)", tickformat = expformat)
 end
 save_figure(fig, "ex-gwf-rad-disu-difference")
+
+# The largest difference of each observation over all time steps:
+
+obs_difference_table(mf6.dir, runs, (head_file,); unit = "ft")
 
 # The largest head and budget differences, next to the values of the [parity
 # table](@ref "Parity table"), and the wall times (CPU: this build, including compilation
