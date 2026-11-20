@@ -170,6 +170,13 @@ its grid (`get_grid_size`), or for a variable at `"face"` the number of faces
 (`get_grid_face_count`). Without IDOMAIN (or with IDOMAIN > 0 everywhere) the heads are
 on grid 1, otherwise on grid 2; `BMI.get_var_grid(sim, "<model>/X")` tells which.
 
+With several models in the solution (GWF–GWF exchanges), every model has these grids
+(except grid 0, which they share), one model after the other in the order of `sim.models`:
+the grids of the second model start after the `2 + 2·npackages` grids of the first (with
+one CHD package in the first model, the second model's grid 1 is grid 5). Ask
+`BMI.get_var_grid(sim, "<model>/X")` rather than counting. libmf6's BMI (`MF6Model`) gives
+each model one grid, its number in the solution, as libmf6 does.
+
 | Method | DIS (grid 1) | DISV, DISU (grid 1) | Grid 2 (`"points"`) | `"scalar"`, `"vector"` |
 | :--- | :--- | :--- | :--- | :--- |
 | `get_grid_rank` | 2 with one layer, else 3 | 2 | 3 | 0, 1 |

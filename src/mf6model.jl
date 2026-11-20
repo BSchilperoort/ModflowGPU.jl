@@ -283,7 +283,8 @@ function _mf6_ptr(m::MF6Model, address::AbstractString)
     s = _mf6sim(m)
     parts = split(uppercase(address), '/')
     _variable(s, address)   # checks the address
-    if length(parts) == 3 && parts[3] in ("NODEUSER", "NODEREDUCED") && s.model.conn.nodes == s.model.conn.nodesuser
+    c = length(parts) == 3 ? _vconn(_find_view(s, parts[1])) : nothing
+    if length(parts) == 3 && parts[3] in ("NODEUSER", "NODEREDUCED") && c.nodes == c.nodesuser
         return get!(() -> Int32[0], m.arrays, join(parts, "/"))
     end
     p = get_value_ptr(s, address)
@@ -332,14 +333,17 @@ get_var_shape(m::MF6Model, name::AbstractString) = size(BMI.get_value_ptr(m, nam
     BMI.get_var_grid(m::MF6Model, name) -> Int
 
 The grid of the model that `name` belongs to, as libmf6: 1 for every address of the
-model (`"<model>/..."`), -1 for the solution and TDIS addresses (libmf6 reports a
+model (`"<model>/..."`; with several models the model's number in the solution, T6.6), -1
+for the solution and TDIS addresses (libmf6 reports a
 failure status, which ModflowInterface.jl ignores).
 """
 function BMI.get_var_grid(m::MF6Model, name::AbstractString)
     return _mf6call(m) do
         s = _mf6sim(m)
         _variable(s, name)
-        first(split(uppercase(name), '/')) == uppercase(s.model.spec.name) ? 1 : -1
+        # T6.6: model k of a multi-model solution has grid k (libmf6: the model id).
+        k = findfirst(v -> uppercase(_vname(v)) == first(split(uppercase(name), '/')), s.views)
+        isnothing(k) ? -1 : k
     end
 end
 
@@ -360,8 +364,8 @@ end
 # The DIS spec of grid `grid` (the only grid is 1, the model).
 function _mf6_dis(m::MF6Model, f::Symbol, grid::Integer)
     s = _mf6sim(m)
-    grid == 1 || _mf6_failure(f, "no model for grid id $grid (the model's grid is 1)")
-    return s.model.spec.dis
+    1 <= grid <= length(s.views) || _mf6_failure(f, "no model for grid id $grid (the models' grids are 1 to $(length(s.views)))")
+    return _vspec(s.views[grid]).dis
 end
 
 # The DIS spec of grid `grid` if its type is `T` (libmf6's `confirm_grid_type`), else a

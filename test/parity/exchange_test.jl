@@ -351,7 +351,21 @@ end
         @test get_value(s, "RIGHT/X") ≈ fill(1.0, 12)
         @test get_value(s, "LEFT/X") ≈ r.heads[1:12] rtol = 1.0e-12
         @test length(s.budgets) == 2
+        # BMI: model 2's grids follow model 1's (1, 2, then 3, 4 for its CHD package).
+        @test ModflowGPU.BMI.get_var_grid(s, "LEFT/X") == 1 && ModflowGPU.BMI.get_var_grid(s, "RIGHT/X") == 5
+        @test ModflowGPU.BMI.get_var_grid(s, "RIGHT/CHD-RIGHT/BOUND") == 8
+        @test ModflowGPU.BMI.get_grid_size(s, 5) == 12 && ModflowGPU.BMI.get_grid_size(s, 8) == 3
+        gx = zeros(4)
+        ModflowGPU.BMI.get_grid_x(s, 5, gx)
+        @test gx ≈ [450.0, 550.0, 650.0, 750.0]
+        @test ModflowGPU.BMI.get_var_units(s, "RIGHT/X") == "L"
         finalize_simulation(s)
+        # libmf6's BMI (MF6Model): the grid of a model is its number.
+        mm = MF6Model(dir; backend = TEST_BACKEND, precision = :double, write_output = false)
+        ModflowGPU.BMI.initialize(mm)
+        @test ModflowGPU.BMI.get_var_grid(mm, "LEFT/X") == 1 && ModflowGPU.BMI.get_var_grid(mm, "RIGHT/X") == 2
+        @test ModflowGPU.BMI.get_grid_shape(mm, 2, zeros(Int32, 3))[1:2] == Int32[3, 4]
+        ModflowGPU.BMI.finalize(mm)
 
         # MF6's input errors (exg-gwfgwf.f90 validate_exchange) and what is not supported.
         e = try

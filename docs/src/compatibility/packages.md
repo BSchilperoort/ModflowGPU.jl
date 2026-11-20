@@ -1,7 +1,8 @@
 # Supported packages
 
-ModflowGPU runs MODFLOW 6 groundwater flow (GWF) models: one GWF model with one IMS
-solution. This page lists what it reads and runs. The tables in the first three sections
+ModflowGPU runs MODFLOW 6 groundwater flow (GWF) models: one IMS solution with one GWF
+model, or with several GWF models connected by GWF–GWF exchanges (see
+[Several models and GWF–GWF exchanges](@ref)). This page lists what it reads and runs. The tables in the first three sections
 are generated from the checks in the code when this manual is built, so they are always
 current.
 
@@ -43,6 +44,31 @@ Notes:
   `HEAD PRINT_FORMAT` (accepted, not applied). The `PERIOD` blocks accept `SAVE` and
   `PRINT` of `HEAD` and `BUDGET` with `ALL`, `FIRST`, `LAST`, `FREQUENCY` and `STEPS`.
 - A model can have several packages of one type (for example three RCH packages).
+
+## Several models and GWF–GWF exchanges
+
+A simulation can have several GWF models in its IMS solution, connected by `GWF6-GWF6`
+exchanges, as in MODFLOW 6: a parent and a refined child grid (local grid refinement),
+neighbouring regions, or a model connected to itself (a periodic boundary, such as the
+two sides of a global grid along the date line). The models are solved together as one
+system, as MODFLOW 6 does; each writes its own head, budget and listing files, and has
+its own variables in the stepping API and BMI (`"<model>/X"`, see
+[Stepping API](@ref "Several models")).
+
+- Exchange options: `AUXILIARY` (`ANGLDEGX` and `CDIST` as MODFLOW 6 uses them),
+  `BOUNDNAMES`, `SAVE_FLOWS` (the exchange flows in each model's budget file),
+  `CELL_AVERAGING` (`HARMONIC`, `LOGARITHMIC`, `AMT-LMK`) and `XT3D`. `PRINT_INPUT` and
+  `PRINT_FLOWS` are accepted and print nothing; `VARIABLECV`, `DEWATERED` and `NEWTON`
+  are accepted and, as in MODFLOW 6, change nothing between confined cells.
+- Each model's budget has MODFLOW 6's exchange terms: `FLOW-JA-FACE` (the flow across the
+  exchange) and `FLOW-JA-FACE-CHD` (the part into constant-head cells), with the
+  exchange's name (`GWF-GWF_1`, ...) as the package name.
+- `XT3D` on the exchange gives the same coefficients as MODFLOW 6's interface model,
+  also next to models with or without XT3D themselves.
+- The models must be confined (`ICELLTYPE` 0, storage without `ICONVERT`, no `NEWTON`) and
+  in one solution; models with storage must agree on the steady-state and transient
+  periods. Observations of exchanges (`OBS6` in the exchange file), ghost nodes (`GNC6`) and
+  movers (`MVR6`) are not supported.
 
 ## Observations (OBS6)
 
@@ -152,7 +178,8 @@ input is accepted.
 | Feature | Status |
 | :-- | :-- |
 | XT3D with convertible cells (`ICELLTYPE` ≠ 0) or with `NEWTON` | not planned at the moment |
-| More than one model or solution, GWF–GWF exchanges | planned |
+| More than one solution; several models with convertible cells or `NEWTON` | not planned at the moment |
+| Observations of GWF–GWF exchanges (`OBS6` in the exchange file) | not planned at the moment |
 | Horizontal flow barriers (HFB6) | not planned at the moment |
 | Ghost-node correction (GNC6) | not planned at the moment |
 | Time-varying hydraulic conductivity and storage (TVK6, TVS6) | not planned at the moment |

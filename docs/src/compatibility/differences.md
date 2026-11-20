@@ -90,8 +90,10 @@ The XT3D coefficients and the matrix of the first solve equal libmf6's (to 1e-15
 - **With the `RHS` option** MODFLOW 6 moves the XT3D terms of the neighbours to the
   right-hand side with the current heads. ModflowGPU keeps them in the residual (it solves
   for head corrections), with the same matrix of the direct terms: the converged heads are
-  the same, the outer iteration counts differ (ex-gwf-hanix with `XT3D RHS`: 409 outer
-  iterations, MODFLOW 6 183).
+  the same. The outer iteration counts differ, and they depend on the inner solves rather
+  than on where the neighbour terms are: ex-gwf-hanix with `XT3D RHS` takes 409 outer
+  iterations with the default preconditioner (MC-ILU0), 164 with `preconditioner = :amg`,
+  and MODFLOW 6 183 (ILU0).
 - **The matrix couples each cell to the neighbours of its neighbours**, so on a DIS grid
   the multicolour ILU0 preconditioner uses more colours than the red–black ordering of
   the standard formulation.
@@ -100,6 +102,29 @@ The XT3D coefficients and the matrix of the first solve equal libmf6's (to 1e-15
   head changes no flow. MODFLOW 6 and ModflowGPU end at heads that differ by such a
   constant (ex-gwf-whirl: 8e-6 m); the flows are the same. This holds with or without
   XT3D.
+
+## Several models and exchanges
+
+The models of a solution are solved as one system with MODFLOW 6's matrix (the same
+entries to 1e-15 on the examples), with these differences in how it is built and
+reported:
+
+- **XT3D on an exchange.** MODFLOW 6 builds an interface model for each side of the
+  exchange (the cells near it, in global coordinates) and takes the XT3D coefficients of
+  the exchange connections, and of the connections next to them, from it. ModflowGPU
+  computes the same coefficients directly on the grid of all models, for the same
+  connections: the result is the same, but there is no interface model (and no
+  `GWFIM*`/`GWFCON*` memory to read).
+- **Preconditioner colouring.** The multicolour preconditioners colour each DIS model
+  red–black and keep that when every exchange connection joins two colours; otherwise
+  (for example a refined child grid) they colour the whole solution greedily, with more
+  colours.
+- **Output.** Each model's listing file has the budget table with MODFLOW 6's exchange
+  terms; the exchange flow tables of `PRINT_FLOWS` (in the model listings and in
+  `mfsim.lst`) are not written. The budget file of a model with an exchange with
+  `SAVE_FLOWS` has MODFLOW 6's `FLOW-JA-FACE` list of the exchange.
+- **Scope.** Only confined models (`ICELLTYPE` 0, no `ICONVERT`, no `NEWTON`) in one
+  solution; exchange observations, `GNC6` and `MVR6` are not supported.
 
 ## Precision
 
@@ -162,7 +187,8 @@ differences:
   records in the cells given in the input, ModflowGPU in the highest active cell the record
   was moved to. The values differ only when that cell (usually in layer 1) is dry at the
   start of the period; observations by boundary name are not affected;
-- observations of GWF–GWF exchanges are not read (exchanges are not supported).
+- observations of GWF–GWF exchanges (`OBS6` in the exchange file) are not supported: a
+  simulation with them is rejected with an `MF6UnsupportedError`.
 
 ## Stepping API and BMI
 

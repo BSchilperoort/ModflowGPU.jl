@@ -17,6 +17,10 @@
 #
 # Model-node variables (X, TOP, ...) are on grid 1 when every cell is a model node, else on
 # grid 2, so that their length is always the size of their grid.
+#
+# T6.6: with several models in the solution, the grids above are there for every model, one
+# model after the other (model 2's grids follow the 2 + 2·npackages of model 1, ...): the
+# grid of a variable of model `<model>` is one of that model's.
 
 import BasicModelInterface as BMI
 import TOML
@@ -214,12 +218,13 @@ _bmi_kind(::BoundaryPackage{K}) where {K} = K
 # flags. BOUND has one unit only for single-column packages (CHD, WEL, RCH), else "none".
 function _bmi_units(s::Simulation, name::AbstractString)
     var = _variable(s, name)
-    L = get(_BMI_LENGTH_UNITS, s.model.spec.dis.length_units, "L")
+    parts = split(uppercase(name), '/')
+    mv = _find_view(s, parts[1])
+    L = get(_BMI_LENGTH_UNITS, (isnothing(mv) ? s.model.spec : _vspec(mv)).dis.length_units, "L")
     T = get(_BMI_TIME_UNITS, s.spec.tdis.time_units, "T")
     u = var.units
-    parts = split(uppercase(name), '/')
     if length(parts) == 3 && parts[3] == "BOUND"
-        k = _bmi_kind(s.model.packages[_find_package(s.model, parts[2])])
+        k = _bmi_kind(s.model.packages[_find_package(s, parts[1], parts[2])])
         u = k === :CHD ? "L" : k === :WEL ? "L3/T" : k === :RCH ? "L/T" : "none"
     end
     u == "L" && return L
@@ -231,19 +236,45 @@ function _bmi_units(s::Simulation, name::AbstractString)
     return u
 end
 
+# T6.6: the grids of the models of a multi-model solution, one model after the other: the
+# grids of model `k` (1: model grid, 2: nodes, then two per package, as for a single model)
+# have the ids `base_k + g - 1`, with `base_1 = 1` (a single model keeps its ids).
+_bmi_ngrids(v) = 2 + 2 * length(_vpackages(v))
+function _bmi_grid_base(s::Simulation, mv)
+    base = 1
+    for v in s.views
+        v === mv && return base
+        base += _bmi_ngrids(v)
+    end
+    return base
+end
+
+# The model (view) of grid `grid` (≥ 1) and the grid's number in that model, or `nothing`.
+function _bmi_view_grid(s::Simulation, grid::Integer)
+    base = 1
+    for v in s.views
+        n = _bmi_ngrids(v)
+        base <= grid < base + n && return v, grid - base + 1
+        base += n
+    end
+    return nothing, grid
+end
+
 # The grid of a variable (see the top of this file).
 function _bmi_var_grid(s::Simulation, name::AbstractString)
     _variable(s, name)   # checks the address
-    m = s.model
-    node_grid = m.conn.nodes == m.conn.nodesuser ? 1 : 2
     parts = split(uppercase(name), '/')
     parts[1] in ("SLN_1", "TDIS") && return 0
-    length(parts) == 2 && return node_grid
+    mv = _find_view(s, parts[1])
+    c = _vconn(mv)
+    b = _bmi_grid_base(s, mv) - 1
+    node_grid = c.nodes == c.nodesuser ? 1 : 2
+    length(parts) == 2 && return b + node_grid
     v = parts[3]
     v in ("NODES", "NODESUSER", "NBOUND", "MAXBOUND") && return 0
-    parts[2] in _dis_names(m) && return v == "NODEREDUCED" ? 1 : node_grid
-    ip = _find_package(m, parts[2])
-    return v == "BOUND" ? 2 + 2ip : 1 + 2ip
+    parts[2] in _dis_names(_vspec(mv)) && return b + (v == "NODEREDUCED" ? 1 : node_grid)
+    ip = findfirst(==(_find_package(s, parts[1], parts[2])), collect(_vpackages(mv)))
+    return b + (v == "BOUND" ? 2 + 2ip : 1 + 2ip)
 end
 
 BMI.get_var_grid(s::Simulation, name::AbstractString) = _bmi_var_grid(s, name)
@@ -303,13 +334,18 @@ _has_vertices(d::DisuSpec) = d.nvert > 0
 
 # (; type, rank, size, shape) of a grid; `shape` is `nothing` for an unstructured grid.
 function _bmi_grid(s::Simulation, grid::Integer)
-    m = s.model
-    d = m.spec.dis
-    np = length(m.packages)
-    nu = Int(m.conn.nodesuser)
-    if grid == 0
-        return (; type = "scalar", rank = 0, size = 1, shape = Int[])
-    elseif grid == 1
+    grid == 0 && return (; type = "scalar", rank = 0, size = 1, shape = Int[])
+    mv, g = _bmi_view_grid(s, grid)
+    ntot = sum(_bmi_ngrids, s.views)
+    isnothing(mv) && throw(ArgumentError("unknown grid $grid (grids are 0 to $ntot)"))
+    m = _vmodel(mv)
+    d = _vspec(mv).dis
+    pkgs = collect(_vpackages(mv))
+    np = length(pkgs)
+    conn = _vconn(mv)
+    nu = Int(conn.nodesuser)
+    grid = g
+    if grid == 1
         if d isa DisSpec
             nl, nr, nc = Int(d.nlay), Int(d.nrow), Int(d.ncol)
             type = nl == 1 && d.angrot == 0 ? "rectilinear" : "structured_quadrilateral"
@@ -319,15 +355,15 @@ function _bmi_grid(s::Simulation, grid::Integer)
         _has_vertices(d) || return (; type = "vector", rank = 1, size = nu, shape = [nu])
         return (; type = "unstructured", rank = 2, size = Int(d.nvert), shape = nothing)
     elseif grid == 2
-        n = Int(m.conn.nodes)
+        n = Int(conn.nodes)
         _has_vertices(d) || return (; type = "vector", rank = 1, size = n, shape = [n])
         return (; type = "points", rank = 3, size = n, shape = nothing)
     elseif 3 <= grid <= 2 + 2np
-        pkg = m.packages[(grid - 1) ÷ 2]
+        pkg = m.packages[pkgs[(grid - 1) ÷ 2]]
         n = isodd(grid) ? length(pkg.nodelist_host) : length(pkg.bound_user)
         return (; type = "vector", rank = 1, size = n, shape = [n])
     end
-    throw(ArgumentError("unknown grid $grid (grids are 0 to $(2 + 2np))"))
+    throw(ArgumentError("unknown grid $grid (grids are 0 to $ntot)"))
 end
 
 BMI.get_grid_type(s::Simulation, grid::Integer) = _bmi_grid(s, grid).type
@@ -392,8 +428,9 @@ end
 
 function _grid_coord(f::Symbol, s::Simulation, grid::Integer, dest::AbstractVector{<:Real}, axis::Int)
     g = _bmi_grid(s, grid)
-    m = s.model
-    d = m.spec.dis
+    mv = first(_bmi_view_grid(s, max(grid, 1)))  # grid 0 (scalar): no coordinates, below
+    d = _vspec(mv).dis
+    conn = _vconn(mv)
     nm = (:x, :y, :z)[axis]
     if g.type == "rectilinear"
         axis == 3 && _bmi_unsupported(f, "grid $grid is rectilinear of rank 2 (no z)")
@@ -409,8 +446,8 @@ function _grid_coord(f::Symbol, s::Simulation, grid::Integer, dest::AbstractVect
         axis == 3 && _bmi_unsupported(f, "the vertices of grid $grid (DISV/DISU) have no elevation (use the DIS/TOP and DIS/BOT variables)")
         return _fill(f, dest, _vertices(d)[axis])
     elseif g.type == "points"
-        axis == 3 && return _fill(f, dest, (m.conn.top .+ m.conn.bot) ./ 2)
-        return _fill(f, dest, _user_centres(d)[axis][m.conn.nodeuser])
+        axis == 3 && return _fill(f, dest, (conn.top .+ conn.bot) ./ 2)
+        return _fill(f, dest, _user_centres(d)[axis][conn.nodeuser])
     end
     return _bmi_unsupported(f, "grid $grid is $(g.type) (no $nm coordinates)")
 end
@@ -429,14 +466,15 @@ BMI.get_grid_node_count(s::Simulation, grid::Integer) = _bmi_grid(s, grid).size
 function _faces(f::Symbol, s::Simulation, grid::Integer)
     g = _bmi_grid(s, grid)
     g.type == "unstructured" || _bmi_unsupported(f, "grid $grid is $(g.type), not unstructured")
-    d = s.model.spec.dis
+    mv = first(_bmi_view_grid(s, grid))
+    d = _vspec(mv).dis
     ncpl = d isa DisvSpec ? Int(d.ncpl) : Int(d.nodes)
     poly = map(d.cell_vertices) do iv
         v = Int.(iv)
         length(v) > 1 && first(v) == last(v) && pop!(v)
         reverse!(v)
     end
-    return [poly[(n - 1) % ncpl + 1] for n in 1:Int(s.model.conn.nodesuser)]
+    return [poly[(n - 1) % ncpl + 1] for n in 1:Int(_vconn(mv).nodesuser)]
 end
 
 # The edges of an unstructured grid: (tail, head) of every vertex pair that bounds a face,
