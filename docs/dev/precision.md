@@ -801,6 +801,27 @@ large coefficients meet small flows: rad-disu (the STO-SY coefficient of the fir
 one Float32 offset rounding is thousands of ft³/d against 4000 ft³/d in; raw pd 48.5 %),
 maw-p03c (total inflow 18 m³/d; raw CBC 1.0e-3, pd 0.60 %), advtidal (raw pd 1.9e-2 %).
 Use `:mixed` where such cell-by-cell flows or budgets matter.
+
+**T6.9: the `:single` budgets of these three models verified.** The bound above contains the
+head difference, so it does not check the budget. The test "`:single` budgets vs a Float64
+evaluation of the `:single` heads" (test/parity/run_test.jl, `_single_budget_replay` in
+test/run_parity.jl) runs each model in `:single` with OC saving every step, then replays it
+in `:double` through the stepping API with the heads (and saturations, `npf_cf!`) set to the
+`:single` heads of each step instead of solved, and compares the two budget files with
+`_rounding_bounds` of the `:single` heads against themselves (no head difference: only the
+Float32 arithmetic of the flows; T6.9 adds the top and bottom offsets of convertible
+storage cells, which `SsTerms`/`SyTerms` round, to the storage bound). CPU:
+
+| Model | CBC beyond the bound / total in | max \|pd\| `:single` / Float64 evaluation | max \|Δ pd\| |
+| --- | --- | --- | --- |
+| ex-gwf-advtidal (361 steps) | 2.7e-8 (GHB) | 0.0188 % / 0.0188 % | 4.9e-5 % |
+| ex-gwf-maw-p03c | 7.5e-9 (CHD) | 0.604 % / 0.604 % | 3.9e-6 % |
+| ex-gwf-rad-disu (24 steps) | 0 | 51.0 % / 51.5 % | 0.52 % (bound of the step 3.8e5 %) |
+
+So the `:single` budgets are what the `:single` heads give in Float64: the large percent
+discrepancies are those of the Float32 heads (their residual times the large storage
+coefficients or conductances), not errors of the flow computation. Criteria: CBC 1e-6 ×
+total in beyond the bound, Δ pd below 1e-3 % or the step's bound.
 The observed flows of maw-p03c (OBS6, T6.7: flows next to the former well, heads flat at
 10.0001 m, large conductances) differ by up to 2.2e-4 × the total inflow in `:single`
 (heads 1.6e-6 m); their parity criterion is 1e-3 × total inflow instead of 1e-4

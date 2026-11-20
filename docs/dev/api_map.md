@@ -596,6 +596,9 @@ it. Underscore-prefixed helpers are omitted.
   `_budget_difference`, `_listing_difference`, `RUN_MF6`; T6.5: `_null_space_model` (steady state
 with WEL/RCH only: heads compared after removing the mean difference, `_head_difference(...; shift)`,
 `_maxdiff`). Used by groups run, synthetic.
+  T6.9: `_conversion_blocks` (cell-conversion messages of a listing), `_single_budget_replay`
+  (`:single` budget vs a `:double` replay of the `:single` heads through the stepping API;
+  `_rounding_bounds` also rounds the top/bottom offsets of convertible storage cells).
   T6.6: `_run_parity` on several models (each model's files, the exchange observation
   files; periodic exchange lists matched in file order in `_budget_difference`).
 - **residual.jl**: `to_test_device`, `flux_residual` (device `flux_residual!` → (rel, rounding

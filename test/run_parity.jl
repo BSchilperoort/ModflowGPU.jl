@@ -128,7 +128,10 @@ function _rounding_bounds(rundir, ours_hds, mf6_hds)
             old = !isnothing(hmold) && hmold[n] != -1.0e30
             hold = old ? hmold[n] : hm[n]
             dold = old ? abs(hoold[n] - hmold[n]) : 0.0
-            bnd[u] = κ * (ε * (abs(hm[n] - s.r[n]) + abs(hold - s.r[n])) + abs(ho[n] - hm[n]) + dold)
+            # T6.9: convertible storage (`SsTerms`, `SyTerms`) also rounds the cell's top and
+            # bottom offsets (`zold`, `znew`, the clamps).
+            tb = sto.iconvert[u] != 0 ? abs(conn.top[n] - s.r[n]) + abs(conn.bot[n] - s.r[n]) : 0.0
+            bnd[u] = κ * (ε * (abs(hm[n] - s.r[n]) + abs(hold - s.r[n]) + tb) + abs(ho[n] - hm[n]) + dold)
         end
         return bnd
     end
@@ -162,7 +165,7 @@ end
 # (`_rounding_bounds`, `:single`, T6.1) the FLOW-JA-FACE, STO-SS and STO-SY values are
 # compared after subtracting their bounds, and the per-step sums of those bounds are
 # returned as well (the allowance of the listing terms and the percent discrepancy).
-function _budget_difference(ours, mf6, tin; bounds = nothing)
+function _budget_difference(ours, mf6, tin; bounds = nothing, bytext = nothing)
     a, b = open_budget_file(ours), open_budget_file(mf6)
     worst = 0.0
     nrec = 0
@@ -213,8 +216,83 @@ function _budget_difference(ours, mf6, tin; bounds = nothing)
             end
         end
         worst = max(worst, maximum(d) / tin[(r.kstp, r.kper)])
+        isnothing(bytext) || (bytext[strip(r.text)] = max(get(bytext, strip(r.text), 0.0), maximum(d) / tin[(r.kstp, r.kper)]))
     end
     return worst, nrec, btot
+end
+
+# --- `:single` budgets verified against a Float64 evaluation of the `:single` heads (T6.9)
+#
+# The `:single` budget of a run is checked against the flows a `:double` model computes
+# from the same (`:single`) heads: a copy of the model with OC saving heads and budgets
+# every step runs in `:single`; a `:double` simulation then replays it step by step through
+# the stepping API, with its heads (and dry cells) set to the `:single` heads of the step
+# instead of solved (the old heads are those of the previous step, as in the `:single`
+# run), and writes its budget file. The two budgets can then differ only by the Float32
+# arithmetic of the flows: `_rounding_bounds` with the `:single` heads as both head files
+# (no head difference). Returns `dq` (max |Δq| beyond the bound / total in, `bytext` per
+# record type), `dpd` (max |Δ percent discrepancy|), `pd` and `rpd` (max |percent
+# discrepancy| of the `:single` run and of the replay), `bpd` (the largest per-step sum of
+# the bounds, in percent of the total inflow) and `nrec` (records compared).
+function _single_budget_replay(rundir; backend = TEST_BACKEND, preconditioner = RUN_PRECONDITIONER)
+    return mktempdir() do tmp
+        d = joinpath(tmp, "model")
+        mkpath(d)
+        for f in readdir(rundir)
+            endswith(f, r"\.(hds|cbc|lst|csv|grb|txt|toml)$") || cp(joinpath(rundir, f), joinpath(d, f))
+        end
+        sim = load_simulation(d)
+        m = only(sim.models)
+        # OC: save heads and budgets every step (the replay needs every step's old heads).
+        ocf = joinpath(d, basename(m.oc.file))
+        txt = read(ocf, String)
+        k = findfirst(r"(?i)^\s*BEGIN\s+period"m, txt)
+        write(ocf, txt[1:(first(k) - 1)] * "BEGIN period 1\n  SAVE HEAD ALL\n  SAVE BUDGET ALL\nEND period 1\n")
+        so, ro = joinpath(tmp, "single"), joinpath(tmp, "replay")
+        rs = ModflowGPU.run(d; backend, precision = :single, outdir = so, preconditioner)
+        @test rs.converged
+        hf = open_head_file(rs.head_file)
+        s = ModflowGPU.initialize(d; backend, precision = :double, outdir = ro, preconditioner)
+        model = s.model
+        conn, r = model.conn, model.setup.r
+        for k in 1:length(s.steps)
+            ModflowGPU.prepare_time_step(s)
+            ModflowGPU.prepare_solve(s)
+            habs = vec(read_head(hf, k))[conn.nodeuser]
+            ib = copy(model.ibound_host)
+            hoff = zeros(conn.nodes)
+            for n in 1:conn.nodes
+                dry = habs[n] == ModflowGPU.HDRY
+                ib[n] = dry ? 0 : (ib[n] < 0 ? -1 : 1)
+                hoff[n] = dry ? conn.bot[n] - r[n] : habs[n] - r[n]
+            end
+            copyto!(model.h, hoff)
+            if ib != model.ibound_host
+                copyto!(model.ibound_host, ib)
+                copyto!(model.ibound, ib)
+                model.offdiag = nothing
+                for pkg in model.packages
+                    ModflowGPU.boundary_kind(pkg) in (:RCH, :EVT) && ModflowGPU.move_to_highest_active!(pkg, model.ibound_host, r)
+                end
+            end
+            # The saturations of the flows (`npf_cf`), from these heads: the run takes them
+            # from the last formulation, before the last head change (< OUTER_DVCLOSE).
+            isnothing(model.npf.cv) || ModflowGPU.npf_cf!(model.npf.cv, model.h, model.ibound)
+            ModflowGPU.finalize_solve(s)
+            ModflowGPU.finalize_time_step(s)
+        end
+        bd = copy(s.budgets)
+        ModflowGPU.finalize_simulation(s)
+        tin = Dict((b.kstp, b.kper) => ModflowGPU.total_rate_in(b) for b in bd)
+        rb = _rounding_bounds(d, rs.head_file, rs.head_file)
+        bytext = Dict{String, Float64}()
+        dq, nrec, btot = _budget_difference(rs.budget_file, joinpath(ro, basename(rs.budget_file)), tin; bounds = rb, bytext)
+        rpd = maximum(b -> abs(ModflowGPU.percent_discrepancy(b)), bd)
+        dpd = maximum(((a, b),) -> abs(ModflowGPU.percent_discrepancy(a) - ModflowGPU.percent_discrepancy(b)), zip(rs.budgets, bd))
+        pd = maximum(b -> abs(ModflowGPU.percent_discrepancy(b)), rs.budgets)
+        bpd = maximum(b -> 100 * get(btot, (b.kstp, b.kper), 0.0) / ModflowGPU.total_rate_in(b), bd)
+        (; dq, dpd, pd, rpd, bpd, nrec, bytext)
+    end
 end
 
 # Listing-table comparison: max over terms of (|Δ| − 2·rounding) / total in.
