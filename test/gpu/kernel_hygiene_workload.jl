@@ -35,9 +35,15 @@ function _workload_model(dir)
     cp(joinpath(MODELS, "coupling_rde"), rundir)
     chmod(rundir, 0o755; recursive = true)
     nam = joinpath(rundir, "rde.nam")
-    write(nam, replace(read(nam, String), "  OC6  rde.oc  oc" => "  GHB6  rde.ghb  ghb\n  OC6  rde.oc  oc"))
+    write(nam, replace(read(nam, String), "  OC6  rde.oc  oc" => "  GHB6  rde.ghb  ghb\n  OC6  rde.oc  oc\n  OBS6  rde.obs  obs"))
+    # T6.7: observations (the gather kernel of the heads, FLOWJA and SIMVALS).
+    write(joinpath(rundir, "rde.obs"), "BEGIN continuous FILEOUT rde.obs.csv\n  h head 2 8 11\n  q flow-ja-face 2 8 11 2 8 10\nEND continuous\n")
+    write(joinpath(rundir, "rde.ghb.obs"), "BEGIN continuous FILEOUT rde.ghb.obs.csv\n  g ghb 2 8 11\nEND continuous\n")
     write(
         joinpath(rundir, "rde.ghb"), """
+        BEGIN options
+          OBS6 FILEIN rde.ghb.obs
+        END options
         BEGIN dimensions
           MAXBOUND  2
         END dimensions

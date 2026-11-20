@@ -51,7 +51,8 @@
 # - NPF option combinations rejected in `check_options` (NEWTON with PERCHED, XT3D with
 #   ALTERNATIVE_CELL_AVERAGING, ...) are checked by `check_npf_options` (src/gwf/npf.jl,
 #   T2.2), not here.
-# - File references (TS6, TAS6, OBS6) must exist; their contents are read by T6.3/T6.7.
+# - File references (TS6, TAS6, OBS6) must exist; they are read (T6.3; OBS6 by T6.7,
+#   `read_obs_file`: model and package observations, `GwfSpec.obs`/`BoundarySpec.obs`).
 
 const LENMODELNAME = 16    # ConstantsModule
 const LENPACKAGENAME = 16

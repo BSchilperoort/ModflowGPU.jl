@@ -5,8 +5,8 @@ CurrentModule = ModflowGPU
 DocTestSetup = :(using ModflowGPU)
 ```
 
-ModflowGPU writes the head file (`.hds`), the budget file (`.cbc`) and the model listing
-file (`.lst`) in MF6's formats. It does not write the binary grid file (`.dis.grb` and
+ModflowGPU writes the head file (`.hds`), the budget file (`.cbc`), the model listing
+file (`.lst`) and the observation files (OBS6) in MF6's formats. It does not write the binary grid file (`.dis.grb` and
 the like), but [`read_grb`](@ref) reads MF6's (see
 [Differences from MODFLOW 6](../compatibility/differences.md)). The readers on this page
 read these files from ModflowGPU and from MF6 alike, so they can also be used to compare
@@ -53,4 +53,20 @@ ModflowGPU.ListingBudgetTerm
 ModflowGPU.listing_rates
 ModflowGPU.percent_discrepancy
 ModflowGPU.MF6BinaryFileError
+```
+
+## Observation files
+
+The observation output of OBS6 input (CSV or `BINARY`), of ModflowGPU and of MF6; the
+paths of a run are in [`RunResult`](@ref)`.obs_files`.
+
+```julia
+obs = read_observations("path/to/simulation/model.obs.head.csv")
+obs.names, obs.times, obs.values   # values: one row per time step, one column per observation
+```
+
+```@docs
+read_observations
+ObservationFile
+ModflowGPU.OBSNODATA
 ```

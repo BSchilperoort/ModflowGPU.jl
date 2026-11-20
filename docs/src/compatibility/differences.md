@@ -129,7 +129,7 @@ Float32, which MODFLOW 6 cannot:
 | Binary grid file (`.dis.grb`, `.disv.grb`, `.disu.grb`) | written unless `NOGRB` | not written; MODFLOW 6's file can be read with [`read_grb`](@ref) |
 | Model listing file (`.lst`) | full report | a short version, see below |
 | Simulation listing file (`mfsim.lst`) | written | not written |
-| Observation output (OBS6) | written | not written |
+| Observation output (OBS6) | written every time step | the same files, CSV or `BINARY`; values as MODFLOW 6 prints them (16 significant digits) |
 | CSV files (`BUDGETCSV`, `CSV_OUTER_OUTPUT`, `CSV_INNER_OUTPUT`, `AUTO_FLOW_REDUCE_CSV`) | written | the options are rejected |
 
 ### Listing file
