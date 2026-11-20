@@ -391,7 +391,8 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
         end
         # Not implemented yet: rejected with strict = true, read with strict = false.
         for (changes, msg, check) in (
-                (edit("gwf.npf", "SAVE_SPECIFIC_DISCHARGE", "XT3D"), "unsupported: NPF6 option XT3D (model 'GWF')", s -> s.models[1].npf.xt3d),
+                # XT3D: supported since T6.5.
+                (edit("gwf.npf", "SAVE_SPECIFIC_DISCHARGE", "XT3D  RHS"), nothing, s -> s.models[1].npf.xt3d && s.models[1].npf.xt3d_rhs),
                 # Convertible cells, convertible storage, AUTO_FLOW_REDUCE: supported since T6.1.
                 (edit("gwf.npf", "icelltype\n    CONSTANT 0", "icelltype\n    CONSTANT 1"), nothing, s -> all(==(1), s.models[1].npf.icelltype)),
                 (
@@ -492,13 +493,8 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
         @testset "higher tiers fail with strict = true" begin
             expected = Dict(
                 # T6.1: the convertible examples load (twri01, advtidal, bcf2ss-p01a, ...).
-                "ex-gwf-hanix" => "NPF6 option XT3D", "ex-gwf-whirl" => "NPF6 option XT3D",
                 "ex-gwf-spbc" => "GWF6-GWF6 exchange", "ex-gwf-lgrv-lgr" => "more than one GWF6 model",
             )
-            # DISV is supported since T6.4; these two need XT3D (T6.5).
-            for name in ("disvmesh", "u1disv-x")
-                expected["ex-gwf-$name"] = "NPF6 option XT3D"
-            end
             for i in 1:4
                 expected["ex-gwf-u1gwfgwf-s$i"] = "more than one GWF6 model"
             end
@@ -519,6 +515,8 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
                             # T6.2: Newton–Raphson
                             "ex-gwf-bcf2ss-p02a", "ex-gwf-bump-p01a", "ex-gwf-bump-p01c", "ex-gwf-capture",
                             "ex-gwf-nwt-p02a", "ex-gwf-nwt-p03a", "ex-gwf-nwt-p03b", "ex-gwf-zaidel",
+                            # T6.5: XT3D
+                            "ex-gwf-hanix", "ex-gwf-whirl", "ex-gwf-u1disv-x", "ex-gwf-disvmesh",
                         )
                         @test load_simulation(simdir) isa SimulationSpec
                     end
