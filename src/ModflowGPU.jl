@@ -63,10 +63,10 @@ export SimulationSpec, build_dis, build_npf, build_ic, build_sto, build_oc, buil
 public oc_record
 # Output
 export open_head_file, HeadFile, read_head, open_budget_file, BudgetFile, BudgetList, read_budget,
-    read_grb, BinaryGridFile, read_listing_budgets, ListingBudget
+    read_grb, BinaryGridFile, read_listing_budgets, ListingBudget, read_observations, ObservationFile
 public HeadStep, BudgetRecord, GrbVariable, ListingBudgetTerm, MF6BinaryFileError, HNOFLO, HDRY,
     find_head_step, head_kstpkper, head_times, find_budget_records, budget_texts, budget_kstpkper,
-    budget_times, listing_rates, percent_discrepancy
+    budget_times, listing_rates, percent_discrepancy, OBSNODATA
 # For backend authors
 public register_backend!, pin_memory!, free_memory!, host_mapped_zeros, free_device_arrays!
 
@@ -92,6 +92,7 @@ include("input/supported.jl")
 
 # Host-side model description (plain structs)
 include("spec/grid.jl")
+include("input/obs.jl")
 include("spec/packages.jl")
 include("spec/simulation.jl")
 
@@ -150,6 +151,7 @@ include("output/layout.jl")
 include("output/hds.jl")
 include("output/cbc.jl")
 include("output/listing.jl")
+include("output/obs.jl")
 include("output/oc.jl")
 
 # Running a simulation

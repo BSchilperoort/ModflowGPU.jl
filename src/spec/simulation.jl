@@ -154,7 +154,8 @@ One GWF6 model.
   EVT, CHD, as in `gwf.f90` `GWF_MULTIPKG`, then in name file order within a type). MF6
   formulates and reports them in this order.
 - `obs_files`: OBS6 files of the model (the model-level OBS6 packages; package OBS6
-  files are in the package specs).
+  files are in the package specs); `obs`: the model's OBS6 file read (`ObsSpec`, T6.7),
+  or `nothing`.
 """
 Base.@kwdef struct GwfSpec
     name::String
@@ -172,6 +173,7 @@ Base.@kwdef struct GwfSpec
     oc::Union{Nothing, OcSpec} = nothing
     boundaries::Vector{BoundarySpec} = BoundarySpec[]
     obs_files::Vector{String} = String[]
+    obs::Union{Nothing, ObsSpec} = nothing
     file::String = ""
 end
 

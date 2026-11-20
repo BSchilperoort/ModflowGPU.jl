@@ -129,7 +129,7 @@ Float32, which MODFLOW 6 cannot:
 | Binary grid file (`.dis.grb`, `.disv.grb`, `.disu.grb`) | written unless `NOGRB` | not written; MODFLOW 6's file can be read with [`read_grb`](@ref) |
 | Model listing file (`.lst`) | full report | a short version, see below |
 | Simulation listing file (`mfsim.lst`) | written | not written |
-| Observation output (OBS6) | written | not written |
+| Observation output (OBS6) | written every time step | the same files, CSV or `BINARY`; values as MODFLOW 6 prints them (16 significant digits) |
 | CSV files (`BUDGETCSV`, `CSV_OUTER_OUTPUT`, `CSV_INNER_OUTPUT`, `AUTO_FLOW_REDUCE_CSV`) | written | the options are rejected |
 
 ### Listing file
@@ -149,6 +149,20 @@ It does not contain the echo of the input (`PRINT_INPUT`), the flow tables of
 `PRINT_FLOWS`, the solver convergence tables of IMS `PRINT_OPTION`, messages about cells
 that become dry or wet, the memory and timing reports, or the warnings and notes that
 MODFLOW 6 writes there. ModflowGPU reports warnings and notes in the Julia log instead.
+
+### Observation files
+
+The observation files have MODFLOW 6's header, times and number format, with these
+differences:
+
+- they are written only when the run writes output (`write_output = true`);
+- an observation value of zero is written as `0.000000000000000`;
+- `RCH` and `EVT` observations by cell, in a model with convertible cells: at the start of
+  a stress period that reads new recharge (evapotranspiration) data, MODFLOW 6 matches the
+  records in the cells given in the input, ModflowGPU in the highest active cell the record
+  was moved to. The values differ only when that cell (usually in layer 1) is dry at the
+  start of the period; observations by boundary name are not affected;
+- observations of GWF–GWF exchanges are not read (exchanges are not supported).
 
 ## Stepping API and BMI
 

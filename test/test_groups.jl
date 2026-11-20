@@ -27,6 +27,7 @@ const TEST_GROUPS = [
     "amg" => ["unit/amg_test.jl"],
     "picard" => ["unit/picard_test.jl", "unit/backtracking_test.jl"],
     "run" => ["parity/run_test.jl"],
+    "obs" => ["unit/obs_test.jl"],
     "stepping" => ["unit/stepping_test.jl"],
     "bmi" => ["unit/bmi_test.jl", "unit/mf6model_test.jl"],
     "builder" => ["unit/builder_test.jl"],

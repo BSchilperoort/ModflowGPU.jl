@@ -89,6 +89,14 @@ it. Underscore-prefixed helpers are omitted.
 - **spec/grid.jl**: discretization specs (PLAN.md 3.2). `AbstractDisSpec`, `DisSpec`,
   `DisvSpec`, `DisuSpec`, `grid_dims`, `nodes_user`, `idomain_user`. Tests:
   simulation_loader, connectivity.
+- **input/obs.jl** (T6.7; included after spec/grid.jl): OBS6 input (Obs.f90
+  `read_obs_options`/`read_obs_blocks`, Observe.f90 `ConstructObservation`, the ID
+  processors of gwf-obs.f90 and `DefaultObsIdProcessor`). `ObsEntry` (name, type, user
+  node(s) or boundname), `ObsOutputSpec` (one CONTINUOUS FILEOUT block, BINARY),
+  `ObsSpec` (DIGITS, PRINT_INPUT), `OBS_TYPES` (per owner: `:GWF` HEAD/DRAWDOWN/FLOW-JA-FACE,
+  package kinds incl. TO-MVR and WEL-REDUCTION), `OBSNODATA` (3.0e30), `read_obs_file(path,
+  owner, dis)`. Loaded into `GwfSpec.obs` and `BoundarySpec.obs` by input/simulation.jl.
+  Tests: obs.
 - **spec/packages.jl**: GWF package specs. `NpfSpec`, `StoSpec` (`is_transient`), `IcSpec`,
   `OcSpec`, `PrintFormat`, `BoundarySpec{Kind}` (T6.3: `timeseries`, `timearrayseries`
   dictionaries by name, read by the loader, `_load_time_series` in input/simulation.jl,
@@ -420,10 +428,21 @@ it. Underscore-prefixed helpers are omitted.
 - **output/listing.jl**: listing-file budget tables. `ListingBudget`, `ListingBudgetTerm`,
   `read_listing_budgets`, `listing_rates`, `percent_discrepancy`, `write_listing_budget`
   (`budget_ot` layout, T2.8). Tests: output, picard.
+- **output/obs.jl** (T6.7): observation values and files (gwf-obs.f90 `gwf_obs_bd`,
+  BoundaryPackage.f90 `bnd_rp_obs`/`bnd_bd_obs`, gwf-wel.f90 `wel_bd_obs`, Obs.f90
+  `build_headers`/`write_obs_simvals`, ObsUtility.f90 `write_fmtd_obs`/`write_unfmtd_obs`).
+  `ObservationOutput` (built by `ModelOutput` when the model has OBS6 input; FLOW-JA-FACE
+  connections checked with `getjaindex`), `obs_rp!` (records per package observation, at
+  the first step of every period, from `prepare_time_step`), `obs_gather!`
+  (`obs_gather_kernel!`: one launch per source array, one device→host copy per step),
+  `obs_values`, `write_observations` (from `_write_step`), `obs_format` (Fortran G editing
+  as MF6's Intel build: G0 with 16 digits, G20.13 times, DIGITS), `ObservationFile` /
+  `read_observations` (CSV and BINARY, ours and MF6's). Tests: obs, run (parity of the
+  observation files, `_obs_difference` in test/run_parity.jl).
 - **output/oc.jl** (T2.8): output control and run output. `oc_selected` (OC PERIOD
   blocks, ALL/FIRST/LAST/FREQUENCY/STEPS), `ModelOutput` (open HDS/CBC/listing files),
   `write_heads`, `write_budget` (STO-SS, FLOW-JA-FACE, package lists as MF6),
-  `write_head_listing` (PRINT HEAD). Tests: picard, run.
+  `write_head_listing` (PRINT HEAD); T6.7: `ModelOutput.obs`. Tests: picard, run.
 
 ## Running a simulation
 
@@ -433,7 +452,8 @@ it. Underscore-prefixed helpers are omitted.
   solution. Tests: run (parity vs MF6 on Tier 0, ex-gwf-fhb, ts_tas, coupling_rde and IMS
   variants; flopy read-back with MFGPU_FLOPY=1). `_write_step` (step output) copies the
   heads to the host only when OC saves or prints them (T5.2). `run` is a `const` alias
-  of `run_simulation` (T8.2).
+  of `run_simulation` (T8.2). T6.7: `RunResult.obs_files`; `_write_step` writes the
+  observations every step.
 
 - **stepping.jl** (T3.3): libmf6/XMI-like stepping (PLAN.md 3.6). `Simulation`,
   `initialize`, `prepare_time_step`, `prepare_solve`, `solve` (one outer iteration),
@@ -494,7 +514,8 @@ it. Underscore-prefixed helpers are omitted.
 - **grids.jl**: `_synthetic_coupling_dis`, `_synthetic_passthrough_dis`, `_rel_close`,
   `_dis`, `_Lcg`/`_next!`; T6.4: `_dis_as_disv`, `_dis_as_disu` (the DISV/DISU description of
   a DIS grid, same user node numbers).
-- **run_parity.jl** (T3.4, moved from parity/run_test.jl): `_run_parity(name, rundir)`
+- **run_parity.jl** (T3.4, moved from parity/run_test.jl; T6.7: `_obs_outputs`,
+  `_obs_difference` (observation files vs MF6's or the CPU run's), `single_obs_tol`): `_run_parity(name, rundir)`
   (ModflowGPU vs MF6 output in `rundir`: heads, CBC, listing tables, both presets, GPU vs
   CPU; returns the numbers per preset; `single_preconditioner` for `:single`, T6.0; `single_budget_tol` and list records matched by package, T6.4; T6.1: `double_budget_tol`, dry cells compared, `_rounding_bounds` for the `:single` budgets), `_mf6_iterations`, `_head_difference`,
   `_budget_difference`, `_listing_difference`, `RUN_MF6`; T6.5: `_null_space_model` (steady state

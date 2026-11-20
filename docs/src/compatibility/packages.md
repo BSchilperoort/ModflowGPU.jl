@@ -27,8 +27,7 @@ Main.CompatTables.options_table()
 Notes:
 
 - `TS6`, `TAS6` and `OBS6` are `FILEIN` options of the stress packages. Time series are
-  supported (see below). An observation file must exist, but it is not read and no
-  observation output is written yet.
+  supported (see below), and so are observations (see [Observations (OBS6)](@ref)).
 - `PRINT_INPUT`, `PRINT_FLOWS`, `MEMORY_PRINT_OPTION` and `PROFILE_OPTION` are accepted
   and have no effect on the output (see the listing file on
   [Differences from MODFLOW 6](@ref "Listing file")).
@@ -44,6 +43,29 @@ Notes:
   `HEAD PRINT_FORMAT` (accepted, not applied). The `PERIOD` blocks accept `SAVE` and
   `PRINT` of `HEAD` and `BUDGET` with `ALL`, `FIRST`, `LAST`, `FREQUENCY` and `STEPS`.
 - A model can have several packages of one type (for example three RCH packages).
+
+## Observations (OBS6)
+
+Observation files (`OBS6`) are read for the model (`OBS6` in the name file) and for every
+stress package (`OBS6 FILEIN` in its OPTIONS), and their output is written as MODFLOW 6
+writes it: one row per time step, CSV (`time` and one column per observation, the names in
+upper case, the values with 16 significant digits or `DIGITS`) or `BINARY`. The
+observation types are MODFLOW 6's:
+
+| Owner | Types | ID |
+| :-- | :-- | :-- |
+| Model (`OBS6` in the name file) | `HEAD`, `DRAWDOWN` (`STRT` minus head) | a cellid |
+| | `FLOW-JA-FACE` (flow from the second cell into the first) | two cellids |
+| `CHD`, `WEL`, `DRN`, `RIV`, `GHB`, `RCH`, `EVT` | the package type (`CHD`, `WEL`, ...): the flow of the package, positive into the model | a cellid, or a boundary name (`BOUNDNAMES`) |
+| `WEL` | `WEL-REDUCTION`: the rate taken off by `AUTO_FLOW_REDUCE` | a cellid or a boundary name |
+| `WEL`, `DRN`, `RIV`, `GHB` | `TO-MVR` | accepted; always `3.0e30` (MVR is not supported) |
+
+A package observation sums the records that match it (all records of a boundary name,
+or every record in the cell), as MODFLOW 6 does; when no record matches in a time step,
+the value is `3.0e30` ([`ModflowGPU.OBSNODATA`](@ref)). The options `DIGITS` and
+`PRINT_INPUT` are accepted (`PRINT_INPUT` writes nothing, see the listing file on
+[Differences from MODFLOW 6](@ref "Listing file")). [`read_observations`](@ref) reads the
+output files of ModflowGPU and of MODFLOW 6.
 
 ## Model features
 
@@ -131,7 +153,6 @@ input is accepted.
 | :-- | :-- |
 | XT3D with convertible cells (`ICELLTYPE` ≠ 0) or with `NEWTON` | not planned at the moment |
 | More than one model or solution, GWF–GWF exchanges | planned |
-| Observation output (OBS6) | planned; the files are accepted, no output is written |
 | Horizontal flow barriers (HFB6) | not planned at the moment |
 | Ghost-node correction (GNC6) | not planned at the moment |
 | Time-varying hydraulic conductivity and storage (TVK6, TVS6) | not planned at the moment |

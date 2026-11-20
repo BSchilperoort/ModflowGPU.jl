@@ -47,6 +47,7 @@ const GROUP_WEIGHTS = Dict{String, Float64}(
     "picard" => 81,
     "stepping" => 87,
     "bmi" => 92,
+    "obs" => 30,
     "builder" => 73,
     "synthetic" => 88,
     "kernel_hygiene" => 2,

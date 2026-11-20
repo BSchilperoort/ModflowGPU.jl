@@ -37,7 +37,8 @@ end
     ModelOutput
 
 The open output files of a model run: `head` and `budget` (`IO` or `nothing` when OC
-names no file), `listing` (`IO`), the `layout` (`OutputLayout`) and the paths.
+names no file), `listing` (`IO`), the `layout` (`OutputLayout`), the paths and `obs`, the
+observation files (`ObservationOutput`, T6.7; `nothing` without OBS6 input).
 
     ModelOutput(m::GwfModel, simdir, outdir)
 """
@@ -49,6 +50,7 @@ struct ModelOutput
     head_path::String
     budget_path::String
     listing_path::String
+    obs::Union{Nothing, ObservationOutput}
 end
 
 function _output_path(simdir, outdir, name)
@@ -66,15 +68,19 @@ function ModelOutput(m::GwfModel, simdir::AbstractString, outdir::AbstractString
     lp = _output_path(simdir, outdir, lname)
     m.spec.npf.save_specific_discharge && !isempty(bp) &&
         @info "NPF SAVE_SPECIFIC_DISCHARGE: DATA-SPDIS is not written to the budget file yet" m.spec.npf.file
+    # T6.7: the observations first (input errors before any file is opened).
+    obs = ObservationOutput(m, simdir, outdir)
     head = isempty(hp) ? nothing : open(hp, "w")
     budget = isempty(bp) ? nothing : open(bp, "w")
-    return ModelOutput(head, budget, open(lp, "w"), OutputLayout(m.spec.dis), hp, bp, lp)
+    listing = open(lp, "w")
+    return ModelOutput(head, budget, listing, OutputLayout(m.spec.dis), hp, bp, lp, obs)
 end
 
 function Base.close(o::ModelOutput)
     isnothing(o.head) || close(o.head)
     isnothing(o.budget) || close(o.budget)
     close(o.listing)
+    isnothing(o.obs) || close(o.obs)
     return nothing
 end
 

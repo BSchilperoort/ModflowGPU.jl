@@ -110,6 +110,9 @@ The output files have the names given in the input:
   asked by `PRINT BUDGET`) and the iteration counts of each time step. It is shorter than
   MODFLOW 6's listing file: it does not echo the input.
 
+- the **observation files** of OBS6 input (`CONTINUOUS FILEOUT name.csv` blocks; this
+  model has none), one row per time step, as MODFLOW 6 writes them.
+
 To write the output somewhere else, pass `outdir = "path/to/output"`; to write nothing,
 `write_output = false`.
 
@@ -186,10 +189,30 @@ julia> [(t.name, round(t.rate_in), round(t.rate_out)) for t in tables[end].terms
  ("CHD", 0.0, 1400.0)
 ```
 
+### Observation files
+
+A model with OBS6 input writes one CSV file per `CONTINUOUS FILEOUT` block: a `time`
+column (the end of each time step) and one column per observation, named as in the input
+(in upper case), with the same header and number format as MODFLOW 6. Their paths are in
+`result.obs_files`, and [`read_observations`](@ref) reads them (and MODFLOW 6's) into an
+[`ObservationFile`](@ref):
+
+```julia
+result = run_simulation("path/to/ex-gwf-fhb"; outdir = "out")
+result.obs_files      # ["out/ex-gwf-fhb.obs.flow.csv", "out/ex-gwf-fhb.obs.head.csv"]
+obs = read_observations(result.obs_files[2])
+obs.names             # ["H1_2_1", "H1_2_10"]
+obs.times             # the end of every time step
+obs.values[:, 1]      # the heads of observation H1_2_1, one per time step
+```
+
+See [Observations (OBS6)](@ref) for the observation types.
+
 ### In Python with FloPy
 
 The head and budget files are MF6 binary files, so
-[FloPy](https://github.com/modflowpy/flopy) reads them as it reads MODFLOW 6's:
+[FloPy](https://github.com/modflowpy/flopy) reads them as it reads MODFLOW 6's (and the
+observation files with `flopy.utils.Mf6Obs`):
 
 ```python
 import flopy

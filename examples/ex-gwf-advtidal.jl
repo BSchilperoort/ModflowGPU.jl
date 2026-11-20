@@ -10,9 +10,8 @@
 #
 # This is the MODFLOW 6 example
 # [ex-gwf-advtidal](https://modflow6-examples.readthedocs.io/en/latest/_notebooks/ex-gwf-advtidal.html).
-# Its time series come from MODFLOW 6's observation (OBS) output; ModflowGPU does not
-# write observation files yet, so the same quantities are read here from the head and
-# budget files, which hold every time step.
+# Its time series come from MODFLOW 6's observation (OBS) output; ModflowGPU writes the
+# same observation files (CSV), which this page reads.
 #
 # ## Input and the MODFLOW 6 run
 #
@@ -80,48 +79,28 @@ save_figure(fig, "ex-gwf-advtidal-grid")
 # The head in layer 3, row 13, column 8; the flow between the cells in rows 5 and 6 of
 # column 6 in layer 1; and the flows of the estuary: of the GHB cells in row 6 of layers
 # 2 and 3, and of all GHB cells of layers 2 and 3 (the boundary names `ESTUARY-L2` and
-# `ESTUARY-L3`). These are the observations of the MF6 example, here from ModflowGPU's
-# head and budget files (lines) and from MODFLOW 6's observation files (dots, every
-# fifth time step).
+# `ESTUARY-L3`). These are the observations of the MF6 example, from MODFLOW 6's
+# observation files (lines) and ModflowGPU's (circles, every fifth time step).
 
-hf = open_head_file(r.head_file)
-t = ModflowGPU.head_times(hf)
-head = [read_head(hf, k)[8, 13, 3] for k in 1:length(hf)]
-n1, n2 = node(g, 1, 5, 6), node(g, 1, 6, 6)
-pos = findfirst(i -> g.ja[i] == n2, g.ia[n1]:(g.ia[n1 + 1] - 1)) + g.ia[n1] - 1
-icf1 = [vec(f)[pos] for f in read_budget(bf; text = "FLOW-JA-FACE")]
-ghbflows = read_budget(bf; text = "GHB")
-layer(n) = cell_of(g, Int(n))[1]
-at(rec, l, rw, c) = rec.q[findfirst(==(node(g, l, rw, c)), rec.id1)]
-estuary = Dict(
-    "ghb_2_6_10" => [at(x, 2, 6, 10) for x in ghbflows], "ghb_3_6_10" => [at(x, 3, 6, 10) for x in ghbflows],
-    "estuary2" => [sum(x.q[layer.(x.id1) .== 2]) for x in ghbflows], "estuary3" => [sum(x.q[layer.(x.id1) .== 3]) for x in ghbflows],
-)
-
-# The observation files of the MODFLOW 6 run (CSV: time, then one column per observation):
-function read_csv(file)
-    lines = readlines(joinpath(mf6.dir, file))
-    names = lowercase.(split(first(lines), ','))
-    data = [parse.(Float64, split(l, ',')) for l in lines[2:end]]
-    return Dict(n => [d[k] for d in data] for (k, n) in enumerate(names))
-end
-obs_head, obs_flow, obs_ghb = read_csv.(("ex-gwf-advtidal.obs.head.csv", "ex-gwf-advtidal.obs.flow.csv", "ex-gwf-advtidal.ghb.obs.csv"))
-
+obs_names = ("ex-gwf-advtidal.obs.head.csv", "ex-gwf-advtidal.obs.flow.csv", "ex-gwf-advtidal.ghb.obs.csv")
+pairs = [obs_pair(mf6.dir, runs[:double], f) for f in obs_names]
 fig = Figure(; size = (760, 820))
 series = [
-    ("head (m)", ["h1_13_8" => head], obs_head),
-    ("flow (m³/d)", ["icf1" => icf1], obs_flow),
-    ("flow (m³/d)", [k => estuary[k] for k in ("ghb_2_6_10", "ghb_3_6_10", "estuary2", "estuary3")], obs_ghb),
+    ("head (m)", ["h1_13_8"]),
+    ("flow (m³/d)", ["icf1"]),
+    ("flow (m³/d)", ["ghb_2_6_10", "ghb_3_6_10", "estuary2", "estuary3"]),
 ]
-for (i, (ylabel, curves, obs)) in enumerate(series)
+for (i, (ylabel, names)) in enumerate(series)
     local ax = Axis(fig[i, 1]; xlabel = "time (d)", ylabel)
-    for (k, (name, v)) in enumerate(curves)
-        lines!(ax, t, v; color = Makie.wong_colors()[k], label = name)
-        scatter!(ax, obs["time"][1:5:end], obs[name][1:5:end]; color = Makie.wong_colors()[k], markersize = 4)
-    end
+    obs_plot!(ax, pairs[i], names; stride = 5)
     Legend(fig[i, 2], ax; labelsize = 9, framevisible = false)
 end
 save_figure(fig, "ex-gwf-advtidal-obs")
+
+# The largest difference of each observation between ModflowGPU and MODFLOW 6 over all
+# time steps:
+
+obs_difference_table(mf6.dir, runs, obs_names; unit = "m or m³/d", flows = obs_names[2:3])
 
 # ## Comparison with MODFLOW 6
 #

@@ -18,7 +18,8 @@
 # printed to the listing file (PRINT_INPUT, PRINT_FLOWS, PRINT_OPTION, HEAD PRINT_FORMAT,
 # MEMORY_PRINT_OPTION, ...): they are accepted and recorded in the spec, and T2.8
 # decides how much of that printing it reproduces. Output files are accepted and
-# owned by later cards: DIS GRB6 and OC HEAD/BUDGET FILEOUT by T2.8, OBS6 files by T6.7.
+# owned by later cards: DIS GRB6 and OC HEAD/BUDGET FILEOUT by T2.8, OBS6 files by T6.7
+# (read and written since T6.7: src/input/obs.jl, src/output/obs.jl).
 # Time series (T6.3): TS6 files and list values given as time-series names (`TsRef`, in
 # any column whose DFN entry allows a time series, auxiliary variables included), TAS6
 # files (RCHA, EVTA: `TAS6 FILEIN`) and TIMEARRAYSERIES arrays are the `:timeseries`

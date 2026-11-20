@@ -26,7 +26,8 @@ using TOML: TOML
 export example_run, mf6_run, quietly, cache_dir, repo_path, run_modflowgpu, compare_with_mf6, comparison_table, parity_row,
     DisGrid, read_dis_grid, VertexGrid, read_vertex_grid, read_grid, input_nodes, node, cell_of, layer_values, specific_discharge, budget_cells,
     map_heatmap!, map_contour!, map_grid!, map_cells!, map_vectors!, section_heatmap!, section_grid!,
-    section_contour!, budget_bars, difference_map, save_figure, intformat, expformat, BC_COLORS, mask_inactive
+    section_contour!, budget_bars, difference_map, save_figure, intformat, expformat, BC_COLORS, mask_inactive,
+    obs_pair, obs_masked, obs_plot!, obs_difference_table
 
 const DOCS = @__DIR__
 const ROOT = dirname(DOCS)
@@ -361,6 +362,94 @@ function comparison_table(
     end
     println(io)
     println(io, "Budget: the largest difference of a budget-file flow or a listing-table rate, relative to the total inflow of its time step.")
+    return Markdown.parse(String(take!(io)))
+end
+
+# --- Observation output ----------------------------------------------------------------------
+
+"""
+    obs_pair(mf6dir, run, file) -> NamedTuple
+
+The observation file `file` (a file name such as `"ex-gwf-fhb.obs.head.csv"`) of a ModflowGPU
+run (`run.result.obs_files`, from [`run_modflowgpu`](@ref)) and of the mf6 run in `mf6dir`,
+as `(; gpu, mf6)`, two `ObservationFile`s.
+"""
+function obs_pair(mf6dir::AbstractString, run, file::AbstractString)
+    gpu = only(filter(f -> basename(f) == file, run.result.obs_files))
+    return (; gpu = read_observations(gpu), mf6 = read_observations(joinpath(mf6dir, file)))
+end
+
+"The column of observation `name` of `obs` as `Float64`s, `NaN` where the package observation matched no record (`ModflowGPU.OBSNODATA`)."
+function obs_masked(obs, name::AbstractString)
+    k = findfirst(==(uppercase(name)), obs.names)
+    k === nothing && error("observation $name is not in the file (has $(obs.names))")
+    return [v >= 0.99 * ModflowGPU.OBSNODATA ? NaN : Float64(v) for v in obs.values[:, k]]
+end
+
+"""
+    obs_plot!(ax, pair, names; colors, stride = 1, labels = names)
+
+Draw the observations `names` of `pair` (from [`obs_pair`](@ref)) on `ax`: mf6 as lines and
+ModflowGPU as open circles (every `stride`-th time step), one colour per observation.
+"""
+function obs_plot!(ax, pair, names; colors = Makie.wong_colors(), stride::Integer = 1, labels = names)
+    for (k, name) in enumerate(names)
+        color = colors[mod1(k, length(colors))]
+        lines!(ax, pair.mf6.times, obs_masked(pair.mf6, name); color, label = "MODFLOW 6 $(labels[k])")
+        i = 1:stride:length(pair.gpu.times)
+        scatter!(ax, pair.gpu.times[i], obs_masked(pair.gpu, name)[i]; color = :transparent, strokecolor = color, strokewidth = 1, markersize = 6, label = "ModflowGPU $(labels[k])")
+    end
+    return ax
+end
+
+"""
+    obs_difference_table(mf6dir, runs, files; unit = "m", flows = (), dh_limit_double = LIMITS.double.dh,
+                         flow_limit_double = LIMITS.double.budget, flow_limit_single = LIMITS.single.budget) -> Markdown.MD
+
+The largest absolute difference between the observations of the ModflowGPU runs `runs` (a
+`Dict` precision => run) and of mf6, over all time steps, for every observation of every file
+in `files` (steps where either has no data are left out). `unit` is the unit of the values.
+The observations of the files in `flows` are flows, the others heads.
+Throws if the time steps or the observation names differ, or if a difference exceeds the
+limits of [`comparison_table`](@ref): heads `dh_limit_double` (`:double`, `:mixed`) and
+`LIMITS.single.dh` (`:single`) in length units; flows relative to the largest |value| of the
+observation in mf6's file, `flow_limit_double` and `flow_limit_single` (the budget limits; the
+parity tests scale the flow observations by the total inflow of the step, which is larger).
+"""
+function obs_difference_table(
+        mf6dir::AbstractString, runs, files; unit = "m", flows = (), dh_limit_double = LIMITS.double.dh,
+        flow_limit_double = LIMITS.double.budget, flow_limit_single = LIMITS.single.budget,
+    )
+    precs = [p for p in (:double, :mixed, :single) if haskey(runs, p)]
+    io = IOBuffer()
+    println(io, "| File | Observation | ", join(("max \\|difference\\| ($unit), `:$p`" for p in precs), " | "), " |")
+    println(io, "| :-- | :-- | ", join(("--:" for _ in precs), " | "), " |")
+    for file in files
+        pairs = Dict(p => obs_pair(mf6dir, runs[p], file) for p in precs)
+        isflow = file in flows
+        for (k, name) in enumerate(pairs[first(precs)].mf6.names)
+            ds = map(precs) do p
+                pr = pairs[p]
+                pr.gpu.names == pr.mf6.names && length(pr.gpu.times) == length(pr.mf6.times) || error("$file: observations of ModflowGPU and mf6 differ")
+                a, b = obs_masked(pr.gpu, name), obs_masked(pr.mf6, name)
+                isnan.(a) == isnan.(b) || error("$file, $name, :$p: ModflowGPU and mf6 have no data in different time steps")
+                d = [abs(x - y) for (x, y) in zip(a, b) if !isnan(x) && !isnan(y)]
+                isempty(d) && return NaN
+                dmax = maximum(d)
+                if isflow
+                    scale = maximum(abs, filter(!isnan, b))
+                    lim = p === :single ? flow_limit_single : flow_limit_double
+                    rel = scale == 0 ? dmax : dmax / scale
+                    rel < lim || error("$file, $name, :$p: max |difference| $dmax is $rel of the largest |value| $scale, exceeds $lim")
+                else
+                    lim = p === :single ? LIMITS.single.dh : dh_limit_double
+                    dmax < lim || error("$file, $name, :$p: max |difference| $dmax exceeds $lim")
+                end
+                dmax
+            end
+            println(io, "| `", file, "` | `", name, "` | ", join((_e(d) for d in ds), " | "), " |")
+        end
+    end
     return Markdown.parse(String(take!(io)))
 end
 

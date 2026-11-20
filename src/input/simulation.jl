@@ -51,7 +51,8 @@
 # - NPF option combinations rejected in `check_options` (NEWTON with PERCHED, XT3D with
 #   ALTERNATIVE_CELL_AVERAGING, ...) are checked by `check_npf_options` (src/gwf/npf.jl,
 #   T2.2), not here.
-# - File references (TS6, TAS6, OBS6) must exist; their contents are read by T6.3/T6.7.
+# - File references (TS6, TAS6, OBS6) must exist; they are read (T6.3; OBS6 by T6.7,
+#   `read_obs_file`: model and package observations, `GwfSpec.obs`/`BoundarySpec.obs`).
 
 const LENMODELNAME = 16    # ConstantsModule
 const LENPACKAGENAME = 16
@@ -491,6 +492,13 @@ function _load_boundary(ld::_Loader, e::PackageEntry, mname, dis::AbstractDisSpe
     ts_files = _filein(ld, o, "ts6_filename", "TS6")
     tas_files = _filein(ld, o, "tas6_filename", "TAS6")
     timeseries, timearrayseries = _load_time_series(ld, f, ts_files, tas_files, periods, g)
+    obs_files = _filein(ld, o, "obs6_filename", "OBS6")
+    # BoundaryPackage.f90 bnd_options: one OBS6 file per package.
+    length(obs_files) > 1 && input_error(
+        option_line(o, "OBS6"), "Multiple OBS6 keywords detected in OPTIONS block. Only one OBS6 entry allowed for a package.",
+    )
+    obs = isempty(obs_files) ? nothing :
+        read_obs_file(_resolve_path(only(obs_files), ld.simdir), kind, dis; simdir = ld.simdir, file = only(obs_files))
     return BoundarySpec{kind}(;
         name = e.name, readasarrays, auxnames, auxmultname, auxmultcol,
         auxdepthname = option(o, "auxdepthname", ""), boundnames = option(o, "boundnames", false),
@@ -501,7 +509,7 @@ function _load_boundary(ld::_Loader, e::PackageEntry, mname, dis::AbstractDisSpe
         flow_reduction_length = option(o, "flow_reduction_length", false),
         auto_flow_reduce_auxname = option(o, "auto_flow_reduce_auxname", ""),
         afrcsv_file = option(o, "afrcsvfile", ""), mover = false,
-        ts_files, tas_files, obs_files = _filein(ld, o, "obs6_filename", "OBS6"), timeseries, timearrayseries,
+        ts_files, tas_files, obs_files, obs, timeseries, timearrayseries,
         schema, periods, file = _rel(ld, f.path),
     )
 end
@@ -563,11 +571,14 @@ function _load_gwf(ld::_Loader, fname, mname, np::Integer)
     ic = _load_ic(ld, entry("IC6"), mname, dis)
     oc = isnothing(entry("OC6")) ? nothing : _load_oc(ld, entry("OC6"), mname, np)
     obs = String[]
+    obsspec = nothing
     for e in entries
         e.ftype == "OBS6" || continue
         path = _resolve_path(e.file, ld.simdir)
         isfile(path) || throw(MF6InputError(path, 0, "OBS6 input file not found"))
         push!(obs, e.file)
+        # T6.7: gwf-obs.f90 (one OBS6 per model: `_model_packages`).
+        obsspec = read_obs_file(path, :GWF, dis; simdir = ld.simdir, file = e.file)
     end
     # Stress packages in MF6's order: by type (GWF_MULTIPKG), then name file order.
     boundaries = BoundarySpec[]
@@ -583,7 +594,7 @@ function _load_gwf(ld::_Loader, fname, mname, np::Integer)
         name = mname, list_file = option(o, "list", ""), print_input = option(o, "print_input", false),
         print_flows = option(o, "print_flows", false), save_flows = option(o, "save_flows", false),
         newton, newton_under_relaxation = option(o, "under_relaxation", false), packages = entries,
-        dis, npf, ic, sto, oc, boundaries, obs_files = obs, file = _rel(ld, nam.path),
+        dis, npf, ic, sto, oc, boundaries, obs_files = obs, obs = obsspec, file = _rel(ld, nam.path),
     )
 end
 

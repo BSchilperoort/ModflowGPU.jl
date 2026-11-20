@@ -30,9 +30,10 @@ ModflowGPU (made from `validation/examples.toml` in the repository when the manu
 built), smallest tier first. Every example that ModflowGPU supports has a page; the others
 need a feature that is planned (see [Supported packages](@ref)), and the card that adds
 the feature adds their page. Examples with the packages that are out of scope (SFR, LAK,
-MAW, UZF, CSUB, transport, ...) are not listed. The examples with observations (OBS) run,
-but ModflowGPU does not write observation files yet (planned, T6.7), so their pages read
-the same values from the head and budget files.
+MAW, UZF, CSUB, transport, ...) are not listed. ModflowGPU writes the observation files
+(OBS) of the examples that have them; the pages of `ex-gwf-fhb`, `ex-gwf-advtidal` and
+`ex-gwf-rad-disu` show them against those of MODFLOW 6 (the `ex-gwf-maw-p03` page shows the
+head and budget files only).
 
 ```@eval
 Main.ExampleTools.gallery_index_table()
