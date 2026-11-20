@@ -270,6 +270,8 @@ function prepare_time_step(s::Simulation, dt::Real = 0.0)
     step = s.steps[s.istep]
     window = time_step_window(s.steps, s.istep)
     step.kstp == 1 && @timed_section :period_data apply_period!(s.model, step.kper; window)
+    # Observations (T6.7, `bnd_rp_obs`): the records of the package observations.
+    step.kstp == 1 && !isnothing(s.output) && !isnothing(s.output.obs) && obs_rp!(s.output.obs, s.model)
     # Time series (T6.3): `idm_ts_advance` after `tdis_set_timestep`.
     @timed_section :period_data advance_time_series!(s.model, window)
     s.stage = :prepared_time_step

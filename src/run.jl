@@ -14,6 +14,9 @@ What [`run_simulation`](@ref) returns. Fields:
   ([`ModelBudget`](@ref));
 - `head_file`, `budget_file`, `listing_file`: the paths of the output files (`""` when
   not written);
+- `obs_files`: the paths of the observation output files (OBS6 `CONTINUOUS FILEOUT`; the
+  model's, then the stress packages'), empty without observations or output; read them
+  with [`read_observations`](@ref);
 - `T`, `Ts`, `Tp`: the precision types used (see [`resolve_precision`](@ref));
 - `model`: the model, still on the device (internal; its memory is released by the
   garbage collector).
@@ -37,6 +40,7 @@ struct RunResult{M <: GwfModel}
     head_file::String
     budget_file::String
     listing_file::String
+    obs_files::Vector{String}
 end
 
 """
@@ -142,7 +146,8 @@ function run_simulation(
     out = s.output
     paths = isnothing(out) ? ("", "", "") : (out.head_path, out.budget_path, out.listing_path)
     allconv = all(r -> r.outer.converged, s.results)
-    return RunResult(s.model, s.T, s.Ts, s.Tp, s.results, s.budgets, absolute_heads(s.model), allconv, paths...)
+    obs = (isnothing(out) || isnothing(out.obs)) ? String[] : copy(out.obs.paths)
+    return RunResult(s.model, s.T, s.Ts, s.Tp, s.results, s.budgets, absolute_heads(s.model), allconv, paths..., obs)
 end
 
 """
@@ -182,6 +187,8 @@ function _write_step(out::ModelOutput, m::GwfModel, step::TimeStep, r::OuterResu
         terms = [(t.name, t.package, t.cum_in, t.cum_out, t.rate_in, t.rate_out) for t in b.terms]
         write_listing_budget(io, step.kstp, step.kper, terms)
     end
+    # Observations (T6.7, gwf_ot_obs): every time step.
+    isnothing(out.obs) || write_observations(out.obs, m, step.totim)
     r.converged || @printf(io, "\n         ****FAILED TO MEET SOLVER CONVERGENCE CRITERIA IN TIME STEP %d OF STRESS PERIOD %d****\n", step.kstp, step.kper)
     @printf(io, "\n TIME STEP LENGTH = %.6g, STRESS PERIOD TIME = %.6g, TOTAL SIMULATION TIME = %.6g\n", step.delt, step.pertim, step.totim)
     flush(io)
