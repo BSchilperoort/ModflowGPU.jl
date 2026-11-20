@@ -83,6 +83,8 @@ it. Underscore-prefixed helpers are omitted.
   `check_feature` (T6.4: `:disv`, `:disu` supported; DISV/DISU options; T6.1: `:convertible`,
   `:convertible_storage`, NPF THICKSTRT/VARIABLECV/DEWATERED/PERCHED/REWET, WEL
   AUTO_FLOW_REDUCE). Tests: simulation_loader, input_lists.
+  T6.6: `:multi_model` and `:exchange` supported, `:multi_solution` (more than one solution)
+  not; `SUPPORTED_OPTIONS` of `exg-gwfgwf`.
 
 ## Model description (host specs, plain structs)
 
@@ -97,6 +99,8 @@ it. Underscore-prefixed helpers are omitted.
   package kinds incl. TO-MVR and WEL-REDUCTION), `OBSNODATA` (3.0e30), `read_obs_file(path,
   owner, dis)`. Loaded into `GwfSpec.obs` and `BoundarySpec.obs` by input/simulation.jl.
   Tests: obs.
+  T6.6: owner `:GWFGWF` (`FLOW-JA-FACE`; `cells` holds the exchange number, or a boundary
+  name), read for GWF-GWF exchanges.
 - **spec/packages.jl**: GWF package specs. `NpfSpec`, `StoSpec` (`is_transient`), `IcSpec`,
   `OcSpec`, `PrintFormat`, `BoundarySpec{Kind}` (T6.3: `timeseries`, `timearrayseries`
   dictionaries by name, read by the loader, `_load_time_series` in input/simulation.jl,
@@ -105,10 +109,13 @@ it. Underscore-prefixed helpers are omitted.
 - **spec/simulation.jl**: simulation-level specs. `TdisSpec` (`nper`), `ImsSpec`
   (`ims_defaults`), `SolutionGroupSpec`, `PackageEntry`, `GwfSpec`, `ExchangeSpec`,
   `SimulationSpec`, `model_spec`. Tests: simulation_loader.
+  T6.6: `ExchangeSpec.obs` (the exchange's OBS6 file read, or `nothing`).
 - **input/simulation.jl**: simulation loader, mfsim.nam → `SimulationSpec` (TDIS, IMS,
   GWF name files, DIS/DISV/DISU, IC, NPF, STO, OC, boundaries, exchanges).
   `load_simulation`, `LENMODELNAME`, `LENPACKAGENAME`. Tests: simulation_loader (examples
   need `reference/`).
+  T6.6: GWF6-GWF6 options checked with `strict`, the exchange OBS6 file read and its
+  exchange numbers / boundary names checked (`gwf_gwf_rp_obs`).
 
 ## Discretization and connectivity (host)
 
@@ -193,6 +200,25 @@ it. Underscore-prefixed helpers are omitted.
   packages, storage, matrix row, flux-form residual; RHS option: matrix of the primary terms),
   `xt3d_flowja!` (`xt3d_flowja_kernel!`). Tests: xt3d (K-orthogonal reduction, libmf6 oracle,
   universal residual, RHS and test/models/xt3d run parity), run.
+  T6.6: `xt3d_assemble` (the structure, matrix and `sb` from flux terms per connection;
+  `xt3d_setup` ends with it, and the XT3D of a multi-model solution uses it).
+- **gwf/exchange.jl** (T6.6; included after gwf/xt3d.jl): multi-model solutions and GWF-GWF
+  exchanges, host setup in Float64 (NumericalSolution.f90 `sln_df`/`sln_connect`,
+  exg-gwfgwf.f90 `validate_exchange`, `calc_cond_sat`, `condcalc`, `gwf_gwf_fc`; the
+  interface model of XT3D on an exchange: SpatialModelConnection.f90, GridConnection.f90,
+  GwfGwfConnection.f90). The models of the solution become one merged model: `ModelPart`
+  (spec, own conn and NpfSetup, node/user offsets, `jamap` model CSR entry → merged entry,
+  package range), `ExchangeSetup` (name `GWF-GWF_<id>`, model indices, nodes per model and
+  merged, `pos` = merged entry of the flow into the model-1 cell, `condsat`),
+  `SolutionSetup` (models, exchanges, merged `conn` (sorted rows, grid `:disu`) and
+  `setup`, `exgentry` per CSR entry, `xt3d`, merged `ic` and `sto`); `solution_setup(sim)`
+  (checks: confined models only, MF6's exchange errors), `_exchange_condsat`,
+  `_merge_properties`, `_merge_sto`, `_solution_xt3d` (flux terms: conductance, each model's
+  own XT3D, and `_interface_xt3d!` on `_interface_grid` (global coordinates, nozee false) for
+  `_interface_connections`: the exchange connections and, with XT3D in the owner model, the
+  connections of its exchange cells), `solution_colors` (per-model red–black made
+  consistent across exchanges, else greedy), `ModelView` (one model of the merged model; the
+  accessors `_vspec`, `_vconn`, `_vrange`, ... are in gwf/model.jl). Tests: exchange.
 - **gwf/ic.jl**: IC (gwf-ic.f90 `ic_ar`). `initial_heads` (starting heads per reduced
   node as offsets, Float64 host or device copy in `T`). Tests: sto.
 - **gwf/sto.jl**: storage (gwf-sto.f90 `sto_rp`/`sto_fc`/`sto_cq`/`sto_bd`,
@@ -244,8 +270,11 @@ it. Underscore-prefixed helpers are omitted.
   window, r)` re-evaluates them per step and restages `bound` (multiplier and offsets in
   Float64, as period data; after a stepping API write the series replace their columns of
   `bound_user`); `tswindow`. Tests: timeseries, run, assembly, sto.
+  T6.6: `BoundaryPackage.uoffset` (keyword `uoffset`: a package of a model of a merged
+  model resolves its cells through the solution's user numbering, `_reduced(pkg, nu)`).
 - **boundaries/chd.jl**: CHD (gwf-chd.f90; see `docs/dev/mf6_notes.md`). `apply_chd_heads!`,
   `calc_chd_rate!`. Tests: boundaries (parity vs MF6 CBC).
+  T6.6: `calc_chd_rate!(...; exg)` skips the exchange entries (`_is_exchange`).
 - **boundaries/wel.jl**, **rch.jl**, **ghb.jl**: WEL, RCH (list and RCHA arrays, cell
   area), GHB formulations (`formulate_record` methods). Tests: boundaries. T6.1: WEL
   AUTO_FLOW_REDUCE (`WelAfr` record kind, `sq_saturation`, `record_kind`; tests: run, model
@@ -373,6 +402,11 @@ it. Underscore-prefixed helpers are omitted.
   `nothing`) and `scsr` (the system/solver CSR: `csr`, or the extended XT3D stencil; `sys`,
   the Krylov solver, the colouring and PTC use it; `csr` stays the connectivity for flows);
   `formulate!` calls `xt3d_formulate_system!` for XT3D models.
+  T6.6: fields `solution` (`SolutionSetup` or `nothing`) and `exgentry` (device Bool per CSR
+  entry), `GwfModel(backend, T, sol::SolutionSetup, nper)` (the merged model: packages with
+  `uoffset`, merged storage and starting heads), `model_views`, the view accessors
+  (`_vspec`, `_vconn`, `_vrange`, `_voffset`, `_vpackages`, `_vmodel`, `_vsetup`, `_vname`;
+  a `GwfModel` is its own view), `absolute_heads(::ModelView)`.
 - **solver/underrelax.jl**: `sln_underrelax`. `UnderRelaxation` (SIMPLE, COOLEY host
   scalars, DBD device state), `underrelax!` (`relax_update_kernel!`,
   `dbd_update_kernel!`); Adapt. Tests: picard (vs a host port), run (variants vs MF6).
@@ -404,11 +438,14 @@ it. Underscore-prefixed helpers are omitted.
   update, `PicardSolver.ptc`; `FLOAT32_CLOSURES.dvclose_head_cap` (the head-resolution
   OUTER_DVCLOSE floor is at most 1 cm).
   Tests: picard, run, stepping.
+  T6.6: the colouring of a merged model is `solution_colors`.
 - **budget.jl**: `gwf_cq`/`gwf_bd`. `npf_flowja!` (one work item per entry, T4.5; T6.1 `connection_terms`, STO-SY term), `calc_flows!` (NPF, STO, packages with
   `bnd_cf` + `simvals`, CHD `calc_chd_rate!`, `csr_diagsum`), `BudgetTerm`, `ModelBudget`
   (`total_rate_in`/`_out`, `total_cum_in`/`_out`, `percent_discrepancy`,
   `cum_percent_discrepancy`), `BudgetAccumulator` (Adapt), `model_budget!` (device reductions,
   host cumulative volumes), `budget_text` (CBC text per package). Tests: picard, run.
+  T6.6: `ModelBudget.model` (the model's name); `calc_flows!` passes `exgentry` to the CHD
+  rate.
 
 ## MF6 output files (host)
 
@@ -439,10 +476,24 @@ it. Underscore-prefixed helpers are omitted.
   as MF6's Intel build: G0 with 16 digits, G20.13 times, DIGITS), `ObservationFile` /
   `read_observations` (CSV and BINARY, ours and MF6's). Tests: obs, run (parity of the
   observation files, `_obs_difference` in test/run_parity.jl).
+  T6.6: `ObservationOutput(::ModelView, ...)` (nodes, connections and packages of the
+  merged model, `_obs_node`, `_obs_ja`).
 - **output/oc.jl** (T2.8): output control and run output. `oc_selected` (OC PERIOD
   blocks, ALL/FIRST/LAST/FREQUENCY/STEPS), `ModelOutput` (open HDS/CBC/listing files),
   `write_heads`, `write_budget` (STO-SS, FLOW-JA-FACE, package lists as MF6),
   `write_head_listing` (PRINT HEAD); T6.7: `ModelOutput.obs`. Tests: picard, run.
+  T6.6: `ModelOutput`, `write_heads`, `write_budget(...; exflows)`, `write_head_listing`
+  take a `GwfModel` or a `ModelView`; `model_flowja` (a model's FLOW-JA-FACE; the diagonal
+  of a constant-head cell without its exchange flows), `_model_values`.
+- **solution.jl** (T6.6; included after output/oc.jl): multi-model solutions at run time
+  (exg-gwfgwf.f90 `gwf_gwf_calc_simvals`, `gwf_gwf_bd`, `gwf_gwf_chd_bd`,
+  `gwf_gwf_bdsav_model`, `gwf_gwf_rp_obs`, `gwf_gwf_save_simvals`). `ExchangeFlows` /
+  `exchange_flows!` (gather of the exchange flows from the merged FLOW-JA-FACE, one copy
+  per step), `exchange_simvals`, `BudgetAccumulator(::ModelView)` and
+  `model_budget!(acc, v, step, x)` (per model: STO-SS, packages, then FLOW-JA-FACE and
+  FLOW-JA-FACE-CHD per exchange in MF6's order, `_exchange_rows`), `write_exchange_budget`
+  (the IMETH 6 lists of exchanges with SAVE_FLOWS), `ExchangeObservations` /
+  `write_exchange_observations` (exchange OBS6). Tests: exchange, run.
 
 ## Running a simulation
 
@@ -454,6 +505,9 @@ it. Underscore-prefixed helpers are omitted.
   heads to the host only when OC saves or prints them (T5.2). `run` is a `const` alias
   of `run_simulation` (T8.2). T6.7: `RunResult.obs_files`; `_write_step` writes the
   observations every step.
+  T6.6: several models: `RunResult.models` (per model `name`, `nodes` (range in `heads`),
+  the output files), `heads` and `budgets` of every model; `_listing_header` and
+  `_write_step` take a view.
 
 - **stepping.jl** (T3.3): libmf6/XMI-like stepping (PLAN.md 3.6). `Simulation`,
   `initialize`, `prepare_time_step`, `prepare_solve`, `solve` (one outer iteration),
@@ -474,6 +528,11 @@ it. Underscore-prefixed helpers are omitted.
   (T8.5: "addresses documented" checks that `var_addresses` of a model with every stress
   package matches the address table of `docs/src/coupling/stepping.md`; a new address
   needs a row there).
+  T6.6: several models in one solution: `Simulation` fields `views`, `models` (names),
+  `outputs`, `accs`, `exflows`, `exobs`; `initialize` builds the merged model
+  (`solution_setup`) when the simulation has several models or exchanges; addresses of every
+  model (`_find_view`, `_find_package(s, model, package)`, `_view_variable`: device X, XOLD,
+  IBOUND as views, host NODELIST in the model's numbering).
 - **bmi.jl** (T3.3, T8.9): BasicModelInterface methods on `Simulation`, all 41 functions
   of the spec. `BMI.initialize(Simulation, config_file)` (no keywords; `_bmi_config`
   reads the TOML configuration file, or takes a directory / mfsim.nam with defaults),
@@ -483,6 +542,8 @@ it. Underscore-prefixed helpers are omitted.
   records / BOUND as vectors; coordinates with XORIGIN, YORIGIN, ANGROT; unstructured
   faces and edges from the DISV/DISU vertices), `_bmi_unsupported` (the ArgumentError of
   unsupported functions). Tests: bmi (conformance on DIS, DISV, DISU), stepping.
+  T6.6: the grids of every model, one model after the other (`_bmi_ngrids`,
+  `_bmi_grid_base`, `_bmi_view_grid`).
 - **mf6model.jl** (T8.10): `MF6Model`, libmf6's BMI/XMI as ModflowInterface.jl wraps it
   (`ModflowModel`), a handle (`source`, `settings`, `simulation`, `last_error`, `arrays`)
   around a `Simulation`; every call forwards to the stepping API (`_mf6call` keeps the
@@ -492,10 +553,13 @@ it. Underscore-prefixed helpers are omitted.
   lacks throw (`_mf6_not_libmf6`). Simulation's BMI (bmi.jl) is separate and unchanged.
   Tests: bmi (`test/unit/mf6model_test.jl`: validation/bmi_script.jl on MF6Model and,
   via validation/libmf6_bmi.jl, on libmf6 6.3.0 and 6.8.2).
+  T6.6: grid k = model k of the solution (libmf6's model ids).
 
 ## Test helpers (`test/`, always loaded)
 
-- **test_groups.jl**: `TEST_GROUPS` (group => files). **parallel.jl** (T6.8):
+- **test_groups.jl**: `TEST_GROUPS` (group => files; T6.6: group `exchange`,
+  test/parity/exchange_test.jl: universal residual and libmf6 oracle of the Tier 7 merged
+  models, exchange unit tests, a two-model simulation against mf6). **parallel.jl** (T6.8):
   `run_parallel_tests`, the `MFGPU_TEST_JOBS=N` driver (work units, `GROUP_WEIGHTS`,
   `GROUP_SPLITS` of run by model through `MFGPU_TEST_MODELS`, which accepts
   `!a,b` = all but those).
@@ -508,6 +572,7 @@ it. Underscore-prefixed helpers are omitted.
   `RELAXED_REFERENCE_EXAMPLES`); T6.1: the Tier 3 convertible examples in
   `EXTRA_PARITY_EXAMPLES`; `rad_disu_confined` (T6.4:
   ex-gwf-rad-disu with ICONVERT 0, written from the reference run at test time).
+  T6.6: Tier 7 (several models, exchanges) in `parity_examples`.
 - **libmf6_oracle.jl**: libmf6 subprocess oracle. `LIBMF6_ENV`, `libmf6_available`,
   `run_libmf6_script` (validation/libmf6_connectivity.jl, libmf6_first_solve.jl), `libmf6_connectivity`, `write_dis_simulation` (synthetic DIS sims; DISV/DISU since T6.4),
   `_libmf6_first_solve` (T6.5: moved from the assembly test; SLN_1 IA/JA/AMAT/RHS/X0 after the first solve).
@@ -521,6 +586,8 @@ it. Underscore-prefixed helpers are omitted.
   `_budget_difference`, `_listing_difference`, `RUN_MF6`; T6.5: `_null_space_model` (steady state
 with WEL/RCH only: heads compared after removing the mean difference, `_head_difference(...; shift)`,
 `_maxdiff`). Used by groups run, synthetic.
+  T6.6: `_run_parity` on several models (each model's files, the exchange observation
+  files; periodic exchange lists matched in file order in `_budget_difference`).
 - **residual.jl**: `to_test_device`, `flux_residual` (device `flux_residual!` → (rel, rounding
   bound)), `residual_stats`, `host_flux_residual` (the T2.3 host loop, validates the kernel).
 - **models/coupling_rde/**: synthetic coupling-like model (2 × 12 × 15, confined, steady +

@@ -968,3 +968,30 @@ ex-gwf-curve-90 in `:single`, `:mixed` and `:double` with the default preconditi
 table equals the previous table (cf78ba7) or, where T6.2a changed it, a run of
 docs/parity/collect.jl on `main`. Cost on global5m: none
 (benchmark/results/2026-11-18-T6.2.md).
+
+## Several models and GWF-GWF exchanges: the Tier 7 examples (T6.6)
+
+The models of a solution run as one merged model (src/gwf/exchange.jl), so the precision
+rules apply unchanged: each model keeps its own reference heads, and an exchange
+connection between two models is a connection of the merged CSR with `Δr = r_m − r_n`
+across the models. Run parity against the tight reference runs (CPU, default
+preconditioner MC-ILU0; the solution is coloured red–black per model where the exchange
+connections allow, else greedily):
+
+| Example | Models, cells | `:double` max \|Δh\| | `:single` max \|Δh\| | `:single` CBC / total in | outer/inner `:double` (MF6) |
+| :-- | :-- | --: | --: | --: | :-- |
+| ex-gwf-u1gwfgwf-s1 | 2, 121 | 1.6e-12 | 1.5e-7 | 1.7e-7 | 2/17 (2/16) |
+| ex-gwf-u1gwfgwf-s2 (XT3D in the models) | 2, 121 | 2.2e-13 | 5.7e-8 | 2.3e-7 | 2/13 (2/12) |
+| ex-gwf-u1gwfgwf-s3 (XT3D models and exchange) | 2, 121 | 1.7e-13 | 1.9e-7 | 2.3e-7 | 2/13 (2/11) |
+| ex-gwf-u1gwfgwf-s4 (XT3D on the exchange) | 2, 121 | 2.3e-13 | 1.9e-7 | 2.3e-7 | 2/13 (2/14) |
+| ex-gwf-lgrv-lgr | 2, 195381 | 3.4e-7 | 3.7e-5 | 7.3e-6 | 2/999 (2/1001) |
+| ex-gwf-spbc (periodic) | 1, 19000 | 1.0e-7 | 2.4e-7 | 9.9e-8 | 2/115 (2/1001) |
+
+`:mixed` equals `:double` to the digits shown. ex-gwf-lgrv-lgr and ex-gwf-spbc in `:double`
+end 3.4e-7 and 1.0e-7 m from MF6's tight run, within 1e-6 m: these are the accuracy of
+the reference runs' linear solves (MF6 needs 1001 inner iterations, INNER_MAXIMUM, in
+both); the universal residual of MF6's heads in our merged model is 1.1e-12 and 1.8e-10 of
+the largest row. ex-gwf-lgrv-lgr `:single` takes 5 outer iterations (1720 inner) for
+3.7e-5 m (K = 1e-6 m/s next to 300 m heads, as ex-gwf-lgrv-gc). Its flows with MF6's heads
+differ from MF6's by up to 2.6e-4 of the largest flow in `:single`, all within the Float32
+rounding of the flows' terms (the exchange test compares beyond that bound).

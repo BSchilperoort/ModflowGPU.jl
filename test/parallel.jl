@@ -40,6 +40,7 @@ const GROUP_WEIGHTS = Dict{String, Float64}(
     "convertible" => 26,
     "newton" => 22,
     "xt3d" => 60,
+    "exchange" => 55,
     "riv_drn_evt" => 35,
     "assembly" => 160,
     "krylov" => 97,
@@ -67,6 +68,8 @@ const GROUP_SPLITS = Dict(
             ("ex-gwf-nwt-p02a,ex-gwf-nwt-p02b", 215.0),
             ("ex-gwf-hwell-a,ex-gwf-advtidal", 150.0),
             ("coupling_rde", 70.0),
+            # T6.6: the Tier 7 examples (several models, exchanges).
+            ("ex-gwf-lgrv-lgr,ex-gwf-spbc,ex-gwf-u1gwfgwf-s1,ex-gwf-u1gwfgwf-s2,ex-gwf-u1gwfgwf-s3,ex-gwf-u1gwfgwf-s4", 60.0),
             (
                 "ex-gwf-bcf2ss-p01a,ex-gwf-bcf2ss-p02a,ex-gwf-bump-p01a,ex-gwf-bump-p01b,ex-gwf-bump-p01c,ex-gwf-curve-90," *
                     "ex-gwf-curvilin,ex-gwf-fhb,ex-gwf-hanic,ex-gwf-hanir,ex-gwf-lgrv-gc,ex-gwf-maw-p03a,ex-gwf-maw-p03c", 170.0,
