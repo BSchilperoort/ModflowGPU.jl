@@ -135,3 +135,111 @@ function write_grb(path::AbstractString, g::BinaryGridFile)
     end
     return path
 end
+
+# --- Writing a model's binary grid file (T6.9; Dis.f90, Disv.f90, Disu.f90 `write_grb`,
+# DiscretizationBase.f90 `dis_ar`)
+
+# Fortran `1PGw.d` (`Ee` exponent digits; default 2) as MF6's build writes the scalar
+# definitions XORIGIN, YORIGIN and ANGROT: fixed notation `F(w-n).(d-k)` and `n = e + 2`
+# blanks for 0.1 ≤ |x| < 10^d (and 0), else `1PEw.d`.
+function _fortran_g(x::Float64, w::Integer, d::Integer; e::Integer = 2)
+    n = e + 2
+    s = x == 0 ? "0." * "0"^(d - 1) : obs_format(x, d; lead0 = true)
+    occursin('E', s) || return lpad(s, w - n) * " "^n
+    s = @sprintf("%.*E", d - 1, x)
+    p = findfirst('E', s)
+    ex = parse(Int, s[(p + 1):end])
+    return lpad(s[1:(p - 1)] * "E" * (ex < 0 ? "-" : "+") * lpad(string(abs(ex)), e, '0'), w)
+end
+
+_grb_line(s, len) = rpad(s, len - 1) * "\n"
+
+"""
+    grb_file(dis::AbstractDisSpec, conn::Connectivity, icelltype) -> BinaryGridFile
+
+The binary grid file MF6 writes for the discretization `dis` (Dis.f90, Disv.f90, Disu.f90
+`write_grb`, version 1): the grid dimensions, origin and rotation, the input arrays (TOP,
+BOTM/BOT, DELR/DELC, VERTICES, CELLX/CELLY, IAVERT/JAVERT: the closed vertex list of each
+cell), the connectivity `conn` in user node numbers (`iajausr`), IDOMAIN and ICELLTYPE by
+user node (`icelltype` by user node; 0 outside the reduced grid, `dis_ar`). Write it with
+[`ModflowGPU.write_grb`](@ref).
+"""
+function grb_file(dis::AbstractDisSpec, conn::Connectivity, icelltype::AbstractVector{<:Integer})
+    nu = Int(conn.nodesuser)
+    ict = Int32[conn.nodereduced[u] > 0 ? Int32(icelltype[u]) : Int32(0) for u in 1:nu]
+    iausr, jausr = iajausr(conn)
+    vars = Tuple{String, Symbol, Vector{Int}, Any, String}[]   # name, type, dims, data, scalar text
+    int(name, v) = push!(vars, (name, :INTEGER, Int[], Int32(v), string(v)))
+    dbl(name, v, w, e) = push!(vars, (name, :DOUBLE, Int[], Float64(v), _fortran_g(Float64(v), w, 15; e)))
+    arr(name, type, x, dims = [length(x)]) = push!(vars, (name, type, dims, x, ""))
+    if dis isa DisSpec
+        grid, w, e = "DIS", 24, 2
+        int("NCELLS", nu)
+        int("NLAY", dis.nlay)
+        int("NROW", dis.nrow)
+        int("NCOL", dis.ncol)
+        int("NJA", conn.nja)
+    elseif dis isa DisvSpec
+        grid, w, e = "DISV", 25, 3
+        _, javert = _cell_vertex_csr(dis.cell_vertices)
+        int("NCELLS", nu)
+        int("NLAY", dis.nlay)
+        int("NCPL", dis.ncpl)
+        int("NVERT", dis.nvert)
+        int("NJAVERT", length(javert))
+        int("NJA", conn.nja)
+    else
+        grid, w, e = "DISU", 24, 2
+        int("NODES", nu)
+        int("NJA", conn.nja)
+    end
+    dbl("XORIGIN", dis.xorigin, w, e)
+    dbl("YORIGIN", dis.yorigin, w, e)
+    dbl("ANGROT", dis.angrot, w, e)
+    if dis isa DisSpec
+        arr("DELR", :DOUBLE, dis.delr)
+        arr("DELC", :DOUBLE, dis.delc)
+        arr("TOP", :DOUBLE, vec(dis.top))
+        arr("BOTM", :DOUBLE, vec(dis.botm))
+    elseif dis isa DisvSpec
+        arr("TOP", :DOUBLE, dis.top)
+        arr("BOTM", :DOUBLE, vec(dis.botm))
+        _vertex_vars!(arr, dis)
+    else
+        arr("TOP", :DOUBLE, dis.top)
+        arr("BOT", :DOUBLE, dis.bot)
+    end
+    arr("IA", :INTEGER, iausr)
+    arr("JA", :INTEGER, jausr)
+    arr("IDOMAIN", :INTEGER, Vector{Int32}(idomain_user(dis)))
+    arr("ICELLTYPE", :INTEGER, ict)
+    dis isa DisuSpec && dis.nvert > 0 && _vertex_vars!(arr, dis)
+    # Disv: VERTICES ... JAVERT come before IA (`write_grb` order).
+    if dis isa DisvSpec
+        order = ["NCELLS", "NLAY", "NCPL", "NVERT", "NJAVERT", "NJA", "XORIGIN", "YORIGIN", "ANGROT", "TOP", "BOTM",
+            "VERTICES", "CELLX", "CELLY", "IAVERT", "JAVERT", "IA", "JA", "IDOMAIN", "ICELLTYPE"]
+        vars = [vars[findfirst(v -> v[1] == name, vars)] for name in order]
+    end
+    lentxt = 100
+    variables = GrbVariable[]
+    data = Dict{String, Any}()
+    for (name, type, dims, x, txt) in vars
+        def = isempty(dims) ? "$name $type NDIM 0 # $txt" : "$name $type NDIM $(length(dims)) $(join(dims, ' '))"
+        push!(variables, GrbVariable(name, type, dims, _grb_line(def, lentxt)))
+        data[name] = x
+    end
+    header = [_grb_line(h, GRB_HEADER_BYTES) for h in ("GRID $grid", "VERSION 1", "NTXT $(length(variables))", "LENTXT $lentxt")]
+    return BinaryGridFile(grid, 1, header, lentxt, variables, data)
+end
+
+# VERTICES (2, nvert), CELLX, CELLY and the closed vertex lists IAVERT, JAVERT (DISV, DISU
+# with vertices).
+function _vertex_vars!(arr, dis)
+    iavert, javert = _cell_vertex_csr(dis.cell_vertices)
+    arr("VERTICES", :DOUBLE, dis.vertices, [2, size(dis.vertices, 2)])
+    arr("CELLX", :DOUBLE, dis.cell_center[1, :])
+    arr("CELLY", :DOUBLE, dis.cell_center[2, :])
+    arr("IAVERT", :INTEGER, iavert)
+    arr("JAVERT", :INTEGER, javert)
+    return nothing
+end

@@ -5,9 +5,10 @@ CurrentModule = ModflowGPU
 DocTestSetup = :(using ModflowGPU)
 ```
 
-ModflowGPU writes the head file (`.hds`), the budget file (`.cbc`), the model listing
-file (`.lst`) and the observation files (OBS6) in MF6's formats. It does not write the binary grid file (`.dis.grb` and
-the like), but [`read_grb`](@ref) reads MF6's (see
+ModflowGPU writes the head file (`.hds`), the budget file (`.cbc`, with `DATA-SPDIS` when
+NPF has `SAVE_SPECIFIC_DISCHARGE`), the binary grid file (`.dis.grb`, `.disv.grb`,
+`.disu.grb`, unless `NOGRB`), the model listing file (`.lst`) and the observation files
+(OBS6) in MF6's formats (see
 [Differences from MODFLOW 6](../compatibility/differences.md)). The readers on this page
 read these files from ModflowGPU and from MF6 alike, so they can also be used to compare
 the two. The binary files can be read by

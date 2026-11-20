@@ -160,18 +160,17 @@ function _rounding_bounds(rundir, ours_hds, mf6_hds)
     return (; flowja_bound, storage_bound, idiag = conn.ia[1:conn.nodes], nodesuser = Int(conn.nodesuser))
 end
 
-# Max |Δq| over the MF6 budget records that we write (all but DATA-SPDIS), per step
+# Max |Δq| over the MF6 budget records (T6.9: DATA-SPDIS too, its qx, qy, qz), per step
 # relative to that step's total inflow `tin[(kstp, kper)]`. With `bounds`
 # (`_rounding_bounds`, `:single`, T6.1) the FLOW-JA-FACE, STO-SS and STO-SY values are
 # compared after subtracting their bounds, and the per-step sums of those bounds are
 # returned as well (the allowance of the listing terms and the percent discrepancy).
-function _budget_difference(ours, mf6, tin; bounds = nothing, bytext = nothing)
+function _budget_difference(ours, mf6, tin; bounds = nothing, bytext = nothing, spdis = nothing)
     a, b = open_budget_file(ours), open_budget_file(mf6)
     worst = 0.0
     nrec = 0
     btot = Dict{Tuple{Int, Int}, Float64}()
     for (i, r) in enumerate(b.records)
-        strip(r.text) == "DATA-SPDIS" && continue
         # List records by package too: a model may have two packages of one type (T6.4).
         pak = r.imeth == 6 ? strip(r.paknam2) : nothing
         j = find_budget_records(a; text = strip(r.text), kstp = r.kstp, kper = r.kper, paknam2 = pak)
@@ -186,7 +185,16 @@ function _budget_difference(ours, mf6, tin; bounds = nothing, bytext = nothing)
         @test ra.totim ≈ r.totim rtol = 1.0e-12
         @test ra.delt ≈ r.delt rtol = 1.0e-12
         qa, qb = read_budget(a, only(j)), read_budget(b, i)
-        if qb isa BudgetList
+        if qb isa BudgetList && strip(r.text) == "DATA-SPDIS"
+            # T6.9: the specific discharge (aux qx, qy, qz): max |Δ| relative to the record's
+            # largest value, collected in `spdis` (`q` is 0).
+            @test qa.id1 == qb.id1 && qa.id2 == qb.id2 && ra.auxtxt == r.auxtxt
+            @test strip(ra.paknam1) == strip(r.paknam1) && strip(ra.paknam2) == strip(r.paknam2)
+            sc = max(maximum(abs, qb.aux; init = 0.0), floatmin())
+            isnothing(spdis) || push!(spdis, maximum(abs.(qa.aux .- qb.aux); init = 0.0) / sc)
+            @test qa.q == qb.q
+            continue
+        elseif qb isa BudgetList
             @test qa.id1 == qb.id1 && qa.id2 == qb.id2
             @test qa.aux ≈ qb.aux rtol = 1.0e-12
             @test strip(ra.paknam2) == strip(r.paknam2) && ra.auxtxt == r.auxtxt
@@ -484,6 +492,11 @@ function _run_parity(
             for x in models
                 mo = r.models[findfirst(y -> y.name == x.name, r.models)]
                 f = mf6_files(x)
+                # T6.9: the binary grid file, byte for byte as MF6's (`write_grb`).
+                gm = joinpath(rundir, isempty(x.dis.grb_file) ? basename(x.dis.file) * ".grb" : x.dis.grb_file)
+                if !x.dis.nogrb && isfile(gm)
+                    @test read(mo.grb_file) == read(gm)
+                end
                 budgets = multi ? filter(b -> b.model == x.name, r.budgets) : r.budgets
                 @test length(budgets) == nsteps
                 dhk, range, ndryk, hshiftk = _head_difference(mo.head_file, f.hds; bot = botu, drytol = p.T === Float64 ? 1.0e-6 : 1.0e-3, shift)
@@ -505,7 +518,13 @@ function _run_parity(
                 # differences beyond the Float32 rounding of the flows and the head difference
                 # (`_rounding_bounds`); otherwise the raw differences.
                 rb = p.T === Float32 && single_rounding_bound ? _rounding_bounds(rundir, mo.head_file, f.hds) : nothing
-                dqk, nreck, btot = isempty(f.cbc) ? (0.0, 0, Dict{Tuple{Int, Int}, Float64}()) : _budget_difference(mo.budget_file, f.cbc, tin; bounds = rb)
+                spd = Float64[]
+                dqk, nreck, btot = isempty(f.cbc) ? (0.0, 0, Dict{Tuple{Int, Int}, Float64}()) : _budget_difference(mo.budget_file, f.cbc, tin; bounds = rb, spdis = spd)
+                if !isempty(spd)
+                    # T6.9: DATA-SPDIS within 1e-6 (`:double`) or 1e-4 (`:single`) of the largest value.
+                    @test maximum(spd) < (p.T === Float64 ? 1.0e-6 : 1.0e-4)
+                    @info "DATA-SPDIS: $name/$(x.name), :$(p.preset): $(length(spd)) records, max |Δ| / max |q| = $(round(maximum(spd); sigdigits = 3))"
+                end
                 if !isnothing(rb) && isempty(f.cbc)
                     # No MF6 budget file (T6.2, ex-gwf-zaidel): the bound of each step from the
                     # connections (C = condsat) and storage, for the listing and the imbalance.

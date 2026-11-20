@@ -89,9 +89,10 @@ julia> result = run_simulation(simdir);
 julia> result.converged
 true
 
-julia> filter(f -> endswith(f, r"\.(hds|cbc|lst)"), readdir(simdir))
-3-element Vector{String}:
+julia> filter(f -> endswith(f, r"\.(hds|cbc|lst|grb)"), readdir(simdir))
+4-element Vector{String}:
  "flow.cbc"
+ "flow.dis.grb"
  "flow.hds"
  "flow.lst"
 ```
@@ -109,6 +110,9 @@ The output files have the names given in the input:
 - `flow.lst`, the **listing file** of the model, with the volumetric budget tables (as
   asked by `PRINT BUDGET`) and the iteration counts of each time step. It is shorter than
   MODFLOW 6's listing file: it does not echo the input.
+- `flow.dis.grb`, the **binary grid file** of the DIS package (unless `NOGRB`), the grid
+  and the connectivity that give the meaning of the `FLOW-JA-FACE` budget record; read it
+  with [`read_grb`](@ref).
 
 - the **observation files** of OBS6 input (`CONTINUOUS FILEOUT name.csv` blocks; this
   model has none), one row per time step, as MODFLOW 6 writes them.

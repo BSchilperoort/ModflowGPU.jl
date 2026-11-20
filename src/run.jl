@@ -22,8 +22,9 @@ What [`run_simulation`](@ref) returns. Fields:
   with [`read_observations`](@ref); with several models those of every model, then those
   of the GWF-GWF exchanges;
 - `models`: per model (T6.6; one entry for a single model) a `NamedTuple` with `name`,
-  `nodes` (its range in `heads`), `head_file`, `budget_file`, `listing_file` and
-  `obs_files`;
+  `nodes` (its range in `heads`), `head_file`, `budget_file`, `listing_file`,
+  `obs_files` and `grb_file` (T6.9: the binary grid file, `""` with NOGRB or without
+  output);
 - `T`, `Ts`, `Tp`: the precision types used (see [`resolve_precision`](@ref));
 - `model`: the model, still on the device (internal; with several models the merged model
   of the solution; its memory is released by the garbage collector).
@@ -54,7 +55,7 @@ struct RunResult{M <: GwfModel}
     budget_file::String
     listing_file::String
     obs_files::Vector{String}
-    models::Vector{NamedTuple{(:name, :nodes, :head_file, :budget_file, :listing_file, :obs_files), Tuple{String, UnitRange{Int}, String, String, String, Vector{String}}}}
+    models::Vector{NamedTuple{(:name, :nodes, :head_file, :budget_file, :listing_file, :obs_files, :grb_file), Tuple{String, UnitRange{Int}, String, String, String, Vector{String}, String}}}
 end
 
 """
@@ -166,8 +167,8 @@ function run_simulation(
     isnothing(s.exobs) || append!(obs, s.exobs.paths)
     models = map(enumerate(s.views)) do (k, v)
         o = get(s.outputs, k, nothing)
-        f = isnothing(o) ? ("", "", "") : (o.head_path, o.budget_path, o.listing_path)
-        (; name = _vname(v), nodes = _vrange(v), head_file = f[1], budget_file = f[2], listing_file = f[3], obs_files = _obs_paths(o))
+        f = isnothing(o) ? ("", "", "", "") : (o.head_path, o.budget_path, o.listing_path, o.grb_path)
+        (; name = _vname(v), nodes = _vrange(v), head_file = f[1], budget_file = f[2], listing_file = f[3], obs_files = _obs_paths(o), grb_file = f[4])
     end
     return RunResult(s.model, s.T, s.Ts, s.Tp, s.results, s.budgets, absolute_heads(s.model), allconv, paths..., obs, models)
 end

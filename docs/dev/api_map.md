@@ -460,7 +460,10 @@ it. Underscore-prefixed helpers are omitted.
 - **output/binary.jl**: shared binary I/O helpers (little-endian stream files).
   `MF6BinaryFileError`, `pad_text`, `OUTPUT_TEXT_BYTES`. Tests: output.
 - **output/grb.jl**: binary grid files. `BinaryGridFile`, `GrbVariable`, `read_grb`,
-  `write_grb`. Tests: output, input_arrays, connectivity.
+  `write_grb`. Tests: output, input_arrays, connectivity. T6.9: `grb_file(dis, conn,
+  icelltype)` (Dis/Disv/Disu.f90 `write_grb`, version 1; `_fortran_g` for the scalar
+  definitions), written by `ModelOutput` (tests: run, byte-identical to MF6's for every
+  reference run; disv_disu).
 - **output/layout.jl**: how arrays split into records. `OutputLayout`, `nodesuser`,
   `budget_dims`. Tests: output.
 - **output/hds.jl**: head files. `HeadFile` / `open_head_file`, `HeadStep`, `head_kstpkper`,
@@ -492,9 +495,17 @@ it. Underscore-prefixed helpers are omitted.
   `write_head_listing` (PRINT HEAD); T6.7: `ModelOutput.obs`. Tests: picard, run.
   T6.9: `write_conversions` (`sgwf_npf_wdmsg`: the `GwfModel.conversions` of the step in the
   listing; tests: run, `_conversion_blocks` vs MF6's listing).
+  T6.9: `ModelOutput.grb_path` (the binary grid file written when the output is opened),
+  `RunResult.models[k].grb_file`.
   T6.6: `ModelOutput`, `write_heads`, `write_budget(...; exflows)`, `write_head_listing`
   take a `GwfModel` or a `ModelView`; `model_flowja` (a model's FLOW-JA-FACE; the diagonal
   of a constant-head cell without its exchange flows), `_model_values`.
+- **output/spdis.jl** (T6.9; included after solution.jl): DATA-SPDIS (gwf-npf.f90
+  `calc_spdis`, `sav_spdis`, `set_edge_properties`; GwfConductanceUtils.f90 `thksatnm`;
+  exg-gwfgwf.f90 `gwf_gwf_set_flow_to_npf`). `check_spdis` (DISU needs ANGLDEGX and vertices),
+  `specific_discharge(m, flowja)` (host Float64, from the model's FLOW-JA-FACE; exchange
+  connections as edges), `write_spdis` (from `write_budget`, after FLOW-JA-FACE). Tests: run
+  (vs MF6's DATA-SPDIS), disv_disu.
 - **solution.jl** (T6.6; included after output/oc.jl): multi-model solutions at run time
   (exg-gwfgwf.f90 `gwf_gwf_calc_simvals`, `gwf_gwf_bd`, `gwf_gwf_chd_bd`,
   `gwf_gwf_bdsav_model`, `gwf_gwf_rp_obs`, `gwf_gwf_save_simvals`). `ExchangeFlows` /

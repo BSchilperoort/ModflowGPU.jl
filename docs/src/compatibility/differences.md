@@ -149,9 +149,10 @@ Float32, which MODFLOW 6 cannot:
 | Output | MODFLOW 6 | ModflowGPU |
 | :-- | :-- | :-- |
 | Head file (`.hds`) | written as OC asks | the same; dry cells have `HDRY` |
-| Budget file (`.cbc`) | written as OC asks | the same records, except `DATA-SPDIS` |
-| `DATA-SPDIS` (specific discharge, NPF `SAVE_SPECIFIC_DISCHARGE`) | written | not written (an `Info` at the start of the run) |
-| Binary grid file (`.dis.grb`, `.disv.grb`, `.disu.grb`) | written unless `NOGRB` | not written; MODFLOW 6's file can be read with [`read_grb`](@ref) |
+| Budget file (`.cbc`) | written as OC asks | the same records |
+| `DATA-SPDIS` (specific discharge, NPF `SAVE_SPECIFIC_DISCHARGE`) | written | the same (computed on the host from the step's flows) |
+| `DATA-SAT` (NPF `SAVE_SATURATION`) | written | not written |
+| Binary grid file (`.dis.grb`, `.disv.grb`, `.disu.grb`) | written unless `NOGRB` | the same file (version 1; a `CRS` option is not written to it) |
 | Model listing file (`.lst`) | full report | a short version, see below |
 | Simulation listing file (`mfsim.lst`) | written | not written |
 | Observation output (OBS6) | written every time step | the same files, CSV or `BINARY`; values as MODFLOW 6 prints them (16 significant digits) |

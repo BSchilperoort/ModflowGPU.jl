@@ -197,7 +197,7 @@ end
         topv = vec(dis.top)
         # `arrays`: also RCHA and EVTA (READASARRAYS: DIS and DISV only, as in MF6); their
         # cells in excluded layer-1 cells move to the highest active cell below.
-        function model(d; arrays = false)
+        function model(d; arrays = false, spdis = false)
             v(a) = d isa DisSpec ? a : vec(a)
             bnd = [
                 build_boundary(:CHD, d; periods = [1 => (; cells = chd, values = [200.0, 201.5, 199.25])], save_flows = true),
@@ -213,7 +213,7 @@ end
                 push!(bnd, build_array_boundary(:EVT, d; name = "evta", periods = [1 => (; surface = topv, rate = fill(1.0e-4, ncpl), depth = 80.0)], save_flows = true))
             end
             return build_model(
-                "grid"; dis = d, npf = build_npf(d; k = v(k), k33 = v(0.1 .* k), save_flows = true),
+                "grid"; dis = d, npf = build_npf(d; k = v(k), k33 = v(0.1 .* k), save_flows = true, save_specific_discharge = spdis),
                 ic = build_ic(d; strt = v(fill(200.0, sz))), sto = build_sto(d; ss = v(fill(1.0e-5, sz)), periods = [1 => :steady_state, 2 => :transient]),
                 oc = build_oc(; head_file = "grid.hds", budget_file = "grid.cbc", periods = [1 => [oc_record(:save, "HEAD"), oc_record(:save, "BUDGET")]]),
                 boundaries = bnd,
@@ -244,6 +244,39 @@ end
             d = maximum(abs.(rv.heads .- r0.heads))
             @test d < (p.T === Float64 ? 1.0e-7 : 1.0e-3)
             @info "DISV/DISU vs DIS run, :$(p.preset): bitwise equal with Jacobi; default preconditioner max |Δh| = $(round(d; sigdigits = 3)) m"
+        end
+
+        # T6.9: DATA-SPDIS and the binary grid file on the three grids (`calc_spdis`,
+        # `write_grb`): the same specific discharge (DISV/DISU normals from cos/sin of the
+        # angles, DIS exact), the same user-node IA/JA.
+        function srun(d, p)
+            return mktempdir() do out
+                r = ModflowGPU.run(build_simulation([model(d; spdis = true)]; tdis, ims); backend = TEST_BACKEND, precision = p.preset, outdir = out, preconditioner = :jacobi)
+                bf = open_budget_file(r.budget_file)
+                sp = [read_budget(bf, i).aux for i in find_budget_records(bf; text = "DATA-SPDIS")]
+                g = read_grb(only(r.models).grb_file)
+                (; sp, g, recs = [strip(x.text) for x in bf.records if x.kstp == 1 && x.kper == 1])
+            end
+        end
+        for_each_precision() do p
+            a = srun(dis, p)
+            @test a.recs[1:3] == ["STO-SS", "FLOW-JA-FACE", "DATA-SPDIS"] || a.recs[1:2] == ["FLOW-JA-FACE", "DATA-SPDIS"]
+            @test length(a.sp) == 4 && a.g.grid == "DIS"
+            sc = maximum(maximum(abs, x) for x in a.sp)
+            @test sc > 0
+            for (grid, d) in (("DISV", _dis_as_disv(dis)), ("DISU", _dis_as_disu(dis; vertices = true)))
+                b = srun(d, p)
+                @test b.g.grid == grid && b.g["IA"] == a.g["IA"] && b.g["JA"] == a.g["JA"] && b.g["ICELLTYPE"] == a.g["ICELLTYPE"]
+                dsp = maximum(maximum(abs.(x .- y)) for (x, y) in zip(a.sp, b.sp)) / sc
+                @test dsp < (p.T === Float64 ? 1.0e-12 : 1.0e-5)
+                @info "DATA-SPDIS $grid vs DIS, :$(p.preset): max |Δ| / max |q| = $(round(dsp; sigdigits = 3))"
+            end
+        end
+        # MF6's errors: DISU without ANGLDEGX or without vertices.
+        for d in (_dis_as_disu(dis; angldegx = false, vertices = true), _dis_as_disu(dis))
+            @test_throws ModflowGPU.MF6InputError mktempdir() do out
+                ModflowGPU.run(build_simulation([model(d; spdis = true)]; tdis, ims); backend = TEST_BACKEND, outdir = out)
+            end
         end
     end
 
