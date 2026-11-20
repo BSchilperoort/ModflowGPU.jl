@@ -250,6 +250,11 @@ function _assembly_models(f)
             @info "Skipping $name in the assembly test (not loadable): $(sprint(showerror, err))"
             continue
         end
+        if length(sim.models) > 1 || !isempty(sim.exchanges)
+            # T6.6: several models / GWF-GWF exchanges: group exchange (test/parity/exchange_test.jl).
+            @info "Skipping $name in the assembly test: several models or exchanges, tested in group exchange (test/parity/exchange_test.jl)"
+            continue
+        end
         if only(sim.models).npf.xt3d
             # T6.5: the XT3D formulation has its own residual and oracle tests (group xt3d).
             @info "Skipping $name in the assembly test: XT3D, tested in group xt3d (test/unit/xt3d_test.jl)"

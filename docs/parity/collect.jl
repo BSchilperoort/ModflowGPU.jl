@@ -61,21 +61,25 @@ function grid_text(d)
     return "DISU $(d.nodes)"
 end
 
+# T6.6: several models: the grids joined by " + ", the cells and packages of all models,
+# and the exchanges ("GWF-GWF", with "XT3D" when on the exchange).
 function describe(rundir)
     sim = ModflowGPU.load_simulation(rundir)
-    m = only(sim.models)
-    ftypes = [replace(p.ftype, r"6$" => "") for p in m.packages]
+    ftypes = [replace(p.ftype, r"6$" => "") for m in sim.models for p in m.packages]
     pkgs = String[]
     for t in unique(ftypes)
         t in ("DIS", "DISV", "DISU", "IC", "OC", "OBS") && continue
         n = count(==(t), ftypes)
         push!(pkgs, n > 1 ? "$t ×$n" : t)
     end
+    for ex in sim.exchanges
+        push!(pkgs, ex.xt3d ? "GWF-GWF (XT3D)" : "GWF-GWF")
+    end
     nts = length(ModflowGPU.time_steps(sim.tdis))
-    active = count(>(0), ModflowGPU.idomain_user(m.dis))
+    active = sum(m -> count(>(0), ModflowGPU.idomain_user(m.dis)), sim.models)
     return Dict{String, Any}(
-        "grid" => grid_text(m.dis), "active_cells" => active, "time_steps" => nts,
-        "packages" => pkgs, "newton" => m.newton,
+        "grid" => join((grid_text(m.dis) for m in sim.models), " + "), "active_cells" => active, "time_steps" => nts,
+        "packages" => pkgs, "newton" => any(m -> m.newton, sim.models),
     )
 end
 

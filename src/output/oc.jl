@@ -41,6 +41,9 @@ names no file), `listing` (`IO`), the `layout` (`OutputLayout`), the paths and `
 observation files (`ObservationOutput`, T6.7; `nothing` without OBS6 input).
 
     ModelOutput(m::GwfModel, simdir, outdir)
+    ModelOutput(v::ModelView, simdir, outdir)
+
+T6.6: one per model of a multi-model solution (`ModelView`).
 """
 struct ModelOutput
     head::Union{Nothing, IO}
@@ -60,20 +63,21 @@ function _output_path(simdir, outdir, name)
     return p
 end
 
-function ModelOutput(m::GwfModel, simdir::AbstractString, outdir::AbstractString)
-    oc = m.spec.oc
+function ModelOutput(m::Union{GwfModel, ModelView}, simdir::AbstractString, outdir::AbstractString)
+    spec = _vspec(m)
+    oc = spec.oc
     hp = (isnothing(oc) || isempty(oc.head_file)) ? "" : _output_path(simdir, outdir, oc.head_file)
     bp = (isnothing(oc) || isempty(oc.budget_file)) ? "" : _output_path(simdir, outdir, oc.budget_file)
-    lname = isempty(m.spec.list_file) ? splitext(basename(m.spec.file))[1] * ".lst" : m.spec.list_file
+    lname = isempty(spec.list_file) ? splitext(basename(spec.file))[1] * ".lst" : spec.list_file
     lp = _output_path(simdir, outdir, lname)
-    m.spec.npf.save_specific_discharge && !isempty(bp) &&
-        @info "NPF SAVE_SPECIFIC_DISCHARGE: DATA-SPDIS is not written to the budget file yet" m.spec.npf.file
+    spec.npf.save_specific_discharge && !isempty(bp) &&
+        @info "NPF SAVE_SPECIFIC_DISCHARGE: DATA-SPDIS is not written to the budget file yet" spec.npf.file
     # T6.7: the observations first (input errors before any file is opened).
     obs = ObservationOutput(m, simdir, outdir)
     head = isempty(hp) ? nothing : open(hp, "w")
     budget = isempty(bp) ? nothing : open(bp, "w")
     listing = open(lp, "w")
-    return ModelOutput(head, budget, listing, OutputLayout(m.spec.dis), hp, bp, lp, obs)
+    return ModelOutput(head, budget, listing, OutputLayout(spec.dis), hp, bp, lp, obs)
 end
 
 function Base.close(o::ModelOutput)
@@ -90,9 +94,9 @@ end
 Append the absolute heads `heads` (Float64, per reduced node) to the head file
 (`gwf_ot_dv`, `record_array`): HNOFLO in user nodes outside the reduced grid.
 """
-function write_heads(o::ModelOutput, m::GwfModel, step::TimeStep, heads::Vector{Float64})
+function write_heads(o::ModelOutput, m::Union{GwfModel, ModelView}, step::TimeStep, heads::Vector{Float64})
     isnothing(o.head) && return nothing
-    write_head_record(o.head, o.layout, heads; kstp = step.kstp, kper = step.kper, pertim = step.pertim, totim = step.totim, nodeuser = m.conn.nodeuser)
+    write_head_record(o.head, o.layout, heads; kstp = step.kstp, kper = step.kper, pertim = step.pertim, totim = step.totim, nodeuser = _vconn(m).nodeuser)
     return nothing
 end
 
@@ -113,40 +117,80 @@ stress package that saves flows (`q` = `simvals`, the net rate into the model; `
 user node, `id2` the record number; with the package's auxiliary values; records without
 a cell left out). A package saves flows with its own
 SAVE_FLOWS or the model's. DATA-SPDIS is not written (specific discharge arrives later).
+
+T6.6: for a model of a multi-model solution (`ModelView`), the model's own values, then the
+flows of each exchange with SAVE_FLOWS, from the model's side (`write_exchange_budget`, with
+the `ExchangeFlows` `exflows` of the step).
 """
-function write_budget(o::ModelOutput, m::GwfModel, step::TimeStep)
+function write_budget(o::ModelOutput, m::Union{GwfModel, ModelView}, step::TimeStep; exflows = nothing)
     io = o.budget
     isnothing(io) && return nothing
-    spec = m.spec
+    spec = _vspec(m)
+    mm = _vmodel(m)
+    conn = _vconn(m)
+    off = _voffset(m)
     kw = (; kstp = step.kstp, kper = step.kper, delt = step.delt, pertim = step.pertim, totim = step.totim)
     nu = nodesuser(o.layout)
-    if !isnothing(m.sto) && (spec.save_flows || spec.sto.save_flows)
+    if !isnothing(spec.sto) && (spec.save_flows || spec.sto.save_flows)
         v = zeros(nu)
-        v[m.conn.nodeuser] .= Float64.(Array(m.sto.strgss))
+        v[conn.nodeuser] .= _model_values(m, mm.sto.strgss)
         write_budget_array(io, o.layout, "STO-SS", v; kw...)
-        if _uses_sy(m)
+        if _uses_sy(mm)
             v = zeros(nu)
-            v[m.conn.nodeuser] .= Float64.(Array(m.sto.strgsy))
+            v[conn.nodeuser] .= _model_values(m, mm.sto.strgsy)
             write_budget_array(io, o.layout, "STO-SY", v; kw...)
         end
     end
     if spec.save_flows || spec.npf.save_flows
-        write_budget_array(io, "FLOW-JA-FACE", Float64.(Array(m.flowja)); kw..., dims = (Int(m.conn.nja), 1, 1))
+        write_budget_array(io, "FLOW-JA-FACE", model_flowja(m); kw..., dims = (Int(conn.nja), 1, 1))
     end
     name = uppercase(spec.name)
-    for pkg in m.packages
+    for ip in _vpackages(m)
+        pkg = mm.packages[ip]
         (spec.save_flows || pkg.spec.save_flows) || continue
         # Records without a cell (node 0) are left out (save_print_model_flows).
         keep = [i for i in 1:pkg.nbound if pkg.nodelist_host[i] > 0]
         sim = Float64.(Array(pkg.simvals))[keep]
-        nodeu = Int32[m.conn.nodeuser[pkg.nodelist_host[i]] for i in keep]
+        nodeu = Int32[conn.nodeuser[pkg.nodelist_host[i] - off] for i in keep]
         list = BudgetList(nodeu, Int32.(keep), sim, _record_aux(pkg)[:, keep])
         write_budget_list(
             io, o.layout, budget_text(pkg), list; kw..., modelnam1 = name, paknam1 = name, modelnam2 = name,
             paknam2 = uppercase(pkg.spec.name), auxtxt = pkg.spec.auxnames,
         )
     end
+    m isa ModelView && write_exchange_budget(o, m, step, exflows)
     return nothing
+end
+
+# The values of a model's nodes of a merged-model array (host, Float64).
+_model_values(m::GwfModel, a) = Float64.(Array(a))
+_model_values(v::ModelView, a) = Float64.(Array(a)[_vrange(v)])
+
+"""
+    model_flowja(m::GwfModel) -> Vector{Float64}
+    model_flowja(v::ModelView) -> Vector{Float64}
+
+FLOW-JA-FACE of a model as MF6 writes it (`nja` of the model, host Float64). For a model of
+a multi-model solution (T6.6) the model's entries of the merged flows; the diagonal of a
+constant-head cell leaves out its exchange flows, which MF6 does not add there
+(exg-gwfgwf.f90 `gwf_gwf_add_to_flowja`: active cells only).
+"""
+model_flowja(m::GwfModel) = Float64.(Array(m.flowja))
+function model_flowja(v::ModelView)
+    mm = v.model
+    f = Float64.(Array(mm.flowja))
+    part = v.part
+    c = part.conn
+    out = f[part.jamap]
+    ia, ex = mm.conn.ia, mm.solution.exgentry
+    for n in 1:c.nodes
+        g = n + part.offset
+        mm.ibound_host[g] < 0 || continue
+        for ii in (ia[g] + 1):(ia[g + 1] - 1)
+            ex[ii] && (out[c.ia[n]] -= f[ii])
+        end
+    end
+    return out
 end
 
 """
@@ -155,9 +199,9 @@ end
 PRINT HEAD: the heads by layer in the listing file (10 values per line, `%12.4E`;
 OC HEAD PRINT_FORMAT is not applied).
 """
-function write_head_listing(io::IO, m::GwfModel, step::TimeStep, heads::Vector{Float64})
-    layout = OutputLayout(m.spec.dis)
-    v = head_output_values(layout, heads; nodeuser = m.conn.nodeuser)
+function write_head_listing(io::IO, m::Union{GwfModel, ModelView}, step::TimeStep, heads::Vector{Float64})
+    layout = OutputLayout(_vspec(m).dis)
+    v = head_output_values(layout, heads; nodeuser = _vconn(m).nodeuser)
     nlay = layout.kind === :disu ? 1 : layout.nlay
     per = length(v) ÷ nlay
     for k in 1:nlay

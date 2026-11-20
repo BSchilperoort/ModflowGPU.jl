@@ -373,10 +373,11 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
         changes = merge(
             edit("mfsim.nam", "gwf6  gwf.nam  Gwf\n", "gwf6  gwf.nam  Gwf\n  gwf6  gwf.nam  second\n"),
         )
-        e = unsupported_error_of(() -> load_variant(changes))  # strict: two models
-        @test occursin("unsupported: more than one GWF6 model (GWF, SECOND)", e.msg)
-        e = input_error_of(() -> load_variant(changes; strict = false))
-        @test occursin("Model was not assigned to a solution: SECOND", e.msg)
+        # T6.6: several models are supported (strict and not).
+        for strict in (true, false)
+            e = input_error_of(() -> load_variant(changes; strict))
+            @test occursin("Model was not assigned to a solution: SECOND", e.msg)
+        end
     end
 
     @testset "unsupported input" begin
@@ -490,14 +491,10 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
             d = load_simulation(examples["ex-gwf-u1disv"]; strict = false).models[1].dis
             @test d isa DisvSpec && (d.ncpl, d.nvert) == (121, 148) && length(d.cell_vertices) == 121
         end
-        @testset "higher tiers fail with strict = true" begin
-            expected = Dict(
-                # T6.1: the convertible examples load (twri01, advtidal, bcf2ss-p01a, ...).
-                "ex-gwf-spbc" => "GWF6-GWF6 exchange", "ex-gwf-lgrv-lgr" => "more than one GWF6 model",
-            )
-            for i in 1:4
-                expected["ex-gwf-u1gwfgwf-s$i"] = "more than one GWF6 model"
-            end
+        @testset "in-scope examples with strict = true" begin
+            # T6.1: the convertible examples load (twri01, advtidal, bcf2ss-p01a, ...); T6.6:
+            # the multi-model examples (Tier 7) too. Nothing in scope fails any more.
+            expected = Dict{String, String}()
             for (name, simdir) in sort!(collect(examples))
                 @testset "$name" begin
                     if haskey(expected, name)
@@ -517,6 +514,9 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
                             "ex-gwf-nwt-p02a", "ex-gwf-nwt-p03a", "ex-gwf-nwt-p03b", "ex-gwf-zaidel",
                             # T6.5: XT3D
                             "ex-gwf-hanix", "ex-gwf-whirl", "ex-gwf-u1disv-x", "ex-gwf-disvmesh",
+                            # T6.6: several models, GWF-GWF exchanges
+                            "ex-gwf-lgrv-lgr", "ex-gwf-spbc", "ex-gwf-u1gwfgwf-s1", "ex-gwf-u1gwfgwf-s2",
+                            "ex-gwf-u1gwfgwf-s3", "ex-gwf-u1gwfgwf-s4",
                         )
                         @test load_simulation(simdir) isa SimulationSpec
                     end

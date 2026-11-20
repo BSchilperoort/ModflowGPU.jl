@@ -110,7 +110,9 @@ Fields that are useful to read (do not change them):
 - `steps`: the TDIS time steps, and `istep`, the index of the current one (0 before the
   first [`prepare_time_step`](@ref));
 - `results` and `budgets`: per completed time step its [`StepResult`](@ref) and
-  [`ModelBudget`](@ref).
+  [`ModelBudget`](@ref) (in a multi-model solution one per model and step, in the order of
+  the solution's models; `ModelBudget.model` names the model);
+- `models`: the names of the models, in the solution's order (T6.6).
 
 The other fields (the model on the device, the solver, the output files, the call stage)
 are internal.
@@ -141,10 +143,21 @@ mutable struct Simulation{M <: GwfModel, P <: PicardSolver, A <: BudgetAccumulat
     # (`device_bound!`), checked at `prepare_solve`; the check's result buffer (lazy).
     const device_writes::Vector{Int}
     check::Any
+    # T6.6: the models (`model_views`: the model itself, or the `ModelView`s of a
+    # multi-model solution), their names, outputs and budget accumulators, and the
+    # exchange flows (`ExchangeFlows`, `nothing` for a single model). `output` and `acc`
+    # are those of the first model.
+    const views::Vector{Any}
+    const models::Vector{String}
+    const outputs::Vector{ModelOutput}
+    const accs::Vector{BudgetAccumulator}
+    const exflows::Any
+    # T6.6: the observation output of the exchanges (`ExchangeObservations`), or `nothing`.
+    const exobs::Any
 end
 
 Base.show(io::IO, s::Simulation) = print(
-    io, "Simulation(\"", s.model.spec.name, "\", T = ", s.T, ", step ", s.istep, " of ", length(s.steps), ", ", s.stage, ")",
+    io, "Simulation(\"", join(s.models, "\", \""), "\", T = ", s.T, ", step ", s.istep, " of ", length(s.steps), ", ", s.stage, ")",
 )
 
 """
@@ -152,9 +165,11 @@ Base.show(io::IO, s::Simulation) = print(
     initialize(spec::SimulationSpec; kwargs...) -> Simulation
 
 Start a simulation to be run one time step at a time: load the MF6 simulation in directory
-`simdir` (or take a loaded or built `spec`; one GWF model with one IMS solution), build
-the model, the outer solver and the budget accumulator on the device, and open the output
-files (libmf6's `initialize`).
+`simdir` (or take a loaded or built `spec`; GWF models in one IMS solution, connected by
+GWF6-GWF6 exchanges when there are several), build the model, the outer solver and the
+budget accumulator on the device, and open the output files (libmf6's `initialize`). The
+models of a multi-model solution are solved as one system (T6.6); each writes its own
+output files, and its variables have its own addresses (`"<model>/X"`, ...).
 
 The keywords are those of [`run_simulation`](@ref): `backend`, `precision`, `outdir`,
 `closures`, `write_output`, `preconditioner` and `precond_options`.
@@ -164,7 +179,8 @@ starting heads and no period data is applied. End with [`finalize_simulation`](@
 which closes the output files and frees the device memory.
 
 Throws an [`ModflowGPU.MF6InputError`](@ref) or [`MF6UnsupportedError`](@ref) for invalid
-or unsupported input (also for a simulation with more than one model).
+or unsupported input (also for a simulation with more than one solution, or models with
+convertible cells or NEWTON in a multi-model solution).
 
 # Example
 ```julia
@@ -188,30 +204,55 @@ function initialize(
         closures = nothing, write_output::Bool = true, preconditioner::Symbol = :auto,
         precond_options::NamedTuple = (;),
     )
-    (length(sim.models) == 1 && isempty(sim.exchanges)) ||
-        throw(MF6UnsupportedError(sim.simdir, "unsupported: $(length(sim.models)) models and $(length(sim.exchanges)) exchanges (only one model is supported)"))
-    spec = only(sim.models)
+    (length(sim.solution_groups) == 1 && length(only(sim.solution_groups).solutions) == 1) ||
+        throw(MF6UnsupportedError(sim.simdir, "unsupported: more than one solution (the models must be in one IMS solution)"))
+    multi = length(sim.models) > 1 || !isempty(sim.exchanges)
     ims = only(only(sim.solution_groups).solutions)
     write_output && _check_output_dir(outdir)
-    # NumericalSolution.f90 `sln_ar`: the Newton formulation (T6.2) and XT3D (T6.5, `gwf_get_iasym`)
-    # give a nonsymmetric matrix.
-    (spec.newton || spec.npf.xt3d) && ims.linear_acceleration === :cg && throw(
-        MF6InputError(
-            ims.file, 0,
-            "MODEL **$(uppercase(spec.name))** PRODUCES AN ASYMMETRIC COEFFICIENT MATRIX, BUT THE CONJUGATE GRADIENT METHOD WAS SELECTED. USE BICGSTAB INSTEAD.",
-        ),
-    )
+    # NumericalSolution.f90 `sln_ar`: the Newton formulation (T6.2) and XT3D (T6.5, `gwf_get_iasym`;
+    # T6.6: also XT3D on an exchange, `gwf_gwf_connection` of the interface model) give a
+    # nonsymmetric matrix.
+    for spec in sim.models
+        (spec.newton || spec.npf.xt3d) && ims.linear_acceleration === :cg && throw(
+            MF6InputError(
+                ims.file, 0,
+                "MODEL **$(uppercase(spec.name))** PRODUCES AN ASYMMETRIC COEFFICIENT MATRIX, BUT THE CONJUGATE GRADIENT METHOD WAS SELECTED. USE BICGSTAB INSTEAD.",
+            ),
+        )
+    end
+    for ex in sim.exchanges
+        ex.xt3d && ims.linear_acceleration === :cg && throw(
+            MF6InputError(
+                ims.file, 0,
+                "MODEL **$(ex.model1)** PRODUCES AN ASYMMETRIC COEFFICIENT MATRIX, BUT THE CONJUGATE GRADIENT METHOD WAS SELECTED. USE BICGSTAB INSTEAD.",
+            ),
+        )
+    end
     T, Ts, Tp = resolve_precision(backend, precision)
     steps = time_steps(sim.tdis)
-    m = GwfModel(backend, T, spec, nper(sim.tdis))
+    m = multi ? GwfModel(backend, T, solution_setup(sim), nper(sim.tdis)) : GwfModel(backend, T, only(sim.models), nper(sim.tdis))
     ps = PicardSolver(m, PicardSettings(ims, T; closures, preconditioner, precond_options); Ts, Tp)
-    acc = BudgetAccumulator(m)
-    out = write_output ? ModelOutput(m, sim.simdir, outdir) : nothing
+    views = model_views(m)
+    accs = BudgetAccumulator[BudgetAccumulator(v) for v in views]
+    outs = ModelOutput[]
+    try
+        write_output && for v in views
+            push!(outs, ModelOutput(v, sim.simdir, outdir))
+        end
+    catch
+        foreach(close, outs)
+        rethrow()
+    end
+    out = isempty(outs) ? nothing : first(outs)
+    exflows = multi ? ExchangeFlows(m) : nothing
+    exobs = (multi && write_output) ? ExchangeObservations(m.solution, sim.simdir, outdir) : nothing
     s = Simulation(
-        sim, m, ps, acc, out, T, Ts, Tp, steps, 0, :initialized, OuterState(ps), StepResult[], ModelBudget[],
-        Dict{String, _Mirror}(), Int[], nothing,
+        sim, m, ps, first(accs), out, T, Ts, Tp, steps, 0, :initialized, OuterState(ps), StepResult[], ModelBudget[],
+        Dict{String, _Mirror}(), Int[], nothing, views, String[_vname(v) for v in views], outs, accs, exflows, exobs,
     )
-    isnothing(out) || _listing_header(out.listing, m, ps, T, Ts, Tp, backend)
+    for (v, o) in zip(views, outs)
+        _listing_header(o.listing, v, ps, T, Ts, Tp, backend)
+    end
     return s
 end
 
@@ -271,7 +312,11 @@ function prepare_time_step(s::Simulation, dt::Real = 0.0)
     window = time_step_window(s.steps, s.istep)
     step.kstp == 1 && @timed_section :period_data apply_period!(s.model, step.kper; window)
     # Observations (T6.7, `bnd_rp_obs`): the records of the package observations.
-    step.kstp == 1 && !isnothing(s.output) && !isnothing(s.output.obs) && obs_rp!(s.output.obs, s.model)
+    if step.kstp == 1
+        for o in s.outputs
+            isnothing(o.obs) || obs_rp!(o.obs, s.model)
+        end
+    end
     # Time series (T6.3): `idm_ts_advance` after `tdis_set_timestep`.
     @timed_section :period_data advance_time_series!(s.model, window)
     s.stage = :prepared_time_step
@@ -334,9 +379,17 @@ function finalize_solve(s::Simulation, isol::Integer = 1)
     m = s.model
     step = s.steps[s.istep]
     @timed_section :flows calc_flows!(m)
-    b = @timed_section :budget model_budget!(s.acc, m, step)
+    if isnothing(s.exflows)
+        b = @timed_section :budget model_budget!(s.acc, m, step)
+        push!(s.budgets, b)
+    else
+        # T6.6: the exchange flows, then the budget of every model.
+        @timed_section :flows exchange_flows!(s.exflows, m)
+        for (v, acc) in zip(s.views, s.accs)
+            push!(s.budgets, @timed_section :budget model_budget!(acc, v, step, s.exflows))
+        end
+    end
     push!(s.results, StepResult(step, OuterResult(s.outer)))
-    push!(s.budgets, b)
     s.stage = :finalized_solve
     _pull_mirrors!(s; lost = true)
     return s.outer.converged
@@ -354,7 +407,12 @@ See [`prepare_time_step`](@ref) for an example.
 function finalize_time_step(s::Simulation)
     _check_stage(s, :finalize_time_step, :finalized_solve)
     r = last(s.results)
-    isnothing(s.output) || @timed_section :output _write_step(s.output, s.model, r.step, r.outer, last(s.budgets), s.spec)
+    nv = length(s.views)
+    for (k, (v, o)) in enumerate(zip(s.views, s.outputs))
+        b = s.budgets[end - nv + k]
+        @timed_section :output _write_step(o, v, r.step, r.outer, b, s.spec; exflows = s.exflows)
+    end
+    isnothing(s.exobs) || write_exchange_observations(s.exobs, s.exflows, r.step.totim)
     s.stage = :finalized_time_step
     ok = r.outer.converged || s.spec.continue_on_nonconvergence
     if !r.outer.converged && s.spec.continue_on_nonconvergence
@@ -440,12 +498,13 @@ finalize_simulation(sim)
 """
 function finalize_simulation(s::Simulation; free::Bool = true)
     s.stage === :freed && return s
-    isnothing(s.output) || close(s.output)
+    foreach(close, s.outputs)
+    isnothing(s.exobs) || close(s.exobs)
     s.stage = :finalized
     if free
         backend = get_backend(s.model.h)
         backend isa CPU || KernelAbstractions.synchronize(backend)
-        free_device_arrays!((s.model, s.solver, s.acc, s.check, s.outer, s.output))
+        free_device_arrays!((s.model, s.solver, s.accs, s.check, s.outer, s.outputs, s.exflows))
         s.stage = :freed
     end
     return s
@@ -496,7 +555,7 @@ function device_bound!(s::Simulation, address::AbstractString)
     s.stage === :prepared_time_step ||
         throw(ArgumentError("device_bound!: device BOUND writes are allowed only between prepare_time_step and prepare_solve (called after $(s.stage))"))
     arr = _variable(s, address).device(s)
-    ip = _find_package(s.model, parts[2])
+    ip = _find_package(s, parts[1], parts[2])
     ip in s.device_writes || push!(s.device_writes, ip)
     return arr
 end
@@ -635,9 +694,10 @@ get_var_address(::Simulation, var::AbstractString, component::AbstractString; su
 
 _scalar(x) = [x]
 
-function _dis_names(m::GwfModel)
+_dis_names(m::GwfModel) = _dis_names(m.spec)
+function _dis_names(spec::GwfSpec)
     names = Set(["DIS"])
-    for p in m.spec.packages
+    for p in spec.packages
         p.ftype in ("DIS6", "DISV6", "DISU6") && push!(names, uppercase(p.name))
     end
     return names
@@ -647,11 +707,28 @@ _tdis_step(s::Simulation) = s.steps[max(s.istep, 1)]
 
 _find_package(m::GwfModel, name) = findfirst(p -> uppercase(p.spec.name) == name, m.packages)
 
+# T6.6: the model `mname` (upper case) of the simulation (its view), or `nothing`.
+_find_view(s::Simulation, mname) = (k = findfirst(v -> uppercase(_vname(v)) == mname, s.views); isnothing(k) ? nothing : s.views[k])
+
+# The index in `s.model.packages` of package `pname` of model `mname` (upper case), or `nothing`.
+function _find_package(s::Simulation, mname, pname)
+    v = _find_view(s, mname)
+    isnothing(v) && return nothing
+    m = _vmodel(v)
+    i = findfirst(ip -> uppercase(m.packages[ip].spec.name) == pname, _vpackages(v))
+    return isnothing(i) ? nothing : _vpackages(v)[i]
+end
+
 # The variable at `address` (uppercase), or an error listing the supported addresses.
 function _variable(s::Simulation, address::AbstractString)
     parts = split(uppercase(address), '/')
     m = s.model
     T = s.T
+    # T6.6: a model of a multi-model solution.
+    if length(parts) in (2, 3) && !isnothing(m.solution)
+        v = _find_view(s, parts[1])
+        isnothing(v) || return _view_variable(s, v, address, parts)
+    end
     mname = uppercase(m.spec.name)
     r = m.setup.r
     if length(parts) == 2 && parts[1] == "SLN_1"
@@ -705,6 +782,56 @@ function _variable(s::Simulation, address::AbstractString)
     throw(ArgumentError("unknown address \"$address\"; supported: $(join(var_addresses(s), ", "))"))
 end
 
+# T6.6: the variables of model `v` of a multi-model solution: its slice of the merged
+# model's arrays (`X`, `XOLD`, `IBOUND`: device views), its own grid and packages. NODELIST
+# holds the model's reduced nodes on the host and the solution's on the device.
+function _view_variable(s::Simulation, v::ModelView, address::AbstractString, parts)
+    T = s.T
+    rg = _vrange(v)
+    off = _voffset(v)
+    r = _vsetup(v).r
+    nn = length(rg)
+    if length(parts) == 2
+        x = parts[2]
+        x == "X" && return _Variable(
+            s -> absolute_heads(v),
+            (s, xs) -> copyto!(s.model.h, off + 1, T.(to_offsets(r, vec(xs))), 1, nn),
+            s -> view(s.model.h, rg), "L",
+        )
+        x == "XOLD" && return _Variable(s -> r .+ Float64.(Array(s.model.hold)[rg]), nothing, s -> view(s.model.hold, rg), "L")
+        x == "HREF" && return _Variable(s -> copy(r), nothing, s -> r, "L")
+        x == "IBOUND" && return _Variable(s -> s.model.ibound_host[rg], nothing, s -> view(s.model.ibound, rg), "-")
+    elseif parts[2] in _dis_names(_vspec(v))
+        c = _vconn(v)
+        x = parts[3]
+        x == "NODEUSER" && return _Variable(_ -> copy(c.nodeuser), nothing, nothing, "-")
+        x == "NODEREDUCED" && return _Variable(_ -> copy(c.nodereduced), nothing, nothing, "-")
+        x == "TOP" && return _Variable(_ -> copy(c.top), nothing, nothing, "L")
+        x == "BOT" && return _Variable(_ -> copy(c.bot), nothing, nothing, "L")
+        x == "AREA" && return _Variable(_ -> copy(c.area), nothing, nothing, "L2")
+        x == "NODES" && return _Variable(_ -> _scalar(Int32(c.nodes)), nothing, nothing, "-")
+        x == "NODESUSER" && return _Variable(_ -> _scalar(Int32(c.nodesuser)), nothing, nothing, "-")
+    else
+        ip = _find_package(s, parts[1], parts[2])
+        if !isnothing(ip)
+            pkg = s -> s.model.packages[ip]
+            x = parts[3]
+            x == "BOUND" && return _Variable(
+                s -> copy(bound_user!(pkg(s))),
+                (s, xs) -> (copyto!(pkg(s).bound_user, xs); set_bound!(pkg(s), s.model.setup.r)),
+                s -> pkg(s).bound, "-", s -> pkg(s).bound_version, s -> bound_user!(pkg(s)),
+            )
+            x == "NODELIST" && return _Variable(
+                s -> Int32[n > 0 ? n - off : n for n in pkg(s).nodelist_host], nothing, s -> pkg(s).nodelist, "-",
+            )
+            x == "SIMVALS" && return _Variable(s -> Float64.(Array(pkg(s).simvals)), nothing, s -> pkg(s).simvals, "L3/T")
+            x == "NBOUND" && return _Variable(s -> _scalar(Int32(pkg(s).nbound)), nothing, nothing, "-")
+            x == "MAXBOUND" && return _Variable(s -> _scalar(Int32(length(pkg(s).nodelist_host))), nothing, nothing, "-")
+        end
+    end
+    throw(ArgumentError("unknown address \"$address\"; supported: $(join(var_addresses(s), ", "))"))
+end
+
 """
     var_addresses(sim::Simulation) -> Vector{String}
 
@@ -718,6 +845,11 @@ libmf6 names them, for a model `<model>` with stress packages `<package>`:
   `MAXBOUND`;
 - `SLN_1/MXITER` and `TDIS/DELT`, `TOTIM`, `PERTIM`, `KPER`, `KSTP`, `NPER`.
 
+With several models in the solution (T6.6) the model addresses are there for every model
+(`<model>` its name). The device arrays of `X`, `XOLD` and `IBOUND` (`get_value_ptr(...;
+device = true)`) are then views of the solution's arrays, and the device NODELIST holds the
+solution's node numbers (the host NODELIST the model's).
+
 The writable ones are listed by [`input_addresses`](@ref).
 
 # Example
@@ -727,12 +859,15 @@ filter(contains("/RIV"), var_addresses(sim))
 ```
 """
 function var_addresses(s::Simulation)
-    m = s.model
-    mn = uppercase(m.spec.name)
-    a = ["$mn/$v" for v in ("X", "XOLD", "HREF", "IBOUND")]
-    append!(a, ["$mn/DIS/$v" for v in ("NODEUSER", "NODEREDUCED", "TOP", "BOT", "AREA", "NODES", "NODESUSER")])
-    for p in m.packages
-        append!(a, ["$mn/$(uppercase(p.spec.name))/$v" for v in ("BOUND", "NODELIST", "SIMVALS", "NBOUND", "MAXBOUND")])
+    a = String[]
+    for mv in s.views
+        mn = uppercase(_vname(mv))
+        append!(a, ["$mn/$v" for v in ("X", "XOLD", "HREF", "IBOUND")])
+        append!(a, ["$mn/DIS/$v" for v in ("NODEUSER", "NODEREDUCED", "TOP", "BOT", "AREA", "NODES", "NODESUSER")])
+        for ip in _vpackages(mv)
+            p = _vmodel(mv).packages[ip]
+            append!(a, ["$mn/$(uppercase(p.spec.name))/$v" for v in ("BOUND", "NODELIST", "SIMVALS", "NBOUND", "MAXBOUND")])
+        end
     end
     push!(a, "SLN_1/MXITER")
     append!(a, ["TDIS/$v" for v in ("DELT", "TOTIM", "PERTIM", "KPER", "KSTP", "NPER")])

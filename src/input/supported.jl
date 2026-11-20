@@ -106,6 +106,12 @@ const SUPPORTED_OPTIONS = Dict{Tuple{String, String}, Vector{String}}(
     ("gwf-rcha", "OPTIONS") => [_STRESS_OPTIONS; "FIXED_CELL"; "READASARRAYS"; "TAS6"],  # T6.3: TAS6
     ("gwf-evt", "OPTIONS") => [_STRESS_OPTIONS; "FIXED_CELL"; "SURF_RATE_SPECIFIED"],
     ("gwf-evta", "OPTIONS") => [_STRESS_OPTIONS; "FIXED_CELL"; "READASARRAYS"; "TAS6"],  # T6.3: TAS6
+    # T6.6: GWF-GWF exchanges (GNC6, MVR6 are rejected by the loader; VARIABLECV, DEWATERED and
+    # NEWTON change nothing between confined cells, the only ones supported with exchanges).
+    ("exg-gwfgwf", "OPTIONS") => [
+        "AUXILIARY", "AUX", "BOUNDNAMES", "PRINT_INPUT", "PRINT_FLOWS", "SAVE_FLOWS", "CELL_AVERAGING", "VARIABLECV", "NEWTON",
+        "XT3D", "OBS6", "DEV_INTERFACEMODEL_ON",
+    ],
     ("sln-ims", "OPTIONS") => ["PRINT_OPTION", "COMPLEXITY", "NO_PTC"],  # T6.2: NO_PTC
     ("sln-ims", "NONLINEAR") => [
         "OUTER_DVCLOSE", "OUTER_MAXIMUM", "UNDER_RELAXATION", "UNDER_RELAXATION_GAMMA",
@@ -144,15 +150,16 @@ T6.4), `:convertible` (NPF ICELLTYPE /= 0 in an active cell) and `:convertible_s
 (STO ICONVERT /= 0 with a transient period), T6.1. Features not in the set are rejected:
 
 - `:newton`: NEWTON in the model name file (supported since T6.2);
-- `:multi_model`: more than one GWF model, or more than one solution (T6.6);
-- `:exchange`: GWF6-GWF6 exchanges (T6.6);
+- `:multi_model`: more than one GWF model (supported since T6.6, in one solution);
+- `:exchange`: GWF6-GWF6 exchanges (supported since T6.6);
+- `:multi_solution`: more than one solution (not supported);
 - `:timeseries`: list values given as TS6 time-series names, or TIMEARRAYSERIES arrays
   (supported since T6.3);
 
 ATS6, TVK6, TVS6 and HPC6 files are options (`ATS6 FILEIN ...`) and are rejected
 through `SUPPORTED_OPTIONS`.
 """
-const SUPPORTED_FEATURES = Set{Symbol}([:timeseries, :disv, :disu, :convertible, :convertible_storage, :newton])
+const SUPPORTED_FEATURES = Set{Symbol}([:timeseries, :disv, :disu, :convertible, :convertible_storage, :newton, :multi_model, :exchange])
 
 """
     check_options(o::OptionSet, dfn_name, ftype, ctx)

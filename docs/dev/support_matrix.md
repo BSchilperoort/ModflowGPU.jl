@@ -18,9 +18,9 @@ through the same engine checks.
 
 | Item | Supported | Rejected (card that adds it) |
 | --- | --- | --- |
-| Models | one GWF6 model | more than one GWF6 model (T6.6, `:multi_model`); GWT6, GWE6, PRT6, CHF6, OLF6 (out of scope, always) |
-| Solutions | one IMS6 solution in one solution group, MXITER | more than one solution (T6.6); EMS6 (out of scope, always) |
-| Exchanges | none | GWF6-GWF6 (T6.6, `:exchange`; also *engine*: `initialize` accepts one model and no exchanges); other exchange types (out of scope); GNC6 or MVR6 on an exchange |
+| Models | GWF6 models in one solution (T6.6, `:multi_model`: several models must be confined, ICELLTYPE 0, STO ICONVERT 0, no NEWTON; checked by `solution_setup`, *engine*) | GWT6, GWE6, PRT6, CHF6, OLF6 (out of scope, always) |
+| Solutions | one IMS6 solution in one solution group, MXITER | more than one solution (`:multi_solution`); EMS6 (out of scope, always) |
+| Exchanges | GWF6-GWF6 (T6.6, `:exchange`): AUXILIARY (ANGLDEGX, CDIST), BOUNDNAMES, PRINT_INPUT, PRINT_FLOWS (no tables written), SAVE_FLOWS, CELL_AVERAGING, VARIABLECV/DEWATERED/NEWTON (no effect on confined cells), XT3D (the interface model's coefficients), OBS6 (FLOW-JA-FACE), DEV_INTERFACEMODEL_ON; a model with itself (periodic) | GNC6 or MVR6 on an exchange; XT3D on a periodic exchange (MF6's error); other exchange types (out of scope) |
 | mfsim.nam OPTIONS | CONTINUE, NOCHECK, MEMORY_PRINT_OPTION, PROFILE_OPTION, MAXERRORS, PRINT_INPUT | HPC6 (parallel input) |
 | TDIS6 | TIME_UNITS, START_DATE_TIME; PERIODDATA (PERLEN, NSTP, TSMULT) | ATS6 (adaptive time stepping; also *engine*, `time_steps`) |
 
@@ -126,3 +126,14 @@ matrix with the pseudo-transient continuation term: 0 to 3e-16 in `:double`) and
 parity test, `:single`, `:mixed` and `:double`, CPU and ROCm; ex-gwf-nwt-p03b without
 `:single` (its Newton iterations do not converge in Float32). Heads of cells below their
 bottom (Newton-dry) are compared as dry (docs/dev/precision.md, T6.2).
+
+T6.6 adds several models in one solution and GWF-GWF exchanges: the Tier 7 examples
+ex-gwf-u1gwfgwf-s1 (outer 7×7 with a refined 9×9 inner model), -s2 (XT3D in both models),
+-s3 (XT3D in the models and on the exchange), -s4 (XT3D on the exchange only),
+ex-gwf-lgrv-lgr (parent 9×61×49 and child 25×90×78, 8400 exchange connections, RIV,
+RCHA) and ex-gwf-spbc (a 190×1×100 model exchanging with itself: periodic boundary), in
+the exchange tests (universal residual of the merged model, libmf6 oracle of the solution
+matrix: 0 to 9e-16 in `:double`, flows of each model and exchange) and the run parity test
+(every model's head, budget and listing files), `:single`, `:mixed` and `:double`, CPU and
+ROCm; and a two-model test simulation with exchange observations, run with mf6 at test
+time.

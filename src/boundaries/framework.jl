@@ -160,8 +160,10 @@ record, 0 without a cell, for heads of the packages with head-like columns, and 
 was taken from; `nothing` after the cells change), `tsblock` (T6.3: the working copy of
 the PERIOD block in force when it has time-series values, `nothing` otherwise) and
 `tswindow` (the time step `(t0, t1)` its series values are for), `icelltype` (T6.1: NPF
-ICELLTYPE by reduced node for the cell-bottom checks of `*_ck`, empty when not given) and
-`moved` (T6.1: a RCH/EVT record is on another cell than given, `highest_active`).
+ICELLTYPE by reduced node for the cell-bottom checks of `*_ck`, empty when not given),
+`moved` (T6.1: a RCH/EVT record is on another cell than given, `highest_active`) and
+`uoffset` (T6.6: in a multi-model solution, the model's first user node minus one in the
+solution's numbering, keyword `uoffset`; 0 otherwise).
 `bound_values(pkg, r)` gives the Float64 values of `bound`.
 """
 mutable struct BoundaryPackage{K, T <: AbstractFloat, VI <: AbstractVector{Int32}, VT <: AbstractVector{T}, MT <: AbstractMatrix{T}}
@@ -194,6 +196,7 @@ mutable struct BoundaryPackage{K, T <: AbstractFloat, VI <: AbstractVector{Int32
     tswindow::NTuple{2, Float64}
     const icelltype::Vector{Int32}
     moved::Bool
+    const uoffset::Int32
 end
 
 # The staging buffer of `bound` on the host, and the result of `pin_memory!` (kept so the
@@ -206,7 +209,7 @@ end
 
 function BoundaryPackage{K, T}(
         backend::Backend, spec::BoundarySpec{K}, conn::Connectivity, dis::AbstractDisSpec;
-        icelltype::AbstractVector{<:Integer} = Int32[],
+        icelltype::AbstractVector{<:Integer} = Int32[], uoffset::Integer = 0,
     ) where {K, T <: AbstractFloat}
     check_boundary_spec(spec)
     grid = grid_dims(dis)
@@ -222,7 +225,7 @@ function BoundaryPackage{K, T}(
         zeros(Int32, maxbound), zeros(Float64, ncol, maxbound), String[], 0, false, staging, pinned,
         zeros(Int32, conn.nodes + 1), zeros(Int32, maxbound),
         zeros(isempty(head_columns(BoundaryKind{K}())) ? 0 : maxbound), nothing, nothing, (NaN, NaN),
-        Vector{Int32}(icelltype), false,
+        Vector{Int32}(icelltype), false, Int32(uoffset),
     )
 end
 
@@ -241,7 +244,7 @@ function Adapt.adapt_structure(to, p::BoundaryPackage)
         adapt(to, p.simvals), adapt(to, p.ratein), adapt(to, p.rateout), adapt(to, p.nodeptr), adapt(to, p.noderec),
         p.nbound, p.iblock, copy(p.nodelist_host), copy(p.bound_user), copy(p.boundname), p.bound_version, p.user_stale,
         staging, pinned, copy(p.nodeptr_host), copy(p.noderec_host), copy(p.rrec), p.rrec_for,
-        isnothing(p.tsblock) ? nothing : _ts_working_copy(p.tsblock), p.tswindow, p.icelltype, p.moved,
+        isnothing(p.tsblock) ? nothing : _ts_working_copy(p.tsblock), p.tswindow, p.icelltype, p.moved, p.uoffset,
     )
 end
 
@@ -281,6 +284,9 @@ end
 
 # The reduced node of user node `nu` (0 when the cell is not in the reduced grid).
 _reduced(conn::Connectivity, nu::Integer) = (nu < 1 || nu > conn.nodesuser) ? Int32(0) : max(conn.nodereduced[nu], Int32(0))
+# T6.6: a package of a model in a multi-model solution has the solution's connectivity and
+# the model's first user node minus one (`uoffset`); its cells are the model's user nodes.
+_reduced(pkg::BoundaryPackage, nu::Integer) = nu < 1 ? Int32(0) : _reduced(pkg.conn, nu + pkg.uoffset)
 
 # Period data (T4.6). A new PERIOD block is applied in at most three host passes:
 #
@@ -532,7 +538,7 @@ function _period_nodes!(pkg::BoundaryPackage, data::ArrayPeriod)
     n = length(nodeu)
     n <= length(pkg.nodelist_host) || throw(ArgumentError("$(pkg.spec.name): $n cells for $(length(pkg.nodelist_host)) records"))
     for i in 1:n
-        pkg.nodelist_host[i] = _reduced(pkg.conn, nodeu[i])
+        pkg.nodelist_host[i] = _reduced(pkg, nodeu[i])
     end
     return n
 end
@@ -543,7 +549,7 @@ function _period_nodes!(pkg::BoundaryPackage, p::PeriodList)
     n <= length(pkg.nodelist_host) ||
         throw(MF6InputError(spec.file, 0, "$(spec.name): $n records in a PERIOD block, but MAXBOUND is $(length(pkg.nodelist_host))"))
     for i in 1:n
-        nd = _reduced(pkg.conn, p.nodeu[i])
+        nd = _reduced(pkg, p.nodeu[i])
         # cellid_to_nlist (BoundaryPackageExt.f90): a list record in a cell outside the
         # reduced grid (IDOMAIN <= 0) is an error.
         nd > 0 || throw(MF6InputError(spec.file, 0, "$(spec.name): Cell is outside active grid domain (user node $(p.nodeu[i]))."))

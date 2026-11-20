@@ -39,6 +39,7 @@ const FILE_NAMES = [
     "gwf-rcha" => ("Recharge (`READASARRAYS`)", "RCH6"),
     "gwf-evt" => ("Evapotranspiration (list input)", "EVT6"),
     "gwf-evta" => ("Evapotranspiration (`READASARRAYS`)", "EVT6"),
+    "exg-gwfgwf" => ("GWF–GWF exchange", "GWF6-GWF6"),
 ]
 
 "What the features of `SUPPORTED_FEATURES` mean for a user."
@@ -49,6 +50,8 @@ const FEATURE_NAMES = Dict(
     :convertible => "Convertible cells (NPF `ICELLTYPE` ≠ 0), with wetting and drying (`REWET`, `WETDRY`)",
     :convertible_storage => "Convertible storage (STO `ICONVERT` ≠ 0, specific yield) in transient periods",
     :newton => "Newton–Raphson formulation (`NEWTON` and `NEWTON UNDER_RELAXATION` in the model name file)",
+    :multi_model => "Several GWF models in one IMS solution (models with `ICELLTYPE` 0, without `NEWTON`)",
+    :exchange => "GWF–GWF exchanges (`GWF6-GWF6`) between models of a solution, and of a model with itself (periodic boundary)",
 )
 
 "Why each package or model of `UNSUPPORTED_PACKAGES` and `UNSUPPORTED_MODELS` is rejected."

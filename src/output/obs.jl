@@ -105,23 +105,36 @@ function _obs_open(simdir, outdir, o::ObsOutputSpec, digits, cols)
     return _ObsFile(p, io, o.binary, digits, cols)
 end
 
+# T6.6: positions in the engine arrays of a model of a multi-model solution: reduced nodes
+# and package indices shifted into the merged model, FLOW-JA-FACE entries through `jamap`.
+_obs_node(::GwfModel, n) = n
+_obs_node(v::ModelView, n) = n > 0 ? n + _voffset(v) : n
+_obs_ja(::GwfModel, ja) = ja
+_obs_ja(v::ModelView, ja) = ja > 0 ? v.part.jamap[ja] : ja
+
 """
     ObservationOutput(m::GwfModel, simdir, outdir) -> ObservationOutput or nothing
+    ObservationOutput(v::ModelView, simdir, outdir) -> ObservationOutput or nothing
 
 Open the observation output files of model `m` (`nothing` without observations) and
 resolve the observations on the model's grid: reduced nodes, and the FLOW-JA-FACE
 connections (`getjaindex`; a pair of cells without a connection is an `MF6InputError`
-with MF6's message).
+with MF6's message). For a model of a multi-model solution (T6.6) the nodes, connections
+and packages are those of the merged model, which `obs_rp!`, `obs_values` and
+`write_observations` then take.
 """
-function ObservationOutput(m::GwfModel{T}, simdir::AbstractString, outdir::AbstractString) where {T}
-    spec = m.spec
+function ObservationOutput(m::Union{GwfModel, ModelView}, simdir::AbstractString, outdir::AbstractString)
+    spec = _vspec(m)
     _has_obs(spec) || return nothing
-    conn = m.conn
+    mm = _vmodel(m)
+    T = eltype(mm)
+    conn = _vconn(m)
     obs = _Obs[]
     files = _ObsFile[]
     owners = Tuple{Int, ObsSpec}[]
     isnothing(spec.obs) || push!(owners, (0, spec.obs))
-    for (ip, pkg) in enumerate(m.packages)
+    for ip in _vpackages(m)
+        pkg = mm.packages[ip]
         isnothing(pkg.spec.obs) || push!(owners, (ip, pkg.spec.obs))
     end
     opens = Tuple{ObsOutputSpec, Int, Vector{Int}}[]
@@ -135,7 +148,7 @@ function ObservationOutput(m::GwfModel{T}, simdir::AbstractString, outdir::Abstr
                 ja = Int32(getjaindex(conn, node, n2))
                 ja == 0 && throw(MF6InputError(e.file, e.line, "Error: No connection exists between cells identified in text: $(e.idstring)"))
             end
-            push!(obs, _Obs(e.name, e.type, owner, node, ja, e.boundname))
+            push!(obs, _Obs(e.name, e.type, owner, Int32(_obs_node(m, node)), Int32(_obs_ja(m, ja)), e.boundname))
             push!(cols, length(obs))
         end
         push!(opens, (o, os.digits, cols))
@@ -144,7 +157,9 @@ function ObservationOutput(m::GwfModel{T}, simdir::AbstractString, outdir::Abstr
     for (o, digits, cols) in opens
         push!(files, _obs_open(simdir, outdir, o, digits, cols))
     end
-    strt = Float64[spec.ic.strt[u] for u in conn.nodeuser]
+    strt = zeros(Int(mm.conn.nodes))
+    strt[_vrange(m)] .= Float64[spec.ic.strt[u] for u in conn.nodeuser]
+    m = mm
     z = similar(m.h, 0)
     out = ObservationOutput{typeof(z)}(
         obs, files, [f.path for f in files], [Int32[] for _ in obs], Any[], Any[], Int[], z, T[], zeros(Int, length(obs)),

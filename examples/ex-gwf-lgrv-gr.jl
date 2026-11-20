@@ -10,8 +10,8 @@
 # [ex-gwf-lgrv](https://modflow6-examples.readthedocs.io/en/latest/_notebooks/ex-gwf-lgrv.html)
 # runs three versions: a refined model (`-gr`), a coarse one (`-gc`, see
 # [A valley aquifer with a river](ex-gwf-lgrv-gc.md)) and the coarse model with a refined
-# child model inside (`-lgr`), which needs two models coupled by an exchange (planned,
-# see [Supported packages](@ref)). This page runs the refined model, `ex-gwf-lgrv-gr`:
+# child model inside (`-lgr`, see [A valley aquifer with a refined child
+# model](ex-gwf-lgrv-lgr.md)). This page runs the refined model, `ex-gwf-lgrv-gr`:
 # 25 layers of 183 × 147 cells of 35 m × 25 m, 672 525 cells, the largest model of the
 # gallery.
 #

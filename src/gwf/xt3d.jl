@@ -415,6 +415,23 @@ function xt3d_setup(conn::Connectivity, p::NpfProperties, r::AbstractVector{Floa
         end
         tptr[jj + 1] = length(tc) + 1
     end
+    return xt3d_assemble(conn, tptr, ta, tb, tc, r; rhs)
+end
+
+"""
+    xt3d_assemble(conn::Connectivity, tptr, ta, tb, tc, r; rhs = false) -> Xt3dSetup
+
+The XT3D setup from the flux terms of every symmetric connection of `conn` (`tptr`, `ta`,
+`tb`, `tc` as in `Xt3dSetup`, the primary term first): the system structure (the extended
+stencil, or `conn` with the RHS option), the constant matrix and `sb`, with the reference
+heads `r`. `xt3d_setup` of a model, and of a multi-model solution (T6.6, where a connection
+can also be a conductance, a single term `condsat·(h_m − h_n)`).
+"""
+function xt3d_assemble(
+        conn::Connectivity, tptr::Vector{Int32}, ta::Vector{Int32}, tb::Vector{Int32}, tc::Vector{Float64},
+        r::AbstractVector{Float64}; rhs::Bool = false,
+    )
+    nodes = Int(conn.nodes)
     tdr = [r[ta[t]] - r[tb[t]] for t in eachindex(ta)]
     ia, ja, isym, jas = rhs ? (conn.ia, conn.ja, conn.isym, conn.jas) : _xt3d_structure(conn)
     amat = zeros(length(ja))

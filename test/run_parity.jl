@@ -172,8 +172,12 @@ function _budget_difference(ours, mf6, tin; bounds = nothing)
         # List records by package too: a model may have two packages of one type (T6.4).
         pak = r.imeth == 6 ? strip(r.paknam2) : nothing
         j = find_budget_records(a; text = strip(r.text), kstp = r.kstp, kper = r.kper, paknam2 = pak)
-        @test length(j) == 1
-        length(j) == 1 || continue
+        # T6.6: a periodic exchange writes two lists with the same text and package to its
+        # model's file (from either side): matched in file order.
+        jb = find_budget_records(b; text = strip(r.text), kstp = r.kstp, kper = r.kper, paknam2 = pak)
+        @test length(j) == length(jb)
+        length(j) == length(jb) || continue
+        j = [j[findfirst(==(i), jb)]]
         ra = a.records[only(j)]
         @test ra.imeth == r.imeth && (ra.ndim1, ra.ndim2, ra.ndim3) == (r.ndim1, r.ndim2, r.ndim3)
         @test ra.totim ≈ r.totim rtol = 1.0e-12
@@ -330,15 +334,21 @@ function _run_parity(
         backtracking::Bool = false, presets = SOLVER_TEST_PRESETS, single_obs_tol::Float64 = 1.0e-4,
     )
     sim = load_simulation(rundir)
-    m = only(sim.models)
+    # T6.6: several models (one IMS solution with GWF-GWF exchanges): every model's head,
+    # budget and listing files against MF6's, and the largest differences reported.
+    models = sim.models
+    multi = length(models) > 1
+    m = first(models)
     # Newton models: the cell bottoms by user node (dry cells) and by reduced node.
     conn = m.newton ? ModflowGPU.build_connectivity(m) : nothing
     botu = m.newton ? (b = fill(-Inf, Int(conn.nodesuser)); b[conn.nodeuser] .= conn.bot; b) : nothing
     wet(h) = isnothing(conn) ? trues(length(h)) : h .>= conn.bot
-    shift = _null_space_model(m, ModflowGPU.nper(sim.tdis))
-    mf6_hds = _only_file(rundir, ".hds")
-    mf6_cbc = isempty(m.oc.budget_file) ? "" : joinpath(rundir, m.oc.budget_file)
-    mf6_lst = joinpath(rundir, isempty(m.list_file) ? splitext(basename(m.file))[1] * ".lst" : m.list_file)
+    shift = all(x -> _null_space_model(x, ModflowGPU.nper(sim.tdis)), models)
+    mf6_files(x) = (
+        hds = multi ? joinpath(rundir, x.oc.head_file) : _only_file(rundir, ".hds"),
+        cbc = isempty(x.oc.budget_file) ? "" : joinpath(rundir, x.oc.budget_file),
+        lst = joinpath(rundir, isempty(x.list_file) ? splitext(basename(x.file))[1] * ".lst" : x.list_file),
+    )
     iters = _mf6_iterations(joinpath(rundir, "mfsim.lst"))
     nsteps = length(ModflowGPU.time_steps(sim.tdis))
     mf6_outer = sum(first, values(iters); init = 0)
@@ -346,6 +356,7 @@ function _run_parity(
     mf6_bt = backtracking ? _backtracked_iterations(read(joinpath(rundir, "mfsim.lst"), String)) : nothing
     heads = Dict{Symbol, Vector{Float64}}()
     stats = Dict{Symbol, Any}()
+    hasobs = any(x -> !isempty(_obs_outputs(x)), models)
     for_each_precision(; presets) do p
         pcname = p.preset === :single ? single_preconditioner : preconditioner
         pc = (; preconditioner = pcname, precond_options)
@@ -354,41 +365,71 @@ function _run_parity(
             @test r.converged
             @test r.T === p.T
             heads[p.preset] = r.heads
-            dh, range, ndry, hshift = _head_difference(r.head_file, mf6_hds; bot = botu, drytol = p.T === Float64 ? 1.0e-6 : 1.0e-3, shift)
-            hdtol = p.T === Float64 ? max(1.0e-6, 1.0e-7 * range) : 1.0e-3
-            @test dh < hdtol
-            # T6.7: observation files vs MF6's (heads within the head-file criterion, flows
-            # relative to the column's largest value: 1e-6 in :double, 1e-4 in :single).
-            hasobs = !isempty(_obs_outputs(m))
-            @test length(r.obs_files) == length(_obs_outputs(m))
-            tins = [ModflowGPU.total_rate_in(b) for b in r.budgets]
-            obs = hasobs ? _obs_difference(m, out, rundir, tins; htol = hdtol, ftol = p.T === Float64 ? 1.0e-6 : single_obs_tol) : nothing
-            tin = Dict((b.kstp, b.kper) => ModflowGPU.total_rate_in(b) for b in r.budgets)
-            btol = p.T === Float64 ? double_budget_tol : single_budget_tol
-            # `:single` with `single_rounding_bound` (T6.1, named models only): budget
-            # differences beyond the Float32 rounding of the flows and the head difference
-            # (`_rounding_bounds`); otherwise the raw differences.
-            rb = p.T === Float32 && single_rounding_bound ? _rounding_bounds(rundir, r.head_file, mf6_hds) : nothing
-            dq, nrec, btot = isempty(mf6_cbc) ? (0.0, 0, Dict{Tuple{Int, Int}, Float64}()) : _budget_difference(r.budget_file, mf6_cbc, tin; bounds = rb)
-            if !isnothing(rb) && isempty(mf6_cbc)
-                # No MF6 budget file (T6.2, ex-gwf-zaidel): the bound of each step from the
-                # connections (C = condsat) and storage, for the listing and the imbalance.
-                for st in ModflowGPU.time_steps(sim.tdis)
-                    key = (st.kstp, st.kper)
-                    tolv = rb.flowja_bound(key, nothing, st.delt)
-                    isnothing(tolv) && continue
-                    sb = rb.storage_bound(key, st.delt, rb.nodesuser)
-                    btot[key] = (sum(tolv) - sum(tolv[ii] for ii in rb.idiag)) / 2 + (isnothing(sb) ? 0.0 : sum(sb))
-                end
+            @test length(r.models) == length(models)
+            # T6.6: then the observation files of the GWF-GWF exchanges.
+            exobs = [o.file for ex in sim.exchanges if !isnothing(ex.obs) for o in ex.obs.outputs]
+            @test length(r.obs_files) == sum(x -> length(_obs_outputs(x)), models) + length(exobs)
+            for file in exobs
+                a, b = ModflowGPU.read_observations(joinpath(out, file)), ModflowGPU.read_observations(joinpath(rundir, file))
+                @test a.names == b.names
+                @test a.times ≈ b.times rtol = 1.0e-12
+                sc = max(maximum(abs, b.values; init = 0.0), floatmin())
+                @test maximum(abs.(a.values .- b.values); init = 0.0) / sc < (p.T === Float64 ? 1.0e-6 : single_obs_tol)
             end
-            @test dq < btol
-            dl, ntab, nmf6 = _listing_difference(r.listing_file, mf6_lst; extra = btot)
-            @test dl < btol
-            @test ntab == nmf6
-            # Percent discrepancy beyond the bound of the in − out imbalance (`:single`).
-            pdx = maximum(b -> max(abs(ModflowGPU.percent_discrepancy(b)) - 100 * get(btot, (b.kstp, b.kper), 0.0) / ModflowGPU.total_rate_in(b), 0.0), r.budgets)
-            pd = maximum(b -> abs(ModflowGPU.percent_discrepancy(b)), r.budgets)
-            p.T === Float32 && @test pdx < 0.01
+            dh = dq = dl = pd = pdx = hshift = 0.0
+            ndry = nrec = ntab = 0
+            obs = nothing
+            hdtols = Float64[]
+            tinss = Dict{String, Vector{Float64}}()
+            for x in models
+                mo = r.models[findfirst(y -> y.name == x.name, r.models)]
+                f = mf6_files(x)
+                budgets = multi ? filter(b -> b.model == x.name, r.budgets) : r.budgets
+                @test length(budgets) == nsteps
+                dhk, range, ndryk, hshiftk = _head_difference(mo.head_file, f.hds; bot = botu, drytol = p.T === Float64 ? 1.0e-6 : 1.0e-3, shift)
+                hdtol = p.T === Float64 ? max(1.0e-6, 1.0e-7 * range) : 1.0e-3
+                push!(hdtols, hdtol)
+                @test dhk < hdtol
+                dh, ndry, hshift = max(dh, dhk), ndry + ndryk, max(hshift, hshiftk)
+                # T6.7: observation files vs MF6's (heads within the head-file criterion, flows
+                # relative to the column's largest value: 1e-6 in :double, 1e-4 in :single).
+                tins = [ModflowGPU.total_rate_in(b) for b in budgets]
+                tinss[x.name] = tins
+                if !isempty(_obs_outputs(x))
+                    o = _obs_difference(x, out, rundir, tins; htol = hdtol, ftol = p.T === Float64 ? 1.0e-6 : single_obs_tol)
+                    obs = isnothing(obs) ? o : (max(obs[1], o[1]), max(obs[2], o[2]), obs[3] + o[3])
+                end
+                tin = Dict((b.kstp, b.kper) => ModflowGPU.total_rate_in(b) for b in budgets)
+                btol = p.T === Float64 ? double_budget_tol : single_budget_tol
+                # `:single` with `single_rounding_bound` (T6.1, named models only): budget
+                # differences beyond the Float32 rounding of the flows and the head difference
+                # (`_rounding_bounds`); otherwise the raw differences.
+                rb = p.T === Float32 && single_rounding_bound ? _rounding_bounds(rundir, mo.head_file, f.hds) : nothing
+                dqk, nreck, btot = isempty(f.cbc) ? (0.0, 0, Dict{Tuple{Int, Int}, Float64}()) : _budget_difference(mo.budget_file, f.cbc, tin; bounds = rb)
+                if !isnothing(rb) && isempty(f.cbc)
+                    # No MF6 budget file (T6.2, ex-gwf-zaidel): the bound of each step from the
+                    # connections (C = condsat) and storage, for the listing and the imbalance.
+                    for st in ModflowGPU.time_steps(sim.tdis)
+                        key = (st.kstp, st.kper)
+                        tolv = rb.flowja_bound(key, nothing, st.delt)
+                        isnothing(tolv) && continue
+                        sb = rb.storage_bound(key, st.delt, rb.nodesuser)
+                        btot[key] = (sum(tolv) - sum(tolv[ii] for ii in rb.idiag)) / 2 + (isnothing(sb) ? 0.0 : sum(sb))
+                    end
+                end
+                @test dqk < btol
+                dlk, ntabk, nmf6 = _listing_difference(mo.listing_file, f.lst; extra = btot)
+                @test dlk < btol
+                @test ntabk == nmf6
+                # Percent discrepancy beyond the bound of the in − out imbalance (`:single`).
+                pdxk = maximum(b -> max(abs(ModflowGPU.percent_discrepancy(b)) - 100 * get(btot, (b.kstp, b.kper), 0.0) / ModflowGPU.total_rate_in(b), 0.0), budgets)
+                pdk = maximum(b -> abs(ModflowGPU.percent_discrepancy(b)), budgets)
+                p.T === Float32 && @test pdxk < 0.01
+                dq, dl, pd, pdx = max(dq, dqk), max(dl, dlk), max(pd, pdk), max(pdx, pdxk)
+                nrec += nreck
+                ntab += ntabk
+            end
+            hdtol = maximum(hdtols)
             outer = sum(s -> s.outer.iterations, r.steps)
             inner = sum(s -> s.outer.inner, r.steps)
             if backtracking
@@ -397,7 +438,8 @@ function _run_parity(
                 @test bt == mf6_bt
                 @info "Backtracking: $name, :$(p.preset), $(backend_name(TEST_BACKEND)): (step, outer iteration) $bt (MF6 $mf6_bt)"
             end
-            @info "Run parity: $name, :$(p.preset), $(backend_name(TEST_BACKEND)) ($pcname), $nsteps step(s), $(round(t; digits = 1)) s: max |Δh| = $(round(dh; sigdigits = 3)) m$(shift ? " after removing a constant shift of $(round(hshift; sigdigits = 3)) m (null space)" : "") (tol $(round(hdtol; sigdigits = 2))$(ndry > 0 ? "; $ndry Newton-dry cell-steps" : "")), CBC max |Δq| / total in = $(round(dq; sigdigits = 3)) ($nrec records), listing $(round(dl; sigdigits = 3)) ($ntab tables), max |percent discrepancy| = $(round(pd; sigdigits = 3))$(p.T === Float32 ? " (beyond the rounding bound $(round(pdx; sigdigits = 3)))" : ""); outer/inner iterations $outer/$inner (MF6 $mf6_outer/$mf6_inner)"
+            mtxt = multi ? " ($(length(models)) models)" : ""
+            @info "Run parity: $name$mtxt, :$(p.preset), $(backend_name(TEST_BACKEND)) ($pcname), $nsteps step(s), $(round(t; digits = 1)) s: max |Δh| = $(round(dh; sigdigits = 3)) m$(shift ? " after removing a constant shift of $(round(hshift; sigdigits = 3)) m (null space)" : "") (tol $(round(hdtol; sigdigits = 2))$(ndry > 0 ? "; $ndry Newton-dry cell-steps" : "")), CBC max |Δq| / total in = $(round(dq; sigdigits = 3)) ($nrec records), listing $(round(dl; sigdigits = 3)) ($ntab tables), max |percent discrepancy| = $(round(pd; sigdigits = 3))$(p.T === Float32 ? " (beyond the rounding bound $(round(pdx; sigdigits = 3)))" : ""); outer/inner iterations $outer/$inner (MF6 $mf6_outer/$mf6_inner)"
             isnothing(obs) || @info "Run parity, observations: $name, :$(p.preset), $(backend_name(TEST_BACKEND)): max |Δ| heads $(round(obs[1]; sigdigits = 3)) m, flows $(round(obs[2]; sigdigits = 3)) × scale ($(obs[3]) values in $(length(r.obs_files)) file(s))"
             stats[p.preset] = (; dh, dq, dl, pd, outer, inner, time = t, mf6_outer, mf6_inner, backend_vs_cpu = NaN, obs)
             if !(TEST_BACKEND isa CPU)
@@ -412,8 +454,11 @@ function _run_parity(
                     if hasobs
                         # T6.7: :double 1e-10 relative, :single heads 1e-4 m, flows 1e-4 × scale.
                         hr = maximum(abs, rc.heads)
-                        oc = _obs_difference(m, out, cout, tins; htol = p.T === Float64 ? 1.0e-10 * hr : 1.0e-4, ftol = p.T === Float64 ? 1.0e-10 : 1.0e-4)
-                        @info "Run $(backend_name(TEST_BACKEND)) vs CPU, observations: $name, :$(p.preset): max |Δ| heads $(round(oc[1]; sigdigits = 3)) m, flows $(round(oc[2]; sigdigits = 3)) × scale"
+                        for x in models
+                            isempty(_obs_outputs(x)) && continue
+                            oc = _obs_difference(x, out, cout, tinss[x.name]; htol = p.T === Float64 ? 1.0e-10 * hr : 1.0e-4, ftol = p.T === Float64 ? 1.0e-10 : 1.0e-4)
+                            @info "Run $(backend_name(TEST_BACKEND)) vs CPU, observations: $name, :$(p.preset): max |Δ| heads $(round(oc[1]; sigdigits = 3)) m, flows $(round(oc[2]; sigdigits = 3)) × scale"
+                        end
                     end
                 end
             end

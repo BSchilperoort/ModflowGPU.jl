@@ -94,8 +94,8 @@ What is different from libmf6:
 
 - `get_value_ptr` returns a host copy of the engine data, not the engine memory itself;
   see [Host mirrors and device arrays](@ref).
-- Only one GWF model with one IMS solution, and the addresses below. There are no
-  exchanges and no other model types.
+- One IMS solution, with one GWF model or several connected by GWF–GWF exchanges (see
+  [Several models](@ref)), and the addresses below. There are no other model types.
 - `prepare_time_step` cannot change the step length (no adaptive time stepping).
 - Boundary values written through the API are not checked each time step as in MF6.
   [Differences from MODFLOW 6](../compatibility/differences.md) lists this and the
@@ -164,6 +164,35 @@ Notes on the table:
   one record per cell of a layer (`ncpl`).
 - **SIMVALS** are computed in `finalize_solve`: after it, they are the flows of the step
   just solved. For CHD they are the flows through the constant-head cells.
+
+### Several models
+
+A simulation with several GWF models (in one IMS solution, connected by `GWF6-GWF6`
+exchanges, see [Supported packages](@ref "Several models and GWF–GWF exchanges")) has the
+model addresses of the table for every model, each with its own name: `"PARENT/X"`,
+`"CHILD/X"`, `"CHILD/RIV-1/BOUND"`, `"CHILD/DIS/NODES"`, ... The solution and TDIS
+addresses (`SLN_1/MXITER`, `TDIS/...`) are there once. `sim.models` lists the model
+names in the order of the solution, and the stepping calls (`prepare_time_step`,
+`ModflowGPU.solve`, ...) advance all models together, as libmf6 does.
+
+```julia
+sim = initialize("path/to/lgr_simulation")
+sim.models                      # ["PARENT", "CHILD"]
+ModflowGPU.update(sim)
+hp = get_value(sim, "PARENT/X") # the heads of each model, in its own node numbering
+hc = get_value(sim, "CHILD/X")
+filter(b -> b.model == "CHILD", sim.budgets)   # the budgets of one model
+```
+
+Each model's variables are in its own numbering: `X`, `IBOUND` and the `DIS` variables
+have the model's nodes, and the host `NODELIST` the model's node numbers. The models are
+one system on the device, so the device arrays of `X`, `XOLD` and `IBOUND`
+(`get_value_ptr(...; device = true)`) are views of the solution's arrays, and the device
+`NODELIST` holds the node numbers of the solution (the model's plus the nodes of the models
+before it in `sim.models`). The flows across the exchanges are part of each model's budget
+(`FLOW-JA-FACE` and `FLOW-JA-FACE-CHD` rows of [`ModelBudget`](@ref)); they have no
+address. In BMI, the grids of the second model follow those of the first (see
+[BMI](@ref "Grids")).
 
 ### BOUND columns
 

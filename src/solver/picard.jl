@@ -175,6 +175,8 @@ function PicardSolver(m::GwfModel{T}, settings::PicardSettings; Ts::Type = T, Tp
     n = Int(m.conn.nodes)
     colors = if !(settings.krylov.preconditioner in (:mc_sgs, :mc_ilu0))
         nothing
+    elseif m.scsr === m.csr && !isnothing(m.solution)
+        solution_colors(m.solution)
     elseif m.scsr === m.csr
         grid_colors(m.conn, m.spec.dis)
     else

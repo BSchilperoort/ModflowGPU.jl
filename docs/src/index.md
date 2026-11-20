@@ -18,7 +18,8 @@ and volumetric budgets on the same input. The first user is
 The package is under development and not yet registered; install it from its Git URL (see
 [Installation](install.md)). Supported today:
 
-- one GWF model with one IMS solution, on DIS, DISV and DISU grids;
+- one IMS solution with one GWF model, or with several connected by GWF–GWF exchanges, on
+  DIS, DISV and DISU grids;
 - NPF (confined and convertible cells, wetting and drying, anisotropy, and the XT3D
   formulation for confined cells), STO, IC and OC;
 - the boundary packages CHD, WEL, GHB, RIV, DRN, RCH and EVT, with time series (TS) and
@@ -26,11 +27,12 @@ The package is under development and not yet registered; install it from its Git
 - the Picard outer iteration and the Newton–Raphson formulation, with backtracking and
   under-relaxation, and CG or BiCGSTAB inner solvers, in double, mixed or single
   precision, with volumetric budgets;
+- observations (OBS6) of heads, flows and stress packages;
 - the stepping API and BMI for coupling.
 
-Not supported yet: several models with exchanges, and observation
-(OBS) output. Input that uses something unsupported is rejected with an error that names it,
-never silently ignored. Packages for other processes (SFR, LAK, MAW, UZF, MVR, CSUB and the
+Several models in one solution must be confined (see
+[Supported packages](@ref "Several models and GWF–GWF exchanges")). Input that uses
+something unsupported is rejected with an error that names it, never silently ignored. Packages for other processes (SFR, LAK, MAW, UZF, MVR, CSUB and the
 transport models) are out of scope. See [Supported packages](compatibility/packages.md).
 
 ## When to use it
