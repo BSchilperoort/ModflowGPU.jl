@@ -896,18 +896,22 @@ end
 
 [`difference_map`](@ref) for several models: one panel per `label => Δhs` pair, `Δhs[k]`
 the head difference array of model `gs[k]`; the models are drawn on one map, with one
-symmetric colour range per panel.
+symmetric colour range per panel. The panels fill rows of `ncols` panels.
 """
-function models_difference_map(gs, panels; layer = 1, unit = "", size = (460 * length(panels), 400), xlabel = "x position", ylabel = "y position")
+function models_difference_map(
+        gs, panels; layer = 1, unit = "", ncols = length(panels),
+        size = (460 * ncols, 400 * cld(length(panels), ncols)), xlabel = "x position", ylabel = "y position",
+    )
     fig = Figure(; size)
     for (k, (lab, ds)) in enumerate(panels)
         as = [layer_values(g, d, layer) for (g, d) in zip(gs, ds)]
         m = maximum(a -> maximum(x -> isnan(x) ? 0.0 : abs(x), a), as)
         m = m == 0 ? 1.0e-12 : m
-        ax = Axis(fig[1, 2k - 1]; aspect = DataAspect(), title = lab, xlabel, ylabel)
+        row, col = fldmod1(k, ncols)
+        ax = Axis(fig[row, 2col - 1]; aspect = DataAspect(), title = lab, xlabel, ylabel)
         hm = models_heatmap!(ax, gs, as; colormap = :balance, colorrange = (-m, m))
         foreach(g -> map_outline!(ax, g; linewidth = 0.5), gs)
-        Colorbar(fig[1, 2k], hm; label = isempty(unit) ? "Δh" : "Δh ($unit)", tickformat = expformat)
+        Colorbar(fig[row, 2col], hm; label = isempty(unit) ? "Δh" : "Δh ($unit)", tickformat = expformat)
     end
     return fig
 end

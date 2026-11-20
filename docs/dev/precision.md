@@ -991,7 +991,13 @@ connections allow, else greedily):
 end 3.4e-7 and 1.0e-7 m from MF6's tight run, within 1e-6 m: these are the accuracy of
 the reference runs' linear solves (MF6 needs 1001 inner iterations, INNER_MAXIMUM, in
 both); the universal residual of MF6's heads in our merged model is 1.1e-12 and 1.8e-10 of
-the largest row. ex-gwf-lgrv-lgr `:single` takes 5 outer iterations (1720 inner) for
+the largest row. T6.6 review, mf6 rerun in scratch copies of the tight runs: with
+INNER_MAXIMUM 20000, lgrv-lgr's first solve takes 1947 inner iterations and MF6 moves
+2.5e-7 m; with INNER_DVCLOSE 1e-13, INNER_RCLOSE 1e-12 (and ModflowGPU with the same
+closures) MF6 and ModflowGPU agree to 2.2e-8 m (lgrv-lgr) and 3.1e-9 m (spbc), while MF6
+moves 3.4e-7 and 1.0e-7 m from the tight run. On spbc the inner cap alone matters little
+(6.7e-9 m with 1063 inner iterations): MF6's CG/ILU0 solve stops early on this
+near-singular periodic system at the tight closures. Default parity tolerances, not loosened. ex-gwf-lgrv-lgr `:single` takes 5 outer iterations (1720 inner) for
 3.7e-5 m (K = 1e-6 m/s next to 300 m heads, as ex-gwf-lgrv-gc). Its flows with MF6's heads
 differ from MF6's by up to 2.6e-4 of the largest flow in `:single`, all within the Float32
 rounding of the flows' terms (the exchange test compares beyond that bound).

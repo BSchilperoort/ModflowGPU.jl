@@ -125,7 +125,7 @@ save_figure(fig, "ex-gwf-u1gwfgwf-flow")
 
 heads6(v, name) = read_head(open_head_file(joinpath(mf6[v].dir, name * ".hds")), 1)
 d = ["s$k" => [heads(v, n) .- heads6(v, n) for n in ("outer", "inner")] for (k, v) in enumerate(versions)]
-save_figure(models_difference_map([outer, inner], d; unit = "m", xlabel = "x position (m)", ylabel = "y position (m)"), "ex-gwf-u1gwfgwf-difference")
+save_figure(models_difference_map([outer, inner], d; ncols = 2, unit = "m", xlabel = "x position (m)", ylabel = "y position (m)"), "ex-gwf-u1gwfgwf-difference")
 
 # The largest head and budget differences over both models, for each version, in both
 # precisions, next to the values of the [parity table](@ref "Parity table"), and the wall
