@@ -34,6 +34,10 @@ A GWF model ready to run on a device in precision `T` (state and assembly):
   the host `SolutionSetup`: the model is then the merged model of the solution, see
   src/gwf/exchange.jl) and `exgentry` (device Bool per CSR entry marking the exchange
   connections, or `nothing`).
+- T6.9: `conversions`, the cell conversions of `wetdry!` since the start of the time step
+  (`(kiter, wet, dry)` with reduced nodes in MF6's order, one entry per call that converted
+  a cell; the initial call of the constructor has `kiter` 0), for the listing
+  (`write_conversions`).
 
 With convertible cells IBOUND changes during the outer iterations (`wetdry!`: dry cells get
 0); `ibound_host` follows it.
@@ -71,6 +75,7 @@ mutable struct GwfModel{T <: AbstractFloat, B <: Backend, C <: CsrStructure, N <
     const scsr::C
     const solution::Any
     const exgentry::Any
+    const conversions::Vector{Tuple{Int, Vector{Int32}, Vector{Int32}}}
 end
 
 function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) where {T <: AbstractFloat}
@@ -98,7 +103,7 @@ function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) whe
     m = GwfModel(
         spec, backend, conn, setup, csr, npf, sys, packages, sto, _device_copy(backend, T.(conn.area)),
         _device_copy(backend, ibh), ibh, h, hold, z(), z(), KernelAbstractions.zeros(backend, T, conn.nja), 0,
-        nothing, 0, wd, newton, nurbot, vol, 0.0, xt3d, scsr, nothing, nothing,
+        nothing, 0, wd, newton, nurbot, vol, 0.0, xt3d, scsr, nothing, nothing, Tuple{Int, Vector{Int32}, Vector{Int32}}[],
     )
     # `preprocess_input`: `wd(0, hnew)` with the starting heads (IBOUND without the
     # constant heads, which `chd_rp` sets later).
@@ -149,7 +154,7 @@ function Adapt.adapt_structure(to, m::GwfModel)
         BoundaryPackage[adapt(to, p) for p in m.packages], adapt(to, m.sto), adapt(to, m.area), adapt(to, m.ibound),
         copy(m.ibound_host), h, adapt(to, m.hold), adapt(to, m.res), adapt(to, m.δ), adapt(to, m.flowja), m.kper,
         nothing, 0, adapt(to, m.wd), m.newton, adapt(to, m.nurbot), adapt(to, m.vol), m.delt, adapt(to, m.xt3d), scsr,
-        m.solution, adapt(to, m.exgentry),
+        m.solution, adapt(to, m.exgentry), copy(m.conversions),
     )
 end
 
@@ -181,6 +186,7 @@ function GwfModel(backend::Backend, ::Type{T}, sol::SolutionSetup, nper::Integer
         spec, backend, conn, setup, csr, npf, sys, packages, sto, _device_copy(backend, T.(conn.area)),
         _device_copy(backend, ibh), ibh, h, hold, z(), z(), KernelAbstractions.zeros(backend, T, conn.nja), 0,
         nothing, 0, nothing, false, z(0), z(0), 0.0, xt3d, scsr, sol, _device_copy(backend, sol.exgentry),
+        Tuple{Int, Vector{Int32}, Vector{Int32}}[],
     )
 end
 
@@ -250,6 +256,7 @@ the constant heads applied to both (`chd_ad`).
 """
 function start_timestep!(m::GwfModel, delt::Float64)
     m.delt = delt
+    empty!(m.conversions)
     isnothing(m.sto) || set_timestep!(m.sto, delt)
     copyto!(m.hold, m.h)
     # npf_ad (T6.1): the old head of a dry cell that can rewet is its bottom.
@@ -344,10 +351,16 @@ off-diagonals are marked stale. A constant-head cell going dry is an `MF6InputEr
 """
 function wetdry!(m::GwfModel, kiter::Integer)
     isnothing(m.wd) && return false
-    changed, chddry = wetdry_device!(m.wd, m.npf.cv, m.csr, m.npf.Δr, m.h, m.ibound, kiter)
+    changed, chddry, flags = wetdry_device!(m.wd, m.npf.cv, m.csr, m.npf.Δr, m.h, m.ibound, kiter)
     chddry && throw(MF6InputError(m.spec.npf.file, 0, "CONSTANT-HEAD CELL WENT DRY -- SIMULATION ABORTED"))
     changed || return false
+    old = copy(m.ibound_host)
     copyto!(m.ibound_host, m.ibound)
+    # T6.9 (`sgwf_npf_wdmsg`): the cells rewetted (in node order), then the cells dried,
+    # among them those rewetted and dried again in this call.
+    wet = isnothing(flags) ? Int32[] : Int32.(findall(!=(0), Array(flags)))
+    dry = Int32[n for n in eachindex(old) if m.ibound_host[n] == 0 && (old[n] != 0 || insorted(n, wet))]
+    (isempty(wet) && isempty(dry)) || push!(m.conversions, (Int(kiter), wet, dry))
     m.offdiag = nothing
     for pkg in m.packages
         boundary_kind(pkg) in (:RCH, :EVT) && move_to_highest_active!(pkg, m.ibound_host, m.setup.r)

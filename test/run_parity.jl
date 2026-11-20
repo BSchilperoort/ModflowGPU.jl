@@ -327,6 +327,28 @@ end
 # head is below the bottom are compared as dry (`_head_difference`), and also left out of
 # the GPU vs CPU and `:single` vs `:double` head comparisons (their heads depend on the
 # iteration path).
+# T6.9: the cell-conversion blocks of a listing file (`sgwf_npf_wdmsg`): header => lines.
+function _conversion_blocks(path)
+    lines = readlines(path)
+    out = Pair{String, Vector{String}}[]
+    i = 1
+    while i <= length(lines)
+        if occursin("CELL CONVERSIONS FOR", lines[i])
+            hdr = strip(lines[i])
+            body = String[]
+            i += 1
+            while i <= length(lines) && occursin(r"^    \s*(WET|DRY)\s", lines[i])
+                push!(body, lines[i])
+                i += 1
+            end
+            push!(out, hdr => body)
+        else
+            i += 1
+        end
+    end
+    return out
+end
+
 function _run_parity(
         name, rundir; preconditioner::Symbol = RUN_PRECONDITIONER, precond_options::NamedTuple = (;),
         single_preconditioner::Symbol = preconditioner, single_budget_tol::Float64 = 1.0e-4,
@@ -421,6 +443,11 @@ function _run_parity(
                 dlk, ntabk, nmf6 = _listing_difference(mo.listing_file, f.lst; extra = btot)
                 @test dlk < btol
                 @test ntabk == nmf6
+                # T6.9: the cell-conversion messages as MF6 writes them (`:double`: the same
+                # iterations convert the same cells; `:single` reported).
+                cva, cvb = _conversion_blocks(mo.listing_file), _conversion_blocks(f.lst)
+                p.T === Float64 && @test cva == cvb
+                (isempty(cva) && isempty(cvb)) || @info "Cell conversions: $name/$(x.name), :$(p.preset): $(length(cva)) blocks (MF6 $(length(cvb))), identical: $(cva == cvb)"
                 # Percent discrepancy beyond the bound of the in − out imbalance (`:single`).
                 pdxk = maximum(b -> max(abs(ModflowGPU.percent_discrepancy(b)) - 100 * get(btot, (b.kstp, b.kper), 0.0) / ModflowGPU.total_rate_in(b), 0.0), budgets)
                 pdk = maximum(b -> abs(ModflowGPU.percent_discrepancy(b)), budgets)

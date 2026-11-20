@@ -194,6 +194,35 @@ function model_flowja(v::ModelView)
 end
 
 """
+    write_conversions(io, m::GwfModel, kstp, kper)
+
+The cell conversions of `m.conversions` (T6.9) in the listing as MF6 writes them
+(gwf-npf.f90 `sgwf_npf_wdmsg`): per `wetdry!` call a header `CELL CONVERSIONS FOR
+ITER.=<kiter>  STEP=<kstp>  PERIOD=<kper>   (NODE or LRC)`, then five conversions per line
+(`(1X,3X,5(A4, A20))`: `WET` or `DRY`, the cell as `(layer,row,col)` on DIS, `(layer,cell2d)`
+on DISV, `(node)` on DISU, `nodeu_to_string`). The initial call (`kiter` 0) is written
+with step and period 0.
+"""
+function write_conversions(io::IO, m::GwfModel, kstp::Integer, kper::Integer)
+    isempty(m.conversions) && return nothing
+    grid = grid_dims(m.spec.dis)
+    cell(n) = "(" * join(cellid(grid, m.conn.nodeuser[n]), ",") * ")"
+    for (kiter, wet, dry) in m.conversions
+        @printf(io, "\n CELL CONVERSIONS FOR ITER.=%d  STEP=%d  PERIOD=%d   (NODE or LRC)\n", kiter, kiter == 0 ? 0 : kstp, kiter == 0 ? 0 : kper)
+        items = vcat([("WET", n) for n in wet], [("DRY", n) for n in dry])
+        for chunk in Iterators.partition(items, 5)
+            print(io, "    ")
+            for (a, n) in chunk
+                print(io, lpad(a, 4), lpad(cell(n), 20))
+            end
+            println(io)
+        end
+    end
+    return nothing
+end
+write_conversions(::IO, ::ModelView, ::Integer, ::Integer) = nothing
+
+"""
     write_head_listing(io, m::GwfModel, step, heads)
 
 PRINT HEAD: the heads by layer in the listing file (10 values per line, `%12.4E`;

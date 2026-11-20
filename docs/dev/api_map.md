@@ -179,7 +179,7 @@ it. Underscore-prefixed helpers are omitted.
   of one connection for `condsat` or a `ConvertibleNpf`, PERCHED included; used by every
   assembly/residual/flow kernel), `_cond_arg`, `npf_cf!` (`npf_sat_kernel!`), `WetDry` (state),
   `npf_rewet_kernel!` (Jacobi passes equal to MF6's sequential loop), `npf_rewet_apply_kernel!`,
-  `npf_dry_kernel!`, `wetdry_device!`, `npf_ad!`. Tests: convertible, assembly, run.
+  `npf_dry_kernel!`, `wetdry_device!` (T6.9: also returns the rewet flags), `npf_ad!`. Tests: convertible, assembly, run.
   T6.2 (Newton–Raphson; gwf-npf.f90 `fn_default_flow`, `highest_cell_saturation`,
   `sgwf_npf_thksat`; SmoothingFunctions.f90): `ConvertibleNpf.newton`/`ihighcellsat` (`ihcx`
   bit 8: bottoms differ by ≥ 0.01), `newton_saturation`, `newton_saturation_derivative`
@@ -272,6 +272,12 @@ it. Underscore-prefixed helpers are omitted.
   `bound_user`); `tswindow`. Tests: timeseries, run, assembly, sto.
   T6.6: `BoundaryPackage.uoffset` (keyword `uoffset`: a package of a model of a merged
   model resolves its cells through the solution's user numbering, `_reduced(pkg, nu)`).
+  T6.9: `BoundaryPackage.device_written` (set by `device_bound!`, cleared by a full host
+  staging) and `tsscatter`; `advance_time_series!` writes only the entries linked to a series
+  (`_linked_entries`, `_stage_linked!`, `bound_scatter_kernel!`) and checks the records
+  (`check_records`, as `gwf_ad` → `bnd_ck`); `move_to_highest_active!` restages nothing for
+  RCH and only the EVT surface of moved records (`bound_shift_kernel!` by the reference
+  difference when written on the device). Tests: timeseries, riv_drn_evt.
 - **boundaries/chd.jl**: CHD (gwf-chd.f90; see `docs/dev/mf6_notes.md`). `apply_chd_heads!`,
   `calc_chd_rate!`. Tests: boundaries (parity vs MF6 CBC).
   T6.6: `calc_chd_rate!(...; exg)` skips the exchange entries (`_is_exchange`).
@@ -407,6 +413,8 @@ it. Underscore-prefixed helpers are omitted.
   `uoffset`, merged storage and starting heads), `model_views`, the view accessors
   (`_vspec`, `_vconn`, `_vrange`, `_voffset`, `_vpackages`, `_vmodel`, `_vsetup`, `_vname`;
   a `GwfModel` is its own view), `absolute_heads(::ModelView)`.
+  T6.9: field `conversions` (the `(kiter, wet, dry)` cell conversions of `wetdry!` in the
+  current step, cleared by `start_timestep!`).
 - **solver/underrelax.jl**: `sln_underrelax`. `UnderRelaxation` (SIMPLE, COOLEY host
   scalars, DBD device state), `underrelax!` (`relax_update_kernel!`,
   `dbd_update_kernel!`); Adapt. Tests: picard (vs a host port), run (variants vs MF6).
@@ -482,6 +490,8 @@ it. Underscore-prefixed helpers are omitted.
   blocks, ALL/FIRST/LAST/FREQUENCY/STEPS), `ModelOutput` (open HDS/CBC/listing files),
   `write_heads`, `write_budget` (STO-SS, FLOW-JA-FACE, package lists as MF6),
   `write_head_listing` (PRINT HEAD); T6.7: `ModelOutput.obs`. Tests: picard, run.
+  T6.9: `write_conversions` (`sgwf_npf_wdmsg`: the `GwfModel.conversions` of the step in the
+  listing; tests: run, `_conversion_blocks` vs MF6's listing).
   T6.6: `ModelOutput`, `write_heads`, `write_budget(...; exflows)`, `write_head_listing`
   take a `GwfModel` or a `ModelView`; `model_flowja` (a model's FLOW-JA-FACE; the diagonal
   of a constant-head cell without its exchange flows), `_model_values`.

@@ -194,12 +194,15 @@ function _listing_header(io::IO, m::Union{GwfModel, ModelView}, ps::PicardSolver
     k = st.krylov
     @printf(io, " OUTER_DVCLOSE = %.4e, OUTER_MAXIMUM = %d, UNDER_RELAXATION = %s\n", st.dvclose, st.maxiter, uppercase(String(st.ims.under_relaxation)))
     @printf(io, " LINEAR_ACCELERATION = %s (%s), INNER_MAXIMUM = %d, INNER_DVCLOSE = %.4e, INNER_RCLOSE = %.4e (option %d)\n", uppercase(String(k.method)), k.preconditioner === :jacobi ? "Jacobi" : String(k.preconditioner), k.maxiter, k.dvclose, k.rclose, k.icnvgopt)
+    # T6.9: the cells dried by the initial `wetdry!` (`preprocess_input`).
+    write_conversions(io, m, 0, 0)
     return nothing
 end
 
 function _write_step(out::ModelOutput, m::Union{GwfModel, ModelView}, step::TimeStep, r::OuterResult, b::ModelBudget, sim::SimulationSpec; exflows = nothing)
     io = out.listing
     oc = _vspec(m).oc
+    write_conversions(io, m, step.kstp, step.kper)   # T6.9: during the outer iterations
     @printf(io, "\n %d CALLS TO NUMERICAL SOLUTION IN TIME STEP %d STRESS PERIOD %d\n %d TOTAL ITERATIONS\n", r.iterations, step.kstp, step.kper, r.inner)
     r.converged || @printf(io, "\n Solution did not converge for stress period %d and time step %d\n", step.kper, step.kstp)
     oc_selected(oc, :save, "BUDGET", step) && write_budget(out, m, step; exflows)

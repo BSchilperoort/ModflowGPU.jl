@@ -168,11 +168,13 @@ ModflowGPU writes a short model listing file with:
   stress period and after a step that did not converge (as MODFLOW 6 does), so they can be
   read with [`read_listing_budgets`](@ref) like MODFLOW 6's;
 - the heads, when OC prints them, 10 values per line in `%12.4E`; `HEAD PRINT_FORMAT` is
-  not applied.
+  not applied;
+- the cell conversions of a model with convertible cells (`CELL CONVERSIONS FOR ITER.=...`,
+  the cells that became dry or wet), as MODFLOW 6 writes them, before the iteration count
+  of the step (those of the starting heads after the header).
 
 It does not contain the echo of the input (`PRINT_INPUT`), the flow tables of
-`PRINT_FLOWS`, the solver convergence tables of IMS `PRINT_OPTION`, messages about cells
-that become dry or wet, the memory and timing reports, or the warnings and notes that
+`PRINT_FLOWS`, the solver convergence tables of IMS `PRINT_OPTION`, the memory and timing reports, or the warnings and notes that
 MODFLOW 6 writes there. ModflowGPU reports warnings and notes in the Julia log instead.
 
 ### Observation files
