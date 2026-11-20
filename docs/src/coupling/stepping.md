@@ -299,8 +299,11 @@ device, open it with [`ModflowGPU.device_bound!`](@ref) between `prepare_time_st
 `prepare_solve`. It returns the same array, and `prepare_solve` then checks the records in
 force on the device (all values finite; for RIV stage ≥ bottom and conductance ≥ 0) and
 throws an `MF6InputError` naming the first bad record. Values written this way are used
-until new period data replace them, and are not seen by host reads of `BOUND`
-(`get_value`, mirrors), which keep the values last set on the host.
+until new period data or a host write of the same `BOUND` replace them, and are not seen
+by host reads of `BOUND` (`get_value`, mirrors), which keep the values last set on the
+host. A time series of the package rewrites only the entries linked to it at each
+`prepare_time_step`, and RCH or EVT records that move to another cell when cells go dry
+keep their values (the EVT surface is shifted to the new cell's reference).
 
 ### Which one to use
 

@@ -532,7 +532,9 @@ Returns the engine array, as `get_value_ptr(sim, address; device = true)`: preci
 every opened BOUND on the device (one kernel and one host-mapped flag per package): all
 values finite, and for RIV stage ≥ bottom and conductance ≥ 0 (`riv_ck`); a violation
 throws an `MF6InputError` naming the first bad record. The written values are used by the
-step, are replaced by new period data, and are not seen by host reads of BOUND
+step and kept in later steps until new period data or a host write of BOUND replace them
+(T6.9: a time series of the package rewrites only its own entries, and RCH/EVT records
+moved to another cell keep their values), and are not seen by host reads of BOUND
 (`get_value`, mirrors), which keep the values last set on the host. Writes into a device
 BOUND that was not opened this way are not checked (the stepping API cannot see them).
 
@@ -557,6 +559,7 @@ function device_bound!(s::Simulation, address::AbstractString)
     arr = _variable(s, address).device(s)
     ip = _find_package(s, parts[1], parts[2])
     ip in s.device_writes || push!(s.device_writes, ip)
+    s.model.packages[ip].device_written = true
     return arr
 end
 

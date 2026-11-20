@@ -163,7 +163,10 @@ the PERIOD block in force when it has time-series values, `nothing` otherwise) a
 ICELLTYPE by reduced node for the cell-bottom checks of `*_ck`, empty when not given),
 `moved` (T6.1: a RCH/EVT record is on another cell than given, `highest_active`) and
 `uoffset` (T6.6: in a multi-model solution, the model's first user node minus one in the
-solution's numbering, keyword `uoffset`; 0 otherwise).
+solution's numbering, keyword `uoffset`; 0 otherwise), `device_written` (T6.9: `bound` was
+written on the device through `device_bound!` since it was last staged in full from the host)
+and `tsscatter` (T6.9: the entries of `bound` linked to time series in the block in force,
+host and device index and value buffers, built on first use; `nothing` otherwise).
 `bound_values(pkg, r)` gives the Float64 values of `bound`.
 """
 mutable struct BoundaryPackage{K, T <: AbstractFloat, VI <: AbstractVector{Int32}, VT <: AbstractVector{T}, MT <: AbstractMatrix{T}}
@@ -197,6 +200,8 @@ mutable struct BoundaryPackage{K, T <: AbstractFloat, VI <: AbstractVector{Int32
     const icelltype::Vector{Int32}
     moved::Bool
     const uoffset::Int32
+    device_written::Bool
+    tsscatter::Any
 end
 
 # The staging buffer of `bound` on the host, and the result of `pin_memory!` (kept so the
@@ -225,7 +230,7 @@ function BoundaryPackage{K, T}(
         zeros(Int32, maxbound), zeros(Float64, ncol, maxbound), String[], 0, false, staging, pinned,
         zeros(Int32, conn.nodes + 1), zeros(Int32, maxbound),
         zeros(isempty(head_columns(BoundaryKind{K}())) ? 0 : maxbound), nothing, nothing, (NaN, NaN),
-        Vector{Int32}(icelltype), false, Int32(uoffset),
+        Vector{Int32}(icelltype), false, Int32(uoffset), false, nothing,
     )
 end
 
@@ -245,6 +250,7 @@ function Adapt.adapt_structure(to, p::BoundaryPackage)
         p.nbound, p.iblock, copy(p.nodelist_host), copy(p.bound_user), copy(p.boundname), p.bound_version, p.user_stale,
         staging, pinned, copy(p.nodeptr_host), copy(p.noderec_host), copy(p.rrec), p.rrec_for,
         isnothing(p.tsblock) ? nothing : _ts_working_copy(p.tsblock), p.tswindow, p.icelltype, p.moved, p.uoffset,
+        p.device_written, nothing,
     )
 end
 
@@ -509,11 +515,14 @@ end
 
 Evaluate the time series of the PERIOD block in force for the time step `window = (t0,
 t1)` (`[totimc, totimc + delt]`, Float64; TimeSeriesManager.f90 `tsmgr_ad`,
-TimeArraySeriesManager.f90 `tasmgr_ad`) and send `bound` to the device (multiplier and
-offsets from `r` in Float64, as period data; T6.3). Returns `false` (nothing done) when the
-block has no time series or was already evaluated for `window`. Records are not checked
-(MF6 checks in `bnd_rp` only). After a stepping API write, the series entries replace the
-written values of their columns.
+TimeArraySeriesManager.f90 `tasmgr_ad`) and send the entries of `bound` linked to a series
+to the device (multiplier and offsets from `r` in Float64, as period data; T6.3). Only those
+entries are written (T6.9: as MF6's links overwrite only their own elements), so values
+written on the device (`device_bound!`) in the other entries are kept. Returns `false`
+(nothing done) when the block has no time series or was already evaluated for `window`.
+The records are checked on the new values (`check_records`, T6.9: MF6 calls `bnd_ck` in
+every `gwf_ad`, after `idm_ts_advance` has set the step's series values). After a stepping
+API write, the series entries replace the written values of their columns.
 """
 function advance_time_series!(pkg::BoundaryPackage, window::NTuple{2, Float64}, r::AbstractVector{Float64})
     blk = pkg.tsblock
@@ -522,8 +531,89 @@ function advance_time_series!(pkg::BoundaryPackage, window::NTuple{2, Float64}, 
     pkg.tswindow = window
     pkg.user_stale || _ts_to_user!(pkg, blk)
     pkg.bound_version += 1
-    _stage_bound!(pkg, r)
+    check_records(BoundaryKind{boundary_kind(pkg)}(), pkg, _bound_source(pkg), pkg.nbound)
+    _stage_linked!(pkg, r)
     return true
+end
+
+# The linear indices into `bound` (column-major `(ncol, maxbound)`) of the entries that a
+# time series of the block in force sets (T6.9): a linked list value or array, and the
+# multiplied column of a record whose MULTIPLIER aux is linked. Sorted, unique.
+function _linked_entries(pkg::BoundaryPackage{K}, blk) where {K}
+    ncol = size(pkg.bound_user, 1)
+    imult = Int(pkg.spec.auxmultcol)
+    mcol = mult_column(BoundaryKind{K}())
+    idx = Int32[]
+    add(c, i) = (c > 0 && i <= pkg.nbound) && push!(idx, Int32((i - 1) * ncol + c))
+    if blk isa PeriodList
+        for t in blk.ts
+            add(_user_column(pkg, t.aux, t.col), t.row)
+            (t.aux && t.col == imult) && add(mcol, t.row)
+        end
+    else
+        for name in keys(blk.tas)
+            c = _user_column(pkg, name)
+            ismult = imult > 0 && name == pkg.spec.auxnames[imult]
+            for i in 1:pkg.nbound
+                add(c, i)
+                ismult && add(mcol, i)
+            end
+        end
+    end
+    return unique!(sort!(idx))
+end
+
+@kernel function bound_scatter_kernel!(bound, @Const(idx), @Const(vals))
+    k = @index(Global)
+    @inbounds bound[idx[k]] = vals[k]
+end
+
+@kernel function bound_shift_kernel!(bound, @Const(idx), @Const(vals))
+    k = @index(Global)
+    @inbounds bound[idx[k]] += vals[k]
+end
+
+# `bound[idx] = vals` (`shift`: `bound[idx] += vals`) on the device, for host index and
+# value vectors.
+function _scatter_bound!(bound::AbstractMatrix{T}, idx::AbstractVector{Int32}, vals::AbstractVector{T}; shift::Bool = false) where {T}
+    isempty(idx) && return bound
+    backend = get_backend(bound)
+    di = _device_copy(backend, idx)
+    dv = _device_copy(backend, vals)
+    _scatter_bound!(bound, di, dv, shift)
+    return bound
+end
+
+function _scatter_bound!(bound, di, dv, shift::Bool)
+    backend = get_backend(bound)
+    kernel = shift ? bound_shift_kernel!(backend, _WG) : bound_scatter_kernel!(backend, _WG)
+    kernel(bound, di, dv; ndrange = length(di))
+    return bound
+end
+
+# Stage the time-series entries of `bound` (T6.9): values as `_stage_bound!` computes them
+# (Float64 multiplier and offsets, one cast), scattered to the device. The index buffers
+# are kept per block (`tsscatter`).
+function _stage_linked!(pkg::BoundaryPackage{K, T}, r::AbstractVector{Float64}) where {K, T}
+    pkg.nbound == 0 && return pkg
+    if isnothing(pkg.tsscatter)
+        idx = _linked_entries(pkg, pkg.tsblock)
+        backend = get_backend(pkg.bound)
+        pkg.tsscatter = (idx, _device_copy(backend, idx), zeros(T, length(idx)), KernelAbstractions.zeros(backend, T, length(idx)))
+    end
+    idx, di, vals, dv = pkg.tsscatter
+    isempty(idx) && return pkg
+    b = _bound_source(pkg)
+    hcols = head_columns(BoundaryKind{K}())
+    ncol = size(pkg.bound_user, 1)
+    @inbounds for k in eachindex(idx)
+        c = (idx[k] - 1) % ncol + 1
+        i = (idx[k] - 1) ÷ ncol + 1
+        vals[k] = T(_staged_value(b, hcols, pkg.nodelist_host, r, c, i))
+    end
+    copyto!(dv, vals)
+    _scatter_bound!(pkg.bound, di, dv, false)
+    return pkg
 end
 
 # Whether two PERIOD blocks of a package give the same cells (user nodes; array input: the
@@ -645,6 +735,7 @@ function _stage_bound!(pkg::BoundaryPackage{K, T}, r::AbstractVector{Float64}) w
         m = pkg.staging
     end
     copyto!(pkg.bound, 1, m, 1, size(pkg.staging, 1) * n)
+    pkg.device_written = false
     return pkg
 end
 
@@ -704,6 +795,7 @@ function _apply_period!(pkg::BoundaryPackage{K, T}, kper::Integer, r::AbstractVe
     # Time series (T6.3): a working copy of the block with the values of this time step.
     pkg.tsblock = nothing
     pkg.tswindow = (NaN, NaN)
+    pkg.tsscatter = nothing
     if !isnothing(data) && _has_time_series(data)
         isnothing(window) &&
             throw(ArgumentError("apply_period!: $(spec.name) has time-series values in period $kper: give the time step as `window = (t0, t1)`"))
@@ -754,10 +846,13 @@ end
 Re-place the records of a RCH or EVT package without FIXED_CELL after IBOUND changed (T6.1;
 `rch_cf`/`evt_cf` start from the cells given, `nodesontop`, and move a record in a cell with
 IBOUND 0 to the highest active cell below, `highest_active`). When a record changes cell,
-the node list and the node→record map are uploaded and `bound` is restaged (head-like
-columns as offsets from the reference of the new cell). Returns whether a record moved.
+the node list and the node→record map are uploaded. The values of `bound` stay (T6.9): only
+the head-like columns (EVT surface) of the moved records change, to offsets from the
+reference of the new cell; restaged from the host values, or, when `bound` was written on
+the device (`device_bound!`), shifted on the device by the difference of the two
+references, so the device values are kept. Returns whether a record moved.
 """
-function move_to_highest_active!(pkg::BoundaryPackage{K}, ibound::AbstractVector{<:Integer}, r::AbstractVector{Float64}) where {K}
+function move_to_highest_active!(pkg::BoundaryPackage{K, T}, ibound::AbstractVector{<:Integer}, r::AbstractVector{Float64}) where {K, T}
     (K in (:RCH, :EVT) && !pkg.spec.fixed_cell && pkg.nbound > 0 && pkg.iblock > 0) || return false
     old = pkg.nodelist_host[1:pkg.nbound]
     _period_nodes!(pkg, _block_data(pkg))
@@ -766,7 +861,25 @@ function move_to_highest_active!(pkg::BoundaryPackage{K}, ibound::AbstractVector
     view(pkg.nodelist_host, 1:pkg.nbound) == old && return false
     _upload_structure!(pkg)
     pkg.rrec_for = nothing
-    _stage_bound!(pkg, r)
+    hcols = head_columns(BoundaryKind{K}())
+    isempty(hcols) && return true
+    if pkg.device_written
+        ncol = size(pkg.bound_user, 1)
+        idx = Int32[]
+        vals = T[]
+        for i in 1:pkg.nbound
+            nold, nnew = old[i], pkg.nodelist_host[i]
+            nold == nnew && continue
+            d = (nold > 0 ? r[nold] : 0.0) - (nnew > 0 ? r[nnew] : 0.0)
+            for c in hcols
+                push!(idx, Int32((i - 1) * ncol + c))
+                push!(vals, T(d))
+            end
+        end
+        _scatter_bound!(pkg.bound, idx, vals; shift = true)
+    else
+        _stage_bound!(pkg, r)
+    end
     return true
 end
 
@@ -778,7 +891,7 @@ with `bound_user!`): apply the MULTIPLIER aux variable of the PERIOD block in fo
 convert the head-like columns to offsets from `r`, exactly as `apply_period!` does for
 period data (host, Float64), then cast to `T` and copy `bound` to the device (one fused
 pass into the staging buffer and one copy). Records are not checked (`riv_ck` etc. run in
-`apply_period!` only; MF6 also runs them in every `gwf_ad`) and are not moved (RCH/EVT
+`apply_period!` and `advance_time_series!` only; MF6 runs them in every `gwf_ad`) and are not moved (RCH/EVT
 keep their cells).
 """
 function set_bound!(pkg::BoundaryPackage, r::AbstractVector{Float64})

@@ -205,8 +205,9 @@ The stepping API works as libmf6 and its XMI/BMI interface do, with these differ
   ModflowGPU keeps `BOUND` (stage, conductance, bottom), as earlier MODFLOW 6 versions
   and ModflowCoupling do; MODFLOW 6.8 has separate `STAGE`, `COND` and `RBOT` arrays.
 - The checks of boundary records (RIV stage and bottom, DRN elevation and GHB head not
-  below the bottom of a convertible cell; conductances not negative) run only when period
-  data are read. MODFLOW 6 repeats them at the start of every time step (unless
+  below the bottom of a convertible cell; conductances not negative) run when period
+  data are read and, for a package with time series, at every time step on that step's
+  series values. MODFLOW 6 repeats them at the start of every time step (unless
   `NOCHECK`), so it also checks values written through its API; ModflowGPU does not check
   values set with `set_value` or `get_value_ptr`. `BOUND` arrays written on the device
   ([`ModflowGPU.device_bound!`](@ref)) get a reduced check at `prepare_solve`: finite
