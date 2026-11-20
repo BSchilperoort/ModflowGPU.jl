@@ -11,8 +11,8 @@
 # runs three versions: a refined model (`-gr`, 25 layers of 183 × 147 cells), a coarse one
 # (`-gc`) and the coarse model with a refined child model inside (`-lgr`). This page runs
 # the coarse model, `ex-gwf-lgrv-gc`: 9 layers of 61 × 49 cells of 105 m × 75 m. The
-# `-lgr` version needs two models coupled by an exchange, which ModflowGPU does not
-# support (see [Supported packages](@ref)).
+# `-lgr` version, with two models coupled by an exchange, has its own page
+# ([A valley aquifer with a refined child model](ex-gwf-lgrv-lgr.md)).
 #
 # ## Input and the MODFLOW 6 run
 #

@@ -18,19 +18,20 @@ ModflowGPU's output, and compares the results with MODFLOW 6 on the same input.
 | [A horizontal well](examples/ex-gwf-hwell.md) | `ex-gwf-hwell-a` | 153 164 cells, 60 steps, AMG; drawdown against an analytical solution |
 | [A valley aquifer with a river](examples/ex-gwf-lgrv-gc.md) | `ex-gwf-lgrv-gc` | 9 layers, RIV and RCH, K zones; maps and a cross-section |
 | [A valley aquifer: the refined model](examples/ex-gwf-lgrv-gr.md) | `ex-gwf-lgrv-gr` | the same at 672 525 cells |
+| [A valley aquifer with a refined child model](examples/ex-gwf-lgrv-lgr.md) | `ex-gwf-lgrv-lgr` | two models coupled by a GWF–GWF exchange (local grid refinement); maps and a cross-section through both |
 | [A nested grid with DISV](examples/ex-gwf-u1disv.md) | `ex-gwf-u1disv` | an unstructured grid with a refined block; heads and their error |
 | [Curvilinear grids with DISV](examples/ex-gwf-curvilinear.md) | `ex-gwf-curve-90`, `ex-gwf-curvilin` | curvilinear cells; heads against the radial-flow solution |
 | [An axisymmetric model with DISU](examples/ex-gwf-rad-disu.md) | `ex-gwf-rad-disu` | a radial model of rings with convertible storage; heads at three depths |
+| [A periodic boundary](examples/ex-gwf-spbc.md) | `ex-gwf-spbc` | a model connected to itself by an exchange; heads against the analytical solution |
+| [A nested model in a hole: GWF–GWF exchanges](examples/ex-gwf-u1gwfgwf.md) | `ex-gwf-u1gwfgwf-s1` to `-s4` | an inner model in the hole of an outer one, with and without XT3D on the exchange; heads and exchange flows |
 | [A coupling-type model, step by step](examples/synthetic-coupling.md) | none | RIV, DRN, EVT and RCH on a synthetic island, run with the stepping API |
 
 ## All MODFLOW 6 examples in scope
 
 The table lists every MODFLOW 6 groundwater-flow example that is in the scope of
 ModflowGPU (made from `validation/examples.toml` in the repository when the manual is
-built), smallest tier first. Every example that ModflowGPU supports has a page; the others
-need a feature that is planned (see [Supported packages](@ref)), and the card that adds
-the feature adds their page. Examples with the packages that are out of scope (SFR, LAK,
-MAW, UZF, CSUB, transport, ...) are not listed. ModflowGPU writes the observation files
+built), smallest tier first. Every example that ModflowGPU supports has a page.
+Examples with the packages that are out of scope (SFR, LAK, MAW, UZF, CSUB, transport, ...) are not listed. ModflowGPU writes the observation files
 (OBS) of the examples that have them; the pages of `ex-gwf-fhb`, `ex-gwf-advtidal` and
 `ex-gwf-rad-disu` show them against those of MODFLOW 6 (the `ex-gwf-maw-p03` page shows the
 head and budget files only).

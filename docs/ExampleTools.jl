@@ -23,7 +23,8 @@ using Printf: @sprintf
 using SHA: sha256
 using TOML: TOML
 
-export example_run, mf6_run, quietly, cache_dir, repo_path, run_modflowgpu, compare_with_mf6, comparison_table, parity_row,
+export example_run, mf6_run, quietly, cache_dir, repo_path, run_modflowgpu, compare_with_mf6, compare_models_with_mf6, comparison_table, models_comparison_table, parity_row,
+    models_heatmap!, map_outline!, models_difference_map,
     DisGrid, read_dis_grid, VertexGrid, read_vertex_grid, read_grid, input_nodes, node, cell_of, layer_values, specific_discharge, budget_cells,
     map_heatmap!, map_contour!, map_grid!, map_cells!, map_vectors!, section_heatmap!, section_grid!,
     section_contour!, budget_bars, difference_map, save_figure, intformat, expformat, BC_COLORS, mask_inactive,
@@ -242,13 +243,29 @@ mf6 head is below the cell bottom are dry (their head is not unique) and left ou
 as in the parity tests; `ndry` counts them (cell-steps). With `shift = true` (a model whose
 heads are defined only up to a constant, e.g. ex-gwf-whirl: steady state with wells only)
 the mean head difference of each step is removed first, as in the parity tests, and the
-largest such shift is returned as `shift`.
+largest such shift is returned as `shift`. For a simulation with several models, `model`
+selects one (the files `<model>.hds`, `.cbc`, `.lst` of both runs, the budgets of that model
+including its exchange terms); [`compare_models_with_mf6`](@ref) does all of them.
 """
-function compare_with_mf6(rundir::AbstractString, run; shift::Bool = false)
+function compare_with_mf6(rundir::AbstractString, run; shift::Bool = false, model = nothing)
     r = run.result
-    a, b = open_head_file(r.head_file), open_head_file(_only_file(rundir, ".hds"))
+    if model === nothing && hasproperty(r, :models) && length(r.models) > 1
+        error("the simulation has several models: pass `model`, or use compare_models_with_mf6")
+    end
+    if model === nothing
+        files = (; hds = _only_file(rundir, ".hds"), cbc = filter(f -> endswith(f, r"\.(cbc|bud)"), readdir(rundir; join = true)), lst = _only_file_lst(rundir))
+        head_file, budget_file, listing_file, budgets = r.head_file, r.budget_file, r.listing_file, r.budgets
+        m = only(ModflowGPU.load_simulation(rundir).models)
+    else
+        k = only(filter(x -> uppercase(x.name) == uppercase(model), r.models))
+        stem = splitext(basename(k.head_file))[1]
+        files = (; hds = joinpath(rundir, stem * ".hds"), cbc = filter(isfile, [joinpath(rundir, stem * ".cbc")]), lst = joinpath(rundir, stem * ".lst"))
+        head_file, budget_file, listing_file = k.head_file, k.budget_file, k.listing_file
+        budgets = filter(b -> b.model == k.name, r.budgets)
+        m = ModflowGPU.model_spec(ModflowGPU.load_simulation(rundir), k.name)
+    end
+    a, b = open_head_file(head_file), open_head_file(files.hds)
     length(a) == length(b) || error("the head files have $(length(a)) and $(length(b)) steps")
-    m = only(ModflowGPU.load_simulation(rundir).models)
     bot = nothing
     if m.newton
         conn = ModflowGPU.build_connectivity(m)
@@ -275,15 +292,14 @@ function compare_with_mf6(rundir::AbstractString, run; shift::Bool = false)
             dh = max(dh, abs(ha[i] - hb[i]))
         end
     end
-    tin = Dict((t.kstp, t.kper) => ModflowGPU.total_rate_in(t) for t in r.budgets)
+    tin = Dict((t.kstp, t.kper) => ModflowGPU.total_rate_in(t) for t in budgets)
     dq = 0.0
-    mf6_cbc = filter(f -> endswith(f, r"\.(cbc|bud)"), readdir(rundir; join = true))
-    if !isempty(mf6_cbc) && isfile(r.budget_file)
-        ba, bb = open_budget_file(r.budget_file), open_budget_file(only(mf6_cbc))
+    if !isempty(files.cbc) && isfile(budget_file)
+        ba, bb = open_budget_file(budget_file), open_budget_file(only(files.cbc))
         for (i, rec) in enumerate(bb.records)
             strip(rec.text) == "DATA-SPDIS" && continue
             pak = rec.imeth == 6 ? strip(rec.paknam2) : nothing
-            j = only(ModflowGPU.find_budget_records(ba; text = strip(rec.text), kstp = rec.kstp, kper = rec.kper, paknam2 = pak))
+            j = only(ModflowGPU.find_budget_records(ba; text = strip(rec.text), kstp = rec.kstp, kper = rec.kper, imeth = rec.imeth, paknam2 = pak))
             qa, qb = read_budget(ba, j), read_budget(bb, i)
             va, vb = qa isa ModflowGPU.BudgetList ? (qa.q, qb.q) : (vec(qa), vec(qb))
             isempty(vb) && continue
@@ -291,8 +307,8 @@ function compare_with_mf6(rundir::AbstractString, run; shift::Bool = false)
         end
     end
     dl = 0.0
-    ta = read_listing_budgets(r.listing_file)
-    for tb in read_listing_budgets(_only_file_lst(rundir))
+    ta = read_listing_budgets(listing_file)
+    for tb in read_listing_budgets(files.lst)
         k = findfirst(x -> (x.kstp, x.kper) == (tb.kstp, tb.kper), ta)
         isnothing(k) && continue
         for (x, y) in zip(ta[k].terms, tb.terms), f in (:rate_in, :rate_out)
@@ -300,8 +316,44 @@ function compare_with_mf6(rundir::AbstractString, run; shift::Bool = false)
             dl = max(dl, max(abs(v - w) - _listing_round(v) - _listing_round(w), 0.0) / tb.total_rate_in)
         end
     end
-    pd = maximum(t -> abs(ModflowGPU.percent_discrepancy(t)), r.budgets)
+    pd = maximum(t -> abs(ModflowGPU.percent_discrepancy(t)), budgets)
     return (; dh, budget_cbc = dq, budget_listing = dl, budget = max(dq, dl), pd, ndry, shift = cmax)
+end
+
+"""
+    compare_models_with_mf6(rundir, run) -> NamedTuple
+
+[`compare_with_mf6`](@ref) for each model of a multi-model simulation, files of model `X`
+being `x.hds`, `x.cbc`, `x.lst` in both runs. Returns `(; models, dh, budget_cbc,
+budget_listing, budget, pd, ndry, shift)` with `models` a `Vector` of `name => stats` and
+the other fields the largest over the models, as the parity tests report them, so the
+result serves as the `cmp` of [`comparison_table`](@ref). The exchange flows are part of
+the budget comparison (the exchange records of the budget file and the listing).
+"""
+function compare_models_with_mf6(rundir::AbstractString, run; kwargs...)
+    per = [k.name => compare_with_mf6(rundir, run; model = k.name, kwargs...) for k in run.result.models]
+    f(s) = maximum(p -> getfield(last(p), s), per)
+    return (; models = per, dh = f(:dh), budget_cbc = f(:budget_cbc), budget_listing = f(:budget_listing), budget = f(:budget), pd = f(:pd), ndry = sum(p -> last(p).ndry, per), shift = f(:shift))
+end
+
+"""
+    models_comparison_table(stats) -> Markdown.MD
+
+The differences against mf6 of each model of a multi-model run: `stats[:double]`,
+`stats[:single]` as `(; cmp, ...)` with `cmp` from [`compare_models_with_mf6`](@ref). One
+row per model and preset: the largest head difference and budget difference (as in
+[`comparison_table`](@ref)) and the largest percent discrepancy of ModflowGPU's budget.
+"""
+function models_comparison_table(stats; unit = "m")
+    io = IOBuffer()
+    println(io, "| Model | Preset | max \\|Δh\\| ($unit) | Budget | Percent discrepancy |")
+    println(io, "| :-- | :-- | --: | --: | --: |")
+    for (name, _) in first(values(stats)).cmp.models, p in (:double, :mixed, :single)
+        haskey(stats, p) || continue
+        c = last(only(filter(x -> first(x) == name, stats[p].cmp.models)))
+        println(io, "| `", name, "` | `:", p, "` | ", _e(c.dh), " | ", _e(c.budget), " | ", _e(c.pd), " |")
+    end
+    return Markdown.parse(String(take!(io)))
 end
 
 # The model listing file of mf6 in `dir` (not mfsim.lst).
@@ -482,9 +534,14 @@ struct DisGrid
     ja::Vector{Int32}
 end
 
-"Read the DIS grid of the simulation in `dir` from its `.dis.grb` file."
-function read_dis_grid(dir::AbstractString)
-    g = read_grb(_only_file(dir, ".grb"))
+"""
+Read the DIS grid of the simulation in `dir` from its `.dis.grb` file; `model` (the file
+prefix, e.g. `"inner"`) selects the model of a simulation with several. The cell edges
+include the model's `XORIGIN` and `YORIGIN`, so the grids of several models can be drawn
+on one map ([`models_heatmap!`](@ref)).
+"""
+function read_dis_grid(dir::AbstractString; model = nothing)
+    g = read_grb(model === nothing ? _only_file(dir, ".grb") : joinpath(dir, lowercase(model) * ".dis.grb"))
     g.grid == "DIS" || error("only DIS grids are supported here, got $(g.grid)")
     d = g.data
     nlay, nrow, ncol = Int(d["NLAY"]), Int(d["NROW"]), Int(d["NCOL"])
@@ -808,6 +865,53 @@ function map_cells!(ax, g::DisGrid, cells; color, kwargs...)
     return poly!(ax, rects; color, kwargs...)
 end
 
+"""
+    models_heatmap!(ax, gs, as; kwargs...)
+
+Heatmaps of the `(ncol, nrow)` values `as[k]` of a layer of each model grid `gs[k]` (from
+`read_dis_grid(dir; model)`, so each is placed by its `XORIGIN` and `YORIGIN`) in one axis,
+the models later in the list drawn over the earlier ones, with one colour range for all
+(`colorrange`, by default the extrema of all values). Returns the last heatmap, for a
+`Colorbar`.
+"""
+function models_heatmap!(ax, gs, as; colorrange = nothing, kwargs...)
+    vals = filter(!isnan, reduce(vcat, [vec(a) for a in as]))
+    colorrange = something(colorrange, extrema(vals))
+    local hm
+    for (g, a) in zip(gs, as)
+        hm = map_heatmap!(ax, g, a; colorrange, kwargs...)
+    end
+    return hm
+end
+
+"The outer edge of the grid `g` (a rectangle)."
+function map_outline!(ax, g::DisGrid; color = :black, linewidth = 1.0, kwargs...)
+    x0, x1 = extrema(g.xe)
+    y0, y1 = extrema(g.ye)
+    return lines!(ax, [x0, x1, x1, x0, x0], [y0, y0, y1, y1, y0]; color, linewidth, kwargs...)
+end
+
+"""
+    models_difference_map(gs, panels; layer = 1, unit = "") -> Figure
+
+[`difference_map`](@ref) for several models: one panel per `label => Δhs` pair, `Δhs[k]`
+the head difference array of model `gs[k]`; the models are drawn on one map, with one
+symmetric colour range per panel.
+"""
+function models_difference_map(gs, panels; layer = 1, unit = "", size = (460 * length(panels), 400), xlabel = "x position", ylabel = "y position")
+    fig = Figure(; size)
+    for (k, (lab, ds)) in enumerate(panels)
+        as = [layer_values(g, d, layer) for (g, d) in zip(gs, ds)]
+        m = maximum(a -> maximum(x -> isnan(x) ? 0.0 : abs(x), a), as)
+        m = m == 0 ? 1.0e-12 : m
+        ax = Axis(fig[1, 2k - 1]; aspect = DataAspect(), title = lab, xlabel, ylabel)
+        hm = models_heatmap!(ax, gs, as; colormap = :balance, colorrange = (-m, m))
+        foreach(g -> map_outline!(ax, g; linewidth = 0.5), gs)
+        Colorbar(fig[1, 2k], hm; label = isempty(unit) ? "Δh" : "Δh ($unit)", tickformat = expformat)
+    end
+    return fig
+end
+
 "Arrows of the specific discharge `qx`, `qy` (`(ncol, nrow)`) of a layer, at the cell centres."
 function map_vectors!(ax, g::DisGrid, qx, qy; normalize = true, color = RGBf(0.75, 0.75, 0.75), lengthscale = 0.8, kwargs...)
     pts = vec([Point2f(g.xc[c], g.yc[r]) for c in 1:g.ncol, r in 1:g.nrow])
@@ -974,6 +1078,9 @@ const GALLERY = [
     "ex-gwf-disvmesh.jl" => ("A triangular mesh (DISV, XT3D)", ["ex-gwf-disvmesh"]),
     "ex-gwf-whirl.jl" => ("Whirl: a rotated conductivity tensor (XT3D)", ["ex-gwf-whirl"]),
     "ex-gwf-rad-disu.jl" => ("An axisymmetric model (DISU)", ["ex-gwf-rad-disu"]),
+    "ex-gwf-lgrv-lgr.jl" => ("Valley aquifer with a refined child model", ["ex-gwf-lgrv-lgr"]),
+    "ex-gwf-spbc.jl" => ("A periodic boundary (GWF–GWF exchange)", ["ex-gwf-spbc"]),
+    "ex-gwf-u1gwfgwf.jl" => ("A nested model in a hole: GWF–GWF exchanges (XT3D)", ["ex-gwf-u1gwfgwf-s1", "ex-gwf-u1gwfgwf-s2", "ex-gwf-u1gwfgwf-s3", "ex-gwf-u1gwfgwf-s4"]),
     "synthetic-coupling.jl" => ("Coupling-type model, step by step", String[]),
 ]
 
@@ -993,8 +1100,8 @@ const NOTEBOOKS = Dict(
     "ex-gwf-u1gwfgwf-s3" => "ex-gwf-u1gwfgwf", "ex-gwf-u1gwfgwf-s4" => "ex-gwf-u1gwfgwf",
 )
 
-# Features (`requires` of validation/examples.toml) of unfinished Phase 6 cards.
-const PLANNED = ["exchange" => "GWF–GWF exchanges (T6.6)", "multi_model" => "GWF–GWF exchanges (T6.6)"]
+# Features (`requires` of validation/examples.toml) of unfinished Phase 6 cards (none left).
+const PLANNED = Pair{String, String}[]
 
 """
     gallery_index_table() -> Markdown.MD
