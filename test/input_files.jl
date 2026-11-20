@@ -92,8 +92,8 @@ const UNSAVED_REFERENCE_EXAMPLES = ("ex-gwf-capture",)
 
 `name => simulation directory` of the examples of the assembly and run parity tests:
 the Tier 0–2 examples, `EXTRA_PARITY_EXAMPLES`, the Tier 4 (Newton, T6.2; without
-`UNSAVED_REFERENCE_EXAMPLES`), the Tier 5 (DISV/DISU, T6.4) and the Tier 6 (XT3D, T6.5)
-examples, sorted by name.
+`UNSAVED_REFERENCE_EXAMPLES`), the Tier 5 (DISV/DISU, T6.4), the Tier 6 (XT3D, T6.5) and
+the Tier 7 (several models and GWF-GWF exchanges, T6.6) examples, sorted by name.
 The parity tests skip, with the reason, those that strict loading rejects.
 `MFGPU_TEST_LGRV_GR=0` leaves out `ex-gwf-lgrv-gr` (672525 cells).
 """
@@ -112,6 +112,8 @@ function parity_examples()
     append!(out, in_scope_examples(; tiers = 5:5))
     # T6.5: XT3D (Tier 6).
     append!(out, in_scope_examples(; tiers = 6:6))
+    # T6.6: multi-model solutions and GWF-GWF exchanges (Tier 7).
+    append!(out, in_scope_examples(; tiers = 7:7))
     filter!(x -> test_model_selected(first(x)), out)
     return sort!(out)
 end
