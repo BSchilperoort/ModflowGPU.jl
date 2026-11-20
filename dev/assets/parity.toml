@@ -711,6 +711,94 @@ time_steps = 1
         outer = 3
         wall_time = 0.02
 [[examples]]
+active_cells = 10480
+grid = "DISV 2×5240"
+kind = "mf6 example"
+name = "ex-gwf-disvmesh"
+newton = false
+packages = ["NPF", "GHB", "RCH"]
+passed = true
+time_steps = 1
+
+    [examples.results.cpu]
+    preconditioner = "auto"
+    single_preconditioner = "auto"
+    single_vs_double = 1.48e-6
+
+        [examples.results.cpu.double]
+        inner = 59
+        max_budget_cbc = 2.35e-14
+        max_budget_listing = 0.0
+        max_dh = 7.48e-12
+        max_percent_discrepancy = 1.05e-13
+        mf6_inner = 1045
+        mf6_outer = 3
+        outer = 2
+        wall_time = 1.91
+
+        [examples.results.cpu.mixed]
+        inner = 59
+        max_budget_cbc = 1.95e-14
+        max_budget_listing = 0.0
+        max_dh = 6.31e-12
+        max_percent_discrepancy = 5.01e-12
+        mf6_inner = 1045
+        mf6_outer = 3
+        outer = 2
+        wall_time = 8.43
+
+        [examples.results.cpu.single]
+        inner = 43
+        max_budget_cbc = 1.8e-8
+        max_budget_listing = 1.4e-7
+        max_dh = 1.48e-6
+        max_percent_discrepancy = 1.98e-5
+        mf6_inner = 1045
+        mf6_outer = 3
+        outer = 3
+        wall_time = 15.21
+
+    [examples.results.rocm]
+    preconditioner = "auto"
+    single_preconditioner = "auto"
+    single_vs_double = 1.48e-6
+
+        [examples.results.rocm.double]
+        inner = 59
+        max_budget_cbc = 2.35e-14
+        max_budget_listing = 0.0
+        max_dh = 7.48e-12
+        max_dh_vs_cpu = 0.0
+        max_percent_discrepancy = 1.05e-13
+        mf6_inner = 1045
+        mf6_outer = 3
+        outer = 2
+        wall_time = 1.9
+
+        [examples.results.rocm.mixed]
+        inner = 59
+        max_budget_cbc = 1.95e-14
+        max_budget_listing = 0.0
+        max_dh = 6.31e-12
+        max_dh_vs_cpu = 0.0
+        max_percent_discrepancy = 5.01e-12
+        mf6_inner = 1045
+        mf6_outer = 3
+        outer = 2
+        wall_time = 8.02
+
+        [examples.results.rocm.single]
+        inner = 43
+        max_budget_cbc = 1.8e-8
+        max_budget_listing = 1.4e-7
+        max_dh = 1.48e-6
+        max_dh_vs_cpu = 0.0
+        max_percent_discrepancy = 1.98e-5
+        mf6_inner = 1045
+        mf6_outer = 3
+        outer = 3
+        wall_time = 10.14
+[[examples]]
 active_cells = 30
 grid = "DIS 1×3×10"
 kind = "mf6 example"
@@ -974,6 +1062,94 @@ time_steps = 1
         mf6_outer = 2
         outer = 4
         wall_time = 0.01
+[[examples]]
+active_cells = 2601
+grid = "DIS 1×51×51"
+kind = "mf6 example"
+name = "ex-gwf-hanix"
+newton = false
+packages = ["NPF", "CHD", "WEL"]
+passed = true
+time_steps = 1
+
+    [examples.results.cpu]
+    preconditioner = "auto"
+    single_preconditioner = "auto"
+    single_vs_double = 5.6e-7
+
+        [examples.results.cpu.double]
+        inner = 75
+        max_budget_cbc = 2.81e-10
+        max_budget_listing = 0.0
+        max_dh = 1.91e-10
+        max_percent_discrepancy = 3.55e-8
+        mf6_inner = 4007
+        mf6_outer = 6
+        outer = 3
+        wall_time = 0.09
+
+        [examples.results.cpu.mixed]
+        inner = 67
+        max_budget_cbc = 2.93e-10
+        max_budget_listing = 0.0
+        max_dh = 1.84e-10
+        max_percent_discrepancy = 3.87e-7
+        mf6_inner = 4007
+        mf6_outer = 6
+        outer = 2
+        wall_time = 1.77
+
+        [examples.results.cpu.single]
+        inner = 45
+        max_budget_cbc = 4.27e-7
+        max_budget_listing = 2.83e-6
+        max_dh = 5.6e-7
+        max_percent_discrepancy = 0.000185
+        mf6_inner = 4007
+        mf6_outer = 6
+        outer = 2
+        wall_time = 2.43
+
+    [examples.results.rocm]
+    preconditioner = "auto"
+    single_preconditioner = "auto"
+    single_vs_double = 5.6e-7
+
+        [examples.results.rocm.double]
+        inner = 75
+        max_budget_cbc = 2.81e-10
+        max_budget_listing = 0.0
+        max_dh = 1.91e-10
+        max_dh_vs_cpu = 0.0
+        max_percent_discrepancy = 3.55e-8
+        mf6_inner = 4007
+        mf6_outer = 6
+        outer = 3
+        wall_time = 0.03
+
+        [examples.results.rocm.mixed]
+        inner = 67
+        max_budget_cbc = 2.93e-10
+        max_budget_listing = 0.0
+        max_dh = 1.84e-10
+        max_dh_vs_cpu = 0.0
+        max_percent_discrepancy = 3.87e-7
+        mf6_inner = 4007
+        mf6_outer = 6
+        outer = 2
+        wall_time = 1.41
+
+        [examples.results.rocm.single]
+        inner = 45
+        max_budget_cbc = 4.27e-7
+        max_budget_listing = 2.83e-6
+        max_dh = 5.6e-7
+        max_dh_vs_cpu = 0.0
+        max_percent_discrepancy = 0.000185
+        mf6_inner = 4007
+        mf6_outer = 6
+        outer = 2
+        wall_time = 1.4
 [[examples]]
 active_cells = 153164
 grid = "DIS 11×118×118"
@@ -2093,6 +2269,182 @@ time_steps = 1
         mf6_outer = 2
         outer = 2
         wall_time = 0.08
+[[examples]]
+active_cells = 121
+grid = "DISV 1×121"
+kind = "mf6 example"
+name = "ex-gwf-u1disv-x"
+newton = false
+packages = ["NPF", "CHD ×2"]
+passed = true
+time_steps = 1
+
+    [examples.results.cpu]
+    preconditioner = "auto"
+    single_preconditioner = "auto"
+    single_vs_double = 1.85e-7
+
+        [examples.results.cpu.double]
+        inner = 13
+        max_budget_cbc = 1.89e-13
+        max_budget_listing = 0.0
+        max_dh = 1.67e-13
+        max_percent_discrepancy = 3.28e-11
+        mf6_inner = 11
+        mf6_outer = 2
+        outer = 2
+        wall_time = 0.0
+
+        [examples.results.cpu.mixed]
+        inner = 13
+        max_budget_cbc = 1.89e-13
+        max_budget_listing = 0.0
+        max_dh = 1.71e-13
+        max_percent_discrepancy = 3.42e-11
+        mf6_inner = 11
+        mf6_outer = 2
+        outer = 2
+        wall_time = 0.29
+
+        [examples.results.cpu.single]
+        inner = 11
+        max_budget_cbc = 1.16e-7
+        max_budget_listing = 2.85e-17
+        max_dh = 1.85e-7
+        max_percent_discrepancy = 6.7e-5
+        mf6_inner = 11
+        mf6_outer = 2
+        outer = 2
+        wall_time = 0.32
+
+    [examples.results.rocm]
+    preconditioner = "auto"
+    single_preconditioner = "auto"
+    single_vs_double = 1.85e-7
+
+        [examples.results.rocm.double]
+        inner = 13
+        max_budget_cbc = 1.89e-13
+        max_budget_listing = 0.0
+        max_dh = 1.67e-13
+        max_dh_vs_cpu = 0.0
+        max_percent_discrepancy = 3.28e-11
+        mf6_inner = 11
+        mf6_outer = 2
+        outer = 2
+        wall_time = 0.01
+
+        [examples.results.rocm.mixed]
+        inner = 13
+        max_budget_cbc = 1.89e-13
+        max_budget_listing = 0.0
+        max_dh = 1.71e-13
+        max_dh_vs_cpu = 0.0
+        max_percent_discrepancy = 3.42e-11
+        mf6_inner = 11
+        mf6_outer = 2
+        outer = 2
+        wall_time = 0.25
+
+        [examples.results.rocm.single]
+        inner = 11
+        max_budget_cbc = 1.16e-7
+        max_budget_listing = 2.85e-17
+        max_dh = 1.85e-7
+        max_dh_vs_cpu = 0.0
+        max_percent_discrepancy = 6.7e-5
+        mf6_inner = 11
+        mf6_outer = 2
+        outer = 2
+        wall_time = 0.3
+[[examples]]
+active_cells = 5100
+grid = "DIS 10×10×51"
+kind = "mf6 example"
+name = "ex-gwf-whirl"
+newton = false
+packages = ["NPF", "WEL"]
+passed = true
+time_steps = 1
+
+    [examples.results.cpu]
+    preconditioner = "auto"
+    single_preconditioner = "auto"
+    single_vs_double = 3.78e-9
+
+        [examples.results.cpu.double]
+        inner = 44
+        max_budget_cbc = 4.66e-10
+        max_budget_listing = 0.0
+        max_dh = 4.07e-11
+        max_percent_discrepancy = 0.0
+        mf6_inner = 2148
+        mf6_outer = 4
+        outer = 2
+        wall_time = 0.06
+
+        [examples.results.cpu.mixed]
+        inner = 44
+        max_budget_cbc = 4.66e-10
+        max_budget_listing = 0.0
+        max_dh = 4.07e-11
+        max_percent_discrepancy = 0.0
+        mf6_inner = 2148
+        mf6_outer = 4
+        outer = 2
+        wall_time = 0.1
+
+        [examples.results.cpu.single]
+        inner = 48
+        max_budget_cbc = 1.57e-7
+        max_budget_listing = 0.0
+        max_dh = 3.81e-9
+        max_percent_discrepancy = 0.0
+        mf6_inner = 2148
+        mf6_outer = 4
+        outer = 3
+        wall_time = 0.11
+
+    [examples.results.rocm]
+    preconditioner = "auto"
+    single_preconditioner = "auto"
+    single_vs_double = 3.78e-9
+
+        [examples.results.rocm.double]
+        inner = 44
+        max_budget_cbc = 4.66e-10
+        max_budget_listing = 0.0
+        max_dh = 4.07e-11
+        max_dh_vs_cpu = 0.0
+        max_percent_discrepancy = 0.0
+        mf6_inner = 2148
+        mf6_outer = 4
+        outer = 2
+        wall_time = 0.07
+
+        [examples.results.rocm.mixed]
+        inner = 44
+        max_budget_cbc = 4.66e-10
+        max_budget_listing = 0.0
+        max_dh = 4.07e-11
+        max_dh_vs_cpu = 0.0
+        max_percent_discrepancy = 0.0
+        mf6_inner = 2148
+        mf6_outer = 4
+        outer = 2
+        wall_time = 0.07
+
+        [examples.results.rocm.single]
+        inner = 48
+        max_budget_cbc = 1.57e-7
+        max_budget_listing = 0.0
+        max_dh = 3.81e-9
+        max_dh_vs_cpu = 0.0
+        max_percent_discrepancy = 0.0
+        mf6_inner = 2148
+        mf6_outer = 4
+        outer = 3
+        wall_time = 0.07
 [[examples]]
 active_cells = 200
 grid = "DIS 1×1×200"
