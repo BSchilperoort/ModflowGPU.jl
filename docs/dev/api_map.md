@@ -149,10 +149,15 @@ it. Underscore-prefixed helpers are omitted.
   names and files `<model>.<ext>`, MF6 package order), `build_tdis`, `build_ims` (`given`
   = keywords passed), `build_simulation`; structural equality `spec_difference` /
   `spec_identical` (types, shapes, order, Float64 bits; `ignore` fields). Tests: builder.
+  T6.9: `build_exchange` (GWF6-GWF6 `ExchangeSpec` from cell lists, aux by name),
+  `build_simulation(...; exchanges)`.
 - **mf6_writer.jl**: `write_simulation(dir, spec)`: MF6 input files of a spec (DIS grids,
   NPF, IC, STO, OC, `BOUNDARY_KINDS` lists and arrays, TDIS, IMS; generalised from
   ModflowCoupling's `mf6_writer.jl`), round trip `load_simulation` → identical spec.
-  Tests: builder (round trip; mf6 runs the written model, needs `reference/`).
+  Tests: builder (round trip; mf6 runs the written model, needs `reference/`). T6.9: DISV
+  and DISU (`_write_dis` methods, VERTICES/CELL2D, CONNECTIONDATA), OBS6 (`_write_obs`: model,
+  package and exchange observations) and GWF6-GWF6 exchanges (`_write_exchange`, mfsim
+  EXCHANGES); time series still rejected.
 
 ## GWF engine
 

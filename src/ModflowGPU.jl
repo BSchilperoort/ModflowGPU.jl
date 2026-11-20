@@ -59,7 +59,7 @@ export MF6Model
 public get_last_bmi_error, get_var_rank, get_var_shape, get_subcomponent_count
 # Builder
 export SimulationSpec, build_dis, build_npf, build_ic, build_sto, build_oc, build_boundary,
-    build_array_boundary, build_model, build_tdis, build_ims, build_simulation, write_simulation
+    build_array_boundary, build_model, build_tdis, build_ims, build_exchange, build_simulation, write_simulation
 public oc_record
 # Output
 export open_head_file, HeadFile, read_head, open_budget_file, BudgetFile, BudgetList, read_budget,

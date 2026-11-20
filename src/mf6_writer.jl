@@ -8,9 +8,10 @@
 # back (`spec_identical`, apart from `simdir`). Arrays whose values are all bitwise equal
 # are written as CONSTANT.
 #
-# Scope ("small specs"): one or more GWF models on DIS grids with the packages of
-# `BOUNDARY_KINDS`, STO, OC, TDIS and IMS. Features that need extra files (time series,
-# TAS, OBS, TVK, TVS, ATS), DISV/DISU grids and exchanges are an `ArgumentError`.
+# Scope ("small specs"): one or more GWF models on DIS, DISV or DISU grids (T6.9) with the
+# packages of `BOUNDARY_KINDS`, STO, OC, OBS6 (T6.9), TDIS, IMS and GWF6-GWF6 exchanges
+# (T6.9, with their OBS6). Features that need other extra files (time series, TAS, TVK, TVS,
+# ATS) are an `ArgumentError`.
 
 "Shortest round-trip decimal representation, readable by Fortran (ModflowCoupling `fmt`)."
 function _mf6_fmt(x::Real)
@@ -55,6 +56,23 @@ end
 _write_node_array(io, name, a::AbstractVector, dis::DisSpec) =
     _write_array(io, name, reshape(a, Int(dis.ncol), Int(dis.nrow), Int(dis.nlay)))
 
+# T6.9: DISV arrays `(ncpl, nlay)`, LAYERED; DISU arrays by node.
+function _write_node_array(io, name, a::AbstractVector, dis::DisvSpec)
+    println(io, "  ", name, " LAYERED")
+    foreach(layer -> _write_layer(io, layer), eachcol(reshape(a, Int(dis.ncpl), Int(dis.nlay))))
+    return nothing
+end
+
+function _write_node_array(io, name, a::AbstractVector, ::DisuSpec)
+    println(io, "  ", name)
+    _write_layer(io, a)
+    return nothing
+end
+
+# The cells of one layer of a READASARRAYS array (`(ncol, nrow)` on DIS, `ncpl` on DISV).
+_layer_shape(a, dis::DisSpec) = reshape(a, Int(dis.ncol), Int(dis.nrow))
+_layer_shape(a, ::DisvSpec) = a
+
 function _check_writable(cond, what)
     cond || throw(ArgumentError("write_simulation: $what is not supported by the writer"))
     return nothing
@@ -92,6 +110,75 @@ function _write_dis(io, d::DisSpec)
         _write_array(io, "BOTM", d.botm)
         _write_array(io, "IDOMAIN", d.idomain)
     end
+    return nothing
+end
+
+function _write_grid_options(io, d::AbstractDisSpec)
+    d.length_units === :undefined || _put(io, "LENGTH_UNITS", _LENGTH_UNIT_WORDS[d.length_units])
+    d.nogrb && _put(io, "NOGRB")
+    isempty(d.grb_file) || _put(io, "GRB6 FILEOUT", d.grb_file)
+    d.xorigin === 0.0 || _put(io, "XORIGIN", _mf6_fmt(d.xorigin))
+    d.yorigin === 0.0 || _put(io, "YORIGIN", _mf6_fmt(d.yorigin))
+    d.angrot === 0.0 || _put(io, "ANGROT", _mf6_fmt(d.angrot))
+    return nothing
+end
+
+# VERTICES and CELL2D (Disv.f90 / Disu.f90 `source_vertices`, `source_cell2d`).
+function _write_vertices(io, d::Union{DisvSpec, DisuSpec})
+    _write_block(io, "VERTICES") do
+        for iv in 1:size(d.vertices, 2)
+            _put(io, iv, _mf6_fmt(d.vertices[1, iv]), _mf6_fmt(d.vertices[2, iv]))
+        end
+    end
+    _write_block(io, "CELL2D") do
+        for (j, iv) in enumerate(d.cell_vertices)
+            _put(io, j, _mf6_fmt(d.cell_center[1, j]), _mf6_fmt(d.cell_center[2, j]), length(iv), iv...)
+        end
+    end
+    return nothing
+end
+
+# T6.9: DISV6 (Disv.f90 input).
+function _write_dis(io, d::DisvSpec)
+    _write_block(() -> _write_grid_options(io, d), io, "OPTIONS")
+    _write_block(io, "DIMENSIONS") do
+        _put(io, "NLAY", d.nlay)
+        _put(io, "NCPL", d.ncpl)
+        _put(io, "NVERT", d.nvert)
+    end
+    _write_block(io, "GRIDDATA") do
+        println(io, "  TOP")
+        _write_layer(io, d.top)
+        _write_node_array(io, "BOTM", vec(d.botm), d)
+        _write_node_array(io, "IDOMAIN", vec(d.idomain), d)
+    end
+    _write_vertices(io, d)
+    return nothing
+end
+
+# T6.9: DISU6 (Disu.f90 input; CONNECTIONDATA as given, user node numbers).
+function _write_dis(io, d::DisuSpec)
+    _write_block(io, "OPTIONS") do
+        _write_grid_options(io, d)
+        d.vertical_offset_tolerance === 0.0 || _put(io, "VERTICAL_OFFSET_TOLERANCE", _mf6_fmt(d.vertical_offset_tolerance))
+    end
+    _write_block(io, "DIMENSIONS") do
+        _put(io, "NODES", d.nodes)
+        _put(io, "NJA", d.nja)
+        d.nvert > 0 && _put(io, "NVERT", d.nvert)
+    end
+    _write_block(io, "GRIDDATA") do
+        for (name, a) in (("TOP", d.top), ("BOT", d.bot), ("AREA", d.area), ("IDOMAIN", d.idomain))
+            _write_node_array(io, name, a, d)
+        end
+    end
+    _write_block(io, "CONNECTIONDATA") do
+        for (name, a) in (("IAC", d.iac), ("JA", d.ja), ("IHC", d.ihc), ("CL12", d.cl12), ("HWVA", d.hwva))
+            _write_node_array(io, name, a, d)
+        end
+        isnothing(d.angldegx) || _write_node_array(io, "ANGLDEGX", d.angldegx, d)
+    end
+    d.nvert > 0 && _write_vertices(io, d)
     return nothing
 end
 
@@ -161,7 +248,6 @@ end
 
 function _write_boundary_options(io, b::BoundarySpec)
     _check_writable(isempty(b.ts_files) && isempty(b.tas_files), "time-series input (package $(b.name))")
-    _check_writable(isempty(b.obs_files), "OBS6 input (package $(b.name))")
     _check_writable(b.auto_flow_reduce == 0 && !b.mover, "WEL AUTO_FLOW_REDUCE / MOVER (package $(b.name))")
     _write_block(io, "OPTIONS") do
         b.readasarrays && _put(io, "READASARRAYS")
@@ -170,6 +256,7 @@ function _write_boundary_options(io, b::BoundarySpec)
         isempty(b.auxmultname) || _put(io, "AUXMULTNAME", b.auxmultname)
         isempty(b.auxdepthname) || _put(io, "AUXDEPTHNAME", b.auxdepthname)
         _bool_options(io, b, (:boundnames, :print_input, :print_flows, :save_flows, :surf_rate_specified))
+        foreach(f -> _put(io, "OBS6 FILEIN", f), b.obs_files)
     end
     return nothing
 end
@@ -204,7 +291,7 @@ function _write_list_boundary(io, b::BoundarySpec)
     return nothing
 end
 
-function _write_array_boundary(io, b::BoundarySpec, dis::DisSpec)
+function _write_array_boundary(io, b::BoundarySpec, dis::Union{DisSpec, DisvSpec})
     _write_boundary_options(io, b)
     layername = boundary_kind(b) === :RCH ? "irch" : "ievt"
     for (k, p) in zip(b.periods.iper, b.periods.data)
@@ -214,8 +301,48 @@ function _write_array_boundary(io, b::BoundarySpec, dis::DisSpec)
                 iaux = findfirst(==(name), b.auxnames)
                 a = !isnothing(iaux) ? p.auxvar[iaux, :] : name == layername ? p.layer : p.values[name]
                 println(io, "  ", uppercase(name))
-                _write_layer(io, reshape(a, Int(dis.ncol), Int(dis.nrow)))
+                _write_layer(io, _layer_shape(a, dis))
             end
+        end
+    end
+    return nothing
+end
+
+# T6.9: OBS6 (Obs.f90 input): DIGITS, PRINT_INPUT, then one CONTINUOUS block per output
+# file with each observation's name, type and ID string as given.
+function _write_obs(io, o::ObsSpec)
+    _write_block(io, "OPTIONS") do
+        o.digits == 0 || _put(io, "DIGITS", o.digits)
+        o.print_input && _put(io, "PRINT_INPUT")
+    end
+    for out in o.outputs
+        _write_block(io, "CONTINUOUS FILEOUT $(out.file)$(out.binary ? " BINARY" : "")") do
+            foreach(e -> _put(io, e.name, e.type, e.idstring), out.observations)
+        end
+    end
+    return nothing
+end
+
+# T6.9: a GWF6-GWF6 exchange file (exg-gwfgwf.f90 input).
+function _write_exchange(io, e::ExchangeSpec, m1::GwfSpec, m2::GwfSpec)
+    d = e.data
+    _write_block(io, "OPTIONS") do
+        isempty(e.auxnames) || _put(io, "AUXILIARY", e.auxnames...)
+        _bool_options(io, e, (:boundnames, :print_input, :print_flows, :save_flows))
+        e.cell_averaging === :harmonic || _put(io, "CELL_AVERAGING", _CELL_AVERAGING_WORDS[e.cell_averaging])
+        e.variablecv && _put(io, "VARIABLECV", e.dewatered ? "DEWATERED" : "")
+        _bool_options(io, e, (:newton, :xt3d))
+        foreach(f -> _put(io, "OBS6 FILEIN", f), e.obs_files)
+    end
+    _write_block(() -> _put(io, "NEXG", length(d.nodem1)), io, "DIMENSIONS")
+    g1, g2 = grid_dims(m1.dis), grid_dims(m2.dis)
+    _write_block(io, "EXCHANGEDATA") do
+        for i in eachindex(d.nodem1)
+            w = String[string.(cellid(g1, d.nodem1[i]))..., string.(cellid(g2, d.nodem2[i]))..., string(d.ihc[i])]
+            append!(w, _mf6_fmt.((d.cl1[i], d.cl2[i], d.hwva[i])))
+            append!(w, _mf6_fmt.(view(d.auxvar, :, i)))
+            (e.boundnames && i <= length(d.boundname) && !isempty(d.boundname[i])) && push!(w, d.boundname[i])
+            _put(io, w...)
         end
     end
     return nothing
@@ -303,7 +430,7 @@ function _write_mfsim(io, spec::SimulationSpec)
     end
     _write_block(() -> _put(io, "TDIS6", spec.tdis.file), io, "TIMING")
     _write_block(() -> foreach(m -> _put(io, "GWF6", m.file, m.name), spec.models), io, "MODELS")
-    _write_block(() -> nothing, io, "EXCHANGES")
+    _write_block(() -> foreach(e -> _put(io, e.exgtype, e.file, e.model1, e.model2), spec.exchanges), io, "EXCHANGES")
     for (g, sg) in enumerate(spec.solution_groups)
         _write_block(io, "SOLUTIONGROUP $g") do
             sg.mxiter == 1 || _put(io, "MXITER", sg.mxiter)
@@ -334,10 +461,11 @@ file under the name in its spec (`file` fields, `PackageEntry`s), as `build_mode
 `build_simulation` set them. `load_simulation(dir)` gives `spec` back
 (`spec_identical(spec, load_simulation(dir); ignore = (:simdir,))`), and mf6 runs it.
 
-Supported: GWF models on DIS grids with NPF, IC, STO, OC, the stress packages of
-`BOUNDARY_KINDS` (lists and READASARRAYS), TDIS and IMS. Exchanges, DISV/DISU, time
-series, TAS, OBS, TVK, TVS and ATS input are an `ArgumentError`. Ported from
-ModflowCoupling's `write_simulation` (src/mf6_writer.jl there).
+Supported: GWF models on DIS, DISV and DISU grids with NPF, IC, STO, OC, OBS6, the stress
+packages of `BOUNDARY_KINDS` (lists, and READASARRAYS on DIS and DISV), TDIS, IMS and
+GWF6-GWF6 exchanges (with their OBS6). Time series, TAS, TVK, TVS and ATS input are an
+`ArgumentError`. Ported from ModflowCoupling's `write_simulation` (src/mf6_writer.jl
+there).
 
 # Example
 ```jldoctest; setup = :(dis = build_dis(; delr = 100.0, delc = 100.0, top = 0.0, botm = fill(-10.0, 10, 5, 1)); chd = build_boundary(:CHD, dis; periods = [1 => (; cells = [(1, 1, 1), (1, 5, 10)], values = [0.0, -2.0])]); sim = build_simulation(build_model("flow"; dis, npf = build_npf(dis; k = 10.0), ic = build_ic(dis; strt = 0.0), boundaries = [chd]); tdis = build_tdis(; perlen = 1.0)))
@@ -359,7 +487,6 @@ SimulationSpec(1 model(s): FLOW; 1 period(s); 0 exchange(s))
 ```
 """
 function write_simulation(dir::AbstractString, spec::SimulationSpec)
-    _check_writable(isempty(spec.exchanges), "GWF6-GWF6 exchanges")
     mkpath(dir)
     open(io -> _write_mfsim(io, spec), joinpath(dir, "mfsim.nam"), "w")
     _write_file(io -> _write_tdis(io, spec.tdis), dir, spec.tdis.file)
@@ -368,19 +495,25 @@ function write_simulation(dir::AbstractString, spec::SimulationSpec)
     end
     for m in spec.models
         dis = m.dis
-        _check_writable(dis isa DisSpec, "$(nameof(typeof(dis))) (model $(m.name))")
-        _check_writable(isempty(m.obs_files), "OBS6 input (model $(m.name))")
         _write_file(io -> _write_model_nam(io, m), dir, m.file)
+        isnothing(m.obs) || _write_file(io -> _write_obs(io, m.obs), dir, only(m.obs_files))
         _write_file(io -> _write_dis(io, dis), dir, dis.file)
         _write_file(io -> _write_npf(io, m.npf, dis), dir, m.npf.file)
         _write_file(io -> _write_ic(io, m.ic, dis), dir, m.ic.file)
         isnothing(m.sto) || _write_file(io -> _write_sto(io, m.sto, dis), dir, m.sto.file)
         isnothing(m.oc) || _write_file(io -> _write_oc(io, m.oc), dir, m.oc.file)
         for b in m.boundaries
+            b.readasarrays && _check_writable(!(dis isa DisuSpec), "READASARRAYS on DISU (package $(b.name))")
             _write_file(dir, b.file) do io
                 b.readasarrays ? _write_array_boundary(io, b, dis) : _write_list_boundary(io, b)
             end
+            isnothing(b.obs) || _write_file(io -> _write_obs(io, b.obs), dir, only(b.obs_files))
         end
+    end
+    byname = Dict(m.name => m for m in spec.models)
+    for e in spec.exchanges
+        _write_file(io -> _write_exchange(io, e, byname[e.model1], byname[e.model2]), dir, e.file)
+        isnothing(e.obs) || _write_file(io -> _write_obs(io, e.obs), dir, only(e.obs_files))
     end
     return dir
 end

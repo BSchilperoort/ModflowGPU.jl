@@ -7,9 +7,11 @@
 #   with the other options the writer handles);
 # - mf6 6.8.2 runs the written coupling_rde model, and `ModflowGPU.run` of the built spec
 #   matches its heads (needs reference/; skips otherwise);
-# - validation errors.
+# - validation errors;
+# - T6.9: DISV, DISU, OBS6 and GWF6-GWF6 exchanges round trip (reference examples; mf6 runs
+#   the written files and gives the reference heads), and `build_exchange`.
 using ModflowGPU: build_dis, build_npf, build_ic, build_sto, build_oc, build_boundary, build_array_boundary,
-    build_model, build_tdis, build_ims, build_simulation, write_simulation, load_simulation, spec_identical,
+    build_model, build_tdis, build_ims, build_simulation, write_simulation, load_simulation, spec_identical, build_exchange,
     spec_difference, oc_record, open_head_file, read_head, MF6InputError
 
 const BUILDER_RDE_DIR = joinpath(@__DIR__, "..", "models", "coupling_rde")
@@ -220,5 +222,81 @@ end
         @test_throws ArgumentError build_simulation(m; tdis = build_tdis(; perlen = [1.0, 1.0]))  # PERIOD 4 > NPER
         dis2 = build_dis(; delr = 1.0, delc = 1.0, top = 1.0, botm = fill(0.0, 2, 2, 1))
         @test_throws ArgumentError build_model("m"; dis = dis2, npf, ic)  # 6 vs 4 cells
+    end
+
+    # T6.9: DISV, DISU, OBS6 and GWF6-GWF6 exchanges in `write_simulation`; exchanges in the
+    # builder (`build_exchange`).
+    @testset "write → load round trip: DISV, DISU, OBS6, exchanges (reference examples)" begin
+        for ex in ("ex-gwf-u1disv", "ex-gwf-curvilin", "ex-gwf-rad-disu", "ex-gwf-maw-p03c", "ex-gwf-u1gwfgwf-s1", "ex-gwf-u1gwfgwf-s3", "ex-gwf-spbc", "ex-gwf-lgrv-lgr")
+            src = reference_rundir(ex)
+            if isnothing(src)
+                @info "Skipping the $ex round trip: reference/runs/$ex not found"
+                continue
+            end
+            mktempdir() do dir
+                spec = load_simulation(src; strict = true)
+                sub = joinpath(dir, "a")
+                write_simulation(sub, spec)
+                back = load_simulation(sub; strict = true)
+                # `line` and the observations' `file`: where an observation was read.
+                d = spec_difference(spec, back; ignore = (:simdir, :line, :file))
+                isnothing(d) || @info "$ex round trip: first difference: $d"
+                @test isnothing(d)
+                @test [m.file for m in back.models] == [m.file for m in spec.models]
+                sub2 = joinpath(dir, "b")
+                write_simulation(sub2, back)
+                @test all(f -> read(joinpath(sub, f)) == read(joinpath(sub2, f)), readdir(sub))
+                # mf6 runs the written files and gives the reference heads.
+                if isfile(BUILDER_MF6) && ex in ("ex-gwf-u1disv", "ex-gwf-rad-disu", "ex-gwf-u1gwfgwf-s1", "ex-gwf-spbc")
+                    out = read(pipeline(Cmd(`$BUILDER_MF6`; dir = sub); stderr = devnull), String)
+                    @test occursin("Normal termination", out)
+                    for m in spec.models
+                        a = open_head_file(joinpath(sub, m.oc.head_file))
+                        b = open_head_file(joinpath(src, m.oc.head_file))
+                        @test length(a) == length(b)
+                        @test read_head(a, length(a)) == read_head(b, length(b))
+                    end
+                end
+            end
+        end
+    end
+
+    @testset "build_exchange: two models, written, run by mf6 and ModflowGPU" begin
+        function half(name, x0)
+            d = build_dis(; delr = 50.0, delc = 50.0, top = 10.0, botm = fill(0.0, 4, 3, 1), xorigin = x0)
+            chd = build_boundary(:CHD, d; periods = [1 => (; cells = [(1, i, x0 == 0 ? 1 : 4) for i in 1:3], values = fill(x0 == 0 ? 5.0 : 2.0, 3))])
+            oc = build_oc(; head_file = "$name.hds", budget_file = "$name.cbc", periods = [1 => ["SAVE HEAD ALL", "SAVE BUDGET ALL"]])
+            return build_model(name; dis = d, npf = build_npf(d; k = 3.0, save_specific_discharge = true), ic = build_ic(d; strt = 4.0), oc, boundaries = [chd], save_flows = true)
+        end
+        left, right = half("left", 0.0), half("right", 200.0)
+        exg = build_exchange(
+            left, right; cells1 = [(1, i, 4) for i in 1:3], cells2 = [(1, i, 1) for i in 1:3], ihc = 1, cl1 = 25.0, cl2 = 25.0,
+            hwva = 50.0, aux = (; ANGLDEGX = 0.0, CDIST = 50.0), boundnames = ["a", "b", "c"], save_flows = true, print_flows = true,
+        )
+        @test exg.model1 == "LEFT" && exg.data.nodem1 == Int32[4, 8, 12] && exg.data.auxnames == ["ANGLDEGX", "CDIST"]
+        sim = build_simulation([left, right]; tdis = build_tdis(; perlen = 1.0), exchanges = [exg],
+            ims = build_ims(; outer_dvclose = 1.0e-9, inner_dvclose = 1.0e-10, inner_rclose = 1.0e-7))
+        @test length(sim.exchanges) == 1
+        @test_throws ArgumentError build_simulation([left]; tdis = build_tdis(; perlen = 1.0), exchanges = [exg])
+        @test_throws ArgumentError build_exchange(left, right; cells1 = [(1, 1, 4)], cells2 = [(1, 1, 1), (1, 2, 1)], ihc = 1, cl1 = 1.0, cl2 = 1.0, hwva = 1.0)
+        @test_throws ArgumentError build_exchange(left, right; cells1 = [(1, 1, 4)], cells2 = [(1, 1, 1)], ihc = 3, cl1 = 1.0, cl2 = 1.0, hwva = 1.0)
+        mktempdir() do dir
+            write_simulation(dir, sim)
+            back = load_simulation(dir; strict = true)
+            d = spec_difference(sim, back; ignore = (:simdir,))
+            isnothing(d) || @info "build_exchange round trip: first difference: $d"
+            @test isnothing(d)
+            if isfile(BUILDER_MF6)
+                out = read(pipeline(Cmd(`$BUILDER_MF6`; dir); stderr = devnull), String)
+                @test occursin("Normal termination", out)
+                h6 = vcat((vec(read_head(open_head_file(joinpath(dir, "$n.hds")), 1)) for n in ("left", "right"))...)
+                for_each_precision() do p
+                    r = ModflowGPU.run(sim; backend = TEST_BACKEND, precision = p.preset, write_output = false)
+                    dh = maximum(abs.(r.heads .- h6))
+                    @test dh < (p.T === Float64 ? 1.0e-9 : 1.0e-4)
+                    @info "build_exchange: two models built in memory vs mf6 6.8.2 on the written files, :$(p.preset): max |Δh| = $(round(dh; sigdigits = 3)) m"
+                end
+            end
+        end
     end
 end
