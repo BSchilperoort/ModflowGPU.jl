@@ -66,6 +66,7 @@ end
 
 _spec_kind(::ModflowGPU.BoundarySpec{K}) where {K} = K
 
+
 # Max |a − b| (`shift`: after removing the mean difference).
 _maxdiff(a, b, shift) = (c = shift ? sum(a .- b) / length(a) : 0.0; maximum(abs.(a .- b .- c); init = 0.0))
 
@@ -252,6 +253,64 @@ end
 _backtracked_iterations(steps::AbstractVector) =
     [(i, b.kiter) for (i, s) in enumerate(steps) for b in s.outer.backtracking if b.count > 0]
 
+# --- Observations (T6.7)
+
+# The observation output files of model `m`: (file as written, observation types by column).
+function _obs_outputs(m)
+    out = Tuple{String, Vector{String}}[]
+    specs = Any[m.obs]
+    append!(specs, [b.obs for b in m.boundaries])
+    for os in specs
+        isnothing(os) && continue
+        for o in os.outputs
+            push!(out, (o.file, [e.type for e in o.observations]))
+        end
+    end
+    return out
+end
+
+"""
+    _obs_difference(m, dir_a, dir_b, tin; htol, ftol) -> (dh, dq, nvalues)
+
+Compare the observation files of model `m` in `dir_a` (ours) with those in `dir_b` (MF6's,
+or the CPU run's): the same names and times (rtol 1e-12), HEAD and DRAWDOWN within `htol`
+(length units), every other type (flows) within `ftol` × the larger of the column's
+largest |value| and the step's total inflow `tin[i]` (row `i`; the scale of the budget
+criterion: ex-gwf-maw-p03c observes vertical flows of 1e-4 m³/d next to a total inflow of
+18 m³/d), and `OBSNODATA` in the same places. Returns the largest head difference, the
+largest scaled flow difference and the number of values compared.
+"""
+function _obs_difference(m, dir_a, dir_b, tin; htol, ftol)
+    dh, dq, nv = 0.0, 0.0, 0
+    for (file, types) in _obs_outputs(m)
+        a = ModflowGPU.read_observations(joinpath(dir_a, file))
+        b = ModflowGPU.read_observations(joinpath(dir_b, file))
+        @test a.names == b.names
+        @test a.times ≈ b.times rtol = 1.0e-12
+        size(a.values) == size(b.values) || (@test size(a.values) == size(b.values); continue)
+        for (j, t) in enumerate(types)
+            va, vb = a.values[:, j], b.values[:, j]
+            nod = vb .== ModflowGPU.OBSNODATA
+            @test (va .== ModflowGPU.OBSNODATA) == nod
+            keep = .!nod
+            isempty(vb[keep]) && continue
+            nv += count(keep)
+            if t in ("HEAD", "DRAWDOWN")
+                dh = max(dh, maximum(abs.(va[keep] .- vb[keep])))
+            else
+                cmax = maximum(abs, vb[keep])
+                for i in findall(keep)
+                    sc = max(cmax, tin[i])
+                    dq = max(dq, sc == 0 ? abs(va[i] - vb[i]) : abs(va[i] - vb[i]) / sc)
+                end
+            end
+        end
+    end
+    @test dh < htol
+    @test dq < ftol
+    return dh, dq, nv
+end
+
 # Runs both presets on TEST_BACKEND (and on a GPU backend also on the CPU backend) and
 # returns per preset (; dh, dq, dl, pd, outer, inner, time, mf6_outer, mf6_inner,
 # backend_vs_cpu), plus :single_vs_double. `single_preconditioner` replaces `preconditioner`
@@ -259,7 +318,8 @@ _backtracked_iterations(steps::AbstractVector) =
 # criterion 1e-4 × total in (T6.4: rad_disu_confined, docs/dev/precision.md).
 # `backtracking = true` (T6.2a) also checks that the run backtracks in the same (time
 # step, outer iteration)s as MF6. `presets` (T6.2): the presets to run (ex-gwf-nwt-p03b
-# leaves out `:single`, see `run_parity_options`). Newton models (T6.2): cells whose MF6
+# leaves out `:single`, see `run_parity_options`). `single_obs_tol` (T6.7): the `:single`
+# criterion of the observed flows (× the step's total inflow, `_obs_difference`). Newton models (T6.2): cells whose MF6
 # head is below the bottom are compared as dry (`_head_difference`), and also left out of
 # the GPU vs CPU and `:single` vs `:double` head comparisons (their heads depend on the
 # iteration path).
@@ -267,7 +327,7 @@ function _run_parity(
         name, rundir; preconditioner::Symbol = RUN_PRECONDITIONER, precond_options::NamedTuple = (;),
         single_preconditioner::Symbol = preconditioner, single_budget_tol::Float64 = 1.0e-4,
         double_budget_tol::Float64 = 1.0e-6, single_rounding_bound::Bool = false,
-        backtracking::Bool = false, presets = SOLVER_TEST_PRESETS,
+        backtracking::Bool = false, presets = SOLVER_TEST_PRESETS, single_obs_tol::Float64 = 1.0e-4,
     )
     sim = load_simulation(rundir)
     m = only(sim.models)
@@ -297,6 +357,12 @@ function _run_parity(
             dh, range, ndry, hshift = _head_difference(r.head_file, mf6_hds; bot = botu, drytol = p.T === Float64 ? 1.0e-6 : 1.0e-3, shift)
             hdtol = p.T === Float64 ? max(1.0e-6, 1.0e-7 * range) : 1.0e-3
             @test dh < hdtol
+            # T6.7: observation files vs MF6's (heads within the head-file criterion, flows
+            # relative to the column's largest value: 1e-6 in :double, 1e-4 in :single).
+            hasobs = !isempty(_obs_outputs(m))
+            @test length(r.obs_files) == length(_obs_outputs(m))
+            tins = [ModflowGPU.total_rate_in(b) for b in r.budgets]
+            obs = hasobs ? _obs_difference(m, out, rundir, tins; htol = hdtol, ftol = p.T === Float64 ? 1.0e-6 : single_obs_tol) : nothing
             tin = Dict((b.kstp, b.kper) => ModflowGPU.total_rate_in(b) for b in r.budgets)
             btol = p.T === Float64 ? double_budget_tol : single_budget_tol
             # `:single` with `single_rounding_bound` (T6.1, named models only): budget
@@ -332,14 +398,24 @@ function _run_parity(
                 @info "Backtracking: $name, :$(p.preset), $(backend_name(TEST_BACKEND)): (step, outer iteration) $bt (MF6 $mf6_bt)"
             end
             @info "Run parity: $name, :$(p.preset), $(backend_name(TEST_BACKEND)) ($pcname), $nsteps step(s), $(round(t; digits = 1)) s: max |Δh| = $(round(dh; sigdigits = 3)) m$(shift ? " after removing a constant shift of $(round(hshift; sigdigits = 3)) m (null space)" : "") (tol $(round(hdtol; sigdigits = 2))$(ndry > 0 ? "; $ndry Newton-dry cell-steps" : "")), CBC max |Δq| / total in = $(round(dq; sigdigits = 3)) ($nrec records), listing $(round(dl; sigdigits = 3)) ($ntab tables), max |percent discrepancy| = $(round(pd; sigdigits = 3))$(p.T === Float32 ? " (beyond the rounding bound $(round(pdx; sigdigits = 3)))" : ""); outer/inner iterations $outer/$inner (MF6 $mf6_outer/$mf6_inner)"
-            stats[p.preset] = (; dh, dq, dl, pd, outer, inner, time = t, mf6_outer, mf6_inner, backend_vs_cpu = NaN)
+            isnothing(obs) || @info "Run parity, observations: $name, :$(p.preset), $(backend_name(TEST_BACKEND)): max |Δ| heads $(round(obs[1]; sigdigits = 3)) m, flows $(round(obs[2]; sigdigits = 3)) × scale ($(obs[3]) values in $(length(r.obs_files)) file(s))"
+            stats[p.preset] = (; dh, dq, dl, pd, outer, inner, time = t, mf6_outer, mf6_inner, backend_vs_cpu = NaN, obs)
             if !(TEST_BACKEND isa CPU)
-                rc = ModflowGPU.run(rundir; backend = CPU(), precision = p.preset, write_output = false, pc...)
-                w = wet(rc.heads)
-                d = _maxdiff(r.heads[w], rc.heads[w], shift)
-                p.T === Float64 ? (@test d <= 1.0e-10 * maximum(abs, rc.heads)) : (@test d < 1.0e-4)
-                @info "Run $(backend_name(TEST_BACKEND)) vs CPU: $name, :$(p.preset): max |Δh| = $(round(d; sigdigits = 3)) m"
-                stats[p.preset] = merge(stats[p.preset], (; backend_vs_cpu = d))
+                mktempdir() do cout
+                    # The CPU run writes output only when there are observations to compare.
+                    rc = ModflowGPU.run(rundir; backend = CPU(), precision = p.preset, write_output = hasobs, outdir = cout, pc...)
+                    w = wet(rc.heads)
+                    d = _maxdiff(r.heads[w], rc.heads[w], shift)
+                    p.T === Float64 ? (@test d <= 1.0e-10 * maximum(abs, rc.heads)) : (@test d < 1.0e-4)
+                    @info "Run $(backend_name(TEST_BACKEND)) vs CPU: $name, :$(p.preset): max |Δh| = $(round(d; sigdigits = 3)) m"
+                    stats[p.preset] = merge(stats[p.preset], (; backend_vs_cpu = d))
+                    if hasobs
+                        # T6.7: :double 1e-10 relative, :single heads 1e-4 m, flows 1e-4 × scale.
+                        hr = maximum(abs, rc.heads)
+                        oc = _obs_difference(m, out, cout, tins; htol = p.T === Float64 ? 1.0e-10 * hr : 1.0e-4, ftol = p.T === Float64 ? 1.0e-10 : 1.0e-4)
+                        @info "Run $(backend_name(TEST_BACKEND)) vs CPU, observations: $name, :$(p.preset): max |Δ| heads $(round(oc[1]; sigdigits = 3)) m, flows $(round(oc[2]; sigdigits = 3)) × scale"
+                    end
+                end
             end
         end
     end
@@ -495,5 +571,10 @@ function run_parity_options(name)
     # :mixed and :double converge.
     presets = name == "ex-gwf-nwt-p03b" ? (:mixed, :double) : SOLVER_TEST_PRESETS
     name == "ex-gwf-nwt-p03b" && @info "Run parity: $name without :single (the Newton iterations do not converge in Float32; docs/dev/precision.md)"
-    return (; preconditioner = pc, single_preconditioner = spc, double_budget_tol = dbt, single_rounding_bound = srb, backtracking = bt, presets)
+    # T6.7: ex-gwf-maw-p03c observes the flows next to its (former) well, where heads are
+    # flat (10.0001 m) and conductances large: in :single the Float32 rounding of these flows
+    # is 2.2e-4 × the total inflow (the raw :single CBC difference there is 1.0e-3,
+    # docs/dev/precision.md), with heads within 1.6e-6 m.
+    sot = name == "ex-gwf-maw-p03c" ? 1.0e-3 : 1.0e-4
+    return (; preconditioner = pc, single_preconditioner = spc, double_budget_tol = dbt, single_rounding_bound = srb, backtracking = bt, presets, single_obs_tol = sot)
 end

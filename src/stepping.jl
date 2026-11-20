@@ -445,7 +445,7 @@ function finalize_simulation(s::Simulation; free::Bool = true)
     if free
         backend = get_backend(s.model.h)
         backend isa CPU || KernelAbstractions.synchronize(backend)
-        free_device_arrays!((s.model, s.solver, s.acc, s.check, s.outer))
+        free_device_arrays!((s.model, s.solver, s.acc, s.check, s.outer, s.output))
         s.stage = :freed
     end
     return s
