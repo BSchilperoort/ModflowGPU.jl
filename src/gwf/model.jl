@@ -30,11 +30,16 @@ A GWF model ready to run on a device in precision `T` (state and assembly):
   `scsr`, the CSR structure of the system `sys` and the linear solver: `csr` itself, or with
   XT3D (without its RHS option) the stencil extended with the neighbours of neighbours.
   `csr` stays the connectivity (flows, `flowja`).
+- T6.6: `solution` (`nothing` for a single model; for the models of a multi-model solution
+  the host `SolutionSetup`: the model is then the merged model of the solution, see
+  src/gwf/exchange.jl) and `exgentry` (device Bool per CSR entry marking the exchange
+  connections, or `nothing`).
 
 With convertible cells IBOUND changes during the outer iterations (`wetdry!`: dry cells get
 0); `ibound_host` follows it.
 
     GwfModel(backend, T, spec::GwfSpec, nper)
+    GwfModel(backend, T, sol::SolutionSetup, nper)
 """
 mutable struct GwfModel{T <: AbstractFloat, B <: Backend, C <: CsrStructure, N <: NpfModel{T}, S <: LinearSystem{T}, ST, V <: AbstractVector{T}, VI <: AbstractVector{Int32}, X}
     const spec::GwfSpec
@@ -64,6 +69,8 @@ mutable struct GwfModel{T <: AbstractFloat, B <: Backend, C <: CsrStructure, N <
     delt::Float64
     const xt3d::X
     const scsr::C
+    const solution::Any
+    const exgentry::Any
 end
 
 function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) where {T <: AbstractFloat}
@@ -91,7 +98,7 @@ function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) whe
     m = GwfModel(
         spec, backend, conn, setup, csr, npf, sys, packages, sto, _device_copy(backend, T.(conn.area)),
         _device_copy(backend, ibh), ibh, h, hold, z(), z(), KernelAbstractions.zeros(backend, T, conn.nja), 0,
-        nothing, 0, wd, newton, nurbot, vol, 0.0, xt3d, scsr,
+        nothing, 0, wd, newton, nurbot, vol, 0.0, xt3d, scsr, nothing, nothing,
     )
     # `preprocess_input`: `wd(0, hnew)` with the starting heads (IBOUND without the
     # constant heads, which `chd_rp` sets later).
@@ -142,13 +149,48 @@ function Adapt.adapt_structure(to, m::GwfModel)
         BoundaryPackage[adapt(to, p) for p in m.packages], adapt(to, m.sto), adapt(to, m.area), adapt(to, m.ibound),
         copy(m.ibound_host), h, adapt(to, m.hold), adapt(to, m.res), adapt(to, m.δ), adapt(to, m.flowja), m.kper,
         nothing, 0, adapt(to, m.wd), m.newton, adapt(to, m.nurbot), adapt(to, m.vol), m.delt, adapt(to, m.xt3d), scsr,
+        m.solution, adapt(to, m.exgentry),
     )
 end
 
+# T6.6: the merged model of a multi-model solution (src/gwf/exchange.jl): the merged
+# connectivity and NPF setup, every model's stress packages (cells in the model's user
+# numbering, `uoffset`), the merged storage and starting heads. Confined models only
+# (`solution_setup` checks), so there is no convertible or Newton data.
+function GwfModel(backend::Backend, ::Type{T}, sol::SolutionSetup, nper::Integer) where {T <: AbstractFloat}
+    conn = sol.conn
+    setup = sol.setup
+    csr = CsrStructure(backend, conn)
+    npf = NpfModel(backend, T, setup)
+    xs = sol.xt3d
+    xt3d = isnothing(xs) ? nothing : Xt3dNpf(backend, T, xs)
+    scsr = (isnothing(xs) || xs.rhs) ? csr : CsrStructure(backend, xs)
+    sys = LinearSystem(backend, T, scsr)
+    ict = setup.properties.icelltype
+    packages = BoundaryPackage[
+        BoundaryPackage(backend, T, b, conn, part.spec.dis; icelltype = ict, uoffset = part.uoffset)
+            for part in sol.models for b in part.spec.boundaries
+    ]
+    sto = isnothing(sol.sto) ? nothing : StoragePackage(backend, T, sol.sto, conn, nper; r = setup.r)
+    z(k = conn.nodes) = KernelAbstractions.zeros(backend, T, k)
+    ibh = ones(Int32, conn.nodes)
+    h = initial_heads(backend, T, sol.ic, conn, setup.r)
+    hold = _device_copy(backend, Array(h))
+    spec = first(sol.models).spec
+    return GwfModel(
+        spec, backend, conn, setup, csr, npf, sys, packages, sto, _device_copy(backend, T.(conn.area)),
+        _device_copy(backend, ibh), ibh, h, hold, z(), z(), KernelAbstractions.zeros(backend, T, conn.nja), 0,
+        nothing, 0, nothing, false, z(0), z(0), 0.0, xt3d, scsr, sol, _device_copy(backend, sol.exgentry),
+    )
+end
+
+
 Base.eltype(::GwfModel{T}) where {T} = T
 KernelAbstractions.get_backend(m::GwfModel) = m.backend
-Base.show(io::IO, m::GwfModel{T}) where {T} =
-    print(io, "GwfModel{", T, "}(\"", m.spec.name, "\", ", m.conn.nodes, " cells, ", length(m.packages), " stress package(s))")
+function Base.show(io::IO, m::GwfModel{T}) where {T}
+    name = isnothing(m.solution) ? m.spec.name : join((p.spec.name for p in m.solution.models), "+")
+    return print(io, "GwfModel{", T, "}(\"", name, "\", ", m.conn.nodes, " cells, ", length(m.packages), " stress package(s))")
+end
 
 """
     apply_period!(m::GwfModel, kper; window = nothing) -> m
@@ -311,4 +353,44 @@ function wetdry!(m::GwfModel, kiter::Integer)
         boundary_kind(pkg) in (:RCH, :EVT) && move_to_highest_active!(pkg, m.ibound_host, m.setup.r)
     end
     return true
+end
+
+# T6.6: a single model is its own view (`ModelView`, src/gwf/exchange.jl).
+_vspec(m::GwfModel) = m.spec
+_vconn(m::GwfModel) = m.conn
+_vrange(m::GwfModel) = 1:Int(m.conn.nodes)
+_voffset(::GwfModel) = 0
+_vpackages(m::GwfModel) = eachindex(m.packages)
+_vmodel(m::GwfModel) = m
+_vsetup(m::GwfModel) = m.setup
+_vname(m::GwfModel) = m.spec.name
+
+_vspec(v::ModelView) = v.part.spec
+_vconn(v::ModelView) = v.part.conn
+_vrange(v::ModelView) = (Int(v.part.offset) + 1):(Int(v.part.offset) + Int(v.part.conn.nodes))
+_voffset(v::ModelView) = Int(v.part.offset)
+_vpackages(v::ModelView) = v.part.packages
+_vmodel(v::ModelView) = v.model
+_vsetup(v::ModelView) = v.part.setup
+_vname(v::ModelView) = v.part.spec.name
+Base.eltype(v::ModelView) = eltype(v.model)
+KernelAbstractions.get_backend(v::ModelView) = v.model.backend
+
+"""
+    model_views(m::GwfModel) -> Vector
+
+The models of `m` (T6.6): `[m]` for a single model, the `ModelView`s of the merged model of
+a multi-model solution.
+"""
+model_views(m::GwfModel) = isnothing(m.solution) ? Any[m] : Any[ModelView(m, k, p) for (k, p) in enumerate(m.solution.models)]
+
+"""
+    absolute_heads(v::ModelView) -> Vector{Float64}
+
+The heads of one model of a multi-model solution (its reduced nodes; confined, so no dry
+cells), `r + h'` on the host in Float64.
+"""
+function absolute_heads(v::ModelView)
+    rg = _vrange(v)
+    return v.part.setup.r .+ Float64.(Array(view(v.model.h, rg)))
 end

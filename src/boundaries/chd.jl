@@ -31,7 +31,13 @@ function apply_chd_heads!(h, pkg::BoundaryPackage{:CHD})
     return h
 end
 
-@kernel function chd_rate_kernel!(simvals, ratein, rateout, flowja, @Const(nodelist), @Const(ia), @Const(ja), @Const(ibound))
+# T6.6: `exg` (a Bool per CSR entry, or `nothing`) marks the exchange connections of a
+# multi-model solution, which MF6's model FLOW-JA-FACE does not hold (the exchange reports
+# the flow into a constant-head cell as FLOW-JA-FACE-CHD).
+@inline _is_exchange(::Nothing, ipos) = false
+@inline _is_exchange(exg, ipos) = @inbounds exg[ipos]
+
+@kernel function chd_rate_kernel!(simvals, ratein, rateout, flowja, @Const(nodelist), @Const(ia), @Const(ja), @Const(ibound), exg)
     i = @index(Global)
     T = eltype(simvals)
     @inbounds begin
@@ -41,6 +47,7 @@ end
         qout = zero(T)
         if n > 0
             for ipos in (ia[n] + Int32(1)):(ia[n + 1] - Int32(1))
+                _is_exchange(exg, ipos) && continue
                 q = flowja[ipos]
                 rate -= q
                 # chin/chout only over connections to active cells.
@@ -61,17 +68,18 @@ end
 end
 
 """
-    calc_chd_rate!(pkg::BoundaryPackage{:CHD}, flowja, ia, ja, ibound) -> pkg
+    calc_chd_rate!(pkg::BoundaryPackage{:CHD}, flowja, ia, ja, ibound; exg = nothing) -> pkg
 
 The CHD flows after all connection flows are in `flowja` (`calc_chd_rate`): per record,
 `simvals = −Σ flowja` over the cell's connections (the net flow from the boundary into
 the model), `ratein` and `rateout` its split over the connections to active cells (the
 listing's CHD in/out), and the rate is added to `flowja` at the diagonal `ia[n]`. `ia`,
 `ja` are MF6's CSR arrays (diagonal first), `ibound` as from `boundary_ibound`. Each CHD
-cell is in one record only, so the diagonal update needs no atomics.
+cell is in one record only, so the diagonal update needs no atomics. `exg` (T6.6): the
+exchange entries of a multi-model solution (a Bool per entry), left out of the sums.
 """
-function calc_chd_rate!(pkg::BoundaryPackage{:CHD}, flowja, ia, ja, ibound)
+function calc_chd_rate!(pkg::BoundaryPackage{:CHD}, flowja, ia, ja, ibound; exg = nothing)
     pkg.nbound == 0 && return pkg
-    chd_rate_kernel!(get_backend(flowja), _WG)(pkg.simvals, pkg.ratein, pkg.rateout, flowja, pkg.nodelist, ia, ja, ibound; ndrange = pkg.nbound)
+    chd_rate_kernel!(get_backend(flowja), _WG)(pkg.simvals, pkg.ratein, pkg.rateout, flowja, pkg.nodelist, ia, ja, ibound, exg; ndrange = pkg.nbound)
     return pkg
 end

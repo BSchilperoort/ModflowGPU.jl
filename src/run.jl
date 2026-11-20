@@ -8,24 +8,36 @@ What [`run_simulation`](@ref) returns. Fields:
 
 - `converged::Bool`: every time step converged;
 - `heads::Vector{Float64}`: the absolute heads at the end of the run, per model node
-  (cells with IDOMAIN > 0, in MF6's reduced node order), in the model's length units;
+  (cells with IDOMAIN > 0, in MF6's reduced node order), in the model's length units; with
+  several models (T6.6) the nodes of every model, one model after the other in the order
+  of the solution (`models[k].nodes` gives each model's range);
 - `steps::Vector{StepResult}`: per time step its [`StepResult`](@ref) (time, iterations);
 - `budgets::Vector{ModelBudget}`: per time step the volumetric budget
-  ([`ModelBudget`](@ref));
+  ([`ModelBudget`](@ref)); with several models one per model and time step (in the order
+  of `models`; `ModelBudget.model` is the model's name);
 - `head_file`, `budget_file`, `listing_file`: the paths of the output files (`""` when
-  not written);
+  not written); with several models those of the first model;
 - `obs_files`: the paths of the observation output files (OBS6 `CONTINUOUS FILEOUT`; the
   model's, then the stress packages'), empty without observations or output; read them
-  with [`read_observations`](@ref);
+  with [`read_observations`](@ref); with several models those of every model;
+- `models`: per model (T6.6; one entry for a single model) a `NamedTuple` with `name`,
+  `nodes` (its range in `heads`), `head_file`, `budget_file`, `listing_file` and
+  `obs_files`;
 - `T`, `Ts`, `Tp`: the precision types used (see [`resolve_precision`](@ref));
-- `model`: the model, still on the device (internal; its memory is released by the
-  garbage collector).
+- `model`: the model, still on the device (internal; with several models the merged model
+  of the solution; its memory is released by the garbage collector).
 
 # Example
 ```julia
 result = run_simulation("path/to/simulation")
 result.converged
 result.budgets[end].terms   # budget terms of the last time step
+
+# several models (e.g. a parent and a child grid connected by a GWF-GWF exchange):
+[(m.name, m.head_file) for m in result.models]
+child = result.models[2]
+result.heads[child.nodes]                                 # its final heads
+filter(b -> b.model == child.name, result.budgets)        # its budgets
 ```
 """
 struct RunResult{M <: GwfModel}
@@ -41,6 +53,7 @@ struct RunResult{M <: GwfModel}
     budget_file::String
     listing_file::String
     obs_files::Vector{String}
+    models::Vector{NamedTuple{(:name, :nodes, :head_file, :budget_file, :listing_file, :obs_files), Tuple{String, UnitRange{Int}, String, String, String, Vector{String}}}}
 end
 
 """
@@ -77,11 +90,12 @@ Base.showerror(io::IO, e::ConvergenceError) = print(
     run_simulation(spec::SimulationSpec; kwargs...) -> RunResult
 
 Run the MF6 simulation in directory `simdir` (the directory with `mfsim.nam`), or a
-loaded or built [`SimulationSpec`](@ref), from start to end. The simulation has one GWF
-model and one IMS solution. Each time step applies the stress-period data, solves the
+loaded or built [`SimulationSpec`](@ref), from start to end. The simulation has one IMS
+solution with one GWF model, or several connected by GWF6-GWF6 exchanges (T6.6; solved as
+one system, as MF6 does). Each time step applies the stress-period data, solves the
 heads with the outer (Picard) iterations, computes flows and the budget, and writes the
-output that the OC package asks for: the head file, the budget file and the model listing
-file (budget tables), under the names given in the input.
+output that the OC package of each model asks for: the head file, the budget file and the
+model listing file (budget tables), under the names given in the input.
 
 Keywords:
 - `backend = CPU()`: the KernelAbstractions backend, e.g. from [`select_backend`](@ref);
@@ -146,8 +160,14 @@ function run_simulation(
     out = s.output
     paths = isnothing(out) ? ("", "", "") : (out.head_path, out.budget_path, out.listing_path)
     allconv = all(r -> r.outer.converged, s.results)
-    obs = (isnothing(out) || isnothing(out.obs)) ? String[] : copy(out.obs.paths)
-    return RunResult(s.model, s.T, s.Ts, s.Tp, s.results, s.budgets, absolute_heads(s.model), allconv, paths..., obs)
+    _obs_paths(o) = (isnothing(o) || isnothing(o.obs)) ? String[] : copy(o.obs.paths)
+    obs = reduce(vcat, (_obs_paths(o) for o in s.outputs); init = String[])
+    models = map(enumerate(s.views)) do (k, v)
+        o = get(s.outputs, k, nothing)
+        f = isnothing(o) ? ("", "", "") : (o.head_path, o.budget_path, o.listing_path)
+        (; name = _vname(v), nodes = _vrange(v), head_file = f[1], budget_file = f[2], listing_file = f[3], obs_files = _obs_paths(o))
+    end
+    return RunResult(s.model, s.T, s.Ts, s.Tp, s.results, s.budgets, absolute_heads(s.model), allconv, paths..., obs, models)
 end
 
 """
@@ -159,10 +179,15 @@ deprecated) for code that calls `ModflowGPU.run`.
 """
 const run = run_simulation
 
-function _listing_header(io::IO, m::GwfModel, ps::PicardSolver, T, Ts, Tp, backend)
+function _listing_header(io::IO, m::Union{GwfModel, ModelView}, ps::PicardSolver, T, Ts, Tp, backend)
     st = ps.settings
     println(io, "ModflowGPU listing file (MODFLOW 6 groundwater flow on KernelAbstractions)")
-    println(io, " MODEL: ", m.spec.name, ", ", m.conn.nodes, " active cells, ", m.conn.nja, " connections")
+    println(io, " MODEL: ", _vname(m), ", ", _vconn(m).nodes, " active cells, ", _vconn(m).nja, " connections")
+    if m isa ModelView
+        mm = m.model
+        others = [_vname(v) for v in model_views(mm) if _vname(v) != _vname(m)]
+        println(io, " SOLUTION: with model(s) ", join(others, ", "), "; ", mm.conn.nodes, " cells, ", length(mm.solution.exchanges), " GWF-GWF exchange(s)")
+    end
     println(io, " BACKEND: ", backend_name(backend), ", PRECISION: T = ", T, ", Ts = ", Ts, ", Tp = ", Tp)
     k = st.krylov
     @printf(io, " OUTER_DVCLOSE = %.4e, OUTER_MAXIMUM = %d, UNDER_RELAXATION = %s\n", st.dvclose, st.maxiter, uppercase(String(st.ims.under_relaxation)))
@@ -170,12 +195,12 @@ function _listing_header(io::IO, m::GwfModel, ps::PicardSolver, T, Ts, Tp, backe
     return nothing
 end
 
-function _write_step(out::ModelOutput, m::GwfModel, step::TimeStep, r::OuterResult, b::ModelBudget, sim::SimulationSpec)
+function _write_step(out::ModelOutput, m::Union{GwfModel, ModelView}, step::TimeStep, r::OuterResult, b::ModelBudget, sim::SimulationSpec; exflows = nothing)
     io = out.listing
-    oc = m.spec.oc
+    oc = _vspec(m).oc
     @printf(io, "\n %d CALLS TO NUMERICAL SOLUTION IN TIME STEP %d STRESS PERIOD %d\n %d TOTAL ITERATIONS\n", r.iterations, step.kstp, step.kper, r.inner)
     r.converged || @printf(io, "\n Solution did not converge for stress period %d and time step %d\n", step.kper, step.kstp)
-    oc_selected(oc, :save, "BUDGET", step) && write_budget(out, m, step)
+    oc_selected(oc, :save, "BUDGET", step) && write_budget(out, m, step; exflows)
     # Heads are copied from the device only when OC saves or prints them (T5.2: a step
     # with budget output only moves no array between device and host).
     save_head, print_head = oc_selected(oc, :save, "HEAD", step), oc_selected(oc, :print, "HEAD", step)
@@ -188,7 +213,7 @@ function _write_step(out::ModelOutput, m::GwfModel, step::TimeStep, r::OuterResu
         write_listing_budget(io, step.kstp, step.kper, terms)
     end
     # Observations (T6.7, gwf_ot_obs): every time step.
-    isnothing(out.obs) || write_observations(out.obs, m, step.totim)
+    isnothing(out.obs) || write_observations(out.obs, _vmodel(m), step.totim)
     r.converged || @printf(io, "\n         ****FAILED TO MEET SOLVER CONVERGENCE CRITERIA IN TIME STEP %d OF STRESS PERIOD %d****\n", step.kstp, step.kper)
     @printf(io, "\n TIME STEP LENGTH = %.6g, STRESS PERIOD TIME = %.6g, TOTAL SIMULATION TIME = %.6g\n", step.delt, step.pertim, step.totim)
     flush(io)

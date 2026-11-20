@@ -605,6 +605,7 @@ end
 function _load_exchange(ld::_Loader, fname, m1::GwfSpec, m2::GwfSpec)
     f = _read_package(ld, fname, "GWF6-GWF6", "EXG")
     o = read_options(f, "OPTIONS")
+    ld.strict && check_options(o, f.dfn.name, "GWF6-GWF6", "exchange $(m1.name) - $(m2.name)")
     has_option(o, "gnc6_filename") && unsupported(f.path, "GNC6 on a GWF6-GWF6 exchange")
     has_option(o, "mvr6_filename") && unsupported(f.path, "MVR6 on a GWF6-GWF6 exchange (out of scope)")
     data = read_exchange_data(f, grid_dims(m1.dis), grid_dims(m2.dis))
@@ -910,7 +911,7 @@ function load_simulation(simdir::AbstractString; strict::Bool = true)
     for (_, m) in models_in
         haskey(assigned, m) || throw(MF6InputError(sim.path, 0, "Model was not assigned to a solution: $m"))
     end
-    strict && sum(g -> length(g[2]), groups_in) > 1 && check_feature(sim.path, :multi_model, "more than one solution")
+    strict && sum(g -> length(g[2]), groups_in) > 1 && check_feature(sim.path, :multi_solution, "more than one solution")
     # Load
     tdis = _load_tdis(ld, tdis6)
     np = nper(tdis)

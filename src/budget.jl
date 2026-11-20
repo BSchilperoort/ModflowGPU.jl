@@ -95,7 +95,7 @@ function calc_flows!(m::GwfModel)
     end
     for pkg in m.packages
         if boundary_kind(pkg) === :CHD
-            calc_chd_rate!(pkg, m.flowja, csr.ia, csr.ja, m.ibound)
+            calc_chd_rate!(pkg, m.flowja, csr.ia, csr.ja, m.ibound; exg = m.exgentry)
         elseif pkg.nbound > 0
             formulate!(pkg, m.h, m.ibound, m.area; kind = record_kind(pkg, m.npf.cv; newton = m.newton))
             calc_simvals!(pkg, m.h, m.ibound)
@@ -131,10 +131,12 @@ end
     ModelBudget
 
 The volumetric budget of a model for one time step, as in MF6's listing file: `kstp` and
-`kper` (time step and stress period numbers) and the `terms` ([`BudgetTerm`](@ref)) in
-MF6's order (STO-SS, STO-SY when ICONVERT is used, then the stress packages). Computed on
+`kper` (time step and stress period numbers), the `terms` ([`BudgetTerm`](@ref)) in
+MF6's order (STO-SS, STO-SY when ICONVERT is used, then the stress packages; in a
+multi-model solution then the GWF-GWF exchange terms `FLOW-JA-FACE` and `FLOW-JA-FACE-CHD`,
+package name the exchange's, e.g. `GWF-GWF_1`) and `model`, the model's name. Computed on
 the device in every time step, also when no budget is printed or saved; found in
-`RunResult.budgets` and `Simulation.budgets`.
+`RunResult.budgets` and `Simulation.budgets` (one per model and time step).
 
 [`percent_discrepancy(b)`](@ref percent_discrepancy) and
 [`cum_percent_discrepancy(b)`](@ref cum_percent_discrepancy) give MF6's percent
@@ -151,7 +153,10 @@ struct ModelBudget
     kstp::Int
     kper::Int
     terms::Vector{BudgetTerm}
+    model::String
 end
+
+ModelBudget(kstp, kper, terms) = ModelBudget(kstp, kper, terms, "")
 
 total_rate_in(b::ModelBudget) = sum(t -> t.rate_in, b.terms; init = 0.0)
 total_rate_out(b::ModelBudget) = sum(t -> t.rate_out, b.terms; init = 0.0)
@@ -268,5 +273,5 @@ function model_budget!(acc::BudgetAccumulator, m::GwfModel, step::TimeStep)
         acc.cum_out[i] += rout * step.delt
         push!(terms, BudgetTerm(acc.names[i], acc.packages[i], rin, rout, acc.cum_in[i], acc.cum_out[i]))
     end
-    return ModelBudget(step.kstp, step.kper, terms)
+    return ModelBudget(step.kstp, step.kper, terms, m.spec.name)
 end
