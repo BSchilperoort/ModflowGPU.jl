@@ -68,10 +68,11 @@ function ModelOutput(m::GwfModel, simdir::AbstractString, outdir::AbstractString
     lp = _output_path(simdir, outdir, lname)
     m.spec.npf.save_specific_discharge && !isempty(bp) &&
         @info "NPF SAVE_SPECIFIC_DISCHARGE: DATA-SPDIS is not written to the budget file yet" m.spec.npf.file
+    # T6.7: the observations first (input errors before any file is opened).
+    obs = ObservationOutput(m, simdir, outdir)
     head = isempty(hp) ? nothing : open(hp, "w")
     budget = isempty(bp) ? nothing : open(bp, "w")
     listing = open(lp, "w")
-    obs = ObservationOutput(m, simdir, outdir)
     return ModelOutput(head, budget, listing, OutputLayout(m.spec.dis), hp, bp, lp, obs)
 end
 

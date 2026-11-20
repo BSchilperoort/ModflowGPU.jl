@@ -124,6 +124,7 @@ function ObservationOutput(m::GwfModel{T}, simdir::AbstractString, outdir::Abstr
     for (ip, pkg) in enumerate(m.packages)
         isnothing(pkg.spec.obs) || push!(owners, (ip, pkg.spec.obs))
     end
+    opens = Tuple{ObsOutputSpec, Int, Vector{Int}}[]
     for (owner, os) in owners, o in os.outputs
         cols = Int[]
         for e in o.observations
@@ -137,7 +138,11 @@ function ObservationOutput(m::GwfModel{T}, simdir::AbstractString, outdir::Abstr
             push!(obs, _Obs(e.name, e.type, owner, node, ja, e.boundname))
             push!(cols, length(obs))
         end
-        push!(files, _obs_open(simdir, outdir, o, os.digits, cols))
+        push!(opens, (o, os.digits, cols))
+    end
+    # The files are opened once every observation is resolved (no file left open by an error).
+    for (o, digits, cols) in opens
+        push!(files, _obs_open(simdir, outdir, o, digits, cols))
     end
     strt = Float64[spec.ic.strt[u] for u in conn.nodeuser]
     z = similar(m.h, 0)

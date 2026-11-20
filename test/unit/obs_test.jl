@@ -213,6 +213,17 @@ end
             @test isempty(r.obs_files)
         end
     end
+    # FLOW-JA-FACE between cells without a connection (gwf_process_intercell_obs_id).
+    mktempdir() do tmp
+        rundir = joinpath(tmp, "afr")
+        cp(joinpath(@__DIR__, "..", "models", "afr"), rundir)
+        write_input(rundir, "afr.obs", "BEGIN continuous FILEOUT afr.obs.csv\n  q flow-ja-face 1 1 1 1 1 3\nEND continuous\n")
+        nam = read(joinpath(rundir, "afr.nam"), String)
+        write(joinpath(rundir, "afr.nam"), replace(nam, "  OC6  afr.oc  oc" => "  OC6  afr.oc  oc\n  OBS6  afr.obs  obs"))
+        e = input_error_of(() -> run_simulation(rundir; backend = TEST_BACKEND, precision = :double, outdir = joinpath(tmp, "out")))
+        @test occursin("No connection exists between cells identified in text: 1 1 1 1 1 3", e.msg)
+        @test !isfile(joinpath(tmp, "out", "afr.obs.csv"))
+    end
     # A model without OBS6 input: no observation output.
     r = run_simulation(joinpath(@__DIR__, "..", "models", "afr"); backend = TEST_BACKEND, precision = :double, write_output = false)
     @test isempty(r.obs_files)
