@@ -367,3 +367,66 @@ for its XT3D items only.
 RIV and GHB can only provide it. Those four packages are out of scope
 (`docs/src/compatibility/packages.md`), so a mover would have nothing to move water to.
 `TO-MVR` stays accepted as `3.0e30`.
+
+### Other MF6 features not supported yet (cards added 2026-11-21)
+
+The remaining rows of "Not supported yet" in `docs/src/compatibility/packages.md`, outside
+the T6.9 backlog. The test-model rule of the backlog section above applies (models under
+`test/models/`, modelled on the named autotests, mf6 6.8.2 at test time, `:single` and
+`:double`). T6.16, T6.17 and T6.18 are independent (‖) of each other and of T6.10 to T6.15.
+
+**T6.16 Adaptive time stepping, ATS6 (M) ‖**
+- Read: `src/Timing/ats.f90` (`ats_set_delt`, `ats_submit_delt`, `ats_reset_delt`,
+  `dtadj`/`dtfailadj`), `tdis.f90` (how ATS changes `delt` and `nstp` within a period),
+  and the retry in `src/SimulationCreate.f90`/`NumericalSolution.f90` (`sln_ca` with a
+  failed solve: `isim_mode`, `ats_reset_delt`, heads reset to the start of the step).
+- Deliver: ATS6 periods: initial `dt0`, `dtmin`, `dtmax`, `dtadj` growth from the solver's
+  outer iteration count, and the retry of a failed step with `dtfailadj`. A retry needs the
+  device state at the start of the step (heads, storage old heads, Newton/PTC state,
+  time-series values) restored, without a host round trip. Output times follow the steps
+  actually taken (OC `FREQUENCY`/`STEPS` as MF6 applies them to ATS periods).
+- Stepping API and BMI: the step size is no longer known in advance; `get_time_step`,
+  `prepare_time_step` and ModflowCoupling's use of `delt` must say what they return (the
+  coupled models with a fixed exchange interval may need ATS off, document it).
+- Test models: from `test_gwf_ats01.py`, `ats02` (failed-step retry) and `ats03`.
+- Done when: those pass parity (head and budget files, same step sequence as MF6);
+  non-ATS models bitwise unchanged.
+- Docs: packages.md (ATS6 row), `getting_started.md` (the ATS6 rejection example is
+  replaced by another unsupported option), stepping.md and bmi.md (time step with ATS).
+
+**T6.17 CSV output (S) ‖**
+- Read: `OutputControl.f90`/`gwf-oc.f90` and `BudgetObject.f90` (`BUDGETCSV`,
+  `budgetcsv_write`), `ImsLinearSolver`/`NumericalSolution.f90` (`csv_convergence_summary`,
+  `CSV_OUTER_OUTPUT`, `CSV_INNER_OUTPUT`), `gwf-wel.f90` (`AUTO_FLOW_REDUCE_CSV`).
+- Deliver: the four CSV files with MF6's headers and columns. Budget CSV per saved step
+  from the Float64 budget totals that already exist; outer CSV per outer iteration (one
+  host read of values the convergence check already reduces); inner CSV only when asked
+  for (it needs a host read per inner iteration: document the cost); WEL reduction CSV
+  from the WEL-REDUCTION values of T6.7.
+- Done when: headers equal MF6's; budget CSV and WEL CSV values match MF6 within the
+  budget tolerances (`ex-gwf-fhb` and `test/models/afr` (AUTO_FLOW_REDUCE) with the options
+  added); outer CSV matches where the outer iteration sequence is the same (`:double`,
+  Jacobi or the parity preconditioner); inner CSV checked for format and consistency only
+  (inner counts differ from MF6 by design, `differences.md`).
+- Docs: packages.md (CSV row), `differences.md` (CSV row), `api/output.md`.
+
+**T6.18 Grid-array input (READARRAYGRID) and IMS solver options (S) ‖**
+- Read: the `gwf-welg`, `gwf-drng`, `gwf-rivg`, `gwf-ghbg`, `gwf-chdg` DFNs and their
+  loaders (`*_rp` with `readarraygrid`, `DNODATA`), `src/input/dfn/schema.jl`
+  (`dfn_name` already selects the variant).
+- Items:
+  1. READARRAYGRID for WEL, DRN, RIV, GHB and CHD (ASCII arrays; NetCDF input stays
+     rejected): build the same bound records the list form gives (a record per cell whose
+     value is not `DNODATA`, in MF6's order), so assembly and budgets are unchanged; the
+     period-data fast path (T4.6) and stepping addresses work as for list input.
+  2. IMS `SCALING_METHOD L2NORM`: implemented in T2.7 (`ims_base_scale`) but rejected with
+     `strict = true`; add a parity test (mf6 at test time, `test_gwf_ims_convergence.py`
+     style) and accept it, or write why not.
+  3. IMS `REORDERING_METHOD RCM` and `MD`: they only change MF6's ILU fill order, not the
+     converged heads; accept them with the existing `Info` ("no effect"), as
+     `RED_BLACK_ORDERING` is, if the owner agrees (ask before merging).
+- Test models: list-input examples (e.g. `ex-gwf-twri01`, `ex-gwf-bcf2ss-p01a`) rewritten with
+  READARRAYGRID inputs, run with mf6; the result must be bitwise equal to our run of the list
+  form and within parity of mf6.
+- Docs: packages.md (rows READARRAYGRID and IMS), differences.md (reordering paragraph).
+

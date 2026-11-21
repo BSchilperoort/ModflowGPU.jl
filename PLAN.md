@@ -514,6 +514,9 @@ marked; their merge commits on `main` hold the card reports.
   - T6.13 Ghost-node correction (GNC6)
   - T6.14 XT3D with convertible cells, Newton, HFB and TVK
   - T6.15 Multi-model with convertible cells and Newton; several solutions
+  - T6.16 Adaptive time stepping (ATS6)
+  - T6.17 CSV output (budget, IMS outer/inner, WEL flow reduction)
+  - T6.18 Grid-array input (READARRAYGRID) and IMS solver options
 - **Phase 7: beyond MF6 parity (build after Milestone B)**: [docs/dev/plan/phase7.md](docs/dev/plan/phase7.md)
   - T7.1 Longitude wrap-around for global grids (dropped 2026-11-16)
   - T7.2 Spherical geometry
@@ -556,7 +559,7 @@ T3.1 ─┬─ T3.2 → T3.4 → T4.1 ─┬─ T4.2 ─┬→ T4.4 → T4.5 →
            T6.4 → T6.5 (DISV examples) ; T6.5 → T6.6 (s2–s4)
            T6.1 + T6.3 → advtidal (owned by whichever of the two merges last)
            T6.1 + T6.3 + T6.4 → T6.7
-           backlog: T6.10, T6.11, T6.12, T6.13 ‖ ; T6.11 + T6.12 → T6.14 → T6.15 (XT3D items)
+           backlog: T6.10, T6.11, T6.12, T6.13 ‖ ; T6.11 + T6.12 → T6.14 → T6.15 (XT3D items) ; T6.16, T6.17, T6.18 ‖
 T4.3 + T4.4 → T7.5 ; T6.4 (done) → T7.2 (validation against DISU)
 ```
 
