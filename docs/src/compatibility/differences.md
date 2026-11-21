@@ -151,7 +151,7 @@ Float32, which MODFLOW 6 cannot:
 | :-- | :-- | :-- |
 | Head file (`.hds`) | written as OC asks | the same; dry cells have `HDRY` |
 | Budget file (`.cbc`) | written as OC asks | the same records |
-| `DATA-SPDIS` (specific discharge, NPF `SAVE_SPECIFIC_DISCHARGE`) | written | the same (computed on the host from the step's flows) |
+| `DATA-SPDIS` (specific discharge, NPF `SAVE_SPECIFIC_DISCHARGE`) | written | the same (computed on the device from the step's flows; on the host for models with convertible cells and for several models in one solution) |
 | Binary grid file (`.dis.grb`, `.disv.grb`, `.disu.grb`) | written unless `NOGRB` | the same file (version 1; a `CRS` option is not written to it) |
 | Model listing file (`.lst`) | full report | a short version, see below |
 | Simulation listing file (`mfsim.lst`) | written | not written |

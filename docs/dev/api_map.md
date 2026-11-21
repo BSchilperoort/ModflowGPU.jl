@@ -525,6 +525,11 @@ it. Underscore-prefixed helpers are omitted.
   (vs MF6's DATA-SPDIS), disv_disu.
   T6.10: `cell_saturation(m)` (NPF `sat`: `cv.sat` of the last formulation for convertible
   cells, `sat0` otherwise) and `write_sat` (DATA-SAT, `sav_sat`). Tests: convertible (vs mf6).
+  T6.10: DATA-SPDIS on the device for a model alone in its solution without convertible
+  cells (`_spdis_on_device`): `SpdisDevice` (per-connection weights from
+  `_spdis_coefficients`, shared with the host `_spdis_cell`; areas; per-node `den`; built at
+  the first write and kept in `ModelOutput.spdis`), `spdis_kernel!`, `specific_discharge!`;
+  `write_spdis(...; cache)`. Tests: disv_disu (device vs host), run (vs MF6).
 - **solution.jl** (T6.6; included after output/oc.jl): multi-model solutions at run time
   (exg-gwfgwf.f90 `gwf_gwf_calc_simvals`, `gwf_gwf_bd`, `gwf_gwf_chd_bd`,
   `gwf_gwf_bdsav_model`, `gwf_gwf_rp_obs`, `gwf_gwf_save_simvals`). `ExchangeFlows` /

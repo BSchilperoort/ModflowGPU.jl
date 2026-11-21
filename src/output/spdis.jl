@@ -129,20 +129,42 @@ end
 
 # The weighting of `calc_spdis` for one cell (DEM10 = 1e-10).
 function _spdis_cell(nix, niy, di, vi, viz, diz)
-    ncz = length(viz)
+    cx, cy, cz, den = _spdis_coefficients(nix, niy, di, diz)
     vz = 0.0
-    if ncz == 1
-        vz = viz[1]
-    elseif ncz > 1
+    for iz in eachindex(viz)
+        vz += cz[iz] * viz[iz]
+    end
+    length(viz) == 1 && (vz = viz[1])
+    vx = 0.0
+    vy = 0.0
+    for ic in eachindex(vi)
+        vx += cx[ic] * vi[ic]
+        vy += cy[ic] * vi[ic]
+    end
+    if den != 0
+        vx /= den
+        vy /= den
+    end
+    return (vx, vy, vz)
+end
+
+# The weights of `calc_spdis` for one cell, which depend only on the geometry (T6.10: shared
+# by the host path and `SpdisDevice`): `vz = Σ cz·viz` (one vertical connection: `cz = 1`,
+# the velocity itself), `vx = Σ cx·vi / den`, `vy = Σ cy·vi / den` (no division when
+# `den == 0`), with `cx = bix − axy·biy`, `cy = biy − ayx·bix`, `den = 1 − axy·ayx`.
+function _spdis_coefficients(nix, niy, di, diz)
+    ncz = length(diz)
+    cz = ones(ncz)
+    if ncz > 1
         dsumz = sum(diz)
         dsumz = dsumz + 1.0e-10 * dsumz
         denom = ncz - 1.0
         for iz in 1:ncz
             w = dsumz > 0 ? 1.0 - diz[iz] / dsumz : 0.0
-            vz += (w / denom) * viz[iz]
+            cz[iz] = w / denom
         end
     end
-    nc = length(vi)
+    nc = length(di)
     wix = [di[ic] * abs(nix[ic]) for ic in 1:nc]
     wiy = [di[ic] * abs(niy[ic]) for ic in 1:nc]
     dsumx = sum(wix; init = 0.0)
@@ -173,18 +195,9 @@ function _spdis_cell(nix, niy, di, vi, viz, diz)
         axy += bix[ic] * niy[ic]
         ayx += biy[ic] * nix[ic]
     end
-    vx = 0.0
-    vy = 0.0
-    for ic in 1:nc
-        vx += (bix[ic] - axy * biy[ic]) * vi[ic]
-        vy += (biy[ic] - ayx * bix[ic]) * vi[ic]
-    end
-    denom = 1.0 - axy * ayx
-    if denom != 0
-        vx /= denom
-        vy /= denom
-    end
-    return (vx, vy, vz)
+    cx = [bix[ic] - axy * biy[ic] for ic in 1:nc]
+    cy = [biy[ic] - ayx * bix[ic] for ic in 1:nc]
+    return cx, cy, cz, 1.0 - axy * ayx
 end
 
 # Fortran `sign(1.0, x)`: +1 for x = +0.0, -1 for x = -0.0.
@@ -266,12 +279,19 @@ end
 
 The DATA-SPDIS record of the budget file (gwf-npf.f90 `sav_spdis`): a list with one entry
 per reduced node (`id1 = id2` its user node, `q = 0`, auxiliary `qx`, `qy`, `qz`), source and
-destination the model and its NPF package.
+destination the model and its NPF package. T6.10: with `cache` (a `Ref`, `ModelOutput.spdis`)
+and a model of one solution without convertible cells (`_spdis_on_device`), computed on the
+device (`SpdisDevice`, `specific_discharge!`); otherwise on the host (`specific_discharge`).
 """
-function write_spdis(io::IO, layout::OutputLayout, m::Union{GwfModel, ModelView}, flowja::AbstractVector{Float64}; kw...)
+function write_spdis(io::IO, layout::OutputLayout, m::Union{GwfModel, ModelView}, flowja::AbstractVector{Float64}; cache = nothing, kw...)
     spec = _vspec(m)
     conn = _vconn(m)
-    sp = specific_discharge(m, flowja)
+    sp = if !isnothing(cache) && _spdis_on_device(m)
+        isnothing(cache[]) && (cache[] = SpdisDevice(m))
+        specific_discharge!(cache[], m)
+    else
+        specific_discharge(m, flowja)
+    end
     nodeu = Int32.(conn.nodeuser)
     list = BudgetList(nodeu, copy(nodeu), zeros(Int(conn.nodes)), sp)
     name = uppercase(spec.name)
@@ -319,4 +339,119 @@ end
 function _npf_package_name(spec::GwfSpec)
     k = findfirst(p -> uppercase(p.ftype) == "NPF6", spec.packages)
     return (isnothing(k) || isempty(spec.packages[k].name)) ? "NPF" : spec.packages[k].name
+end
+
+# ---------------------------------------------------------------------------------------
+# Device path (T6.10)
+# ---------------------------------------------------------------------------------------
+
+# The device path: a model alone in its solution (no exchange edges) whose face areas do
+# not depend on the heads (no convertible cells: `thksatnm` of two confined cells).
+_spdis_on_device(m) = m isa GwfModel && isnothing(m.npf.cv)
+
+"""
+    SpdisDevice(m::GwfModel)
+
+The geometry of `calc_spdis` for model `m` on its device, in the state precision `T`
+(built once on the host in Float64, `_spdis_coefficients` as in `specific_discharge`):
+per CSR position `ihc` (`Int8`), the weight `cx` (vertical: `cz`) and `cy` of the
+connection and its `area` (vertical: HWVA; horizontal: HWVA times `thksatnm` of the two
+confined cells); per node `den`; the result buffer `out` `(3, nodes)`. Only for
+`_spdis_on_device` models.
+"""
+struct SpdisDevice{VI, V, M}
+    ihc::VI
+    cx::V
+    cy::V
+    area::V
+    den::V
+    out::M
+end
+
+function SpdisDevice(m::GwfModel)
+    conn = m.conn
+    T = eltype(m)
+    nja = Int(conn.nja)
+    nodes = Int(conn.nodes)
+    ihc = zeros(Int8, nja)
+    cx, cy, area, den = zeros(nja), zeros(nja), zeros(nja), zeros(nodes)
+    nix, niy, di, diz = Float64[], Float64[], Float64[], Float64[]
+    hor, ver = Int[], Int[]
+    for n in 1:nodes
+        empty!(nix); empty!(niy); empty!(di); empty!(diz); empty!(hor); empty!(ver)
+        for ii in (conn.ia[n] + 1):(conn.ia[n + 1] - 1)
+            mn = Int(conn.ja[ii])
+            jj = Int(conn.jas[ii])
+            ih = Int(conn.ihc[jj])
+            _, dltot = _xt3d_connection_vector(conn, n, mn, true, ih, jj)
+            cl1, cl2 = mn < n ? (conn.cl2[jj], conn.cl1[jj]) : (conn.cl1[jj], conn.cl2[jj])
+            d = dltot * cl1 * (1.0 / (cl1 + cl2))
+            ihc[ii] = ih
+            area[ii] = conn.hwva[jj]
+            if ih == 0
+                push!(diz, d)
+                push!(ver, ii)
+            else
+                # `thksatnm` of two confined cells (IBOUND is checked in the kernel).
+                area[ii] *= _thksatnm(1, 1, 0, 0, false, ih, 0.0, 0.0, 1.0, 1.0, conn.top[n], conn.top[mn], conn.bot[n], conn.bot[mn])
+                xn, yn, _ = _connection_normal(conn, n, mn, ih, jj)
+                push!(nix, -xn)
+                push!(niy, -yn)
+                push!(di, d)
+                push!(hor, ii)
+            end
+        end
+        x, y, z, den[n] = _spdis_coefficients(nix, niy, di, diz)
+        cx[hor] .= x
+        cy[hor] .= y
+        cx[ver] .= z
+    end
+    backend = get_backend(m.h)
+    dev(a) = _device_copy(backend, a)
+    return SpdisDevice(dev(ihc), dev(T.(cx)), dev(T.(cy)), dev(T.(area)), dev(T.(den)), KernelAbstractions.zeros(backend, T, 3, nodes))
+end
+
+# `calc_spdis` for node `n` with the weights of `SpdisDevice`: the velocities of the
+# connections (horizontal: flow over the saturated face area, 0 next to an inactive cell;
+# vertical: flow, positive upward, over the cell area) weighted, in the precision of `out`.
+@kernel function spdis_kernel!(out, @Const(ia), @Const(ja), @Const(ihc), @Const(cx), @Const(cy), @Const(area), @Const(den), @Const(flowja), @Const(ibound))
+    n = @index(Global)
+    T = eltype(out)
+    @inbounds begin
+        vx = zero(T)
+        vy = zero(T)
+        vz = zero(T)
+        for ii in (ia[n] + Int32(1)):(ia[n + 1] - Int32(1))
+            m = ja[ii]
+            if ihc[ii] == Int8(0)
+                q = n > m ? -flowja[ii] : flowja[ii]
+                vz += cx[ii] * (q / area[ii])
+            else
+                a = (ibound[n] == Int32(0) || ibound[m] == Int32(0)) ? zero(T) : area[ii]
+                vi = a > zero(T) ? flowja[ii] / a : zero(T)
+                vx += cx[ii] * vi
+                vy += cy[ii] * vi
+            end
+        end
+        dn = den[n]
+        if dn != zero(T)
+            vx /= dn
+            vy /= dn
+        end
+        out[1, n] = vx
+        out[2, n] = vy
+        out[3, n] = vz
+    end
+end
+
+"""
+    specific_discharge!(sd::SpdisDevice, m::GwfModel) -> Matrix{Float64}
+
+`specific_discharge` on the device (T6.10): `spdis_kernel!`, one work item per node, from
+the device FLOW-JA-FACE `m.flowja` and IBOUND; returns `(3, nodes)` on the host in Float64.
+"""
+function specific_discharge!(sd::SpdisDevice, m::GwfModel)
+    backend = get_backend(m.flowja)
+    spdis_kernel!(backend, _WG)(sd.out, m.csr.ia, m.csr.ja, sd.ihc, sd.cx, sd.cy, sd.area, sd.den, m.flowja, m.ibound; ndrange = Int(m.conn.nodes))
+    return Float64.(Array(sd.out))
 end

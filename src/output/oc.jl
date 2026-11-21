@@ -40,7 +40,8 @@ The open output files of a model run: `head` and `budget` (`IO` or `nothing` whe
 names no file), `listing` (`IO`), the `layout` (`OutputLayout`), the paths and `obs`, the
 observation files (`ObservationOutput`, T6.7; `nothing` without OBS6 input). T6.9: the
 binary grid file is written when the output is opened (`dis_ar` → `write_grb`, unless
-NOGRB; `grb_path`, `""` without one).
+NOGRB; `grb_path`, `""` without one). T6.10: `spdis`, the device geometry of DATA-SPDIS
+(`SpdisDevice`, built at the first write; `nothing` before or on the host path).
 
     ModelOutput(m::GwfModel, simdir, outdir)
     ModelOutput(v::ModelView, simdir, outdir)
@@ -57,6 +58,7 @@ struct ModelOutput
     listing_path::String
     obs::Union{Nothing, ObservationOutput}
     grb_path::String
+    spdis::Base.RefValue{Any}
 end
 
 function _output_path(simdir, outdir, name)
@@ -92,7 +94,7 @@ function ModelOutput(m::Union{GwfModel, ModelView}, simdir::AbstractString, outd
         head = isempty(hp) ? nothing : open(hp, "w")
         budget = isempty(bp) ? nothing : open(bp, "w")
         listing = open(lp, "w")
-        return ModelOutput(head, budget, listing, OutputLayout(spec.dis), hp, bp, lp, obs, gp)
+        return ModelOutput(head, budget, listing, OutputLayout(spec.dis), hp, bp, lp, obs, gp, Ref{Any}(nothing))
     catch
         isnothing(obs) || close(obs)
         isnothing(head) || close(head)
@@ -168,7 +170,7 @@ function write_budget(o::ModelOutput, m::Union{GwfModel, ModelView}, step::TimeS
         fja = model_flowja(m)
         write_budget_array(io, "FLOW-JA-FACE", fja; kw..., dims = (Int(conn.nja), 1, 1))
         # T6.9: DATA-SPDIS after FLOW-JA-FACE (`npf_save_model_flows` → `sav_spdis`).
-        spec.npf.save_specific_discharge && write_spdis(io, o.layout, m, fja; kw...)
+        spec.npf.save_specific_discharge && write_spdis(io, o.layout, m, fja; cache = o.spdis, kw...)
         # T6.10: DATA-SAT after it (`sav_sat`).
         spec.npf.save_saturation && write_sat(io, o.layout, m; kw...)
     end
