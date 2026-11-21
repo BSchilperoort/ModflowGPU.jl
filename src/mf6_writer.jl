@@ -291,6 +291,21 @@ function _write_list_boundary(io, b::BoundarySpec)
     return nothing
 end
 
+# T6.11: HFB6 (two cellids and HYDCHR per record).
+function _write_hfb(io, h::HfbSpec, dis::AbstractDisSpec)
+    g = grid_dims(dis)
+    _write_block(() -> h.print_input && _put(io, "PRINT_INPUT"), io, "OPTIONS")
+    _write_block(() -> _put(io, "MAXHFB", h.maxhfb), io, "DIMENSIONS")
+    for (k, p) in zip(h.periods.iper, h.periods.data)
+        _write_block(io, "PERIOD $k") do
+            for r in eachindex(p.cell1)
+                _put(io, string.(cellid(g, p.cell1[r]))..., string.(cellid(g, p.cell2[r]))..., _mf6_fmt(p.hydchr[r]))
+            end
+        end
+    end
+    return nothing
+end
+
 function _write_array_boundary(io, b::BoundarySpec, dis::Union{DisSpec, DisvSpec})
     _write_boundary_options(io, b)
     layername = boundary_kind(b) === :RCH ? "irch" : "ievt"
@@ -461,8 +476,8 @@ file under the name in its spec (`file` fields, `PackageEntry`s), as `build_mode
 `build_simulation` set them. `load_simulation(dir)` gives `spec` back
 (`spec_identical(spec, load_simulation(dir); ignore = (:simdir,))`), and mf6 runs it.
 
-Supported: GWF models on DIS, DISV and DISU grids with NPF, IC, STO, OC, OBS6, the stress
-packages of `BOUNDARY_KINDS` (lists, and READASARRAYS on DIS and DISV), TDIS, IMS and
+Supported: GWF models on DIS, DISV and DISU grids with NPF, IC, STO, OC, OBS6, HFB6 (T6.11),
+the stress packages of `BOUNDARY_KINDS` (lists, and READASARRAYS on DIS and DISV), TDIS, IMS and
 GWF6-GWF6 exchanges (with their OBS6). Time series, TAS, TVK, TVS and ATS input are an
 `ArgumentError`. Ported from ModflowCoupling's `write_simulation` (src/mf6_writer.jl
 there).
@@ -502,6 +517,7 @@ function write_simulation(dir::AbstractString, spec::SimulationSpec)
         _write_file(io -> _write_ic(io, m.ic, dis), dir, m.ic.file)
         isnothing(m.sto) || _write_file(io -> _write_sto(io, m.sto, dis), dir, m.sto.file)
         isnothing(m.oc) || _write_file(io -> _write_oc(io, m.oc), dir, m.oc.file)
+        isnothing(m.hfb) || _write_file(io -> _write_hfb(io, m.hfb, dis), dir, m.hfb.file)
         for b in m.boundaries
             b.readasarrays && _check_writable(!(dis isa DisuSpec), "READASARRAYS on DISU (package $(b.name))")
             _write_file(dir, b.file) do io

@@ -143,7 +143,8 @@ function workload(dir)
     # storage kernels with a ConvertibleNpf / ConvertibleStorage.
     # T6.2: the Newton formulation (test/models/newton: PTC, NEWTON UNDER_RELAXATION, Newton
     # storage, DRN and WEL terms, backtracking).
-    for name in ("wetdry", "afr", "disu_staggered", "newton")
+    # T6.11: HFB6 (the scatter kernel; barriers in the convertible conductances).
+    for name in ("wetdry", "afr", "disu_staggered", "newton", "hfb_conv")
         d = joinpath(dir, name)
         cp(joinpath(MODELS, name), d)
         chmod(d, 0o755; recursive = true)

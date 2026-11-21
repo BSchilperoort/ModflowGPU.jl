@@ -6,5 +6,5 @@ BEGIN griddata
   icelltype
     CONSTANT  1
   k
-    CONSTANT  100.0
+    CONSTANT  10.0
 END griddata

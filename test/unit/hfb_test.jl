@@ -14,7 +14,7 @@
 #      `condsat_modify` barriers, a multiplier, HYDCHR 0) and its NEWTON variant;
 #    - ex-gwf-u1disv (reference run inputs) with a line of barriers added (DISV).
 using ModflowGPU: load_simulation, build_connectivity, npf_setup, GwfModel, apply_period!, MF6UnsupportedError,
-    MF6InputError, hfb_condsat, hfb_barriers, HfbSpec, HfbPeriod, StressPeriods, solution_setup
+    MF6InputError, hfb_condsat, hfb_barriers, HfbSpec, HfbPeriod, StressPeriods, solution_setup, write_simulation, spec_identical
 
 const HFB_MF6 = get(ENV, "MF6", joinpath(REFERENCE_DIR, "mf6.8.2_linux", "bin", "mf6"))
 const HFB_MODELS = joinpath(@__DIR__, "..", "models")
@@ -125,6 +125,14 @@ _hfb_period1(dir) = apply_period!(GwfModel(CPU(), Float64, only(load_simulation(
         conn = build_connectivity(dm)
         bar = @test_logs (:warn, r"HFB connection between inactive cell\(s\) will be excluded: \(1\) to \(2\)") hfb_barriers(dm.hfb, 1, dm.dis, conn, zeros(Int32, conn.nodes))
         @test bar.noden == [25] && bar.nodem == [26] && bar.static == [true]
+    end
+    # write_simulation round trip.
+    for name in ("hfb_conv", "hfb_disu")
+        a = load_simulation(joinpath(HFB_MODELS, name))
+        mktempdir() do tmp
+            write_simulation(tmp, a)
+            @test spec_identical(a, load_simulation(tmp); ignore = (:simdir,))
+        end
     end
     # HFB6 in a model of a multi-model solution: unsupported.
     m2 = only(load_simulation(joinpath(HFB_MODELS, "hfb_disu")).models)
