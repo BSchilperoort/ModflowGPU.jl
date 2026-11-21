@@ -68,6 +68,9 @@ it. Underscore-prefixed helpers are omitted.
   `read_oc_periods` (`OcRecord`), `read_sto_periods`, `read_tdis_perioddata`,
   `read_records`, `ExchangeData` / `read_exchange_data` / `exchange_schema`,
   `write_binary_list`. Tests: input_lists.
+  T6.18: `read_arraygrid_periods` (READARRAYGRID CHDG/WELG/DRNG/RIVG/GHBG,
+  Mf6FileGridArray.f90 `param_load`: list schema and `PeriodList`s of the list form;
+  `read_period_data` dispatches to it). Tests: input_lists, arraygrid.
 - **input/timeseries.jl** (T6.3): TS6 and TAS6 files and their evaluation on the host in
   Float64 (TimeSeries.f90, TimeArraySeries.f90). `TimeSeries` / `read_time_series_file`
   (NAME(S), METHOD(S), SFAC(S), several series per file, DNODATA), `ts_value(s, t0, t1)`
@@ -85,6 +88,8 @@ it. Underscore-prefixed helpers are omitted.
   AUTO_FLOW_REDUCE). Tests: simulation_loader, input_lists.
   T6.6: `:multi_model` and `:exchange` supported, `:multi_solution` (more than one solution)
   not; `SUPPORTED_OPTIONS` of `exg-gwfgwf`.
+  T6.18: `SUPPORTED_OPTIONS` of the READARRAYGRID variants (`gwf-chdg`, ...); IMS
+  SCALING_METHOD L2NORM accepted.
 
 ## Model description (host specs, plain structs)
 
@@ -116,6 +121,8 @@ it. Underscore-prefixed helpers are omitted.
   need `reference/`).
   T6.6: GWF6-GWF6 options checked with `strict`, the exchange OBS6 file read and its
   exchange numbers / boundary names checked (`gwf_gwf_rp_obs`).
+  T6.18: READARRAYGRID stress packages read (`read_arraygrid_periods`); records at
+  inactive cells dropped (`nodeu_to_nlist`). Tests: arraygrid.
 
 ## Discretization and connectivity (host)
 

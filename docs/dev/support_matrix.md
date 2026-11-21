@@ -30,7 +30,7 @@ through the same engine checks.
 | --- | --- | --- |
 | OPTIONS | PRINT_OPTION, COMPLEXITY (SIMPLE, MODERATE, COMPLEX presets), NO_PTC [ALL / FIRST] (T6.2: pseudo-transient continuation of Newton steady states) | CSV_OUTER_OUTPUT, CSV_INNER_OUTPUT, ATS_OUTER_MAXIMUM_FRACTION, DEV_PTC* (developer options) |
 | NONLINEAR | OUTER_DVCLOSE, OUTER_MAXIMUM, UNDER_RELAXATION NONE / SIMPLE / COOLEY / DBD (+ THETA, KAPPA, GAMMA, MOMENTUM), BACKTRACKING_NUMBER / _TOLERANCE / _REDUCTION_FACTOR / _RESIDUAL_LIMIT (also COMPLEXITY COMPLEX's; T6.2a, `sln_backtracking`, on DIS, DISV and DISU, confined and convertible cells, every precision preset), LINEAR_SOLVER DEFAULT / LINEAR | other LINEAR_SOLVER values |
-| LINEAR | INNER_MAXIMUM, INNER_DVCLOSE, INNER_RCLOSE (absolute, STRICT, L2NORM_RCLOSE, RELATIVE_RCLOSE), LINEAR_ACCELERATION CG / BICGSTAB, NUMBER_ORTHOGONALIZATIONS, SCALING_METHOD NONE / DIAGONAL, REORDERING_METHOD NONE | SCALING_METHOD L2NORM, REORDERING_METHOD RCM / MD |
+| LINEAR | INNER_MAXIMUM, INNER_DVCLOSE, INNER_RCLOSE (absolute, STRICT, L2NORM_RCLOSE, RELATIVE_RCLOSE), LINEAR_ACCELERATION CG / BICGSTAB, NUMBER_ORTHOGONALIZATIONS, SCALING_METHOD NONE / DIAGONAL / L2NORM (T6.18), REORDERING_METHOD NONE | REORDERING_METHOD RCM / MD |
 
 Accepted with a different behaviour (logged warnings, not errors):
 
@@ -55,7 +55,7 @@ Accepted with a different behaviour (logged warnings, not errors):
 | STO6 | SS, SY, ICONVERT 0 and ≠ 0 (convertible storage, STO-SY, T6.1), STORAGECOEFFICIENT, SS_CONFINED_ONLY, SAVE_FLOWS, STEADY-STATE / TRANSIENT periods | TVS6 (*engine*) |
 | IC6 | STRT | – |
 | OC6 | HEAD and BUDGET FILEOUT, HEAD PRINT_FORMAT; SAVE / PRINT HEAD / BUDGET with ALL, FIRST, LAST, FREQUENCY, STEPS | BUDGETCSV (and other options) |
-| CHD6, WEL6, GHB6, RIV6, DRN6 (lists) | AUXILIARY, AUXMULTNAME, BOUNDNAMES, PRINT_INPUT, PRINT_FLOWS, SAVE_FLOWS, TS6 / OBS6 FILEIN (see below), MAXBOUND, PERIOD blocks (incl. empty blocks); DRN AUXDEPTHNAME; values given as time-series names in any column MF6 allows, auxiliary variables (also the AUXMULTNAME multiplier) included (T6.3) | MOVER (MVR6 out of scope), WEL AUTO_FLOW_REDUCE_CSV, READARRAYGRID input; WEL AUTO_FLOW_REDUCE, FLOW_REDUCTION_LENGTH, AUTO_FLOW_REDUCE_AUXNAME are supported (T6.1) |
+| CHD6, WEL6, GHB6, RIV6, DRN6 (lists) | AUXILIARY, AUXMULTNAME, BOUNDNAMES, PRINT_INPUT, PRINT_FLOWS, SAVE_FLOWS, TS6 / OBS6 FILEIN (see below), MAXBOUND, PERIOD blocks (incl. empty blocks); DRN AUXDEPTHNAME; values given as time-series names in any column MF6 allows, auxiliary variables (also the AUXMULTNAME multiplier) included (T6.3) | MOVER (MVR6 out of scope), WEL AUTO_FLOW_REDUCE_CSV, NETCDF arrays and EXPORT_ARRAY_NETCDF of READARRAYGRID input (READARRAYGRID itself is supported since T6.18: `read_arraygrid_periods`); WEL AUTO_FLOW_REDUCE, FLOW_REDUCTION_LENGTH, AUTO_FLOW_REDUCE_AUXNAME are supported (T6.1) |
 | RCH6 (list and READASARRAYS) | as the lists, plus FIXED_CELL, IRCH; READASARRAYS: TAS6 FILEIN and `RECHARGE` / auxiliary `TIMEARRAYSERIES` (T6.3) | – |
 | EVT6 (list and READASARRAYS) | as the lists, plus FIXED_CELL, SURF_RATE_SPECIFIED, NSEG ≥ 1 (PXDP, PETM, PETM0), IEVT; READASARRAYS: TAS6 FILEIN and `RATE` / auxiliary `TIMEARRAYSERIES` (T6.3) | – |
 | OBS6 | the file must exist; it is read by no one | observations are not evaluated or written until T6.7 (accepted, no output) |

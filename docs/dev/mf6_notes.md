@@ -324,3 +324,21 @@ GwfConductanceUtils.f90, GwfStorageUtils.f90 and gwf-wel.f90 (6.8.2).
   `sQSaturation(bot + f·thk, bot, h)` (f = AUTO_FLOW_REDUCE, ≤ 0 → 0.1, > 1 → 1; with
   FLOW_REDUCTION_LENGTH `bot + f`; AUTO_FLOW_REDUCE_AUXNAME gives f per record).
   AUTO_FLOW_REDUCE_CSV is not supported.
+
+## READARRAYGRID input (T6.18)
+
+- **Records** (Mf6FileGridArray.f90 `param_load`): the first array of a PERIOD block
+  defines the records, one per user node whose value is not exactly DNODATA (3.0e30, after
+  FACTOR: `FACTOR 1.02` on an array of 3.0e30 makes every cell a record), in node order;
+  more than MAXBOUND (default: the number of user nodes, `ainit`) is an error. Later
+  arrays of the block are taken at those nodes without a DNODATA test. Arrays not given
+  keep their input memory by record index (zero until first given), so a block that gives
+  only an auxiliary array with more cells than before shifts nothing but gives the new
+  records the values of the old indices (test/models/arraygrid, WELG period 3).
+- **Inactive cells** (BoundaryPackageExt.f90 `nodeu_to_nlist`): MF6 6.8.2 lowers NBOUND
+  by the number of records at inactive cells, but neither moves the later records up nor
+  sets their node, so the values shift when an inactive record is not the last one. We
+  drop the records at inactive cells (`_drop_inactive`, src/input/simulation.jl); the
+  results agree when the inactive records are last (the GHBG of test/models/arraygrid).
+- No BOUNDNAMES, TS6 or TAS6 in the READARRAYGRID DFNs; NETCDF arrays and
+  EXPORT_ARRAY_NETCDF are rejected.
