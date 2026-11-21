@@ -195,6 +195,5 @@ input is accepted.
 | Time-varying hydraulic conductivity and storage (TVK6, TVS6) | not planned at the moment |
 | Adaptive time stepping (ATS6) | not planned at the moment |
 | CSV output: OC `BUDGETCSV`, IMS `CSV_OUTER_OUTPUT` and `CSV_INNER_OUTPUT`, WEL `AUTO_FLOW_REDUCE_CSV` | not planned at the moment |
-| IMS `REORDERING_METHOD RCM` and `MD` | not planned at the moment |
 
 The tested models are listed on [Comparing results](results.md).

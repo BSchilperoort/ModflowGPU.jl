@@ -89,7 +89,7 @@ it. Underscore-prefixed helpers are omitted.
   T6.6: `:multi_model` and `:exchange` supported, `:multi_solution` (more than one solution)
   not; `SUPPORTED_OPTIONS` of `exg-gwfgwf`.
   T6.18: `SUPPORTED_OPTIONS` of the READARRAYGRID variants (`gwf-chdg`, ...); IMS
-  SCALING_METHOD L2NORM accepted.
+  SCALING_METHOD L2NORM accepted; REORDERING_METHOD RCM and MD accepted (no effect).
 
 ## Model description (host specs, plain structs)
 

@@ -26,9 +26,10 @@ sets) are accepted, but their values are not used. The log says so when the run 
 an `Info` for ILU0 and for settings that come from `COMPLEXITY` alone, a `Warning` when
 you set `RELAXATION_FACTOR` or `PRECONDITIONER_LEVELS` yourself. MILU relaxation can be
 switched on with `precond_options = (; relax = 0.97)`. The multicolour preconditioners
-use their own ordering: `REORDERING_METHOD RCM` and `MD` are rejected (with
-`strict = false` they have no effect, with an `Info`), and `RED_BLACK_ORDERING` is
-accepted and has no effect.
+use their own ordering: `REORDERING_METHOD RCM` and `MD` and `RED_BLACK_ORDERING`
+are accepted and have no effect (for `REORDERING_METHOD` an `Info` says so). In
+MODFLOW 6 they only change the order of the ILU factorisation, so the number of
+iterations, not the converged heads.
 
 The convergence tests of IMS (`INNER_DVCLOSE`, `INNER_RCLOSE` with its `STRICT`,
 `L2NORM_RCLOSE` and `RELATIVE_RCLOSE` variants, `OUTER_DVCLOSE`) are the same, so the

@@ -202,3 +202,19 @@ end
         end
     end
 end
+
+# T6.18 item 3: REORDERING_METHOD RCM and MD only change MF6's ILU order; they are accepted
+# with an Info and change nothing in our run.
+@testset "IMS REORDERING_METHOD RCM and MD: accepted, no effect" begin
+    ref = ModflowGPU.run(AG_MODEL; backend = TEST_BACKEND, precision = :double, write_output = false)
+    for m in ("RCM", "MD")
+        mktempdir() do tmp
+            dir = _ag_copy(AG_MODEL, joinpath(tmp, m); edit = (f, t) -> endswith(f, ".ims") ? replace(t, "END linear" => "  REORDERING_METHOD  $m\nEND linear") : t)
+            @test only(only(load_simulation(dir).solution_groups).solutions).reordering_method === Symbol(lowercase(m))
+            r = @test_logs (:info, Regex("REORDERING_METHOD $m has no effect")) match_mode = :any ModflowGPU.run(
+                dir; backend = TEST_BACKEND, precision = :double, write_output = false,
+            )
+            @test r.heads == ref.heads
+        end
+    end
+end

@@ -145,7 +145,7 @@ Values accepted with `strict = true` for options whose value selects a method, p
 const SUPPORTED_VALUES = Dict{Tuple{String, String}, Vector{String}}(
     ("sln-ims", "UNDER_RELAXATION") => ["NONE", "SIMPLE", "COOLEY", "DBD"],  # T2.8
     ("sln-ims", "SCALING_METHOD") => ["NONE", "DIAGONAL", "L2NORM"],         # T2.7; L2NORM T6.18
-    ("sln-ims", "REORDERING_METHOD") => ["NONE"],
+    ("sln-ims", "REORDERING_METHOD") => ["NONE", "RCM", "MD"],                # RCM, MD: no effect (Info), T6.18
     ("sln-ims", "LINEAR_SOLVER") => ["DEFAULT", "LINEAR"],
 )
 
