@@ -110,7 +110,7 @@ mult_column(::BoundaryKind) = 1
     check_boundary_spec(spec::BoundarySpec)
 
 Throw `MF6UnsupportedError` for options of a stress package that the engine does not
-support yet (WEL `AUTO_FLOW_REDUCE_CSV`, MVR), `MF6InputError` for invalid EVT dimensions
+support yet (MVR), `MF6InputError` for invalid EVT dimensions
 (NSEG < 1, NSEG > 1 or SURF_RATE_SPECIFIED with READASARRAYS) and `ArgumentError` for
 kinds without a formulation.
 """
@@ -119,10 +119,8 @@ function check_boundary_spec(spec::BoundarySpec{K}) where {K}
         throw(ArgumentError("$(spec.name): boundary package $K has no engine formulation yet"))
     spec.mover && throw(MF6UnsupportedError(spec.file, "unsupported: MOVER option of $(spec.name)"))
     if K === :WEL
-        # gwf-wel.f90 `source_options` (AUTO_FLOW_REDUCE since T6.1; its CSV output is not
-        # supported).
-        isempty(spec.afrcsv_file) ||
-            throw(MF6UnsupportedError(spec.file, "unsupported: AUTO_FLOW_REDUCE_CSV of $(spec.name)"))
+        # gwf-wel.f90 `source_options` (AUTO_FLOW_REDUCE since T6.1; its CSV output since
+        # T6.17, src/output/csv.jl).
         spec.auto_flow_reduce <= 0 && spec.flow_reduction_length && spec.auto_flow_reduce != 0 && throw(
             MF6InputError(
                 spec.file, 0,

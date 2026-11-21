@@ -157,6 +157,8 @@ mutable struct Simulation{M <: GwfModel, P <: PicardSolver, A <: BudgetAccumulat
     # T6.9: without `write_output`, the observation output of each model (`ObservationOutput`
     # or `nothing`): MF6 writes OBS6 output in every run.
     const obsonly::Vector{Any}
+    # T6.17: the CSV files (`CsvOutput`), or `nothing`.
+    const csv::Union{Nothing, CsvOutput}
 end
 
 Base.show(io::IO, s::Simulation) = print(
@@ -262,10 +264,20 @@ function initialize(
         rethrow()
     end
     exobs = multi ? ExchangeObservations(m.solution, sim.simdir, outdir) : nothing
+    # T6.17: CSV files, also without `write_output` (as MF6 writes them).
+    !write_output && !hasobs && has_csv_output(sim) && _check_output_dir(outdir)
+    csv = try
+        CsvOutput(sim, m, ps, outdir)
+    catch
+        foreach(close, outs)
+        foreach(o -> isnothing(o) || close(o), obsonly)
+        isnothing(exobs) || close(exobs)
+        rethrow()
+    end
     s = Simulation(
         sim, m, ps, first(accs), out, T, Ts, Tp, steps, 0, :initialized, OuterState(ps), StepResult[], ModelBudget[],
         Dict{String, _Mirror}(), Int[], nothing, views, String[_vname(v) for v in views], outs, accs, exflows, exobs,
-        obsonly,
+        obsonly, csv,
     )
     for (v, o) in zip(views, outs)
         _listing_header(o.listing, v, ps, T, Ts, Tp, backend)
@@ -361,7 +373,7 @@ function prepare_solve(s::Simulation, isol::Integer = 1)
     _check_device_writes!(s)
     _push_mirrors!(s)
     @timed_section :start_timestep start_timestep!(s.model, s.steps[s.istep].delt)
-    s.outer = OuterState(s.solver)
+    s.outer = OuterState(s.solver; trace = isnothing(s.csv) ? nothing : s.csv.trace)
     s.stage = :prepared_solve
     _pull_mirrors!(s)
     return s
@@ -382,7 +394,13 @@ function solve(s::Simulation, isol::Integer = 1)
     _check_solution(isol)
     _check_stage(s, :solve, :prepared_solve, :solving)
     s.stage = :solving
-    return outer_iteration!(s.outer, s.solver, s.model, s.steps[s.istep].kstp)
+    step = s.steps[s.istep]
+    isnothing(s.csv) && return outer_iteration!(s.outer, s.solver, s.model, step.kstp)
+    # T6.17: the outer and inner CSV rows of this outer iteration.
+    inner0, kiter0 = s.outer.inner, s.outer.kiter
+    converged = outer_iteration!(s.outer, s.solver, s.model, step.kstp)
+    s.outer.kiter == kiter0 || csv_outer_iteration!(s.csv, s.outer, step, inner0)
+    return converged
 end
 
 """
@@ -437,6 +455,8 @@ function finalize_time_step(s::Simulation)
         isnothing(o) || write_observations(o, s.model, r.step.totim)
     end
     isnothing(s.exobs) || write_exchange_observations(s.exobs, s.exflows, r.step.totim)
+    # T6.17: the budget CSV and AUTO_FLOW_REDUCE_CSV rows (`gwf_ot`).
+    isnothing(s.csv) || csv_time_step!(s.csv, s.model, @view(s.budgets[(end - nv + 1):end]), r.step)
     s.stage = :finalized_time_step
     ok = r.outer.converged || s.spec.continue_on_nonconvergence
     if !r.outer.converged && s.spec.continue_on_nonconvergence
@@ -525,6 +545,7 @@ function finalize_simulation(s::Simulation; free::Bool = true)
     foreach(close, s.outputs)
     foreach(o -> isnothing(o) || close(o), s.obsonly)
     isnothing(s.exobs) || close(s.exobs)
+    isnothing(s.csv) || close(s.csv)
     s.stage = :finalized
     if free
         backend = get_backend(s.model.h)

@@ -156,6 +156,7 @@ include("output/obs.jl")
 include("output/oc.jl")
 include("solution.jl")
 include("output/spdis.jl")
+include("output/csv.jl")
 
 # Running a simulation
 include("stepping.jl")
