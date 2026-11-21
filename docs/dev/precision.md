@@ -801,6 +801,46 @@ large coefficients meet small flows: rad-disu (the STO-SY coefficient of the fir
 one Float32 offset rounding is thousands of ft³/d against 4000 ft³/d in; raw pd 48.5 %),
 maw-p03c (total inflow 18 m³/d; raw CBC 1.0e-3, pd 0.60 %), advtidal (raw pd 1.9e-2 %).
 Use `:mixed` where such cell-by-cell flows or budgets matter.
+
+**T6.9: the `:single` budgets of these three models verified.** The bound above contains the
+head difference, so it does not check the budget. The test "`:single` budgets vs a Float64
+evaluation of the `:single` heads" (test/parity/run_test.jl, `_single_budget_replay` in
+test/run_parity.jl) runs each model in `:single` with OC saving every step, then replays it
+in `:double` through the stepping API with the heads (and saturations, `npf_cf!`) set to the
+`:single` heads of each step instead of solved, and compares the two budget files with
+`_rounding_bounds` of the `:single` heads against themselves (no head difference: only the
+Float32 arithmetic of the flows; T6.9 adds the top and bottom offsets of convertible
+storage cells, which `SsTerms`/`SyTerms` round, to the storage bound). CPU:
+
+| Model | CBC beyond the bound / total in | max \|pd\| `:single` / Float64 evaluation | max \|Δ pd\| |
+| --- | --- | --- | --- |
+| ex-gwf-advtidal (361 steps) | 2.7e-8 (GHB) | 0.0188 % / 0.0188 % | 4.9e-5 % |
+| ex-gwf-maw-p03c | 7.5e-9 (CHD) | 0.604 % / 0.604 % | 3.9e-6 % |
+| ex-gwf-rad-disu (24 steps) | 0 | 51.0 % / 51.5 % | 0.52 % (bound of the step 3.8e5 %) |
+
+So the `:single` budgets are what the `:single` heads give in Float64: the large percent
+discrepancies are those of the Float32 heads (their residual times the large storage
+coefficients or conductances), not errors of the flow computation. Criteria: CBC 1e-6 ×
+total in beyond the bound, Δ pd below 1e-3 % or the step's bound. The replay also
+compares DATA-SPDIS (SAVE_SPECIFIC_DISCHARGE, T6.9): max |Δ| relative to the record's
+largest value 2.5e-7 (advtidal) and 2.2e-8 (maw-p03c), criterion 1e-6.
+
+**DATA-SPDIS (T6.9).** The run parity compares the specific discharge (qx, qy, qz) of every
+model that saves it, as max |Δ| over the record relative to its largest |q|: criterion
+1e-6 in `:double`/`:mixed` and 1e-3 in `:single` (largest elsewhere: ex-gwf-lgrv-lgr child
+1.2e-4 in `:single`; advtidal 6.7e-5 `:single`, 2.2e-11 `:double`). Newton models leave out
+the cells whose saturated thickness in MF6's heads is below 1e-6 of their thickness
+(Newton-dry: MF6's head 1e-15 above the bottom, ours on it) and the cells connected to one
+(`_spdis_thin_cells`): their face velocities divide a vanishing flow (MF6 7e-27, ours 0) by
+a vanishing upstream saturated area, so MF6's value there is noise (ex-gwf-bump-p01a: 0.99
+of the record's largest |q| without the skip; with it 5.1e-10 `:double`, 1.8e-6 `:single`;
+bump-p01b/c 1.4e-9 / 1.9e-9 and 4.1e-6 / 9.7e-6). **ex-gwf-maw-p03c: 1e-5 and 0.1** (`spdis_tol`, test/run_parity.jl). CPU:
+3.1e-6 `:double`, 3.8e-6 `:mixed`, 4.26e-2 `:single`. The `:double` value is the reference's
+(the tight-relative run, heads leave 2.9e-8 of the row magnitudes, see above). The `:single`
+value is the qz of the cells next to the former well (large vertical conductance per unit
+area, flat heads near 10.0001 m) computed from Float32 heads that differ 7.8e-6 m from
+MF6's; the same heads evaluated in Float64 give the `:single` DATA-SPDIS within 2.2e-8
+(replay above), so it is the head rounding and not the specific discharge computation.
 The observed flows of maw-p03c (OBS6, T6.7: flows next to the former well, heads flat at
 10.0001 m, large conductances) differ by up to 2.2e-4 × the total inflow in `:single`
 (heads 1.6e-6 m); their parity criterion is 1e-3 × total inflow instead of 1e-4

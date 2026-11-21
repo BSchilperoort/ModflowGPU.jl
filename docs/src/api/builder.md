@@ -11,7 +11,12 @@ order); most values may also be a scalar or one value per layer. The result can 
 directly with [`run_simulation`](@ref) or [`initialize`](@ref), or written as MF6 input
 files with [`write_simulation`](@ref), which MF6 runs too.
 
-Only DIS grids can be built so far. Units are those of the model: lengths in its length
+[`build_dis`](@ref) builds DIS grids; DISV and DISU grids (a `DisvSpec` or `DisuSpec`, for
+example from a loaded simulation) are accepted by the other builders and by
+[`write_simulation`](@ref). Several models are connected by GWF6-GWF6 exchanges
+([`build_exchange`](@ref), passed to [`build_simulation`](@ref) as `exchanges`), solved in
+one IMS solution. [`write_simulation`](@ref) also writes the OBS6 files of a loaded
+simulation; time series (TS6, TAS6) are not written. Units are those of the model: lengths in its length
 units (`length_units` of [`build_dis`](@ref)), times in its time units (`time_units` of
 [`build_tdis`](@ref)).
 
@@ -39,6 +44,7 @@ build_array_boundary
 build_model
 build_tdis
 build_ims
+build_exchange
 build_simulation
 write_simulation
 ```

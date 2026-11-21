@@ -120,8 +120,9 @@ reported:
   (for example a refined child grid) they colour the whole solution greedily, with more
   colours.
 - **Output.** Each model's listing file has the budget table with MODFLOW 6's exchange
-  terms; the exchange flow tables of `PRINT_FLOWS` (in the model listings and in
-  `mfsim.lst`) are not written. The budget file of a model with an exchange with
+  terms and, with the exchange's `PRINT_FLOWS`, its flow table (`EXG GWF-GWF_1 ...`, in
+  the steps whose budget OC saves, after the step's summary); the exchange rate summary
+  that MODFLOW 6 writes to `mfsim.lst` is not written (there is no `mfsim.lst`). The budget file of a model with an exchange with
   `SAVE_FLOWS` has MODFLOW 6's `FLOW-JA-FACE` list of the exchange.
 - **Scope.** Only confined models (`ICELLTYPE` 0, no `ICONVERT`, no `NEWTON`) in one
   solution; `GNC6` and `MVR6` on exchanges are not supported.
@@ -149,9 +150,10 @@ Float32, which MODFLOW 6 cannot:
 | Output | MODFLOW 6 | ModflowGPU |
 | :-- | :-- | :-- |
 | Head file (`.hds`) | written as OC asks | the same; dry cells have `HDRY` |
-| Budget file (`.cbc`) | written as OC asks | the same records, except `DATA-SPDIS` |
-| `DATA-SPDIS` (specific discharge, NPF `SAVE_SPECIFIC_DISCHARGE`) | written | not written (an `Info` at the start of the run) |
-| Binary grid file (`.dis.grb`, `.disv.grb`, `.disu.grb`) | written unless `NOGRB` | not written; MODFLOW 6's file can be read with [`read_grb`](@ref) |
+| Budget file (`.cbc`) | written as OC asks | the same records |
+| `DATA-SPDIS` (specific discharge, NPF `SAVE_SPECIFIC_DISCHARGE`) | written | the same (computed on the host from the step's flows) |
+| `DATA-SAT` (NPF `SAVE_SATURATION`) | written | not written |
+| Binary grid file (`.dis.grb`, `.disv.grb`, `.disu.grb`) | written unless `NOGRB` | the same file (version 1; a `CRS` option is not written to it) |
 | Model listing file (`.lst`) | full report | a short version, see below |
 | Simulation listing file (`mfsim.lst`) | written | not written |
 | Observation output (OBS6) | written every time step | the same files, CSV or `BINARY`; values as MODFLOW 6 prints them (16 significant digits) |
@@ -168,11 +170,13 @@ ModflowGPU writes a short model listing file with:
   stress period and after a step that did not converge (as MODFLOW 6 does), so they can be
   read with [`read_listing_budgets`](@ref) like MODFLOW 6's;
 - the heads, when OC prints them, 10 values per line in `%12.4E`; `HEAD PRINT_FORMAT` is
-  not applied.
+  not applied;
+- the cell conversions of a model with convertible cells (`CELL CONVERSIONS FOR ITER.=...`,
+  the cells that became dry or wet), as MODFLOW 6 writes them, before the iteration count
+  of the step (those of the starting heads after the header).
 
 It does not contain the echo of the input (`PRINT_INPUT`), the flow tables of
-`PRINT_FLOWS`, the solver convergence tables of IMS `PRINT_OPTION`, messages about cells
-that become dry or wet, the memory and timing reports, or the warnings and notes that
+`PRINT_FLOWS`, the solver convergence tables of IMS `PRINT_OPTION`, the memory and timing reports, or the warnings and notes that
 MODFLOW 6 writes there. ModflowGPU reports warnings and notes in the Julia log instead.
 
 ### Observation files
@@ -180,7 +184,6 @@ MODFLOW 6 writes there. ModflowGPU reports warnings and notes in the Julia log i
 The observation files have MODFLOW 6's header, times and number format, with these
 differences:
 
-- they are written only when the run writes output (`write_output = true`);
 - an observation value of zero is written as `0.000000000000000`;
 - `RCH` and `EVT` observations by cell, in a model with convertible cells: at the start of
   a stress period that reads new recharge (evapotranspiration) data, MODFLOW 6 matches the
@@ -205,8 +208,9 @@ The stepping API works as libmf6 and its XMI/BMI interface do, with these differ
   ModflowGPU keeps `BOUND` (stage, conductance, bottom), as earlier MODFLOW 6 versions
   and ModflowCoupling do; MODFLOW 6.8 has separate `STAGE`, `COND` and `RBOT` arrays.
 - The checks of boundary records (RIV stage and bottom, DRN elevation and GHB head not
-  below the bottom of a convertible cell; conductances not negative) run only when period
-  data are read. MODFLOW 6 repeats them at the start of every time step (unless
+  below the bottom of a convertible cell; conductances not negative) run when period
+  data are read and, for a package with time series, at every time step on that step's
+  series values. MODFLOW 6 repeats them at the start of every time step (unless
   `NOCHECK`), so it also checks values written through its API; ModflowGPU does not check
   values set with `set_value` or `get_value_ptr`. `BOUND` arrays written on the device
   ([`ModflowGPU.device_bound!`](@ref)) get a reduced check at `prepare_solve`: finite

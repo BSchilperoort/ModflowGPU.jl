@@ -46,7 +46,7 @@ backend = "rocm"              # a name for select_backend: "cpu" (default), "aut
 precision = "single"          # "auto" (default), "double", "mixed" or "single"
 preconditioner = "auto"       # "auto" (default), "jacobi", "chebyshev", "mc_sgs", "mc_ilu0" or "amg"
 outdir = "output"             # folder for the output files (default: the simulation folder)
-write_output = true           # false writes no output files
+write_output = true           # false writes no output files but the OBS6 observations
 
 [closures]                    # overrides of the IMS closures (optional)
 outer_dvclose = 1.0e-4

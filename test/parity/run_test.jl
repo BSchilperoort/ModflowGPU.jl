@@ -25,6 +25,8 @@
 #   MF6: ILU0 in natural order), `MFGPU_TEST_PRECONDITIONER` chooses another;
 # - on a GPU backend, the run is repeated on the CPU backend: `:double` heads within 1e-10
 #   relative, `:single` within 1e-4 m.
+# - T6.9: the `:single` budgets of ex-gwf-advtidal, ex-gwf-maw-p03c and ex-gwf-rad-disu
+#   against a `:double` evaluation of the same `:single` heads (`_single_budget_replay`).
 # The comparison helpers (`_run_parity`, ...) are in test/run_parity.jl.
 
 # IMS variants of coupling_rde for the under-relaxation (sln_underrelax) and COMPLEXITY
@@ -89,6 +91,30 @@ end
         end
     end
     @info "Run parity test: $(nmodels[]) model(s)"
+end
+
+# T6.9: the `:single` budgets of the models whose run parity uses the rounding bound with
+# the head difference (`single_rounding_bound`, which does not verify the budget itself),
+# against a `:double` evaluation of the same `:single` heads (`_single_budget_replay`):
+# only the Float32 arithmetic of the flows may differ.
+@testset "`:single` budgets vs a Float64 evaluation of the `:single` heads" begin
+    for name in ("ex-gwf-advtidal", "ex-gwf-maw-p03c", "ex-gwf-rad-disu")
+        test_model_selected(name) || continue
+        rundir = reference_rundir(name)
+        if isnothing(rundir)
+            @info "Skipping the :single budget replay of $name: no reference run"
+            continue
+        end
+        x = _single_budget_replay(rundir; preconditioner = run_parity_options(name).single_preconditioner)
+        @test x.dq < 1.0e-6
+        # The percent discrepancies: within the sum of the bounds of the step (rad-disu:
+        # large), and at most 1e-3 % apart otherwise.
+        @test x.dpd < max(1.0e-3, x.bpd)
+        @test x.nrec > 0
+        # DATA-SPDIS (advtidal, maw-p03c): from the same heads, only Float32 rounding.
+        isnothing(x.spdis) || @test x.spdis < 1.0e-6
+        @info "Single budget replay: $name, $(backend_name(TEST_BACKEND)): $(x.nrec) records, CBC max |Δq| beyond the Float32 flow rounding / total in = $(round(x.dq; sigdigits = 3)) ($(join(("$k $(round(v; sigdigits = 2))" for (k, v) in sort(collect(x.bytext))), ", "))); max |pd| :single $(round(x.pd; sigdigits = 3)) %, Float64 evaluation of the :single heads $(round(x.rpd; sigdigits = 3)) %, max |Δ pd| $(round(x.dpd; sigdigits = 3)) % (rounding allowance up to $(round(x.bpd; sigdigits = 3)) %)$(isnothing(x.spdis) ? "" : ", DATA-SPDIS max |Δ| / max |q| = $(round(x.spdis; sigdigits = 3))")"
+    end
 end
 
 # flopy reads our HDS and CBC files (opt-in: MFGPU_FLOPY=1, needs `uv`; like the flopy

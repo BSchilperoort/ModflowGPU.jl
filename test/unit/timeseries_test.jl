@@ -172,12 +172,12 @@ _ts(method, times, values) = TimeSeries(:S, method, times, values, "test.ts")
     end
 
     # A small simulation with time series in CHD (head, offsets), WEL (rate and the
-    # AUXMULTNAME multiplier) and RCHA (TAS).
+    # AUXMULTNAME multiplier), RCHA (TAS) and GHB (conductance).
     files = Dict(
         "mfsim.nam" => "BEGIN timing\n TDIS6 s.tdis\nEND timing\nBEGIN models\n gwf6 g.nam g\nEND models\nBEGIN exchanges\nEND exchanges\nBEGIN solutiongroup 1\n ims6 s.ims g\nEND solutiongroup 1\n",
         "s.tdis" => "BEGIN dimensions\n NPER 2\nEND dimensions\nBEGIN perioddata\n 10.0 2 1.0\n 10.0 1 1.0\nEND perioddata\n",
         "s.ims" => "BEGIN nonlinear\n OUTER_DVCLOSE 1e-6\nEND nonlinear\n",
-        "g.nam" => "BEGIN packages\n DIS6 g.dis\n NPF6 g.npf\n IC6 g.ic\n CHD6 g.chd\n WEL6 g.wel\n RCH6 g.rch\nEND packages\n",
+        "g.nam" => "BEGIN packages\n DIS6 g.dis\n NPF6 g.npf\n IC6 g.ic\n CHD6 g.chd\n WEL6 g.wel\n RCH6 g.rch\n GHB6 g.ghb\nEND packages\n",
         "g.dis" => "BEGIN dimensions\n NLAY 1\n NROW 2\n NCOL 3\nEND dimensions\nBEGIN griddata\n delr\n  CONSTANT 10\n delc\n  CONSTANT 10\n top\n  CONSTANT 500\n botm\n  CONSTANT 0\nEND griddata\n",
         "g.npf" => "BEGIN griddata\n icelltype\n  CONSTANT 0\n k\n  CONSTANT 1\nEND griddata\n",
         "g.ic" => "BEGIN griddata\n strt\n  INTERNAL\n  100 200 300 400 450 480\nEND griddata\n",
@@ -186,6 +186,8 @@ _ts(method, times, values) = TimeSeries(:S, method, times, values, "test.ts")
         "g.wel" => "BEGIN options\n AUXILIARY mlt\n AUXMULTNAME mlt\n TS6 FILEIN g.wel.ts\nEND options\nBEGIN dimensions\n MAXBOUND 2\nEND dimensions\nBEGIN period 1\n 1 2 2 q mlt\n 1 2 3 -1.0 mlt\nEND period\n",
         "g.wel.ts" => "BEGIN attributes\n NAMES q mlt\n METHODS stepwise linearend\nEND attributes\nBEGIN timeseries\n 0 -2 1\n 5 -4 3\n 20 -8 5\nEND timeseries\n",
         "g.rch" => "BEGIN options\n READASARRAYS\n TAS6 FILEIN g.rch.tas\nEND options\nBEGIN period 1\n RECHARGE TIMEARRAYSERIES r\nEND period\n",
+        "g.ghb" => "BEGIN options\n TS6 FILEIN g.ghb.ts\nEND options\nBEGIN dimensions\n MAXBOUND 2\nEND dimensions\nBEGIN period 1\n 1 1 2 150.0 gc\n 1 1 3 160.0 gc\nEND period\n",
+        "g.ghb.ts" => "BEGIN attributes\n NAME gc\n METHOD linear\n SFAC 2.0\nEND attributes\nBEGIN timeseries\n 0 1\n 20 3\nEND timeseries\n",
         "g.rch.tas" => "BEGIN attributes\n NAME r\n METHOD stepwise\nEND attributes\nBEGIN time 0\n CONSTANT 0.001\nEND time\nBEGIN time 10\n INTERNAL\n 1 2 3 4 5 6\nEND time\nBEGIN time 20\n CONSTANT 0\nEND time\n",
     )
 
@@ -263,6 +265,51 @@ _ts(method, times, values) = TimeSeries(:S, method, times, values, "test.ts")
                 # q STEPWISE at t = 20 is the record before (-4), the multiplier at t = 20 is 5.
                 @test bound_user!(wel)[1, 1:2] == [-4.0, -7.0]
                 @test bound_values(wel, r)[1, 1:2] == [-4.0 * 5.0, -7.0 * 5.0]
+
+                # T6.9: a step rewrites only the entries linked to a series, so device
+                # writes to the others are kept (GHB: bhead given, cond from a series).
+                ghb = pk[:GHB]
+                apply_period!(ghb, 1, r; window = w[1])
+                @test ModflowGPU._linked_entries(ghb, ghb.tsblock) == Int32[2, 4]
+                dev = Array(ghb.bound)
+                dev[1, :] .= T(-3.5)
+                copyto!(ghb.bound, dev)
+                @test advance_time_series!(ghb, w[2], r)
+                got = Array(ghb.bound)
+                @test got[1, 1:2] == fill(T(-3.5), 2)
+                @test got[2, 1:2] == T.(bound_values(ghb, r)[2, 1:2])
+                @test bound_values(ghb, r)[2, 1] ≈ 2.0 * (1.0 + 2.0 * 7.5 / 20.0) rtol = 1.0e-15   # SFAC 2, LINEAR midpoint
+                # WEL: the rates linked directly and through the linked multiplier.
+                apply_period!(wel, 1, r; window = w[1])
+                @test ModflowGPU._linked_entries(wel, wel.tsblock) == Int32[1, 2]
+                # RCHA linked to a TAS: the whole column.
+                @test ModflowGPU._linked_entries(rch, rch.tsblock) == Int32.(1:rch.nbound)
+            end
+        end
+    end
+
+    @testset "record checks on every step's series values (T6.9, gwf_ad → bnd_ck)" begin
+        mktempdir() do dir
+            foreach(((k, v),) -> write_input(dir, k, v), files)
+            write_input(dir, "g.nam", replace(files["g.nam"], " GHB6 g.ghb\n" => " GHB6 g.ghb\n RIV6 g.riv\n"))
+            # Stage LINEAR from 160 to 120 over 20 days, river bottom 140: the average of
+            # step 1 (0–5 d, 155) and step 2 (5–10 d, 145) pass, step 3 (10–20 d, 130)
+            # is below the bottom.
+            write_input(dir, "g.riv", "BEGIN options\n TS6 FILEIN g.riv.ts\nEND options\nBEGIN dimensions\n MAXBOUND 1\nEND dimensions\nBEGIN period 1\n 1 2 1 stg 5.0 140.0\nEND period\n")
+            write_input(dir, "g.riv.ts", "BEGIN attributes\n NAME stg\n METHOD linear\nEND attributes\nBEGIN timeseries\n 0 160\n 20 120\nEND timeseries\n")
+            m = only(load_simulation(dir; strict = true).models)
+            conn = build_connectivity(m)
+            r = Float64.(m.ic.strt)
+            steps = time_steps(load_simulation(dir).tdis)
+            w = [time_step_window(steps, i) for i in 1:3]
+            for_each_precision() do p
+                spec = only(filter(b -> ModflowGPU.boundary_kind(b) === :RIV, m.boundaries))
+                riv = BoundaryPackage(TEST_BACKEND, p.T, spec, conn, m.dis)
+                apply_period!(riv, 1, r; window = w[1])
+                @test advance_time_series!(riv, w[2], r)
+                @test bound_values(riv, r)[1, 1] == 145.0 - r[conn.nodereduced[4]]
+                err = input_error_of(() -> advance_time_series!(riv, w[3], r))
+                @test occursin("RIV BOUNDARY (1) RIVER STAGE (130.0) IS LESS THAN RIVER BOTTOM (140.0)", err.msg)
             end
         end
     end

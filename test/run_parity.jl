@@ -128,7 +128,10 @@ function _rounding_bounds(rundir, ours_hds, mf6_hds)
             old = !isnothing(hmold) && hmold[n] != -1.0e30
             hold = old ? hmold[n] : hm[n]
             dold = old ? abs(hoold[n] - hmold[n]) : 0.0
-            bnd[u] = κ * (ε * (abs(hm[n] - s.r[n]) + abs(hold - s.r[n])) + abs(ho[n] - hm[n]) + dold)
+            # T6.9: convertible storage (`SsTerms`, `SyTerms`) also rounds the cell's top and
+            # bottom offsets (`zold`, `znew`, the clamps).
+            tb = sto.iconvert[u] != 0 ? abs(conn.top[n] - s.r[n]) + abs(conn.bot[n] - s.r[n]) : 0.0
+            bnd[u] = κ * (ε * (abs(hm[n] - s.r[n]) + abs(hold - s.r[n]) + tb) + abs(ho[n] - hm[n]) + dold)
         end
         return bnd
     end
@@ -157,18 +160,17 @@ function _rounding_bounds(rundir, ours_hds, mf6_hds)
     return (; flowja_bound, storage_bound, idiag = conn.ia[1:conn.nodes], nodesuser = Int(conn.nodesuser))
 end
 
-# Max |Δq| over the MF6 budget records that we write (all but DATA-SPDIS), per step
+# Max |Δq| over the MF6 budget records (T6.9: DATA-SPDIS too, its qx, qy, qz), per step
 # relative to that step's total inflow `tin[(kstp, kper)]`. With `bounds`
 # (`_rounding_bounds`, `:single`, T6.1) the FLOW-JA-FACE, STO-SS and STO-SY values are
 # compared after subtracting their bounds, and the per-step sums of those bounds are
 # returned as well (the allowance of the listing terms and the percent discrepancy).
-function _budget_difference(ours, mf6, tin; bounds = nothing)
+function _budget_difference(ours, mf6, tin; bounds = nothing, bytext = nothing, spdis = nothing, spdis_skip = nothing)
     a, b = open_budget_file(ours), open_budget_file(mf6)
     worst = 0.0
     nrec = 0
     btot = Dict{Tuple{Int, Int}, Float64}()
     for (i, r) in enumerate(b.records)
-        strip(r.text) == "DATA-SPDIS" && continue
         # List records by package too: a model may have two packages of one type (T6.4).
         pak = r.imeth == 6 ? strip(r.paknam2) : nothing
         j = find_budget_records(a; text = strip(r.text), kstp = r.kstp, kper = r.kper, paknam2 = pak)
@@ -183,7 +185,20 @@ function _budget_difference(ours, mf6, tin; bounds = nothing)
         @test ra.totim ≈ r.totim rtol = 1.0e-12
         @test ra.delt ≈ r.delt rtol = 1.0e-12
         qa, qb = read_budget(a, only(j)), read_budget(b, i)
-        if qb isa BudgetList
+        if qb isa BudgetList && strip(r.text) == "DATA-SPDIS"
+            # T6.9: the specific discharge (aux qx, qy, qz): max |Δ| relative to the record's
+            # largest value, collected in `spdis` (`q` is 0).
+            @test qa.id1 == qb.id1 && qa.id2 == qb.id2 && ra.auxtxt == r.auxtxt
+            @test strip(ra.paknam1) == strip(r.paknam1) && strip(ra.paknam2) == strip(r.paknam2)
+            # `spdis_skip(kstp, kper)`: user nodes to leave out (Newton models,
+            # `_spdis_thin_cells`).
+            keep = isnothing(spdis_skip) ? Colon() : findall(!in(Set(spdis_skip(r.kstp, r.kper))), qb.id1)
+            xa, xb = qa.aux[:, keep], qb.aux[:, keep]
+            sc = max(maximum(abs, xb; init = 0.0), floatmin())
+            isnothing(spdis) || push!(spdis, maximum(abs.(xa .- xb); init = 0.0) / sc)
+            @test qa.q == qb.q
+            continue
+        elseif qb isa BudgetList
             @test qa.id1 == qb.id1 && qa.id2 == qb.id2
             @test qa.aux ≈ qb.aux rtol = 1.0e-12
             @test strip(ra.paknam2) == strip(r.paknam2) && ra.auxtxt == r.auxtxt
@@ -213,8 +228,104 @@ function _budget_difference(ours, mf6, tin; bounds = nothing)
             end
         end
         worst = max(worst, maximum(d) / tin[(r.kstp, r.kper)])
+        isnothing(bytext) || (bytext[strip(r.text)] = max(get(bytext, strip(r.text), 0.0), maximum(d) / tin[(r.kstp, r.kper)]))
     end
     return worst, nrec, btot
+end
+
+# --- `:single` budgets verified against a Float64 evaluation of the `:single` heads (T6.9)
+#
+# The `:single` budget of a run is checked against the flows a `:double` model computes
+# from the same (`:single`) heads: a copy of the model with OC saving heads and budgets
+# every step runs in `:single`; a `:double` simulation then replays it step by step through
+# the stepping API, with its heads (and dry cells) set to the `:single` heads of the step
+# instead of solved (the old heads are those of the previous step, as in the `:single`
+# run), and writes its budget file. The two budgets can then differ only by the Float32
+# arithmetic of the flows: `_rounding_bounds` with the `:single` heads as both head files
+# (no head difference). Returns `dq` (max |Δq| beyond the bound / total in, `bytext` per
+# record type), `dpd` (max |Δ percent discrepancy|), `pd` and `rpd` (max |percent
+# discrepancy| of the `:single` run and of the replay), `bpd` (the largest per-step sum of
+# the bounds, in percent of the total inflow), `nrec` (records compared) and `spdis` (max
+# |Δ| of DATA-SPDIS relative to the record's largest value; `nothing` without the record).
+function _single_budget_replay(rundir; backend = TEST_BACKEND, preconditioner = RUN_PRECONDITIONER)
+    return mktempdir() do tmp
+        d = joinpath(tmp, "model")
+        mkpath(d)
+        for f in readdir(rundir)
+            endswith(f, r"\.(hds|cbc|lst|csv|grb|txt|toml)$") || cp(joinpath(rundir, f), joinpath(d, f))
+        end
+        sim = load_simulation(d)
+        m = only(sim.models)
+        # OC: save heads and budgets every step (the replay needs every step's old heads).
+        ocf = joinpath(d, basename(m.oc.file))
+        txt = read(ocf, String)
+        k = findfirst(r"(?i)^\s*BEGIN\s+period"m, txt)
+        write(ocf, txt[1:(first(k) - 1)] * "BEGIN period 1\n  SAVE HEAD ALL\n  SAVE BUDGET ALL\nEND period 1\n")
+        so, ro = joinpath(tmp, "single"), joinpath(tmp, "replay")
+        rs = ModflowGPU.run(d; backend, precision = :single, outdir = so, preconditioner)
+        @test rs.converged
+        hf = open_head_file(rs.head_file)
+        s = ModflowGPU.initialize(d; backend, precision = :double, outdir = ro, preconditioner)
+        model = s.model
+        conn, r = model.conn, model.setup.r
+        for k in 1:length(s.steps)
+            ModflowGPU.prepare_time_step(s)
+            ModflowGPU.prepare_solve(s)
+            habs = vec(read_head(hf, k))[conn.nodeuser]
+            ib = copy(model.ibound_host)
+            hoff = zeros(conn.nodes)
+            for n in 1:conn.nodes
+                dry = habs[n] == ModflowGPU.HDRY
+                ib[n] = dry ? 0 : (ib[n] < 0 ? -1 : 1)
+                hoff[n] = dry ? conn.bot[n] - r[n] : habs[n] - r[n]
+            end
+            copyto!(model.h, hoff)
+            if ib != model.ibound_host
+                copyto!(model.ibound_host, ib)
+                copyto!(model.ibound, ib)
+                model.offdiag = nothing
+                for pkg in model.packages
+                    ModflowGPU.boundary_kind(pkg) in (:RCH, :EVT) && ModflowGPU.move_to_highest_active!(pkg, model.ibound_host, r)
+                end
+            end
+            # The saturations of the flows (`npf_cf`), from these heads: the run takes them
+            # from the last formulation, before the last head change (< OUTER_DVCLOSE).
+            isnothing(model.npf.cv) || ModflowGPU.npf_cf!(model.npf.cv, model.h, model.ibound)
+            ModflowGPU.finalize_solve(s)
+            ModflowGPU.finalize_time_step(s)
+        end
+        bd = copy(s.budgets)
+        ModflowGPU.finalize_simulation(s)
+        tin = Dict((b.kstp, b.kper) => ModflowGPU.total_rate_in(b) for b in bd)
+        rb = _rounding_bounds(d, rs.head_file, rs.head_file)
+        bytext = Dict{String, Float64}()
+        spd = Float64[]
+        dq, nrec, btot = _budget_difference(rs.budget_file, joinpath(ro, basename(rs.budget_file)), tin; bounds = rb, bytext, spdis = spd)
+        rpd = maximum(b -> abs(ModflowGPU.percent_discrepancy(b)), bd)
+        dpd = maximum(((a, b),) -> abs(ModflowGPU.percent_discrepancy(a) - ModflowGPU.percent_discrepancy(b)), zip(rs.budgets, bd))
+        pd = maximum(b -> abs(ModflowGPU.percent_discrepancy(b)), rs.budgets)
+        bpd = maximum(b -> 100 * get(btot, (b.kstp, b.kper), 0.0) / ModflowGPU.total_rate_in(b), bd)
+        spdis = isempty(spd) ? nothing : maximum(spd)
+        (; dq, dpd, pd, rpd, bpd, nrec, bytext, spdis)
+    end
+end
+
+# T6.9: the user nodes whose DATA-SPDIS is not compared in a Newton model: a cell whose
+# saturated thickness in MF6's heads `hu` (by user node) is below 1e-6 of its thickness
+# (Newton-dry: at or below its bottom, MF6's head often 1e-15 above it, ours on it), and the
+# cells connected to one. Their face velocities divide a vanishing flow (MF6 7e-27, ours 0)
+# by a vanishing saturated area (`thksatnm` upstream: a Newton-dry cell above its
+# neighbour's head), so MF6's value is noise of either; ex-gwf-bump-p01a: up to 0.99 of the
+# record's largest |q| there, 5e-10 elsewhere.
+function _spdis_thin_cells(conn, hu)
+    thin(nr) = hu[conn.nodeuser[nr]] - conn.bot[nr] < 1.0e-6 * (conn.top[nr] - conn.bot[nr])
+    out = Int[]
+    for nr in 1:Int(conn.nodes)
+        if thin(nr) || any(ii -> thin(Int(conn.ja[ii])), (conn.ia[nr] + 1):(conn.ia[nr + 1] - 1))
+            push!(out, Int(conn.nodeuser[nr]))
+        end
+    end
+    return out
 end
 
 # Listing-table comparison: max over terms of (|Δ| − 2·rounding) / total in.
@@ -327,11 +438,58 @@ end
 # head is below the bottom are compared as dry (`_head_difference`), and also left out of
 # the GPU vs CPU and `:single` vs `:double` head comparisons (their heads depend on the
 # iteration path).
+# T6.9: the cell-conversion blocks of a listing file (`sgwf_npf_wdmsg`): header => lines.
+function _conversion_blocks(path)
+    lines = readlines(path)
+    out = Pair{String, Vector{String}}[]
+    i = 1
+    while i <= length(lines)
+        if occursin("CELL CONVERSIONS FOR", lines[i])
+            hdr = strip(lines[i])
+            body = String[]
+            i += 1
+            while i <= length(lines) && occursin(r"^    \s*(WET|DRY)\s", lines[i])
+                push!(body, lines[i])
+                i += 1
+            end
+            push!(out, hdr => body)
+        else
+            i += 1
+        end
+    end
+    return out
+end
+
+# T6.9: the exchange PRINT_FLOWS tables of a listing (`gwf_gwf_bdsav_model`): title =>
+# (header lines, rows (number, cellid, rate, name)).
+function _exchange_tables(path)
+    lines = readlines(path)
+    out = Pair{String, Tuple{Vector{String}, Vector{Tuple{Int, String, Float64, String}}}}[]
+    i = 1
+    while i <= length(lines)
+        if startswith(lines[i], " EXG GWF-GWF_")
+            title = lines[i]
+            hdr = lines[(i + 1):(i + 3)]
+            rows = Tuple{Int, String, Float64, String}[]
+            i += 4
+            while i <= length(lines) && !startswith(lines[i], " ---")
+                w = split(lines[i])
+                push!(rows, (parse(Int, w[1]), String(w[2]), parse(Float64, w[3]), length(w) > 3 ? String(w[4]) : ""))
+                i += 1
+            end
+            push!(out, title => (hdr, rows))
+        end
+        i += 1
+    end
+    return out
+end
+
 function _run_parity(
         name, rundir; preconditioner::Symbol = RUN_PRECONDITIONER, precond_options::NamedTuple = (;),
         single_preconditioner::Symbol = preconditioner, single_budget_tol::Float64 = 1.0e-4,
         double_budget_tol::Float64 = 1.0e-6, single_rounding_bound::Bool = false,
         backtracking::Bool = false, presets = SOLVER_TEST_PRESETS, single_obs_tol::Float64 = 1.0e-4,
+        spdis_tol::NTuple{2, Float64} = (1.0e-6, 1.0e-3),
     )
     sim = load_simulation(rundir)
     # T6.6: several models (one IMS solution with GWF-GWF exchanges): every model's head,
@@ -384,6 +542,11 @@ function _run_parity(
             for x in models
                 mo = r.models[findfirst(y -> y.name == x.name, r.models)]
                 f = mf6_files(x)
+                # T6.9: the binary grid file, byte for byte as MF6's (`write_grb`).
+                gm = joinpath(rundir, isempty(x.dis.grb_file) ? basename(x.dis.file) * ".grb" : x.dis.grb_file)
+                if !x.dis.nogrb && isfile(gm)
+                    @test read(mo.grb_file) == read(gm)
+                end
                 budgets = multi ? filter(b -> b.model == x.name, r.budgets) : r.budgets
                 @test length(budgets) == nsteps
                 dhk, range, ndryk, hshiftk = _head_difference(mo.head_file, f.hds; bot = botu, drytol = p.T === Float64 ? 1.0e-6 : 1.0e-3, shift)
@@ -405,7 +568,22 @@ function _run_parity(
                 # differences beyond the Float32 rounding of the flows and the head difference
                 # (`_rounding_bounds`); otherwise the raw differences.
                 rb = p.T === Float32 && single_rounding_bound ? _rounding_bounds(rundir, mo.head_file, f.hds) : nothing
-                dqk, nreck, btot = isempty(f.cbc) ? (0.0, 0, Dict{Tuple{Int, Int}, Float64}()) : _budget_difference(mo.budget_file, f.cbc, tin; bounds = rb)
+                spd = Float64[]
+                skip = nothing
+                if !isnothing(botu)
+                    hfm = open_head_file(f.hds)
+                    skip = (kstp, kper) -> begin
+                        k = findfirst(s -> (s.kstp, s.kper) == (kstp, kper), hfm.steps)
+                        isnothing(k) ? Int[] : _spdis_thin_cells(conn, vec(read_head(hfm, k)))
+                    end
+                end
+                dqk, nreck, btot = isempty(f.cbc) ? (0.0, 0, Dict{Tuple{Int, Int}, Float64}()) : _budget_difference(mo.budget_file, f.cbc, tin; bounds = rb, spdis = spd, spdis_skip = skip)
+                if !isempty(spd)
+                    # T6.9: DATA-SPDIS within `spdis_tol` (`:double`, `:single`) of the record's
+                    # largest value (1e-6 and 1e-3; ex-gwf-lgrv-lgr child 1.2e-4 in `:single`).
+                    @test maximum(spd) < (p.T === Float64 ? spdis_tol[1] : spdis_tol[2])
+                    @info "DATA-SPDIS: $name/$(x.name), :$(p.preset): $(length(spd)) records, max |Δ| / max |q| = $(round(maximum(spd); sigdigits = 3))"
+                end
                 if !isnothing(rb) && isempty(f.cbc)
                     # No MF6 budget file (T6.2, ex-gwf-zaidel): the bound of each step from the
                     # connections (C = condsat) and storage, for the listing and the imbalance.
@@ -421,6 +599,22 @@ function _run_parity(
                 dlk, ntabk, nmf6 = _listing_difference(mo.listing_file, f.lst; extra = btot)
                 @test dlk < btol
                 @test ntabk == nmf6
+                # T6.9: the cell-conversion messages as MF6 writes them (`:double`: the same
+                # iterations convert the same cells; `:single` reported).
+                # T6.9: the exchange PRINT_FLOWS tables (titles, header, cells, names; rates
+                # within the budget criterion of the largest rate).
+                ta, tb = _exchange_tables(mo.listing_file), _exchange_tables(f.lst)
+                @test first.(ta) == first.(tb)
+                for ((_, (ha, ra)), (_, (hb, rb))) in zip(ta, tb)
+                    @test ha == hb
+                    @test [(r[1], r[2], r[4]) for r in ra] == [(r[1], r[2], r[4]) for r in rb]
+                    sc = maximum(r -> abs(r[3]), rb; init = 0.0)
+                    @test maximum(((a, b),) -> abs(a[3] - b[3]), zip(ra, rb); init = 0.0) <= max(sc * (p.T === Float64 ? 1.0e-6 : 1.0e-3), 1.0e-6 * sc + 5.0e-8 * sc)
+                end
+                isempty(tb) || @info "Exchange flow tables: $name/$(x.name), :$(p.preset): $(length(ta)) tables (MF6 $(length(tb)))"
+                cva, cvb = _conversion_blocks(mo.listing_file), _conversion_blocks(f.lst)
+                p.T === Float64 && @test cva == cvb
+                (isempty(cva) && isempty(cvb)) || @info "Cell conversions: $name/$(x.name), :$(p.preset): $(length(cva)) blocks (MF6 $(length(cvb))), identical: $(cva == cvb)"
                 # Percent discrepancy beyond the bound of the in − out imbalance (`:single`).
                 pdxk = maximum(b -> max(abs(ModflowGPU.percent_discrepancy(b)) - 100 * get(btot, (b.kstp, b.kper), 0.0) / ModflowGPU.total_rate_in(b), 0.0), budgets)
                 pdk = maximum(b -> abs(ModflowGPU.percent_discrepancy(b)), budgets)
@@ -621,5 +815,12 @@ function run_parity_options(name)
     # is 2.2e-4 × the total inflow (the raw :single CBC difference there is 1.0e-3,
     # docs/dev/precision.md), with heads within 1.6e-6 m.
     sot = name == "ex-gwf-maw-p03c" ? 1.0e-3 : 1.0e-4
-    return (; preconditioner = pc, single_preconditioner = spc, double_budget_tol = dbt, single_rounding_bound = srb, backtracking = bt, presets, single_obs_tol = sot)
+    # T6.9: DATA-SPDIS of ex-gwf-maw-p03c: its reference is the tight-relative run (heads
+    # leave 2.9e-8 of the row magnitudes): 3.1e-6 of the largest value in `:double`. In
+    # `:single`, 4.3e-2: the qz of the cells next to the former well (large vertical
+    # conductance per area) from the Float32 heads (7.8e-6 m from MF6's); the `:single`
+    # DATA-SPDIS is within 2.2e-8 of a Float64 evaluation of the same heads
+    # (`_single_budget_replay`, test/parity/run_test.jl). docs/dev/precision.md.
+    spt = name == "ex-gwf-maw-p03c" ? (1.0e-5, 0.1) : (1.0e-6, 1.0e-3)
+    return (; preconditioner = pc, single_preconditioner = spc, double_budget_tol = dbt, single_rounding_bound = srb, backtracking = bt, presets, single_obs_tol = sot, spdis_tol = spt)
 end

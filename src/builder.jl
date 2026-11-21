@@ -796,13 +796,67 @@ function build_ims(; complexity::Union{Nothing, Symbol} = nothing, models = Stri
 end
 
 """
+    build_exchange(m1, m2; cells1, cells2, ihc, cl1, cl2, hwva, aux = (;), boundnames = nothing,
+                   print_input = false, print_flows = false, save_flows = false,
+                   cell_averaging = :harmonic, variablecv = false, dewatered = false,
+                   newton = false, xt3d = false, file = "") -> ExchangeSpec
+
+A GWF6-GWF6 exchange (T6.9) between the models `m1` and `m2` (`build_model`; the same
+model for a periodic exchange): connection `i` joins cell `cells1[i]` of `m1` and
+`cells2[i]` of `m2` (MF6 cellids, `CartesianIndex`es or user nodes, as for
+`build_boundary`), with `ihc` (0 vertical, 1 horizontal, 2 vertically staggered), the
+distances `cl1`, `cl2` from each cell centre to the shared face and `hwva` (face width or,
+vertical, area); scalars apply to every connection. `aux` gives auxiliary variables by
+name (e.g. `(; ANGLDEGX = ..., CDIST = ...)`, which XT3D and SAVE_SPECIFIC_DISCHARGE
+need), `boundnames` a name per connection. Both cells must be active. The file is
+`<model1>_<model2>.gwfgwf` unless `file` is given. Pass the exchanges to
+[`build_simulation`](@ref).
+"""
+function build_exchange(
+        m1::GwfSpec, m2::GwfSpec; cells1, cells2, ihc, cl1, cl2, hwva, aux = (;), boundnames = nothing,
+        print_input::Bool = false, print_flows::Bool = false, save_flows::Bool = false, cell_averaging::Symbol = :harmonic,
+        variablecv::Bool = false, dewatered::Bool = false, newton::Bool = false, xt3d::Bool = false,
+        file::AbstractString = "",
+    )
+    ctx = "build_exchange $(m1.name)-$(m2.name)"
+    _check_choice(ctx, "cell_averaging", cell_averaging, (:harmonic, :logarithmic, :amt_lmk, :amt_hmk))
+    n1 = _cell_nodes(cells1, 1, grid_dims(m1.dis), ctx)
+    n2 = _cell_nodes(cells2, 1, grid_dims(m2.dis), ctx)
+    n = length(n1)
+    length(n2) == n || _bad(ctx, "cells1 and cells2 have $(n) and $(length(n2)) cells")
+    for (m, nodes) in ((m1, n1), (m2, n2))
+        idom = idomain_user(m.dis)
+        for (r, nd) in enumerate(nodes)
+            idom[nd] > 0 || _bad(ctx, "connection $r: cell $(cellid(grid_dims(m.dis), nd)) of model $(m.name) is not active")
+        end
+    end
+    vec_of(x, name) = (x isa Number ? fill(x, n) : (length(x) == n ? collect(x) : _bad(ctx, "$name: $(length(x)) values for $n connections")))
+    ihcv = Int32.(vec_of(ihc, "ihc"))
+    all(in((0, 1, 2)), ihcv) || _bad(ctx, "ihc must be 0, 1 or 2")
+    c1, c2, hw = (Float64.(vec_of(x, name)) for (x, name) in ((cl1, "cl1"), (cl2, "cl2"), (hwva, "hwva")))
+    foreach(((x, name),) -> _check_finite(x, ctx, name), ((c1, "cl1"), (c2, "cl2"), (hw, "hwva")))
+    auxnames = String[uppercase(String(k)) for k in keys(aux)]
+    auxvar = zeros(length(auxnames), n)
+    for (i, k) in enumerate(keys(aux))
+        auxvar[i, :] .= Float64.(vec_of(aux[k], String(k)))
+    end
+    bn = isnothing(boundnames) ? String[] : String[uppercase(String(b)) for b in vec_of(boundnames, "boundnames")]
+    data = ExchangeData(n1, n2, ihcv, c1, c2, hw, auxvar, auxnames, bn)
+    f = isempty(file) ? lowercase("$(m1.name)_$(m2.name).gwfgwf") : String(file)
+    return ExchangeSpec(;
+        model1 = m1.name, model2 = m2.name, auxnames, boundnames = !isnothing(boundnames), print_input, print_flows,
+        save_flows, cell_averaging, variablecv, dewatered, newton, xt3d, data, file = f,
+    )
+end
+
+"""
     build_simulation(models; tdis, ims = build_ims(), mxiter = 1, simdir = "",
                      continue_on_nonconvergence = false, nocheck = false,
                      memory_print_option = "", profile_option = "", maxerrors = 0,
-                     print_input = false) -> SimulationSpec
+                     print_input = false, exchanges = ExchangeSpec[]) -> SimulationSpec
 
 A simulation of one or more GWF models (`build_model`) solved by one IMS solution in one
-solution group. The IMS solution gets the model names when its `models` is empty; TDIS
+solution group, connected by the GWF6-GWF6 `exchanges` ([`build_exchange`](@ref), T6.9). The IMS solution gets the model names when its `models` is empty; TDIS
 and IMS files without a name get `<first model>.tdis` / `.ims`. Period data must not
 refer to stress periods after the last one.
 
@@ -832,6 +886,7 @@ function build_simulation(
         models; tdis::TdisSpec, ims::ImsSpec = build_ims(), mxiter::Integer = 1, simdir::AbstractString = "",
         continue_on_nonconvergence::Bool = false, nocheck::Bool = false, memory_print_option::AbstractString = "",
         profile_option::AbstractString = "", maxerrors::Integer = 0, print_input::Bool = false,
+        exchanges = ExchangeSpec[],
     )
     ctx = "build_simulation"
     ms = models isa GwfSpec ? GwfSpec[models] : GwfSpec[m for m in models]
@@ -856,10 +911,15 @@ function build_simulation(
     ims = _with(ims; models = ims_models, file = _default_file(ims.file, base, "ims"))
     tdis = _with(tdis; file = _default_file(tdis.file, base, "tdis"))
     mxiter >= 1 || _bad(ctx, "mxiter must be at least 1")
+    exs = ExchangeSpec[e for e in exchanges]
+    for e in exs
+        (e.model1 in names && e.model2 in names) || _bad(ctx, "exchange $(e.file): models $(e.model1) and $(e.model2) are not both in the simulation")
+    end
+    allunique(e.file for e in exs) || _bad(ctx, "exchange files are not unique")
     return SimulationSpec(;
         simdir = String(simdir), continue_on_nonconvergence, nocheck, memory_print_option = String(memory_print_option),
         profile_option = String(profile_option), maxerrors = Int32(maxerrors), print_input, tdis, models = ms,
-        solution_groups = [SolutionGroupSpec(; mxiter = Int32(mxiter), solutions = [ims])],
+        exchanges = exs, solution_groups = [SolutionGroupSpec(; mxiter = Int32(mxiter), solutions = [ims])],
     )
 end
 

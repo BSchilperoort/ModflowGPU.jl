@@ -127,6 +127,9 @@ end
     @test thick.condsat[1] ≈ 0.5 * full.condsat[1]
     # Without THICKSTRT a negative ICELLTYPE is convertible.
     @test npf_setup(npf([-1, 0]), IcSpec(; strt = [5.0, 5.0]), dis, c).properties.icelltype == [1, 0]
+    # T6.9 review: the ICELLTYPE of the binary grid file and DATA-SPDIS is the processed one.
+    @test ModflowGPU._mf6_icelltype(npf([-1, 0])) == [1, 0]
+    @test ModflowGPU._mf6_icelltype(npf([-1, 1]; thickstrt = true)) == [0, 1]
     # STRT below the cell bottom is an error.
     @test_throws MF6InputError npf_setup(npf([-1, -1]; thickstrt = true), IcSpec(; strt = [-1.0, 5.0]), dis, c)
 end

@@ -32,8 +32,8 @@ Notes:
 - `PRINT_INPUT`, `PRINT_FLOWS`, `MEMORY_PRINT_OPTION` and `PROFILE_OPTION` are accepted
   and have no effect on the output (see the listing file on
   [Differences from MODFLOW 6](@ref "Listing file")).
-- `SAVE_SPECIFIC_DISCHARGE` is accepted, but the `DATA-SPDIS` record is not written to the
-  budget file.
+- `SAVE_SPECIFIC_DISCHARGE` writes the `DATA-SPDIS` record to the budget file, as
+  MODFLOW 6 does.
 - IMS: the ILU preconditioner options (`PRECONDITIONER_LEVELS`,
   `PRECONDITIONER_DROP_TOLERANCE`, `RELAXATION_FACTOR`) are accepted, but ModflowGPU uses
   its own preconditioner (see [Differences from MODFLOW 6](differences.md)). The
@@ -58,8 +58,8 @@ its own variables in the stepping API and BMI (`"<model>/X"`, see
 - Exchange options: `AUXILIARY` (`ANGLDEGX` and `CDIST` as MODFLOW 6 uses them),
   `BOUNDNAMES`, `SAVE_FLOWS` (the exchange flows in each model's budget file),
   `CELL_AVERAGING` (`HARMONIC`, `LOGARITHMIC`, `AMT-LMK`), `XT3D` and `OBS6 FILEIN`
-  (observations of the exchange flows). `PRINT_INPUT` and
-  `PRINT_FLOWS` are accepted and print nothing; `VARIABLECV`, `DEWATERED` and `NEWTON`
+  (observations of the exchange flows), `PRINT_FLOWS` (the flow table of the exchange in
+  each model's listing file). `PRINT_INPUT` is accepted and prints nothing; `VARIABLECV`, `DEWATERED` and `NEWTON`
   are accepted and, as in MODFLOW 6, change nothing between confined cells.
 - Each model's budget has MODFLOW 6's exchange terms: `FLOW-JA-FACE` (the flow across the
   exchange) and `FLOW-JA-FACE-CHD` (the part into constant-head cells), with the

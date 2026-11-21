@@ -195,6 +195,11 @@ function _check_positive!(errors, name, k, nodeuser, g::GridDims)
     return nothing
 end
 
+# ICELLTYPE by user node as MF6 holds it after `preprocess_input` (as `npf_properties`):
+# negative is 1, or 0 under THICKSTRT. What `dis_ar` writes to the binary grid file and
+# `calc_spdis` uses (T6.9 review).
+_mf6_icelltype(npf::NpfSpec) = Int32[t < 0 ? Int32(npf.thickstrt ? 0 : 1) : t for t in npf.icelltype]
+
 """
     npf_properties(npf::NpfSpec, dis::AbstractDisSpec, conn::Connectivity; newton = false) -> NpfProperties
 

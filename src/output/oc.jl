@@ -38,7 +38,9 @@ end
 
 The open output files of a model run: `head` and `budget` (`IO` or `nothing` when OC
 names no file), `listing` (`IO`), the `layout` (`OutputLayout`), the paths and `obs`, the
-observation files (`ObservationOutput`, T6.7; `nothing` without OBS6 input).
+observation files (`ObservationOutput`, T6.7; `nothing` without OBS6 input). T6.9: the
+binary grid file is written when the output is opened (`dis_ar` → `write_grb`, unless
+NOGRB; `grb_path`, `""` without one).
 
     ModelOutput(m::GwfModel, simdir, outdir)
     ModelOutput(v::ModelView, simdir, outdir)
@@ -54,6 +56,7 @@ struct ModelOutput
     budget_path::String
     listing_path::String
     obs::Union{Nothing, ObservationOutput}
+    grb_path::String
 end
 
 function _output_path(simdir, outdir, name)
@@ -70,14 +73,24 @@ function ModelOutput(m::Union{GwfModel, ModelView}, simdir::AbstractString, outd
     bp = (isnothing(oc) || isempty(oc.budget_file)) ? "" : _output_path(simdir, outdir, oc.budget_file)
     lname = isempty(spec.list_file) ? splitext(basename(spec.file))[1] * ".lst" : spec.list_file
     lp = _output_path(simdir, outdir, lname)
-    spec.npf.save_specific_discharge && !isempty(bp) &&
-        @info "NPF SAVE_SPECIFIC_DISCHARGE: DATA-SPDIS is not written to the budget file yet" spec.npf.file
+    # T6.9: DATA-SPDIS (`calc_spdis` needs ANGLDEGX and, on DISU, the vertices).
+    spec.npf.save_specific_discharge && check_spdis(spec.dis, _vconn(m), spec.npf.file)
     # T6.7: the observations first (input errors before any file is opened).
     obs = ObservationOutput(m, simdir, outdir)
+    # T6.9: the binary grid file (DiscretizationBase.f90 `dis_ar`: GRB6 FILEOUT, else the
+    # DIS input file name + ".grb").
+    gp = ""
+    if !spec.dis.nogrb
+        dis = spec.dis
+        ext = dis isa DisSpec ? "dis" : dis isa DisvSpec ? "disv" : "disu"
+        name = !isempty(dis.grb_file) ? dis.grb_file : isempty(dis.file) ? lowercase(spec.name) * ".$ext.grb" : dis.file * ".grb"
+        gp = _output_path(simdir, outdir, name)
+        write_grb(gp, grb_file(dis, _vconn(m), _mf6_icelltype(spec.npf)))
+    end
     head = isempty(hp) ? nothing : open(hp, "w")
     budget = isempty(bp) ? nothing : open(bp, "w")
     listing = open(lp, "w")
-    return ModelOutput(head, budget, listing, OutputLayout(spec.dis), hp, bp, lp, obs)
+    return ModelOutput(head, budget, listing, OutputLayout(spec.dis), hp, bp, lp, obs, gp)
 end
 
 function Base.close(o::ModelOutput)
@@ -116,7 +129,8 @@ saves flows, FLOW-JA-FACE (`nja` values) when NPF saves flows, then one IMETH 6 
 stress package that saves flows (`q` = `simvals`, the net rate into the model; `id1` the
 user node, `id2` the record number; with the package's auxiliary values; records without
 a cell left out). A package saves flows with its own
-SAVE_FLOWS or the model's. DATA-SPDIS is not written (specific discharge arrives later).
+SAVE_FLOWS or the model's. T6.9: with NPF SAVE_SPECIFIC_DISCHARGE the DATA-SPDIS list after
+FLOW-JA-FACE (`write_spdis`).
 
 T6.6: for a model of a multi-model solution (`ModelView`), the model's own values, then the
 flows of each exchange with SAVE_FLOWS, from the model's side (`write_exchange_budget`, with
@@ -142,7 +156,10 @@ function write_budget(o::ModelOutput, m::Union{GwfModel, ModelView}, step::TimeS
         end
     end
     if spec.save_flows || spec.npf.save_flows
-        write_budget_array(io, "FLOW-JA-FACE", model_flowja(m); kw..., dims = (Int(conn.nja), 1, 1))
+        fja = model_flowja(m)
+        write_budget_array(io, "FLOW-JA-FACE", fja; kw..., dims = (Int(conn.nja), 1, 1))
+        # T6.9: DATA-SPDIS after FLOW-JA-FACE (`npf_save_model_flows` → `sav_spdis`).
+        spec.npf.save_specific_discharge && write_spdis(io, o.layout, m, fja; kw...)
     end
     name = uppercase(spec.name)
     for ip in _vpackages(m)
@@ -192,6 +209,35 @@ function model_flowja(v::ModelView)
     end
     return out
 end
+
+"""
+    write_conversions(io, m::GwfModel, kstp, kper)
+
+The cell conversions of `m.conversions` (T6.9) in the listing as MF6 writes them
+(gwf-npf.f90 `sgwf_npf_wdmsg`): per `wetdry!` call a header `CELL CONVERSIONS FOR
+ITER.=<kiter>  STEP=<kstp>  PERIOD=<kper>   (NODE or LRC)`, then five conversions per line
+(`(1X,3X,5(A4, A20))`: `WET` or `DRY`, the cell as `(layer,row,col)` on DIS, `(layer,cell2d)`
+on DISV, `(node)` on DISU, `nodeu_to_string`). The initial call (`kiter` 0) is written
+with step and period 0.
+"""
+function write_conversions(io::IO, m::GwfModel, kstp::Integer, kper::Integer)
+    isempty(m.conversions) && return nothing
+    grid = grid_dims(m.spec.dis)
+    cell(n) = "(" * join(cellid(grid, m.conn.nodeuser[n]), ",") * ")"
+    for (kiter, wet, dry) in m.conversions
+        @printf(io, "\n CELL CONVERSIONS FOR ITER.=%d  STEP=%d  PERIOD=%d   (NODE or LRC)\n", kiter, kiter == 0 ? 0 : kstp, kiter == 0 ? 0 : kper)
+        items = vcat([("WET", n) for n in wet], [("DRY", n) for n in dry])
+        for chunk in Iterators.partition(items, 5)
+            print(io, "    ")
+            for (a, n) in chunk
+                print(io, lpad(a, 4), lpad(cell(n), 20))
+            end
+            println(io)
+        end
+    end
+    return nothing
+end
+write_conversions(::IO, ::ModelView, ::Integer, ::Integer) = nothing
 
 """
     write_head_listing(io, m::GwfModel, step, heads)

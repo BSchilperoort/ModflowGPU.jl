@@ -94,6 +94,12 @@ function workload(dir)
     end
     M.prepare_solve(s)
     M.finalize(s)
+    # T6.9: the partial BOUND restage (time-series entries and the EVT surfaces of moved
+    # records after device writes).
+    bnd = KernelAbstractions.zeros(BACKEND, T, 2, 3)
+    for shift in (false, true)
+        M._scatter_bound!(bnd, Int32[1, 4], T[1, 2]; shift)
+    end
     sim = M.load_simulation(rundir)
     # (AMG separately below, with a small coarsest level.)
     for v in IMS_VARIANTS, preconditioner in filter(!=(:amg), M.PRECONDITIONERS)

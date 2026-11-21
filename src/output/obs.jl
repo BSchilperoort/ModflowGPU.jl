@@ -84,6 +84,9 @@ mutable struct ObservationOutput{VT <: AbstractVector}
     slot::Vector{Int}
     bslot::Vector{Int}
     const strt::Vector{Float64}
+    # T6.9: the host copies of `idx` (the plan of the last `_obs_plan!`, reused when a new
+    # period gives the same records)
+    hostidx::Vector{Vector{Int32}}
 end
 
 _has_obs(spec::GwfSpec) = !isnothing(spec.obs) || any(b -> !isnothing(b.obs), spec.boundaries)
@@ -163,7 +166,7 @@ function ObservationOutput(m::Union{GwfModel, ModelView}, simdir::AbstractString
     z = similar(m.h, 0)
     out = ObservationOutput{typeof(z)}(
         obs, files, [f.path for f in files], [Int32[] for _ in obs], Any[], Any[], Int[], z, T[], zeros(Int, length(obs)),
-        zeros(Int, length(obs)), strt,
+        zeros(Int, length(obs)), strt, Vector{Int32}[],
     )
     _obs_plan!(out, m)
     return out
@@ -245,13 +248,28 @@ function _obs_plan!(o::ObservationOutput, m::GwfModel{T}) where {T}
         end
     end
     backend = m.backend
+    hostidx = Vector{Int32}[lists[src] for src in order]
+    # T6.9: the same plan as in force (e.g. a new period with the same records): nothing
+    # to rebuild.
+    if !isempty(o.offs) || !isempty(o.sources)
+        if isequal(order, o.sources) && hostidx == o.hostidx
+            return o
+        end
+    end
     offs = Int[]
     idx = Any[]
     off = 0
-    for src in order
+    for (k, src) in enumerate(order)
         push!(offs, off)
-        push!(idx, _device_copy(backend, lists[src]))
-        off += length(lists[src])
+        # T6.9: reuse the device index vector of the same position when it has the length.
+        old = k <= length(o.idx) ? o.idx[k] : nothing
+        if !isnothing(old) && length(old) == length(hostidx[k])
+            copyto!(old, hostidx[k])
+            push!(idx, old)
+        else
+            push!(idx, _device_copy(backend, hostidx[k]))
+        end
+        off += length(hostidx[k])
     end
     start = Dict{Any, Int}(src => offs[k] for (k, src) in enumerate(order))
     for i in eachindex(o.obs)
@@ -263,8 +281,9 @@ function _obs_plan!(o::ObservationOutput, m::GwfModel{T}) where {T}
     o.sources = order
     o.idx = idx
     o.offs = offs
-    o.vals = fill!(similar(m.h, off), zero(T))
-    o.host = zeros(T, off)
+    o.hostidx = hostidx
+    length(o.vals) == off || (o.vals = fill!(similar(m.h, off), zero(T)))
+    length(o.host) == off || (o.host = zeros(T, off))
     return o
 end
 

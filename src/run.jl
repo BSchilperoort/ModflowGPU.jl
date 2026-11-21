@@ -22,8 +22,9 @@ What [`run_simulation`](@ref) returns. Fields:
   with [`read_observations`](@ref); with several models those of every model, then those
   of the GWF-GWF exchanges;
 - `models`: per model (T6.6; one entry for a single model) a `NamedTuple` with `name`,
-  `nodes` (its range in `heads`), `head_file`, `budget_file`, `listing_file` and
-  `obs_files`;
+  `nodes` (its range in `heads`), `head_file`, `budget_file`, `listing_file`,
+  `obs_files` and `grb_file` (T6.9: the binary grid file, `""` with NOGRB or without
+  output);
 - `T`, `Ts`, `Tp`: the precision types used (see [`resolve_precision`](@ref));
 - `model`: the model, still on the device (internal; with several models the merged model
   of the solution; its memory is released by the garbage collector).
@@ -54,7 +55,7 @@ struct RunResult{M <: GwfModel}
     budget_file::String
     listing_file::String
     obs_files::Vector{String}
-    models::Vector{NamedTuple{(:name, :nodes, :head_file, :budget_file, :listing_file, :obs_files), Tuple{String, UnitRange{Int}, String, String, String, Vector{String}}}}
+    models::Vector{NamedTuple{(:name, :nodes, :head_file, :budget_file, :listing_file, :obs_files, :grb_file), Tuple{String, UnitRange{Int}, String, String, String, Vector{String}, String}}}
 end
 
 """
@@ -105,7 +106,8 @@ Keywords:
 - `outdir = simdir`: the directory for the output files (`spec.simdir` for a spec); a
   directory inside the one named by the environment variable `REFERENCE_DIR` (the MF6
   reference runs of the parity tests) is an `ArgumentError`;
-- `write_output = true`: `false` writes no files;
+- `write_output = true`: `false` writes no head, budget, grid or listing files (T6.9:
+  the OBS6 observation files are written in every run, as MF6 does);
 - `closures = nothing`: a `NamedTuple` that overrides IMS settings, with any of
   `outer_dvclose`, `outer_maximum`, `inner_dvclose`, `inner_rclose`, `inner_maximum`
   (closures in the model's units); in `:single`, closures below what Float32 can reach
@@ -163,11 +165,14 @@ function run_simulation(
     allconv = all(r -> r.outer.converged, s.results)
     _obs_paths(o) = (isnothing(o) || isnothing(o.obs)) ? String[] : copy(o.obs.paths)
     obs = reduce(vcat, (_obs_paths(o) for o in s.outputs); init = String[])
+    foreach(o -> isnothing(o) || append!(obs, o.paths), s.obsonly)   # T6.9: without write_output
     isnothing(s.exobs) || append!(obs, s.exobs.paths)
     models = map(enumerate(s.views)) do (k, v)
         o = get(s.outputs, k, nothing)
-        f = isnothing(o) ? ("", "", "") : (o.head_path, o.budget_path, o.listing_path)
-        (; name = _vname(v), nodes = _vrange(v), head_file = f[1], budget_file = f[2], listing_file = f[3], obs_files = _obs_paths(o))
+        f = isnothing(o) ? ("", "", "", "") : (o.head_path, o.budget_path, o.listing_path, o.grb_path)
+        oo = get(s.obsonly, k, nothing)
+        of = isnothing(oo) ? _obs_paths(o) : copy(oo.paths)
+        (; name = _vname(v), nodes = _vrange(v), head_file = f[1], budget_file = f[2], listing_file = f[3], obs_files = of, grb_file = f[4])
     end
     return RunResult(s.model, s.T, s.Ts, s.Tp, s.results, s.budgets, absolute_heads(s.model), allconv, paths..., obs, models)
 end
@@ -194,12 +199,15 @@ function _listing_header(io::IO, m::Union{GwfModel, ModelView}, ps::PicardSolver
     k = st.krylov
     @printf(io, " OUTER_DVCLOSE = %.4e, OUTER_MAXIMUM = %d, UNDER_RELAXATION = %s\n", st.dvclose, st.maxiter, uppercase(String(st.ims.under_relaxation)))
     @printf(io, " LINEAR_ACCELERATION = %s (%s), INNER_MAXIMUM = %d, INNER_DVCLOSE = %.4e, INNER_RCLOSE = %.4e (option %d)\n", uppercase(String(k.method)), k.preconditioner === :jacobi ? "Jacobi" : String(k.preconditioner), k.maxiter, k.dvclose, k.rclose, k.icnvgopt)
+    # T6.9: the cells dried by the initial `wetdry!` (`preprocess_input`).
+    write_conversions(io, m, 0, 0)
     return nothing
 end
 
 function _write_step(out::ModelOutput, m::Union{GwfModel, ModelView}, step::TimeStep, r::OuterResult, b::ModelBudget, sim::SimulationSpec; exflows = nothing)
     io = out.listing
     oc = _vspec(m).oc
+    write_conversions(io, m, step.kstp, step.kper)   # T6.9: during the outer iterations
     @printf(io, "\n %d CALLS TO NUMERICAL SOLUTION IN TIME STEP %d STRESS PERIOD %d\n %d TOTAL ITERATIONS\n", r.iterations, step.kstp, step.kper, r.inner)
     r.converged || @printf(io, "\n Solution did not converge for stress period %d and time step %d\n", step.kper, step.kstp)
     oc_selected(oc, :save, "BUDGET", step) && write_budget(out, m, step; exflows)
@@ -218,6 +226,8 @@ function _write_step(out::ModelOutput, m::Union{GwfModel, ModelView}, step::Time
     isnothing(out.obs) || write_observations(out.obs, _vmodel(m), step.totim)
     r.converged || @printf(io, "\n         ****FAILED TO MEET SOLVER CONVERGENCE CRITERIA IN TIME STEP %d OF STRESS PERIOD %d****\n", step.kstp, step.kper)
     @printf(io, "\n TIME STEP LENGTH = %.6g, STRESS PERIOD TIME = %.6g, TOTAL SIMULATION TIME = %.6g\n", step.delt, step.pertim, step.totim)
+    # T6.9: the exchange PRINT_FLOWS tables (`gwf_gwf_bdsav_model`: when OC saves the budget).
+    (m isa ModelView && !isnothing(exflows) && oc_selected(oc, :save, "BUDGET", step)) && write_exchange_flow_tables(io, m, step, exflows)
     flush(io)
     return nothing
 end

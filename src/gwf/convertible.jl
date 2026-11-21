@@ -485,19 +485,22 @@ function npf_ad!(wd::WetDry, cv::ConvertibleNpf, hold, ibound)
 end
 
 """
-    wetdry_device!(wd::WetDry, cv::ConvertibleNpf, csr, Δr, h, ibound, kiter) -> (changed, chd_dry)
+    wetdry_device!(wd::WetDry, cv::ConvertibleNpf, csr, Δr, h, ibound, kiter) -> (changed, chd_dry, rewetted)
 
 `sgwf_npf_wetdry` for outer iteration `kiter` (0 at the start of the run): with REWET and
 `kiter % IWETIT == 0` the dry wettable cells next to a wet enough cell are rewetted
 (`rewet_check`, Jacobi passes until nothing changes, then applied), then convertible cells
-with heads at or below their bottom are dried. Returns whether IBOUND changed and whether a
-constant-head cell went dry (one synchronisation per pass).
+with heads at or below their bottom are dried. Returns whether IBOUND changed, whether a
+constant-head cell went dry (one synchronisation per pass) and the device flags of the
+rewetted cells (nonzero for a cell rewetted in this call; `nothing` when no rewetting was
+tried).
 """
 function wetdry_device!(wd::WetDry, cv::ConvertibleNpf, csr::CsrStructure, Δr, h, ibound, kiter::Integer)
     backend = get_backend(h)
     nodes = length(h)
     T = eltype(h)
     fill!(wd.count, Int32(0))
+    rewetted = nothing
     if wd.rewet && kiter % wd.iwetit == 0
         fill!(wd.flag, Int32(0))
         fill!(wd.hwet, zero(T))
@@ -513,8 +516,9 @@ function wetdry_device!(wd::WetDry, cv::ConvertibleNpf, csr::CsrStructure, Δr, 
         end
         fill!(wd.count, Int32(0))
         npf_rewet_apply_kernel!(backend, _WG)(h, ibound, wd.count, fin, hin; ndrange = nodes)
+        rewetted = fin
     end
     npf_dry_kernel!(backend, _WG)(h, ibound, wd.count, cv.icelltype, cv.topoff, cv.botoff; ndrange = nodes)
     c = Array(wd.count)
-    return c[2] != 0, c[3] != 0
+    return c[2] != 0, c[3] != 0, rewetted
 end

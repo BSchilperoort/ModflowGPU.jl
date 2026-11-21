@@ -274,6 +274,38 @@ end
             @test evt1.nodelist_host[1] == red(1, 2, 5)   # FIXED_CELL
         end
 
+        @testset "EVT moves keep device BOUND writes (T6.9)" begin
+            for_each_precision() do p
+                T = p.T
+                n11 = red(1, 1, 1)
+                n21 = red(2, 1, 1)
+                evta = BoundaryPackage(TEST_BACKEND, T, byname["EVTA"], conn, m.dis)
+                apply_period!(evta, 1, r)
+                @test !evta.device_written
+                # Host values only: the moved record's surface is restaged from the host.
+                ibh = ones(Int32, nodes)
+                ibh[n11] = 0
+                @test ModflowGPU.move_to_highest_active!(evta, ibh, r)
+                @test Array(evta.bound) == T.(ModflowGPU.bound_values(evta, r))
+                @test ModflowGPU.move_to_highest_active!(evta, ones(Int32, nodes), r)   # back
+                # Written on the device (what `device_bound!` marks): every value is kept,
+                # the moved record's surface offset is shifted to the new cell's reference.
+                written = Array(evta.bound)
+                written[1, :] .= T(1.25)
+                written[2, :] .= T(0.005)
+                copyto!(evta.bound, written)
+                evta.device_written = true
+                @test ModflowGPU.move_to_highest_active!(evta, ibh, r)
+                @test evta.nodelist_host[1] == n21
+                moved = Array(evta.bound)
+                @test moved[1, 1] == T(1.25) + T(r[n11] - r[n21])
+                @test moved[:, 2:end] == written[:, 2:end]
+                @test moved[2:end, 1] == written[2:end, 1]
+                # Same IBOUND again: no record moves, nothing is written.
+                @test !ModflowGPU.move_to_highest_active!(evta, ibh, r)
+            end
+        end
+
         for_each_precision() do p
             T = p.T
             area = to_test_device(T.(conn.area))
