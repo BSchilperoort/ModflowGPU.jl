@@ -450,4 +450,13 @@ end
             isnothing(h6) || @test maximum(abs.(r.heads .- h6)) < (p.T === Float64 ? 1.0e-9 : 1.0e-4)
         end
     end
+    # `initialize` sets `nocheck` on every package; the device BOUND check then tests only
+    # for finite values (a RIV stage below its bottom passes).
+    s = ModflowGPU.initialize(_nocheck_model(:GHB, true); backend = TEST_BACKEND, write_output = false)
+    @test all(pkg -> pkg.nocheck, s.model.packages)
+    @test !ModflowGPU.initialize(_nocheck_model(:GHB, false); backend = TEST_BACKEND, write_output = false).model.packages[1].nocheck
+    rec = [1.0; 1.0; 2.0;;]  # stage 1 below bottom 2
+    @test !ModflowGPU._device_record_ok(ModflowGPU.BoundaryKind{:RIV}(), rec, 1)
+    @test ModflowGPU._device_record_ok(ModflowGPU.BoundaryKind{:NOCHECK}(), rec, 1)
+    @test !ModflowGPU._device_record_ok(ModflowGPU.BoundaryKind{:NOCHECK}(), [NaN;;], 1)
 end
