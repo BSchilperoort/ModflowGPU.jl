@@ -157,7 +157,7 @@ Float32, which MODFLOW 6 cannot:
 | Model listing file (`.lst`) | full report | a short version, see below |
 | Simulation listing file (`mfsim.lst`) | written | not written |
 | Observation output (OBS6) | written every time step | the same files, CSV or `BINARY`; values as MODFLOW 6 prints them (16 significant digits) |
-| CSV files (`BUDGETCSV`, `CSV_OUTER_OUTPUT`, `CSV_INNER_OUTPUT`, `AUTO_FLOW_REDUCE_CSV`) | written | the options are rejected |
+| CSV files (`BUDGETCSV`, `CSV_OUTER_OUTPUT`, `CSV_INNER_OUTPUT`, `AUTO_FLOW_REDUCE_CSV`) | written | the same files, see below |
 
 ### Listing file
 
@@ -191,6 +191,29 @@ differences:
   was moved to. The values differ only when that cell (usually in layer 1) is dry at the
   start of the period; observations by boundary name are not affected;
 - the observation files of GWF–GWF exchanges are written after those of the models.
+
+### CSV files
+
+The CSV files (`BUDGETCSV`, `CSV_OUTER_OUTPUT`, `CSV_INNER_OUTPUT`,
+`AUTO_FLOW_REDUCE_CSV`) have MODFLOW 6's headers, columns and number format. Their values
+follow from ModflowGPU's solution:
+
+- the budget and well-reduction values match MODFLOW 6's within the budget differences of
+  the run (in `:single`, a well whose reduction is at the Float32 rounding level may have a
+  row in one file and not in the other);
+- the outer-iteration file has the same rows where the outer iterations are the same (in
+  `:double`); its inner-iteration counts, and the whole inner-iteration file, are those of
+  ModflowGPU's linear solver, whose preconditioner differs from MODFLOW 6's (see
+  [The preconditioner is replaced](@ref)): other counts, changes, residuals and step
+  lengths. As in MODFLOW 6 the residual is the scaled one for `CG` and the unscaled one
+  for `BICGSTAB`; after an iteration that recomputes the residual
+  (`NUMBER_ORTHOGONALIZATIONS`) it is the recomputed one;
+- where several cells have the same largest change to the rounding level (a symmetric
+  model), the cell reported may differ;
+- the package column of the outer-iteration file is always empty (no supported package
+  has its own convergence test);
+- `CSV_INNER_OUTPUT` reads two values per model from the device in every inner iteration,
+  which slows down the linear solve, most on a GPU; the other files add no device work.
 
 ## Stepping API and BMI
 

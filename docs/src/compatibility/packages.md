@@ -96,6 +96,24 @@ the value is `3.0e30` ([`ModflowGPU.OBSNODATA`](@ref)). The options `DIGITS` and
 [Differences from MODFLOW 6](@ref "Listing file")). [`read_observations`](@ref) reads the
 output files of ModflowGPU and of MODFLOW 6.
 
+## CSV output
+
+The CSV files of MODFLOW 6 are written with its headers and columns, in every run (also
+with `write_output = false`, as for observations); their paths are in
+[`RunResult`](@ref)`.csv_files`:
+
+| Option | File |
+| :-- | :-- |
+| OC `BUDGETCSV FILEOUT` | the model's volumetric budget, one row per time step: the rate in and the rate out of every budget term, `TOTAL_IN`, `TOTAL_OUT`, `PERCENT_DIFFERENCE` |
+| IMS `CSV_OUTER_OUTPUT FILEOUT` | one row per outer iteration: total inner iterations, time, period, step, outer iteration, its inner iterations, the largest head change with its model and cell |
+| IMS `CSV_INNER_OUTPUT FILEOUT` | one row per inner iteration: the largest change and residual with their model and cell, `alpha` (and `omega` with `BICGSTAB`); with several models also per model |
+| WEL `AUTO_FLOW_REDUCE_CSV FILEOUT` | one row per well and time step whose rate `AUTO_FLOW_REDUCE` reduced: requested and actual rate, reduction |
+
+The inner iterations are those of ModflowGPU's linear solver, not MODFLOW 6's (see
+[Differences from MODFLOW 6](@ref "CSV files")), and `CSV_INNER_OUTPUT` slows the run
+down: it reads two values per model from the device in every inner iteration. The other
+files cost nothing measurable.
+
 ## Model features
 
 Besides options, the input is checked for features that change how the model is solved.
@@ -186,7 +204,6 @@ input is accepted.
 | Ghost-node correction (GNC6) | not planned at the moment |
 | Time-varying hydraulic conductivity and storage (TVK6, TVS6) | not planned at the moment |
 | Adaptive time stepping (ATS6) | not planned at the moment |
-| CSV output: OC `BUDGETCSV`, IMS `CSV_OUTER_OUTPUT` and `CSV_INNER_OUTPUT`, WEL `AUTO_FLOW_REDUCE_CSV` | not planned at the moment |
 | IMS `SCALING_METHOD L2NORM`, `REORDERING_METHOD RCM` and `MD` | not planned at the moment |
 | `READARRAYGRID` input of list packages | not planned at the moment |
 
