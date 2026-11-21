@@ -61,7 +61,7 @@ Accepted with a different behaviour (logged warnings, not errors):
 | OBS6 | the file must exist; it is read by no one | observations are not evaluated or written until T6.7 (accepted, no output) |
 | TS6 (T6.3) | ATTRIBUTES NAME(S), METHOD(S) STEPWISE / LINEAR / LINEAREND, SFAC(S), AUTODEALLOCATE (no effect); several series per file and several files per package; DNODATA values; evaluated per time step on the host in Float64 (time-weighted average over the step, LINEAREND the value at its end) | a series that ends before a step ends (MF6's error; no extension to the end of the simulation) |
 | TAS6 (T6.3) | ATTRIBUTES NAME, METHOD STEPWISE / LINEAR, SFAC, AUTODEALLOCATE; one `TIME` block per array (CONSTANT, INTERNAL, OPEN/CLOSE, FACTOR); evaluated per time step on the host in Float64 (time-weighted average) | DISU grids (MF6 does not support them either) |
-| Always rejected | – | SFR6, LAK6, MAW6, UZF6, MVR6, CSUB6, BUY6, VSC6, API6 (out of scope), GNC6, HFB6 (not in the plan) |
+| Always rejected | – | SFR6, LAK6, MAW6, UZF6, MVR6, CSUB6, BUY6, VSC6, API6 (out of scope), GNC6 (not in the plan); HFB6 is supported since T6.11 |
 
 ## Engine features
 
