@@ -46,8 +46,10 @@
 #   here (MF6 does not check that they were given and would run with unset values).
 #   Value checks of NPF arrays (K <= 0, ...), done by MF6 in `prepcheck`, are done by
 #   `npf_properties` (src/gwf/npf.jl, T2.2).
-# - READARRAYGRID input (CHDG, WELG, ...) is rejected also with `strict = false`: there is
-#   no period-data reader for it yet (an explicit exception to the strict/non-strict rule).
+# - READARRAYGRID input (CHDG, WELG, DRNG, RIVG, GHBG; T6.18) is read into the list
+#   records of the list form (`read_arraygrid_periods`). Records at inactive cells are
+#   dropped (`nodeu_to_nlist`); MF6 6.8.2 lowers NBOUND there but does not move the later
+#   records up, so its values shift to other cells when such a record is not the last one.
 # - NPF option combinations rejected in `check_options` (NEWTON with PERCHED, XT3D with
 #   ALTERNATIVE_CELL_AVERAGING, ...) are checked by `check_npf_options` (src/gwf/npf.jl,
 #   T2.2), not here.
@@ -419,6 +421,18 @@ function _check_active_list(f::InputFile, sp::StressPeriods{PeriodList}, dis::Ab
     return nothing
 end
 
+# READARRAYGRID (T6.18): BoundaryPackageExt.f90 `nodeu_to_nlist` leaves out the records at
+# cells that are not active (`get_nodenumber(nodeu, 0) <= 0`), without an error.
+function _drop_inactive(sp::StressPeriods{PeriodList}, dis::AbstractDisSpec)
+    idom = idomain_user(dis)
+    data = map(sp.data) do p
+        keep = [idom[n] > 0 for n in p.nodeu]
+        all(keep) && return p
+        PeriodList(p.nodeu[keep], p.bound[:, keep], p.auxvar[:, keep], p.boundname, p.ts)
+    end
+    return StressPeriods(sp.iper, data)
+end
+
 # TS6 and TAS6 files of a stress package (T6.3; TimeSeriesManager.f90 `HashBndTimeSeries`:
 # a later series of the same name replaces the earlier one), and every name the period
 # data use must be one of them (`read_value_or_time_series`, `MakeTasLink`).
@@ -463,7 +477,6 @@ function _load_boundary(ld::_Loader, e::PackageEntry, mname, dis::AbstractDisSpe
     kind = Symbol(rstrip(e.ftype, '6'))
     o = read_options(f, "OPTIONS")
     d = read_options(f, "DIMENSIONS")
-    endswith(f.dfn.name, "g") && unsupported(f.path, "$(e.ftype) READARRAYGRID input (package '$(e.name)', $ctx)")
     option(o, "mover", false) && unsupported(f.path, "$(e.ftype) option MOVER (MVR6 is out of scope; package '$(e.name)', $ctx)")
     ld.strict && check_options(o, f.dfn.name, e.ftype, "package '$(e.name)', $ctx")
     auxnames = option(o, "auxiliary", String[])::Vector{String}
@@ -478,9 +491,13 @@ function _load_boundary(ld::_Loader, e::PackageEntry, mname, dis::AbstractDisSpe
     end
     g = grid_dims(dis)
     readasarrays = f.dfn.name in ("gwf-rcha", "gwf-evta")
+    readarraygrid = f.dfn.name in _ARRAYGRID_PACKAGES
     if readasarrays
         schema = nothing
         periods = read_array_periods(f, g; simdir = ld.simdir)
+    elseif readarraygrid
+        schema, periods = read_arraygrid_periods(f, g; simdir = ld.simdir)
+        periods = _drop_inactive(periods, dis)
     else
         schema, periods = read_list_periods(f, g; simdir = ld.simdir)
         _check_active_list(f, periods, dis)
@@ -503,7 +520,8 @@ function _load_boundary(ld::_Loader, e::PackageEntry, mname, dis::AbstractDisSpe
         name = e.name, readasarrays, auxnames, auxmultname, auxmultcol,
         auxdepthname = option(o, "auxdepthname", ""), boundnames = option(o, "boundnames", false),
         fixed_cell = option(o, "fixed_cell", false), nseg = option(d, "nseg", 1),
-        surf_rate_specified = option(o, "surf_rate_specified", false), maxbound = option(d, "maxbound", 0),
+        surf_rate_specified = option(o, "surf_rate_specified", false),
+        maxbound = readarraygrid ? schema.maxbound : option(d, "maxbound", 0),
         print_input = option(o, "print_input", false), print_flows = option(o, "print_flows", false),
         save_flows = option(o, "save_flows", false), auto_flow_reduce = option(o, "auto_flow_reduce", 0.0),
         flow_reduction_length = option(o, "flow_reduction_length", false),

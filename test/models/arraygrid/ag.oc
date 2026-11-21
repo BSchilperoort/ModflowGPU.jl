@@ -1,0 +1,10 @@
+BEGIN options
+  BUDGET  FILEOUT  ag.cbc
+  HEAD  FILEOUT  ag.hds
+END options
+
+BEGIN period  1
+  SAVE  HEAD  ALL
+  SAVE  BUDGET  ALL
+  PRINT  BUDGET  ALL
+END period  1

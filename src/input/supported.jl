@@ -71,6 +71,8 @@ const UNSUPPORTED_MODELS = ("GWT6", "GWE6", "PRT6", "CHF6", "OLF6")
 
 # Options every list stress package shares (gwf-chd, -wel, -drn, -riv, -ghb, -rch, -evt).
 const _STRESS_OPTIONS = ["AUXILIARY", "AUX", "AUXMULTNAME", "BOUNDNAMES", "PRINT_INPUT", "PRINT_FLOWS", "SAVE_FLOWS", "TS6", "OBS6"]
+# Options of the READARRAYGRID variants (gwf-chdg, -welg, -drng, -rivg, -ghbg; T6.18).
+const _GRID_OPTIONS = ["READARRAYGRID", "AUXILIARY", "AUX", "AUXMULTNAME", "PRINT_INPUT", "PRINT_FLOWS", "SAVE_FLOWS", "OBS6"]
 
 """
     SUPPORTED_OPTIONS
@@ -106,6 +108,12 @@ const SUPPORTED_OPTIONS = Dict{Tuple{String, String}, Vector{String}}(
     ("gwf-rcha", "OPTIONS") => [_STRESS_OPTIONS; "FIXED_CELL"; "READASARRAYS"; "TAS6"],  # T6.3: TAS6
     ("gwf-evt", "OPTIONS") => [_STRESS_OPTIONS; "FIXED_CELL"; "SURF_RATE_SPECIFIED"],
     ("gwf-evta", "OPTIONS") => [_STRESS_OPTIONS; "FIXED_CELL"; "READASARRAYS"; "TAS6"],  # T6.3: TAS6
+    # T6.18: READARRAYGRID variants (no BOUNDNAMES or TS6 in their DFNs).
+    ("gwf-chdg", "OPTIONS") => _GRID_OPTIONS,
+    ("gwf-welg", "OPTIONS") => [_GRID_OPTIONS; "AUTO_FLOW_REDUCE"; "FLOW_REDUCTION_LENGTH"],
+    ("gwf-ghbg", "OPTIONS") => _GRID_OPTIONS,
+    ("gwf-rivg", "OPTIONS") => _GRID_OPTIONS,
+    ("gwf-drng", "OPTIONS") => [_GRID_OPTIONS; "AUXDEPTHNAME"],
     # T6.6: GWF-GWF exchanges (GNC6, MVR6 are rejected by the loader; VARIABLECV, DEWATERED and
     # NEWTON change nothing between confined cells, the only ones supported with exchanges).
     ("exg-gwfgwf", "OPTIONS") => [
@@ -136,7 +144,7 @@ Values accepted with `strict = true` for options whose value selects a method, p
 """
 const SUPPORTED_VALUES = Dict{Tuple{String, String}, Vector{String}}(
     ("sln-ims", "UNDER_RELAXATION") => ["NONE", "SIMPLE", "COOLEY", "DBD"],  # T2.8
-    ("sln-ims", "SCALING_METHOD") => ["NONE", "DIAGONAL"],                   # T2.7
+    ("sln-ims", "SCALING_METHOD") => ["NONE", "DIAGONAL", "L2NORM"],         # T2.7; L2NORM T6.18
     ("sln-ims", "REORDERING_METHOD") => ["NONE"],
     ("sln-ims", "LINEAR_SOLVER") => ["DEFAULT", "LINEAR"],
 )
