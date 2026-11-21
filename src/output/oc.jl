@@ -130,7 +130,8 @@ stress package that saves flows (`q` = `simvals`, the net rate into the model; `
 user node, `id2` the record number; with the package's auxiliary values; records without
 a cell left out). A package saves flows with its own
 SAVE_FLOWS or the model's. T6.9: with NPF SAVE_SPECIFIC_DISCHARGE the DATA-SPDIS list after
-FLOW-JA-FACE (`write_spdis`).
+FLOW-JA-FACE (`write_spdis`); T6.10: with NPF SAVE_SATURATION the DATA-SAT list after
+that (`write_sat`).
 
 T6.6: for a model of a multi-model solution (`ModelView`), the model's own values, then the
 flows of each exchange with SAVE_FLOWS, from the model's side (`write_exchange_budget`, with
@@ -160,6 +161,8 @@ function write_budget(o::ModelOutput, m::Union{GwfModel, ModelView}, step::TimeS
         write_budget_array(io, "FLOW-JA-FACE", fja; kw..., dims = (Int(conn.nja), 1, 1))
         # T6.9: DATA-SPDIS after FLOW-JA-FACE (`npf_save_model_flows` → `sav_spdis`).
         spec.npf.save_specific_discharge && write_spdis(io, o.layout, m, fja; kw...)
+        # T6.10: DATA-SAT after it (`sav_sat`).
+        spec.npf.save_saturation && write_sat(io, o.layout, m; kw...)
     end
     name = uppercase(spec.name)
     for ip in _vpackages(m)

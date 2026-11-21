@@ -32,8 +32,8 @@ Notes:
 - `PRINT_INPUT`, `PRINT_FLOWS`, `MEMORY_PRINT_OPTION` and `PROFILE_OPTION` are accepted
   and have no effect on the output (see the listing file on
   [Differences from MODFLOW 6](@ref "Listing file")).
-- `SAVE_SPECIFIC_DISCHARGE` writes the `DATA-SPDIS` record to the budget file, as
-  MODFLOW 6 does.
+- `SAVE_SPECIFIC_DISCHARGE` and `SAVE_SATURATION` write the `DATA-SPDIS` and `DATA-SAT`
+  records to the budget file, as MODFLOW 6 does.
 - IMS: the ILU preconditioner options (`PRECONDITIONER_LEVELS`,
   `PRECONDITIONER_DROP_TOLERANCE`, `RELAXATION_FACTOR`) are accepted, but ModflowGPU uses
   its own preconditioner (see [Differences from MODFLOW 6](differences.md)). The

@@ -281,6 +281,40 @@ function write_spdis(io::IO, layout::OutputLayout, m::Union{GwfModel, ModelView}
     return nothing
 end
 
+"""
+    cell_saturation(m) -> Vector{Float64}
+
+The saturation NPF holds for each reduced node of model `m` (a `GwfModel` or a
+`ModelView`; gwf-npf.f90 `this%sat`, T6.10): for convertible cells the value of the last
+formulation (`cf_default_flow`: `thksat` of the heads of the last outer iteration, 0 for
+a dry cell; the smoothed saturation with Newton), for confined cells the initial
+saturation (`npf_ar`: 1, or the THICKSTRT saturation of the starting head).
+"""
+function cell_saturation(m::Union{GwfModel, ModelView})
+    mm = _vmodel(m)
+    rng = _vrange(m)
+    cv = mm.npf.cv
+    return isnothing(cv) ? mm.setup.properties.sat0[rng] : Float64.(Array(cv.sat))[rng]
+end
+
+"""
+    write_sat(io, layout, m; kw...)
+
+The DATA-SAT record of the budget file (gwf-npf.f90 `sav_sat`, NPF SAVE_SATURATION; T6.10):
+a list with one entry per reduced node (`id1 = id2` its user node, `q = 0`, auxiliary
+`sat`, `cell_saturation`), source and destination the model and its NPF package.
+"""
+function write_sat(io::IO, layout::OutputLayout, m::Union{GwfModel, ModelView}; kw...)
+    spec = _vspec(m)
+    conn = _vconn(m)
+    nodeu = Int32.(conn.nodeuser)
+    list = BudgetList(nodeu, copy(nodeu), zeros(Int(conn.nodes)), permutedims(cell_saturation(m)))
+    name = uppercase(spec.name)
+    npfname = uppercase(_npf_package_name(spec))
+    write_budget_list(io, layout, "DATA-SAT", list; kw..., modelnam1 = name, paknam1 = npfname, modelnam2 = name, paknam2 = npfname, auxtxt = [lpad("sat", 16)])
+    return nothing
+end
+
 # The name of the model's NPF package (name file PACKAGES block; "NPF" by default).
 function _npf_package_name(spec::GwfSpec)
     k = findfirst(p -> uppercase(p.ftype) == "NPF6", spec.packages)

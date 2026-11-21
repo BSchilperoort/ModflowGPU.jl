@@ -6,7 +6,7 @@ DocTestSetup = :(using ModflowGPU)
 ```
 
 ModflowGPU writes the head file (`.hds`), the budget file (`.cbc`, with `DATA-SPDIS` when
-NPF has `SAVE_SPECIFIC_DISCHARGE`), the binary grid file (`.dis.grb`, `.disv.grb`,
+NPF has `SAVE_SPECIFIC_DISCHARGE` and `DATA-SAT` when it has `SAVE_SATURATION`), the binary grid file (`.dis.grb`, `.disv.grb`,
 `.disu.grb`, unless `NOGRB`), the model listing file (`.lst`) and the observation files
 (OBS6) in MF6's formats (see
 [Differences from MODFLOW 6](../compatibility/differences.md)). The readers on this page
