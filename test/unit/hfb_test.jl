@@ -12,7 +12,8 @@
 #    - test/models/hfb_disu (test_gwf_disu_hfb_idomain.py: DISU, IDOMAIN, user node numbers);
 #    - test/models/hfb_conv (convertible DIS, barriers changing between periods: `hfb_fc` and
 #      `condsat_modify` barriers, a multiplier, HYDCHR 0) and its NEWTON variant;
-#    - ex-gwf-u1disv (reference run inputs) with a line of barriers added (DISV).
+#    - ex-gwf-u1disv (reference run inputs) with a line of barriers added (DISV);
+#    - test/models/disu_staggered (convertible DISU, IHC 2) with barriers, and with NEWTON.
 using ModflowGPU: load_simulation, build_connectivity, npf_setup, GwfModel, apply_period!, MF6UnsupportedError,
     MF6InputError, hfb_condsat, hfb_barriers, HfbSpec, HfbPeriod, StressPeriods, solution_setup, write_simulation, spec_identical
 
@@ -62,6 +63,31 @@ function _u1disv_hfb(dst)
     write(nam, replace(read(nam, String), r"END packages"i => "  HFB6  ex-gwf-u1disv.hfb  hfb\nEND packages"))
     write(
         joinpath(dst, "ex-gwf-u1disv.hfb"),
+        "BEGIN options\nEND options\n\nBEGIN dimensions\n  MAXHFB  $(length(recs))\nEND dimensions\n\nBEGIN period  1\n$(join(recs, "\n"))\nEND period  1\n",
+    )
+    return dst
+end
+
+# test/models/disu_staggered (convertible DISU with staggered connections, IHC 2) with a
+# barrier on every second horizontal connection (`hfb_fc` with the overlap of the cells as
+# the face height on IHC 2), and the same with NEWTON (`condsat_modify`).
+function _staggered_hfb(dst; newton = false)
+    _hfb_variant(joinpath(HFB_MODELS, "disu_staggered"), dst; edit = newton ? _hfb_newton : (f, t) -> t)
+    m = only(load_simulation(dst).models)
+    conn = build_connectivity(m)
+    recs = String[]
+    k = 0
+    for n in 1:conn.nodes, ii in (conn.ia[n] + 1):(conn.ia[n + 1] - 1)
+        mm = conn.ja[ii]
+        (mm > n && conn.ihc[conn.jas[ii]] != 0) || continue
+        (k += 1) % 2 == 1 || continue
+        push!(recs, "  $(conn.nodeuser[n])  $(conn.nodeuser[mm])  $(isodd(length(recs)) ? "-0.2" : "5.0e-3")")
+    end
+    @assert any(==(2), conn.ihc)
+    nam = joinpath(dst, "stg.nam")
+    write(nam, replace(read(nam, String), r"END packages"i => "  HFB6  stg.hfb  hfb\nEND packages"))
+    write(
+        joinpath(dst, "stg.hfb"),
         "BEGIN options\nEND options\n\nBEGIN dimensions\n  MAXHFB  $(length(recs))\nEND dimensions\n\nBEGIN period  1\n$(join(recs, "\n"))\nEND period  1\n",
     )
     return dst
@@ -209,6 +235,8 @@ end
         ("hfb_conv", "hfb_conv", (f, t) -> t),
         ("hfb_conv_newton", "hfb_conv", _hfb_newton),
         ("hfb_u1disv", nothing, nothing),
+        ("hfb_staggered", :staggered, false),
+        ("hfb_staggered_newton", :staggered, true),
     ]
     for (name, src, edit) in cases
         if !test_model_selected(name)
@@ -216,7 +244,9 @@ end
             @info "Skipping $name: mf6 not found at $HFB_MF6"
         else
             mktempdir() do tmp
-                dir = isnothing(src) ? _u1disv_hfb(joinpath(tmp, name)) : _hfb_variant(joinpath(HFB_MODELS, src), joinpath(tmp, name); edit)
+                dir = isnothing(src) ? _u1disv_hfb(joinpath(tmp, name)) :
+                    src === :staggered ? _staggered_hfb(joinpath(tmp, name); newton = edit) :
+                    _hfb_variant(joinpath(HFB_MODELS, src), joinpath(tmp, name); edit)
                 if isnothing(dir)
                     @info "Skipping $name: no reference run of ex-gwf-u1disv"
                 else
