@@ -821,7 +821,22 @@ storage cells, which `SsTerms`/`SyTerms` round, to the storage bound). CPU:
 So the `:single` budgets are what the `:single` heads give in Float64: the large percent
 discrepancies are those of the Float32 heads (their residual times the large storage
 coefficients or conductances), not errors of the flow computation. Criteria: CBC 1e-6 ×
-total in beyond the bound, Δ pd below 1e-3 % or the step's bound.
+total in beyond the bound, Δ pd below 1e-3 % or the step's bound. The replay also
+compares DATA-SPDIS (SAVE_SPECIFIC_DISCHARGE, T6.9): max |Δ| relative to the record's
+largest value 2.5e-7 (advtidal) and 2.2e-8 (maw-p03c), criterion 1e-6.
+
+**DATA-SPDIS (T6.9).** The run parity compares the specific discharge (qx, qy, qz) of every
+model that saves it, as max |Δ| over the record relative to its largest |q|: criterion
+1e-6 in `:double`/`:mixed` and 1e-3 in `:single` (largest elsewhere: ex-gwf-lgrv-lgr child
+1.2e-4 in `:single`; advtidal 6.7e-5 `:single`, 2.2e-11 `:double`). Newton models leave out
+the cells below their bottom in MF6's heads (a flow over a vanishing saturated area,
+`spdis_skip`). **ex-gwf-maw-p03c: 1e-5 and 0.1** (`spdis_tol`, test/run_parity.jl). CPU:
+3.1e-6 `:double`, 3.8e-6 `:mixed`, 4.26e-2 `:single`. The `:double` value is the reference's
+(the tight-relative run, heads leave 2.9e-8 of the row magnitudes, see above). The `:single`
+value is the qz of the cells next to the former well (large vertical conductance per unit
+area, flat heads near 10.0001 m) computed from Float32 heads that differ 7.8e-6 m from
+MF6's; the same heads evaluated in Float64 give the `:single` DATA-SPDIS within 2.2e-8
+(replay above), so it is the head rounding and not the specific discharge computation.
 The observed flows of maw-p03c (OBS6, T6.7: flows next to the former well, heads flat at
 10.0001 m, large conductances) differ by up to 2.2e-4 × the total inflow in `:single`
 (heads 1.6e-6 m); their parity criterion is 1e-3 × total inflow instead of 1e-4

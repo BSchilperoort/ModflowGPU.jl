@@ -111,7 +111,9 @@ end
         # large), and at most 1e-3 % apart otherwise.
         @test x.dpd < max(1.0e-3, x.bpd)
         @test x.nrec > 0
-        @info "Single budget replay: $name, $(backend_name(TEST_BACKEND)): $(x.nrec) records, CBC max |Δq| beyond the Float32 flow rounding / total in = $(round(x.dq; sigdigits = 3)) ($(join(("$k $(round(v; sigdigits = 2))" for (k, v) in sort(collect(x.bytext))), ", "))); max |pd| :single $(round(x.pd; sigdigits = 3)) %, Float64 evaluation of the :single heads $(round(x.rpd; sigdigits = 3)) %, max |Δ pd| $(round(x.dpd; sigdigits = 3)) % (rounding allowance up to $(round(x.bpd; sigdigits = 3)) %)"
+        # DATA-SPDIS (advtidal, maw-p03c): from the same heads, only Float32 rounding.
+        isnothing(x.spdis) || @test x.spdis < 1.0e-6
+        @info "Single budget replay: $name, $(backend_name(TEST_BACKEND)): $(x.nrec) records, CBC max |Δq| beyond the Float32 flow rounding / total in = $(round(x.dq; sigdigits = 3)) ($(join(("$k $(round(v; sigdigits = 2))" for (k, v) in sort(collect(x.bytext))), ", "))); max |pd| :single $(round(x.pd; sigdigits = 3)) %, Float64 evaluation of the :single heads $(round(x.rpd; sigdigits = 3)) %, max |Δ pd| $(round(x.dpd; sigdigits = 3)) % (rounding allowance up to $(round(x.bpd; sigdigits = 3)) %)$(isnothing(x.spdis) ? "" : ", DATA-SPDIS max |Δ| / max |q| = $(round(x.spdis; sigdigits = 3))")"
     end
 end
 
