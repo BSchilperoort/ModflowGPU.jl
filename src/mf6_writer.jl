@@ -10,8 +10,8 @@
 #
 # Scope ("small specs"): one or more GWF models on DIS, DISV or DISU grids (T6.9) with the
 # packages of `BOUNDARY_KINDS`, STO, OC, OBS6 (T6.9), TDIS, IMS and GWF6-GWF6 exchanges
-# (T6.9, with their OBS6). Features that need other extra files (time series, TAS, TVK, TVS,
-# ATS) are an `ArgumentError`.
+# (T6.9, with their OBS6), and the TS6 and TAS6 files of the stress packages (T6.10).
+# Features that need other extra files (TVK, TVS, ATS) are an `ArgumentError`.
 
 "Shortest round-trip decimal representation, readable by Fortran (ModflowCoupling `fmt`)."
 function _mf6_fmt(x::Real)
@@ -247,7 +247,6 @@ function _write_oc(io, o::OcSpec)
 end
 
 function _write_boundary_options(io, b::BoundarySpec)
-    _check_writable(isempty(b.ts_files) && isempty(b.tas_files), "time-series input (package $(b.name))")
     _check_writable(b.auto_flow_reduce == 0 && !b.mover, "WEL AUTO_FLOW_REDUCE / MOVER (package $(b.name))")
     _write_block(io, "OPTIONS") do
         b.readasarrays && _put(io, "READASARRAYS")
@@ -256,6 +255,8 @@ function _write_boundary_options(io, b::BoundarySpec)
         isempty(b.auxmultname) || _put(io, "AUXMULTNAME", b.auxmultname)
         isempty(b.auxdepthname) || _put(io, "AUXDEPTHNAME", b.auxdepthname)
         _bool_options(io, b, (:boundnames, :print_input, :print_flows, :save_flows, :surf_rate_specified))
+        foreach(f -> _put(io, "TS6 FILEIN", f), b.ts_files)
+        foreach(f -> _put(io, "TAS6 FILEIN", f), b.tas_files)
         foreach(f -> _put(io, "OBS6 FILEIN", f), b.obs_files)
     end
     return nothing
@@ -269,7 +270,9 @@ function _write_list_boundary(io, b::BoundarySpec)
         boundary_kind(b) === :EVT && _put(io, "NSEG", b.nseg)
     end
     for (k, p) in zip(b.periods.iper, b.periods.data)
-        _check_writable(isempty(p.ts), "time-series values (package $(b.name))")
+        # T6.10: a value linked to a time series is written as the series name.
+        tsname = Dict((Int(t.row), Int(t.col), t.aux) => String(t.name) for t in p.ts)
+        val(a, i, r, aux) = get(() -> _mf6_fmt(a[i, r]), tsname, (r, i, aux))
         _write_block(io, "PERIOD $k") do
             for r in eachindex(p.nodeu)
                 w = String[]
@@ -277,9 +280,9 @@ function _write_list_boundary(io, b::BoundarySpec)
                     if c.kind === :cellid
                         append!(w, string.(cellid(s.grid, p.nodeu[r])))
                     elseif c.kind === :double
-                        append!(w, _mf6_fmt.(view(p.bound, c.first:(c.first + c.width - 1), r)))
+                        append!(w, [val(p.bound, i, r, false) for i in c.first:(c.first + c.width - 1)])
                     elseif c.kind === :aux
-                        append!(w, _mf6_fmt.(view(p.auxvar, c.first:(c.first + c.width - 1), r)))
+                        append!(w, [val(p.auxvar, i, r, true) for i in c.first:(c.first + c.width - 1)])
                     elseif c.kind === :boundname
                         isempty(p.boundname[r]) || push!(w, p.boundname[r])
                     end
@@ -295,15 +298,64 @@ function _write_array_boundary(io, b::BoundarySpec, dis::Union{DisSpec, DisvSpec
     _write_boundary_options(io, b)
     layername = boundary_kind(b) === :RCH ? "irch" : "ievt"
     for (k, p) in zip(b.periods.iper, b.periods.data)
-        _check_writable(isempty(p.tas), "TIMEARRAYSERIES input (package $(b.name))")
         _write_block(io, "PERIOD $k") do
             for name in p.given
+                # T6.10: an array linked to a time-array series.
+                haskey(p.tas, name) && (_put(io, uppercase(name), "TIMEARRAYSERIES", p.tas[name]); continue)
                 iaux = findfirst(==(name), b.auxnames)
                 a = !isnothing(iaux) ? p.auxvar[iaux, :] : name == layername ? p.layer : p.values[name]
                 println(io, "  ", uppercase(name))
                 _write_layer(io, _layer_shape(a, dis))
             end
         end
+    end
+    return nothing
+end
+
+# T6.10: the series of TS6 or TAS6 file `fname` of package `b` (`series`: its
+# `timeseries` or `timearrayseries`), matched by the path each series was read from
+# (`_resolve_path` against `simdir`; else by base name). In file order of the names
+# (`sort` by name: a `Dict` has no order).
+function _series_of_file(series::AbstractDict, fname, simdir, b, what)
+    p = _resolve_path(fname, simdir)
+    out = [s for s in values(series) if s.file == p]
+    isempty(out) && (out = [s for s in values(series) if basename(s.file) == basename(fname)])
+    _check_writable(!isempty(out), "$what file $fname whose series are not in the spec (package $(b.name))")
+    return sort!(out; by = s -> s.name)
+end
+
+const _TS_METHOD_WORDS = Dict(:stepwise => "STEPWISE", :linear => "LINEAR", :linearend => "LINEAREND")
+
+# T6.10: a TS6 file (TimeSeries.f90 input): NAMES and METHODS, then one TIMESERIES record
+# per time with a value per series; SFAC is already applied (none written), and a series
+# without a record at a time of another one gets DNODATA there (dropped on reading).
+function _write_ts(io, series::Vector{TimeSeries})
+    for s in series
+        _check_writable(allunique(s.times), "time series $(s.name) with repeated times")
+    end
+    _write_block(io, "ATTRIBUTES") do
+        _put(io, "NAMES", String.(getfield.(series, :name))...)
+        _put(io, "METHODS", [_TS_METHOD_WORDS[s.method] for s in series]...)
+    end
+    times = sort!(unique(reduce(vcat, (s.times for s in series))))
+    at = [Dict(zip(s.times, s.values)) for s in series]
+    _write_block(io, "TIMESERIES") do
+        for t in times
+            _put(io, _mf6_fmt(t), (_mf6_fmt(get(d, t, DNODATA)) for d in at)...)
+        end
+    end
+    return nothing
+end
+
+# T6.10: a TAS6 file (TimeArraySeries.f90 input): NAME and METHOD, then one TIME block per
+# array (`_write_layer`; SFAC already applied).
+function _write_tas(io, s::TimeArraySeries, dis)
+    _write_block(io, "ATTRIBUTES") do
+        _put(io, "NAME", s.name)
+        _put(io, "METHOD", _TS_METHOD_WORDS[s.method])
+    end
+    for (t, a) in zip(s.times, s.arrays)
+        _write_block(() -> _write_layer(io, _layer_shape(a, dis)), io, "TIME $(_mf6_fmt(t))")
     end
     return nothing
 end
@@ -463,8 +515,9 @@ file under the name in its spec (`file` fields, `PackageEntry`s), as `build_mode
 
 Supported: GWF models on DIS, DISV and DISU grids with NPF, IC, STO, OC, OBS6, the stress
 packages of `BOUNDARY_KINDS` (lists, and READASARRAYS on DIS and DISV), TDIS, IMS and
-GWF6-GWF6 exchanges (with their OBS6). Time series, TAS, TVK, TVS and ATS input are an
-`ArgumentError`. Ported from ModflowCoupling's `write_simulation` (src/mf6_writer.jl
+GWF6-GWF6 exchanges (with their OBS6), and the TS6 and TAS6 files of the stress packages
+(T6.10: the series as loaded, SFAC applied; values linked to a series written as its
+name). TVK, TVS and ATS input are an `ArgumentError`. Ported from ModflowCoupling's `write_simulation` (src/mf6_writer.jl
 there).
 
 # Example
@@ -508,6 +561,14 @@ function write_simulation(dir::AbstractString, spec::SimulationSpec)
                 b.readasarrays ? _write_array_boundary(io, b, dis) : _write_list_boundary(io, b)
             end
             isnothing(b.obs) || _write_file(io -> _write_obs(io, b.obs), dir, only(b.obs_files))
+            for f in b.ts_files
+                ss = _series_of_file(b.timeseries, f, spec.simdir, b, "TS6")
+                _write_file(io -> _write_ts(io, ss), dir, f)
+            end
+            for f in b.tas_files
+                ss = _series_of_file(b.timearrayseries, f, spec.simdir, b, "TAS6")
+                _write_file(io -> _write_tas(io, only(ss), dis), dir, f)
+            end
         end
     end
     byname = Dict(m.name => m for m in spec.models)
