@@ -829,8 +829,12 @@ largest value 2.5e-7 (advtidal) and 2.2e-8 (maw-p03c), criterion 1e-6.
 model that saves it, as max |Δ| over the record relative to its largest |q|: criterion
 1e-6 in `:double`/`:mixed` and 1e-3 in `:single` (largest elsewhere: ex-gwf-lgrv-lgr child
 1.2e-4 in `:single`; advtidal 6.7e-5 `:single`, 2.2e-11 `:double`). Newton models leave out
-the cells below their bottom in MF6's heads (a flow over a vanishing saturated area,
-`spdis_skip`). **ex-gwf-maw-p03c: 1e-5 and 0.1** (`spdis_tol`, test/run_parity.jl). CPU:
+the cells whose saturated thickness in MF6's heads is below 1e-6 of their thickness
+(Newton-dry: MF6's head 1e-15 above the bottom, ours on it) and the cells connected to one
+(`_spdis_thin_cells`): their face velocities divide a vanishing flow (MF6 7e-27, ours 0) by
+a vanishing upstream saturated area, so MF6's value there is noise (ex-gwf-bump-p01a: 0.99
+of the record's largest |q| without the skip; with it 5.1e-10 `:double`, 1.8e-6 `:single`;
+bump-p01b/c 1.4e-9 / 1.9e-9 and 4.1e-6 / 9.7e-6). **ex-gwf-maw-p03c: 1e-5 and 0.1** (`spdis_tol`, test/run_parity.jl). CPU:
 3.1e-6 `:double`, 3.8e-6 `:mixed`, 4.26e-2 `:single`. The `:double` value is the reference's
 (the tight-relative run, heads leave 2.9e-8 of the row magnitudes, see above). The `:single`
 value is the qz of the cells next to the former well (large vertical conductance per unit

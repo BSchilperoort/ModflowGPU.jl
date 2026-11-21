@@ -190,9 +190,9 @@ function _budget_difference(ours, mf6, tin; bounds = nothing, bytext = nothing, 
             # largest value, collected in `spdis` (`q` is 0).
             @test qa.id1 == qb.id1 && qa.id2 == qb.id2 && ra.auxtxt == r.auxtxt
             @test strip(ra.paknam1) == strip(r.paknam1) && strip(ra.paknam2) == strip(r.paknam2)
-            # `spdis_skip(kstp, kper)`: user nodes to leave out (Newton models: cells below
-            # their bottom in MF6's heads, whose velocity is a flow over a vanishing area).
-            keep = isnothing(spdis_skip) ? Colon() : findall(!in(spdis_skip(r.kstp, r.kper)), qb.id1)
+            # `spdis_skip(kstp, kper)`: user nodes to leave out (Newton models,
+            # `_spdis_thin_cells`).
+            keep = isnothing(spdis_skip) ? Colon() : findall(!in(Set(spdis_skip(r.kstp, r.kper))), qb.id1)
             xa, xb = qa.aux[:, keep], qb.aux[:, keep]
             sc = max(maximum(abs, xb; init = 0.0), floatmin())
             isnothing(spdis) || push!(spdis, maximum(abs.(xa .- xb); init = 0.0) / sc)
@@ -308,6 +308,24 @@ function _single_budget_replay(rundir; backend = TEST_BACKEND, preconditioner = 
         spdis = isempty(spd) ? nothing : maximum(spd)
         (; dq, dpd, pd, rpd, bpd, nrec, bytext, spdis)
     end
+end
+
+# T6.9: the user nodes whose DATA-SPDIS is not compared in a Newton model: a cell whose
+# saturated thickness in MF6's heads `hu` (by user node) is below 1e-6 of its thickness
+# (Newton-dry: at or below its bottom, MF6's head often 1e-15 above it, ours on it), and the
+# cells connected to one. Their face velocities divide a vanishing flow (MF6 7e-27, ours 0)
+# by a vanishing saturated area (`thksatnm` upstream: a Newton-dry cell above its
+# neighbour's head), so MF6's value is noise of either; ex-gwf-bump-p01a: up to 0.99 of the
+# record's largest |q| there, 5e-10 elsewhere.
+function _spdis_thin_cells(conn, hu)
+    thin(nr) = hu[conn.nodeuser[nr]] - conn.bot[nr] < 1.0e-6 * (conn.top[nr] - conn.bot[nr])
+    out = Int[]
+    for nr in 1:Int(conn.nodes)
+        if thin(nr) || any(ii -> thin(Int(conn.ja[ii])), (conn.ia[nr] + 1):(conn.ia[nr + 1] - 1))
+            push!(out, Int(conn.nodeuser[nr]))
+        end
+    end
+    return out
 end
 
 # Listing-table comparison: max over terms of (|Δ| − 2·rounding) / total in.
@@ -556,7 +574,7 @@ function _run_parity(
                     hfm = open_head_file(f.hds)
                     skip = (kstp, kper) -> begin
                         k = findfirst(s -> (s.kstp, s.kper) == (kstp, kper), hfm.steps)
-                        isnothing(k) ? Int[] : findall(vec(read_head(hfm, k)) .< botu)
+                        isnothing(k) ? Int[] : _spdis_thin_cells(conn, vec(read_head(hfm, k)))
                     end
                 end
                 dqk, nreck, btot = isempty(f.cbc) ? (0.0, 0, Dict{Tuple{Int, Int}, Float64}()) : _budget_difference(mo.budget_file, f.cbc, tin; bounds = rb, spdis = spd, spdis_skip = skip)
