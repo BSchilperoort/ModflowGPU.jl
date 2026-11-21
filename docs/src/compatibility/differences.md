@@ -214,7 +214,10 @@ The stepping API works as libmf6 and its XMI/BMI interface do, with these differ
   `NOCHECK`), so it also checks values written through its API; ModflowGPU does not check
   values set with `set_value` or `get_value_ptr`. `BOUND` arrays written on the device
   ([`ModflowGPU.device_bound!`](@ref)) get a reduced check at `prepare_solve`: finite
-  values and, for RIV, stage not below bottom and conductance not negative.
+  values and, for RIV, stage not below bottom and conductance not negative. With the
+  simulation option `NOCHECK` these checks are skipped, as in MODFLOW 6 (the EVT PXDP
+  checks of `NSEG` > 1 still run, and device `BOUND` values are still checked for being
+  finite).
 - There are two BMIs. [`MF6Model`](@ref) returns what libmf6's BMI returns (one grid per
   model, DIS x and y as indices, libmf6's shapes and type strings), with the differences
   listed under [Differences from libmf6](@ref); where libmf6 returns a failure status it

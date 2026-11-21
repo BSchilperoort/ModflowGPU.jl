@@ -234,6 +234,10 @@ function initialize(
     T, Ts, Tp = resolve_precision(backend, precision)
     steps = time_steps(sim.tdis)
     m = multi ? GwfModel(backend, T, solution_setup(sim), nper(sim.tdis)) : GwfModel(backend, T, only(sim.models), nper(sim.tdis))
+    # T6.10: NOCHECK (SimulationCreate.f90 `isimcheck = 0`): no `bnd_ck` in `gwf_ad`.
+    for pkg in m.packages
+        pkg.nocheck = sim.nocheck
+    end
     ps = PicardSolver(m, PicardSettings(ims, T; closures, preconditioner, precond_options); Ts, Tp)
     views = model_views(m)
     accs = BudgetAccumulator[BudgetAccumulator(v) for v in views]
@@ -599,6 +603,8 @@ end
     return ok
 end
 @inline _device_record_ok(::BoundaryKind, bound, i) = _finite_record(bound, i)
+# With NOCHECK (T6.10) only the finite-value check, which is not an MF6 check.
+_device_check_kind(pkg::BoundaryPackage{K}) where {K} = pkg.nocheck ? BoundaryKind{:NOCHECK}() : BoundaryKind{K}()
 @inline _device_record_ok(::BoundaryKind{:RIV}, bound, i) =
     _finite_record(bound, i) && bound[1, i] >= bound[3, i] && bound[2, i] >= zero(eltype(bound))
 
@@ -626,7 +632,7 @@ function _check_device_writes!(s::Simulation)
         pkg = s.model.packages[ip]
         pkg.nbound > 0 || continue
         isnothing(host) ? fill!(flag, Int32(0)) : (host[1] = Int32(0))
-        device_bound_check_kernel!(backend, _WG)(flag, pkg.bound, BoundaryKind{boundary_kind(pkg)}(); ndrange = pkg.nbound)
+        device_bound_check_kernel!(backend, _WG)(flag, pkg.bound, _device_check_kind(pkg); ndrange = pkg.nbound)
         KernelAbstractions.synchronize(backend)
         bad = isnothing(host) ? Array(flag)[1] : host[1]
         bad == 0 || _device_bound_error(pkg)
@@ -639,7 +645,7 @@ end
 function _device_bound_error(pkg::BoundaryPackage{K}) where {K}
     bound = Array(pkg.bound)
     for i in 1:pkg.nbound
-        _device_record_ok(BoundaryKind{K}(), bound, i) && continue
+        _device_record_ok(_device_check_kind(pkg), bound, i) && continue
         rec = Float64.(bound[:, i])
         reason = !all(isfinite, rec) ? "non-finite value" :
             rec[1] < rec[3] ? "RIVER STAGE IS LESS THAN RIVER BOTTOM" : "CONDUCTANCE IS LESS THAN ZERO"
