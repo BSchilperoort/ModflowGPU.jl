@@ -85,7 +85,7 @@ function ModelOutput(m::Union{GwfModel, ModelView}, simdir::AbstractString, outd
         ext = dis isa DisSpec ? "dis" : dis isa DisvSpec ? "disv" : "disu"
         name = !isempty(dis.grb_file) ? dis.grb_file : isempty(dis.file) ? lowercase(spec.name) * ".$ext.grb" : dis.file * ".grb"
         gp = _output_path(simdir, outdir, name)
-        write_grb(gp, grb_file(dis, _vconn(m), spec.npf.icelltype))
+        write_grb(gp, grb_file(dis, _vconn(m), _mf6_icelltype(spec.npf)))
     end
     head = isempty(hp) ? nothing : open(hp, "w")
     budget = isempty(bp) ? nothing : open(bp, "w")

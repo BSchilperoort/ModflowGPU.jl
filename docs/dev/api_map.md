@@ -466,9 +466,9 @@ it. Underscore-prefixed helpers are omitted.
   `MF6BinaryFileError`, `pad_text`, `OUTPUT_TEXT_BYTES`. Tests: output.
 - **output/grb.jl**: binary grid files. `BinaryGridFile`, `GrbVariable`, `read_grb`,
   `write_grb`. Tests: output, input_arrays, connectivity. T6.9: `grb_file(dis, conn,
-  icelltype)` (Dis/Disv/Disu.f90 `write_grb`, version 1; `_fortran_g` for the scalar
-  definitions), written by `ModelOutput` (tests: run, byte-identical to MF6's for every
-  reference run; disv_disu).
+  icelltype)` (Dis/Disv/Disu.f90 `write_grb`, version 1; ICELLTYPE after `preprocess_input`,
+  `_mf6_icelltype` in gwf/npf.jl; `_fortran_g` for the scalar definitions), written by
+  `ModelOutput` (tests: run, byte-identical to MF6's for every reference run; disv_disu).
 - **output/layout.jl**: how arrays split into records. `OutputLayout`, `nodesuser`,
   `budget_dims`. Tests: output.
 - **output/hds.jl**: head files. `HeadFile` / `open_head_file`, `HeadStep`, `head_kstpkper`,

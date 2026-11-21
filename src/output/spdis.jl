@@ -75,7 +75,8 @@ function specific_discharge(m::Union{GwfModel, ModelView}, flowja::AbstractVecto
     rng = _vrange(m)
     nodes = Int(conn.nodes)
     ib = mm.ibound_host[rng]
-    ict = Int32[spec.npf.icelltype[conn.nodeuser[n]] for n in 1:nodes]
+    ictu = _mf6_icelltype(spec.npf)
+    ict = Int32[ictu[conn.nodeuser[n]] for n in 1:nodes]
     cv = mm.npf.cv
     sat = isnothing(cv) ? ones(nodes) : Float64.(Array(cv.sat))[rng]
     upstream = spec.newton
@@ -220,6 +221,7 @@ function _spdis_edges(v::ModelView)
         ia = findfirst(==("ANGLDEGX"), uppercase.(d.auxnames))
         ic = findfirst(==("CDIST"), uppercase.(d.auxnames))
         p1, p2 = sol.models[ex.m1], sol.models[ex.m2]
+        ictu1, ictu2 = _mf6_icelltype(p1.spec.npf), _mf6_icelltype(p2.spec.npf)
         q = x[ie]
         for i in eachindex(ex.node1)
             n1, n2 = Int(ex.node1[i]), Int(ex.node2[i])
@@ -234,8 +236,8 @@ function _spdis_edges(v::ModelView)
                 isnothing(ia) && throw(MF6InputError(ex.spec.file, 0, "error in gwf_gwf_cq"))
                 a = d.auxvar[ia, i] * (pi / 180)
                 nx, ny = cos(a), sin(a)
-                ict1 = p1.spec.npf.icelltype[c1.nodeuser[n1]]
-                ict2 = p2.spec.npf.icelltype[c2.nodeuser[n2]]
+                ict1 = ictu1[c1.nodeuser[n1]]
+                ict2 = ictu2[c2.nodeuser[n2]]
                 thk = _thksatnm(1, 1, ict1, ict2, false, ihc, 0.0, 0.0, 1.0, 1.0, c1.top[n1], c2.top[n2], c1.bot[n1], c2.bot[n2])
                 area = d.hwva[i] * thk
             end
