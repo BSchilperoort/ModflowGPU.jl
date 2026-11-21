@@ -80,17 +80,25 @@ function ModelOutput(m::Union{GwfModel, ModelView}, simdir::AbstractString, outd
     # T6.9: the binary grid file (DiscretizationBase.f90 `dis_ar`: GRB6 FILEOUT, else the
     # DIS input file name + ".grb").
     gp = ""
-    if !spec.dis.nogrb
-        dis = spec.dis
-        ext = dis isa DisSpec ? "dis" : dis isa DisvSpec ? "disv" : "disu"
-        name = !isempty(dis.grb_file) ? dis.grb_file : isempty(dis.file) ? lowercase(spec.name) * ".$ext.grb" : dis.file * ".grb"
-        gp = _output_path(simdir, outdir, name)
-        write_grb(gp, grb_file(dis, _vconn(m), _mf6_icelltype(spec.npf)))
+    head = budget = nothing
+    try  # T6.10: on an error, close what is open
+        if !spec.dis.nogrb
+            dis = spec.dis
+            ext = dis isa DisSpec ? "dis" : dis isa DisvSpec ? "disv" : "disu"
+            name = !isempty(dis.grb_file) ? dis.grb_file : isempty(dis.file) ? lowercase(spec.name) * ".$ext.grb" : dis.file * ".grb"
+            gp = _output_path(simdir, outdir, name)
+            write_grb(gp, grb_file(dis, _vconn(m), _mf6_icelltype(spec.npf)))
+        end
+        head = isempty(hp) ? nothing : open(hp, "w")
+        budget = isempty(bp) ? nothing : open(bp, "w")
+        listing = open(lp, "w")
+        return ModelOutput(head, budget, listing, OutputLayout(spec.dis), hp, bp, lp, obs, gp)
+    catch
+        isnothing(obs) || close(obs)
+        isnothing(head) || close(head)
+        isnothing(budget) || close(budget)
+        rethrow()
     end
-    head = isempty(hp) ? nothing : open(hp, "w")
-    budget = isempty(bp) ? nothing : open(bp, "w")
-    listing = open(lp, "w")
-    return ModelOutput(head, budget, listing, OutputLayout(spec.dis), hp, bp, lp, obs, gp)
 end
 
 function Base.close(o::ModelOutput)

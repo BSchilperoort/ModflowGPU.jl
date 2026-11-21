@@ -242,39 +242,40 @@ function initialize(
     views = model_views(m)
     accs = BudgetAccumulator[BudgetAccumulator(v) for v in views]
     outs = ModelOutput[]
+    obsonly = Any[]
+    exobs = nothing
+    # T6.10: a step that throws closes every output file opened before it (the model
+    # output, the observation files of a run without `write_output`, the exchange
+    # observation files).
     try
         write_output && for v in views
             push!(outs, ModelOutput(v, sim.simdir, outdir))
         end
-    catch
-        foreach(close, outs)
-        rethrow()
-    end
-    out = isempty(outs) ? nothing : first(outs)
-    exflows = multi ? ExchangeFlows(m) : nothing
-    # T6.9: observations are written also without `write_output` (MF6 writes OBS6 output in
-    # every run, e.g. through libmf6), into `outdir`.
-    hasobs = any(v -> _has_obs(_vspec(v)), views) || (multi && any(ex -> !isnothing(ex.spec.obs), m.solution.exchanges))
-    !write_output && hasobs && _check_output_dir(outdir)
-    obsonly = Any[]
-    try
+        out = isempty(outs) ? nothing : first(outs)
+        exflows = multi ? ExchangeFlows(m) : nothing
+        # T6.9: observations are written also without `write_output` (MF6 writes OBS6 output in
+        # every run, e.g. through libmf6), into `outdir`.
+        hasobs = any(v -> _has_obs(_vspec(v)), views) || (multi && any(ex -> !isnothing(ex.spec.obs), m.solution.exchanges))
+        !write_output && hasobs && _check_output_dir(outdir)
         write_output || for v in views
             push!(obsonly, ObservationOutput(v, sim.simdir, outdir))
         end
+        exobs = multi ? ExchangeObservations(m.solution, sim.simdir, outdir) : nothing
+        s = Simulation(
+            sim, m, ps, first(accs), out, T, Ts, Tp, steps, 0, :initialized, OuterState(ps), StepResult[], ModelBudget[],
+            Dict{String, _Mirror}(), Int[], nothing, views, String[_vname(v) for v in views], outs, accs, exflows, exobs,
+            obsonly,
+        )
+        for (v, o) in zip(views, outs)
+            _listing_header(o.listing, v, ps, T, Ts, Tp, backend)
+        end
+        return s
     catch
+        foreach(close, outs)
         foreach(o -> isnothing(o) || close(o), obsonly)
+        isnothing(exobs) || close(exobs)
         rethrow()
     end
-    exobs = multi ? ExchangeObservations(m.solution, sim.simdir, outdir) : nothing
-    s = Simulation(
-        sim, m, ps, first(accs), out, T, Ts, Tp, steps, 0, :initialized, OuterState(ps), StepResult[], ModelBudget[],
-        Dict{String, _Mirror}(), Int[], nothing, views, String[_vname(v) for v in views], outs, accs, exflows, exobs,
-        obsonly,
-    )
-    for (v, o) in zip(views, outs)
-        _listing_header(o.listing, v, ps, T, Ts, Tp, backend)
-    end
-    return s
 end
 
 # T6.2 (from T6.1): output written next to the inputs (the default `outdir`) once overwrote
