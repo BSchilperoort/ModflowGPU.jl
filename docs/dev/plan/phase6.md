@@ -252,3 +252,9 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
   `:single` and `:double`; non-affected models bitwise unchanged; global5m no regression.
 - Docs: update the user pages each item touches (output, getting_started, bmi,
   differences, packages) and `docs/dev/api_map.md`.
+- Still open after the merge (2026-11-21, unowned): NOCHECK (`isimcheck`) is not honoured,
+  record checks always run (now every step for time-series packages); `write_simulation`
+  rejects time series; DATA-SPDIS is computed on the host (move to the device if a large
+  model needs it every step); `:single` DATA-SPDIS of maw-p03c is 4.3e-2 of the largest
+  value (Float32 head rounding; use `:mixed`); `obsonly` files are not closed when
+  `ExchangeObservations` fails in `initialize`; DATA-SAT not written. Part B unchanged.
