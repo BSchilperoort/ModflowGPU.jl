@@ -244,10 +244,8 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
      with several solutions raises `MF6UnsupportedError`; unit test for
      FLOW-JA-FACE-CHD on exchange cells.
   9. Refresh the parity.toml header with a full collection run (cpu and rocm).
-- Part B (backlog, not in this card; a later card if the owner wants them): multi-model
-  runs with convertible cells/ICONVERT/NEWTON and several solutions; GNC6 and MVR6 (also
-  on exchanges); XT3D with convertible cells/Newton, TVK, HFB; XT3D exchange next to a
-  DISU model without vertices.
+- Part B (backlog, not in this card): carded on 2026-11-21 as T6.10 to T6.15; MVR6 gets
+  no card (see the note after T6.15).
 - Done when: every Part A item is fixed or has a written reason why not, with tests in
   `:single` and `:double`; non-affected models bitwise unchanged; global5m no regression.
 - Docs: update the user pages each item touches (output, getting_started, bmi,
@@ -258,3 +256,114 @@ T6.0, T6.1, T6.2a, T6.3 and T6.4 depend on no other Phase 6 card.
   model needs it every step); `:single` DATA-SPDIS of maw-p03c is 4.3e-2 of the largest
   value (Float32 head rounding; use `:mixed`); `obsonly` files are not closed when
   `ExchangeObservations` fails in `initialize`; DATA-SAT not written. Part B unchanged.
+  All carded on 2026-11-21: T6.10 (leftovers), T6.11 to T6.15 (Part B).
+
+### Phase 6 backlog (cards added 2026-11-21)
+
+The T6.9 Part B items and the leftovers noted after the T6.9 merge. None of these features
+is used by a model in `validation/examples.toml` that is in scope, so each card builds its
+own test models, modelled on the named MF6 autotests (`reference/modflow6/autotest`; flopy
+is not installed, so write the input files by hand or with `write_simulation`), stores them
+under `test/models/`, and runs mf6 6.8.2 at test time for the reference, as
+`test/unit/xt3d_test.jl` and `test/unit/builder_test.jl` do. Parity criteria are those of
+PLAN.md section 4 in `:single` and `:double`. Each card updates the matching row of "Not
+supported yet" in `docs/src/compatibility/packages.md`, `docs/dev/api_map.md`, and keeps
+non-affected models bitwise unchanged (parity.toml) and global5m without regression.
+Order: T6.10 to T6.13 are independent (‖); T6.14 needs T6.11 and T6.12; T6.15 needs T6.14
+for its XT3D items only.
+
+**T6.10 Small leftovers from T6.9 (S) ‖**
+- Depends: T6.9 (merged).
+- Items (WIP commit per item):
+  1. NOCHECK: honour `isimcheck` (`gwf_ad`: `bnd_ck` only when `isimcheck > 0`; autotest
+     `test_gwf_bnd_nocheck.py`); `check_records` is skipped with NOCHECK.
+  2. `SAVE_SATURATION`: write `DATA-SAT` to the budget file (`npf_save_model_flows`,
+     `sat` as MF6 computes it); remove the "not written" row in `differences.md`.
+  3. `write_simulation` with time series: write TS6 and TAS6 files and their `FILEIN`
+     references so that a loaded model with time series round trips (mf6 runs the written
+     files; advtidal and fhb as tests).
+  4. `initialize`: close the observation files already opened (`obsonly`) when a later
+     step, e.g. `ExchangeObservations`, throws.
+  5. DATA-SPDIS on the device: only if a timing on global5m with
+     `SAVE_SPECIFIC_DISCHARGE` and output every step shows the host path costs more than
+     10 % of the step; otherwise write the measurement in the card report and close the
+     item.
+- Not an item: the `:single` DATA-SPDIS of maw-p03c (4.3e-2) is Float32 head rounding,
+  explained in `docs/dev/precision.md`; no fix planned.
+- Done when: every item fixed (or item 5 measured), tests in both precisions.
+
+**T6.11 Horizontal flow barriers, HFB6 (S) ‖**
+- Read: `src/Model/GroundWaterFlow/gwf-hfb.f90` (`hfb_ar`, `hfb_rp`, `hfb_fc`,
+  `condsat_modify`, `condsat_reset`, `hfb_cq`), and how NPF calls it in `gwf.f90`.
+- Deliver: HFB6 on DIS, DISV and DISU (hydraulic characteristic per connection, stress
+  periods), applied to the conductances on the device when a period starts: saturated
+  conductance for confined connections, and the thickness-weighted form MF6 uses for
+  convertible cells and Newton (`hfb_fc`). Budgets unchanged in form (HFB has no budget
+  term in MF6).
+- Test models: from `test_gwf_vhfb.py` (vertical barrier check), `test_gwf_disu_hfb_idomain.py`
+  (DISU, IDOMAIN), and a convertible DIS model with barriers changing between periods.
+- Done when: those models pass parity; XT3D with HFB stays rejected (T6.14).
+- Docs: packages.md (HFB6 row), `docs/src/compatibility/results.md` lists the test models.
+
+**T6.12 Time-varying K and storage, TVK6 and TVS6 (M) ‖**
+- Read: `TvBase.f90`, `gwf-tvk.f90`, `gwf-tvs.f90`, and where NPF/STO recompute after a
+  change (`npf_cond_changed`/`calc_condsat`, `sto` `ss`/`sy` updates).
+- Deliver: TVK (K, K22, K33) and TVS (SS, SY) per period and with time series (T6.3
+  engine); after a change, recompute the affected saturated conductances and storage terms
+  on the device (only the changed cells and their connections, not a full rebuild).
+  Device-only writes through the stepping API (`device_bound!`-style addresses for K/SS/SY
+  if they exist) must not be overwritten (T6.9 item 1 rule).
+- Test models: from `test_gwf_npf_tvk01.py` to `tvk06` and `test_gwf_sto_tvs01.py`.
+- Done when: those models pass parity; XT3D with TVK stays rejected (T6.14).
+- Docs: packages.md (TVK6, TVS6 row), stepping.md if addresses change.
+
+**T6.13 Ghost-node correction, GNC6 (M) ‖**
+- Read: `src/Exchange/GhostNode.f90` (`gnc_fc`, `gnc_fn`, `gnc_cq`, implicit and explicit),
+  GNC in `gwf.f90` and `exg-gwfgwf.f90` / `GwfInterfaceModel.f90` (GNC on exchanges).
+- Deliver: GNC6 within a model (DISU and DISV, `IMPLICIT` and `EXPLICIT`) and on GWF-GWF
+  exchanges (`GNCDATA` in the exchange). Implicit GNC adds connections between a cell and
+  the contributing cells: extend the CSR stencil (as XT3D did, T6.5) on the host; the
+  correction itself is formulated in a kernel. Newton terms (`gnc_fn`) only if T6.2's
+  Newton path reaches GNC models; otherwise reject NEWTON with GNC.
+- Test models: there is no GNC autotest in this checkout (MF6 tests GNC through the
+  external test models): build a DISU nested grid with ghost nodes and an LGR-style pair of
+  models with GNC on the exchange (like `ex-gwf-lgrv-lgr`), both with mf6 at test time.
+- Done when: both pass parity in both precisions, implicit and explicit.
+- Docs: packages.md (GNC6 row, and the exchanges section that says GNC is not supported).
+
+**T6.14 XT3D with convertible cells, Newton, HFB and TVK (L)**
+- Depends: T6.11 and T6.12 (for the HFB and TVK parts; the convertible/Newton part can
+  start first).
+- Read: `Xt3dInterface.f90` (`xt3d_fc` and `xt3d_fn` with `inewton`, `xt3d_fhfb`,
+  `xt3d_load_inbr`, the saturated-thickness terms), `Xt3dAlgorithm.f90`.
+- Deliver: XT3D for convertible cells (saturated thickness in the XT3D conductance),
+  the XT3D Newton terms, HFB on XT3D connections, and TVK changes recomputing the XT3D
+  coefficients.
+- Test models: from `test_gwf_xt3d_newton_upstream.py`, a convertible XT3D model on DIS and
+  DISV, and XT3D with HFB and with TVK.
+- Done when: those pass parity; the existing Tier 6 examples bitwise unchanged.
+- Docs: packages.md (XT3D row), differences.md if outer counts differ.
+
+**T6.15 Multi-model with convertible cells and Newton; several solutions (L)**
+- Depends: T6.6, T6.2 (merged); T6.14 for the XT3D-exchange-with-Newton item only.
+- Read: `GwfGwfConnection.f90`, `GwfInterfaceModel.f90` (Newton and convertible cells across
+  the interface), `exg-gwfgwf.f90` (`gwf_gwf_fn`, `rewet` across exchanges),
+  `SolutionGroup.f90` and `NumericalSolution.f90` (several solutions in a group, `mxiter`
+  of the group).
+- Deliver: (1) the joined-model approach of T6.6 extended to convertible cells, ICONVERT,
+  rewetting and NEWTON (per-model `NEWTON` must agree, as MF6 requires); (2) several IMS
+  solutions solved one after another in a solution group, each with its own IMS settings,
+  with the group's outer loop; (3) an XT3D exchange next to a DISU model without vertices
+  (`test_par_gwf_disu_noverts.py`, run serially).
+- Test models: from `test_gwf_ifmod_newton.py`, `test_gwf_ifmod_rewet.py`,
+  `test_gwf_ifmod_mult_exg.py`, `test_par_gwf_newton.py` (serial), and a two-solution
+  simulation (two IMS, models without exchanges between solutions, as MF6 allows).
+- Done when: those pass parity; T6.6 Tier 7 examples bitwise unchanged; strict=false with
+  several solutions no longer raises.
+- Docs: packages.md (rows on several solutions and multi-model Newton), stepping.md
+  (addresses with several solutions).
+
+**MVR6 gets no card.** In MF6 only LAK, MAW, SFR and UZF can receive moved water; WEL, DRN,
+RIV and GHB can only provide it. Those four packages are out of scope
+(`docs/src/compatibility/packages.md`), so a mover would have nothing to move water to.
+`TO-MVR` stays accepted as `3.0e30`.

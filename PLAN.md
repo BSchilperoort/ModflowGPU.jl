@@ -508,6 +508,12 @@ marked; their merge commits on `main` hold the card reports.
   - T6.7 OBS for GWF heads and flows (done 2026-11-20)
   - T6.8 Parallel test runner (done 2026-11-19)
   - T6.9 Phase 6 open issues (done 2026-11-21)
+  - T6.10 Small leftovers from T6.9 (NOCHECK, DATA-SAT, write_simulation with time series)
+  - T6.11 Horizontal flow barriers (HFB6)
+  - T6.12 Time-varying K and storage (TVK6, TVS6)
+  - T6.13 Ghost-node correction (GNC6)
+  - T6.14 XT3D with convertible cells, Newton, HFB and TVK
+  - T6.15 Multi-model with convertible cells and Newton; several solutions
 - **Phase 7: beyond MF6 parity (build after Milestone B)**: [docs/dev/plan/phase7.md](docs/dev/plan/phase7.md)
   - T7.1 Longitude wrap-around for global grids (dropped 2026-11-16)
   - T7.2 Spherical geometry
@@ -550,6 +556,7 @@ T3.1 ─┬─ T3.2 → T3.4 → T4.1 ─┬─ T4.2 ─┬→ T4.4 → T4.5 →
            T6.4 → T6.5 (DISV examples) ; T6.5 → T6.6 (s2–s4)
            T6.1 + T6.3 → advtidal (owned by whichever of the two merges last)
            T6.1 + T6.3 + T6.4 → T6.7
+           backlog: T6.10, T6.11, T6.12, T6.13 ‖ ; T6.11 + T6.12 → T6.14 → T6.15 (XT3D items)
 T4.3 + T4.4 → T7.5 ; T6.4 (done) → T7.2 (validation against DISU)
 ```
 
