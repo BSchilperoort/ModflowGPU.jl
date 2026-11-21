@@ -129,42 +129,20 @@ end
 
 # The weighting of `calc_spdis` for one cell (DEM10 = 1e-10).
 function _spdis_cell(nix, niy, di, vi, viz, diz)
-    cx, cy, cz, den = _spdis_coefficients(nix, niy, di, diz)
+    ncz = length(viz)
     vz = 0.0
-    for iz in eachindex(viz)
-        vz += cz[iz] * viz[iz]
-    end
-    length(viz) == 1 && (vz = viz[1])
-    vx = 0.0
-    vy = 0.0
-    for ic in eachindex(vi)
-        vx += cx[ic] * vi[ic]
-        vy += cy[ic] * vi[ic]
-    end
-    if den != 0
-        vx /= den
-        vy /= den
-    end
-    return (vx, vy, vz)
-end
-
-# The weights of `calc_spdis` for one cell, which depend only on the geometry (T6.10: shared
-# by the host path and `SpdisDevice`): `vz = Σ cz·viz` (one vertical connection: `cz = 1`,
-# the velocity itself), `vx = Σ cx·vi / den`, `vy = Σ cy·vi / den` (no division when
-# `den == 0`), with `cx = bix − axy·biy`, `cy = biy − ayx·bix`, `den = 1 − axy·ayx`.
-function _spdis_coefficients(nix, niy, di, diz)
-    ncz = length(diz)
-    cz = ones(ncz)
-    if ncz > 1
+    if ncz == 1
+        vz = viz[1]
+    elseif ncz > 1
         dsumz = sum(diz)
         dsumz = dsumz + 1.0e-10 * dsumz
         denom = ncz - 1.0
         for iz in 1:ncz
             w = dsumz > 0 ? 1.0 - diz[iz] / dsumz : 0.0
-            cz[iz] = w / denom
+            vz += (w / denom) * viz[iz]
         end
     end
-    nc = length(di)
+    nc = length(vi)
     wix = [di[ic] * abs(nix[ic]) for ic in 1:nc]
     wiy = [di[ic] * abs(niy[ic]) for ic in 1:nc]
     dsumx = sum(wix; init = 0.0)
@@ -195,9 +173,76 @@ function _spdis_coefficients(nix, niy, di, diz)
         axy += bix[ic] * niy[ic]
         ayx += biy[ic] * nix[ic]
     end
-    cx = [bix[ic] - axy * biy[ic] for ic in 1:nc]
-    cy = [biy[ic] - ayx * bix[ic] for ic in 1:nc]
-    return cx, cy, cz, 1.0 - axy * ayx
+    vx = 0.0
+    vy = 0.0
+    for ic in 1:nc
+        vx += (bix[ic] - axy * biy[ic]) * vi[ic]
+        vy += (biy[ic] - ayx * bix[ic]) * vi[ic]
+    end
+    denom = 1.0 - axy * ayx
+    if denom != 0
+        vx /= denom
+        vy /= denom
+    end
+    return (vx, vy, vz)
+end
+
+# T6.10: the weights of `_spdis_cell`, which depend only on the geometry, for
+# `SpdisDevice`: with `hor`/`ver` the CSR positions of the horizontal/vertical
+# connections, `cx[hor] = bix − axy·biy`, `cy[hor] = biy − ayx·bix`, `cx[ver]` the vertical
+# weights (1 for a single connection); returns `den = 1 − axy·ayx`. The same operations in
+# the same order as `_spdis_cell`, so `Σ cx·vi / den` is its `vx` bitwise. `wix`, `wiy`,
+# `bix`, `biy` are scratch vectors.
+function _spdis_coefficients!(cx, cy, hor, ver, nix, niy, di, diz, wix, wiy, bix, biy)
+    ncz = length(diz)
+    if ncz == 1
+        cx[ver[1]] = 1.0
+    elseif ncz > 1
+        dsumz = sum(diz)
+        dsumz = dsumz + 1.0e-10 * dsumz
+        denom = ncz - 1.0
+        for iz in 1:ncz
+            w = dsumz > 0 ? 1.0 - diz[iz] / dsumz : 0.0
+            cx[ver[iz]] = w / denom
+        end
+    end
+    nc = length(di)
+    resize!(wix, nc); resize!(wiy, nc); resize!(bix, nc); resize!(biy, nc)
+    for ic in 1:nc
+        wix[ic] = di[ic] * abs(nix[ic])
+        wiy[ic] = di[ic] * abs(niy[ic])
+    end
+    dsumx = sum(wix; init = 0.0)
+    dsumy = sum(wiy; init = 0.0)
+    dsumx = dsumx + 1.0e-10 * dsumx
+    dsumy = dsumy + 1.0e-10 * dsumy
+    for ic in 1:nc
+        wix[ic] = (dsumx - wix[ic]) * abs(nix[ic])
+        wiy[ic] = (dsumy - wiy[ic]) * abs(niy[ic])
+    end
+    dsumx = 0.0
+    dsumy = 0.0
+    for ic in 1:nc
+        bix[ic] = wix[ic] * sign1(nix[ic])
+        biy[ic] = wiy[ic] * sign1(niy[ic])
+        dsumx += wix[ic] * abs(nix[ic])
+        dsumy += wiy[ic] * abs(niy[ic])
+    end
+    dsumx > 0 && (dsumx = 1.0 / dsumx)
+    dsumy > 0 && (dsumy = 1.0 / dsumy)
+    axy = 0.0
+    ayx = 0.0
+    for ic in 1:nc
+        bix[ic] *= dsumx
+        biy[ic] *= dsumy
+        axy += bix[ic] * niy[ic]
+        ayx += biy[ic] * nix[ic]
+    end
+    for ic in 1:nc
+        cx[hor[ic]] = bix[ic] - axy * biy[ic]
+        cy[hor[ic]] = biy[ic] - ayx * bix[ic]
+    end
+    return 1.0 - axy * ayx
 end
 
 # Fortran `sign(1.0, x)`: +1 for x = +0.0, -1 for x = -0.0.
@@ -353,7 +398,7 @@ _spdis_on_device(m) = m isa GwfModel && isnothing(m.npf.cv)
     SpdisDevice(m::GwfModel)
 
 The geometry of `calc_spdis` for model `m` on its device, in the state precision `T`
-(built once on the host in Float64, `_spdis_coefficients` as in `specific_discharge`):
+(built once on the host in Float64, `_spdis_coefficients!` as in `specific_discharge`):
 per CSR position `ihc` (`Int8`), the weight `cx` (vertical: `cz`) and `cy` of the
 connection and its `area` (vertical: HWVA; horizontal: HWVA times `thksatnm` of the two
 confined cells); per node `den`; the result buffer `out` `(3, nodes)`. Only for
@@ -377,6 +422,7 @@ function SpdisDevice(m::GwfModel)
     cx, cy, area, den = zeros(nja), zeros(nja), zeros(nja), zeros(nodes)
     nix, niy, di, diz = Float64[], Float64[], Float64[], Float64[]
     hor, ver = Int[], Int[]
+    wix, wiy, bix, biy = Float64[], Float64[], Float64[], Float64[]
     for n in 1:nodes
         empty!(nix); empty!(niy); empty!(di); empty!(diz); empty!(hor); empty!(ver)
         for ii in (conn.ia[n] + 1):(conn.ia[n + 1] - 1)
@@ -401,10 +447,7 @@ function SpdisDevice(m::GwfModel)
                 push!(hor, ii)
             end
         end
-        x, y, z, den[n] = _spdis_coefficients(nix, niy, di, diz)
-        cx[hor] .= x
-        cy[hor] .= y
-        cx[ver] .= z
+        den[n] = _spdis_coefficients!(cx, cy, hor, ver, nix, niy, di, diz, wix, wiy, bix, biy)
     end
     backend = get_backend(m.h)
     dev(a) = _device_copy(backend, a)

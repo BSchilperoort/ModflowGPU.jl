@@ -527,7 +527,7 @@ it. Underscore-prefixed helpers are omitted.
   cells, `sat0` otherwise) and `write_sat` (DATA-SAT, `sav_sat`). Tests: convertible (vs mf6).
   T6.10: DATA-SPDIS on the device for a model alone in its solution without convertible
   cells (`_spdis_on_device`): `SpdisDevice` (per-connection weights from
-  `_spdis_coefficients`, shared with the host `_spdis_cell`; areas; per-node `den`; built at
+  `_spdis_coefficients!`, the weights of the host `_spdis_cell`; areas; per-node `den`; built at
   the first write and kept in `ModelOutput.spdis`), `spdis_kernel!`, `specific_discharge!`;
   `write_spdis(...; cache)`. Tests: disv_disu (device vs host), run (vs MF6).
 - **solution.jl** (T6.6; included after output/oc.jl): multi-model solutions at run time
