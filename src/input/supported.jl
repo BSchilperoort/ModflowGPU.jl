@@ -58,9 +58,9 @@ unsupported(file::AbstractString, what::AbstractString) =
     UNSUPPORTED_PACKAGES
 
 GWF package file types that are out of scope (PLAN.md section 1: SFR, LAK, MAW, UZF, MVR,
-CSUB, BUY, VSC, API) or not in the plan (GNC, HFB): always an error.
+CSUB, BUY, VSC, API) or not in the plan (GNC): always an error. HFB6 is supported since T6.11.
 """
-const UNSUPPORTED_PACKAGES = ("SFR6", "LAK6", "MAW6", "UZF6", "MVR6", "CSUB6", "BUY6", "VSC6", "API6", "GNC6", "HFB6")
+const UNSUPPORTED_PACKAGES = ("SFR6", "LAK6", "MAW6", "UZF6", "MVR6", "CSUB6", "BUY6", "VSC6", "API6", "GNC6")
 
 """
     UNSUPPORTED_MODELS
@@ -96,6 +96,7 @@ const SUPPORTED_OPTIONS = Dict{Tuple{String, String}, Vector{String}}(
     ],
     ("gwf-sto", "OPTIONS") => ["SAVE_FLOWS", "STORAGECOEFFICIENT", "SS_CONFINED_ONLY"],
     ("gwf-ic", "OPTIONS") => String[],
+    ("gwf-hfb", "OPTIONS") => ["PRINT_INPUT"],  # T6.11
     ("gwf-oc", "OPTIONS") => ["BUDGET", "HEAD"],
     ("gwf-chd", "OPTIONS") => _STRESS_OPTIONS,
     ("gwf-wel", "OPTIONS") => [_STRESS_OPTIONS; "AUTO_FLOW_REDUCE"; "FLOW_REDUCTION_LENGTH"; "AUTO_FLOW_REDUCE_AUXNAME"],  # T6.1

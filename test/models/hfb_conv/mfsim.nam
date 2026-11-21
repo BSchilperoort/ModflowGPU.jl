@@ -1,0 +1,18 @@
+# Convertible DIS model with HFB6 barriers changing between periods (T6.11).
+BEGIN options
+END options
+
+BEGIN timing
+  TDIS6  hfbc.tdis
+END timing
+
+BEGIN models
+  gwf6  hfbc.nam  hfbc
+END models
+
+BEGIN exchanges
+END exchanges
+
+BEGIN solutiongroup  1
+  ims6  hfbc.ims  hfbc
+END solutiongroup  1

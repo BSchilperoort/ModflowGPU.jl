@@ -1,0 +1,10 @@
+BEGIN options
+END options
+
+BEGIN dimensions
+  MAXHFB  1
+END dimensions
+
+BEGIN period  1
+  26  27  1.0e-6
+END period  1
