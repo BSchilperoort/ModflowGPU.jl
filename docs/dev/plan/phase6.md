@@ -305,7 +305,7 @@ for its XT3D items only.
 - Done when: those models pass parity; XT3D with HFB stays rejected (T6.14).
 - Docs: packages.md (HFB6 row), `docs/src/compatibility/results.md` lists the test models.
 
-**T6.12 Time-varying K and storage, TVK6 and TVS6 (M) ‖**
+**T6.12 Time-varying K and storage, TVK6 and TVS6 (M) ‖ (done 2026-11-22)**
 - Read: `TvBase.f90`, `gwf-tvk.f90`, `gwf-tvs.f90`, and where NPF/STO recompute after a
   change (`npf_cond_changed`/`calc_condsat`, `sto` `ss`/`sy` updates).
 - Deliver: TVK (K, K22, K33) and TVS (SS, SY) per period and with time series (T6.3
