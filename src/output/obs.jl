@@ -108,6 +108,21 @@ function _obs_open(simdir, outdir, o::ObsOutputSpec, digits, cols)
     return _ObsFile(p, io, o.binary, digits, cols)
 end
 
+# `_obs_open` for each `(o, digits, cols)` of `opens`; when one fails, the files already
+# opened are closed (T6.10).
+function _obs_open_all(simdir, outdir, opens)
+    files = _ObsFile[]
+    try
+        for (o, digits, cols) in opens
+            push!(files, _obs_open(simdir, outdir, o, digits, cols))
+        end
+    catch
+        foreach(f -> close(f.io), files)
+        rethrow()
+    end
+    return files
+end
+
 # T6.6: positions in the engine arrays of a model of a multi-model solution: reduced nodes
 # and package indices shifted into the merged model, FLOW-JA-FACE entries through `jamap`.
 _obs_node(::GwfModel, n) = n
@@ -157,9 +172,7 @@ function ObservationOutput(m::Union{GwfModel, ModelView}, simdir::AbstractString
         push!(opens, (o, os.digits, cols))
     end
     # The files are opened once every observation is resolved (no file left open by an error).
-    for (o, digits, cols) in opens
-        push!(files, _obs_open(simdir, outdir, o, digits, cols))
-    end
+    append!(files, _obs_open_all(simdir, outdir, opens))
     strt = zeros(Int(mm.conn.nodes))
     strt[_vrange(m)] .= Float64[spec.ic.strt[u] for u in conn.nodeuser]
     m = mm
@@ -168,7 +181,12 @@ function ObservationOutput(m::Union{GwfModel, ModelView}, simdir::AbstractString
         obs, files, [f.path for f in files], [Int32[] for _ in obs], Any[], Any[], Int[], z, T[], zeros(Int, length(obs)),
         zeros(Int, length(obs)), strt, Vector{Int32}[],
     )
-    _obs_plan!(out, m)
+    try
+        _obs_plan!(out, m)
+    catch
+        close(out)
+        rethrow()
+    end
     return out
 end
 

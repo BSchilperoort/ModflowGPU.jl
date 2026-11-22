@@ -85,6 +85,7 @@ it. Underscore-prefixed helpers are omitted.
   AUTO_FLOW_REDUCE). Tests: simulation_loader, input_lists.
   T6.6: `:multi_model` and `:exchange` supported, `:multi_solution` (more than one solution)
   not; `SUPPORTED_OPTIONS` of `exg-gwfgwf`.
+  T6.10: NPF SAVE_SATURATION.
 
 ## Model description (host specs, plain structs)
 
@@ -157,7 +158,10 @@ it. Underscore-prefixed helpers are omitted.
   Tests: builder (round trip; mf6 runs the written model, needs `reference/`). T6.9: DISV
   and DISU (`_write_dis` methods, VERTICES/CELL2D, CONNECTIONDATA), OBS6 (`_write_obs`: model,
   package and exchange observations) and GWF6-GWF6 exchanges (`_write_exchange`, mfsim
-  EXCHANGES); time series still rejected.
+  EXCHANGES).
+  T6.10: TS6 and TAS6 files (`_write_ts`, `_write_tas`, `_series_of_file`: the series of a
+  FILEIN name, matched by the path it was read from), their FILEIN options, and linked
+  values written as the series name (list) or `TIMEARRAYSERIES <name>` (arrays).
 
 ## GWF engine
 
@@ -283,6 +287,8 @@ it. Underscore-prefixed helpers are omitted.
   (`check_records`, as `gwf_ad` → `bnd_ck`); `move_to_highest_active!` restages nothing for
   RCH and only the EVT surface of moved records (`bound_shift_kernel!` by the reference
   difference when written on the device). Tests: timeseries, riv_drn_evt.
+  T6.10: `BoundaryPackage.nocheck` (NOCHECK, set by `initialize`): `_check_records!` skips
+  the `bnd_ck` checks (`_is_bnd_ck`: all but EVT's `check_pxdp`). Tests: riv_drn_evt.
 - **boundaries/chd.jl**: CHD (gwf-chd.f90; see `docs/dev/mf6_notes.md`). `apply_chd_heads!`,
   `calc_chd_rate!`. Tests: boundaries (parity vs MF6 CBC).
   T6.6: `calc_chd_rate!(...; exg)` skips the exchange entries (`_is_exchange`).
@@ -496,6 +502,8 @@ it. Underscore-prefixed helpers are omitted.
   merged model, `_obs_node`, `_obs_ja`).
   T6.9: `ObservationOutput.hostidx`: `_obs_plan!` keeps the plan when a period gives the
   same records and reuses the device index vectors and value buffers of the same length.
+  T6.10: `_obs_open_all` (closes the files already opened when one fails; also used by
+  `ExchangeObservations`); `ObservationOutput` closes its files when `_obs_plan!` throws.
 - **output/oc.jl** (T2.8): output control and run output. `oc_selected` (OC PERIOD
   blocks, ALL/FIRST/LAST/FREQUENCY/STEPS), `ModelOutput` (open HDS/CBC/listing files),
   `write_heads`, `write_budget` (STO-SS, FLOW-JA-FACE, package lists as MF6),
@@ -507,12 +515,21 @@ it. Underscore-prefixed helpers are omitted.
   T6.6: `ModelOutput`, `write_heads`, `write_budget(...; exflows)`, `write_head_listing`
   take a `GwfModel` or a `ModelView`; `model_flowja` (a model's FLOW-JA-FACE; the diagonal
   of a constant-head cell without its exchange flows), `_model_values`.
+  T6.10: DATA-SAT after DATA-SPDIS (`write_sat`); `ModelOutput` closes what it opened when
+  a later step of its construction throws.
 - **output/spdis.jl** (T6.9; included after solution.jl): DATA-SPDIS (gwf-npf.f90
   `calc_spdis`, `sav_spdis`, `set_edge_properties`; GwfConductanceUtils.f90 `thksatnm`;
   exg-gwfgwf.f90 `gwf_gwf_set_flow_to_npf`). `check_spdis` (DISU needs ANGLDEGX and vertices),
   `specific_discharge(m, flowja)` (host Float64, from the model's FLOW-JA-FACE; exchange
   connections as edges), `write_spdis` (from `write_budget`, after FLOW-JA-FACE). Tests: run
   (vs MF6's DATA-SPDIS), disv_disu.
+  T6.10: `cell_saturation(m)` (NPF `sat`: `cv.sat` of the last formulation for convertible
+  cells, `sat0` otherwise) and `write_sat` (DATA-SAT, `sav_sat`). Tests: convertible (vs mf6).
+  T6.10: DATA-SPDIS on the device for a model alone in its solution without convertible
+  cells (`_spdis_on_device`): `SpdisDevice` (per-connection weights from
+  `_spdis_coefficients!`, the weights of the host `_spdis_cell`; areas; per-node `den`; built at
+  the first write and kept in `ModelOutput.spdis`), `spdis_kernel!`, `specific_discharge!`;
+  `write_spdis(...; cache)`. Tests: disv_disu (device vs host), run (vs MF6).
 - **solution.jl** (T6.6; included after output/oc.jl): multi-model solutions at run time
   (exg-gwfgwf.f90 `gwf_gwf_calc_simvals`, `gwf_gwf_bd`, `gwf_gwf_chd_bd`,
   `gwf_gwf_bdsav_model`, `gwf_gwf_rp_obs`, `gwf_gwf_save_simvals`). `ExchangeFlows` /
@@ -567,6 +584,9 @@ it. Underscore-prefixed helpers are omitted.
   (`solution_setup`) when the simulation has several models or exchanges; addresses of every
   model (`_find_view`, `_find_package(s, model, package)`, `_view_variable`: device X, XOLD,
   IBOUND as views, host NODELIST in the model's numbering).
+  T6.10: `initialize` sets `BoundaryPackage.nocheck` from the simulation's NOCHECK (the
+  device BOUND check then only tests for finite values, `_device_check_kind`), and closes
+  every output file it opened when a later step throws (tests: obs, riv_drn_evt).
 - **bmi.jl** (T3.3, T8.9): BasicModelInterface methods on `Simulation`, all 41 functions
   of the spec. `BMI.initialize(Simulation, config_file)` (no keywords; `_bmi_config`
   reads the TOML configuration file, or takes a directory / mfsim.nam with defaults),

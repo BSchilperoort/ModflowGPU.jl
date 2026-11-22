@@ -297,7 +297,8 @@ guide). Do not use them after `finalize_simulation`, which frees them.
 Treat the device arrays as read-only, with one exception: to write `BOUND` on the
 device, open it with [`ModflowGPU.device_bound!`](@ref) between `prepare_time_step` and
 `prepare_solve`. It returns the same array, and `prepare_solve` then checks the records in
-force on the device (all values finite; for RIV stage ≥ bottom and conductance ≥ 0) and
+force on the device (all values finite; for RIV stage ≥ bottom and conductance ≥ 0,
+unless the simulation has the `NOCHECK` option) and
 throws an `MF6InputError` naming the first bad record. Values written this way are used
 until new period data or a host write of the same `BOUND` replace them, and are not seen
 by host reads of `BOUND` (`get_value`, mirrors), which keep the values last set on the
