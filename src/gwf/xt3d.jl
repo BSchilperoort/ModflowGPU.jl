@@ -418,22 +418,56 @@ function xt3d_setup(conn::Connectivity, p::NpfProperties, r::AbstractVector{Floa
     return xt3d_assemble(conn, tptr, ta, tb, tc, r; rhs)
 end
 
+# T6.13 (GhostNode.f90 `gnc_ac`): the connectivity plus, for every flux term `(a, b)` of
+# connection n–m, the entries (n, a), (n, b), (m, a), (m, b) and their transposes.
+function _terms_structure(conn::Connectivity, tptr, ta, tb)
+    nodes = Int(conn.nodes)
+    rows = [Set{Int32}() for _ in 1:nodes]
+    for n in 1:nodes, ii in (conn.ia[n] + 1):(conn.ia[n + 1] - 1)
+        push!(rows[n], conn.ja[ii])
+        m = conn.ja[ii]
+        m > n || continue
+        jj = conn.jas[ii]
+        for t in tptr[jj]:(tptr[jj + 1] - 1), c in (ta[t], tb[t]), row in (Int32(n), m)
+            c == row && continue
+            push!(rows[row], c)
+            push!(rows[c], row)
+        end
+    end
+    ia = Vector{Int32}(undef, nodes + 1)
+    ja = Int32[]
+    ia[1] = 1
+    for n in 1:nodes
+        push!(ja, Int32(n))
+        append!(ja, sort!(collect(rows[n])))
+        ia[n + 1] = length(ja) + 1
+    end
+    isym = Vector{Int32}(undef, length(ja))
+    fill_isym!(isym, ia, ja)
+    jas = Vector{Int32}(undef, length(ja))
+    fill_jas!(jas, ia, ja, isym)
+    return ia, ja, isym, jas
+end
+
 """
-    xt3d_assemble(conn::Connectivity, tptr, ta, tb, tc, r; rhs = false) -> Xt3dSetup
+    xt3d_assemble(conn::Connectivity, tptr, ta, tb, tc, r; rhs = false, structure = :xt3d) -> Xt3dSetup
 
 The XT3D setup from the flux terms of every symmetric connection of `conn` (`tptr`, `ta`,
 `tb`, `tc` as in `Xt3dSetup`, the primary term first): the system structure (the extended
 stencil, or `conn` with the RHS option), the constant matrix and `sb`, with the reference
 heads `r`. `xt3d_setup` of a model, and of a multi-model solution (T6.6, where a connection
-can also be a conductance, a single term `condsat·(h_m − h_n)`).
+can also be a conductance, a single term `condsat·(h_m − h_n)`). T6.13: `structure = :terms`
+builds the structure from the terms themselves (the connectivity plus the entries the
+terms need: `gnc_ac` of GNC6) instead of XT3D's neighbours of neighbours.
 """
 function xt3d_assemble(
         conn::Connectivity, tptr::Vector{Int32}, ta::Vector{Int32}, tb::Vector{Int32}, tc::Vector{Float64},
-        r::AbstractVector{Float64}; rhs::Bool = false,
+        r::AbstractVector{Float64}; rhs::Bool = false, structure::Symbol = :xt3d,
     )
     nodes = Int(conn.nodes)
     tdr = [r[ta[t]] - r[tb[t]] for t in eachindex(ta)]
-    ia, ja, isym, jas = rhs ? (conn.ia, conn.ja, conn.isym, conn.jas) : _xt3d_structure(conn)
+    ia, ja, isym, jas = rhs ? (conn.ia, conn.ja, conn.isym, conn.jas) :
+        structure === :terms ? _terms_structure(conn, tptr, ta, tb) : _xt3d_structure(conn)
     amat = zeros(length(ja))
     for n in 1:nodes, ii in (conn.ia[n] + 1):(conn.ia[n + 1] - 1)
         m = conn.ja[ii]

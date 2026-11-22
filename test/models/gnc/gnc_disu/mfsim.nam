@@ -1,0 +1,18 @@
+BEGIN options
+END options
+
+BEGIN timing
+  TDIS6  gnc_disu.tdis
+END timing
+
+BEGIN models
+  gwf6  gnc_disu.nam  gnc_disu
+END models
+
+BEGIN exchanges
+
+END exchanges
+
+BEGIN solutiongroup  1
+  ims6  gnc_disu.ims  gnc_disu
+END solutiongroup  1

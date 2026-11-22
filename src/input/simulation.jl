@@ -60,7 +60,7 @@ const LENMODELNAME = 16    # ConstantsModule
 const LENPACKAGENAME = 16
 
 # gwf.f90 GWF_BASEPKG / GWF_MULTIPKG (in scope; the rest is in UNSUPPORTED_PACKAGES).
-const _GWF_BASE_FTYPES = ("DIS6", "DISV6", "DISU6", "NPF6", "STO6", "IC6", "OC6", "OBS6", "HFB6")
+const _GWF_BASE_FTYPES = ("DIS6", "DISV6", "DISU6", "NPF6", "STO6", "IC6", "OC6", "OBS6", "HFB6", "GNC6")
 const _GWF_MULTI_FTYPES = ("WEL6", "DRN6", "RIV6", "GHB6", "RCH6", "EVT6", "CHD6")
 const _GWF_ALL_FTYPES = (
     "DIS6", "DISV6", "DISU6", "NPF6", "BUY6", "VSC6", "GNC6", "HFB6", "STO6", "IC6", "CSUB6",
@@ -558,6 +558,71 @@ function _load_hfb(ld::_Loader, e::PackageEntry, mname, dis::AbstractDisSpec, np
     )
 end
 
+# GNC6 (T6.13; GhostNode.f90 `read_options`, `read_dimensions`, `read_data`): read with
+# MF6's own parser rules, not IDM. `dis1` is the grid of the ghost-node cells (`cellidn`)
+# and of the contributing cells (`cellidsj`), `dis2` that of `cellidm` (another model's grid
+# for an exchange). A contributing cell of all zeros is none (`allow_zero`). The cells must
+# be active (IDOMAIN > 0): MF6's "Cell is outside active grid domain".
+function _load_gnc(ld::_Loader, fname, name, dis1::AbstractDisSpec, mname1, dis2::AbstractDisSpec = dis1, mname2 = mname1)
+    f = _read_package(ld, fname, "GNC6", "GWF")
+    opts = Dict{String, Bool}("PRINT_INPUT" => false, "PRINT_FLOWS" => false, "I2KN" => false, "EXPLICIT" => false)
+    ob = find_block(f, "OPTIONS")
+    if !isnothing(ob)
+        for l in ob.lines
+            k = keyword(l, 1)
+            haskey(opts, k) || input_error(l, "Unknown GNC option: $k")
+            opts[k] = true
+        end
+    end
+    numgnc = 0
+    numalphaj = 0
+    for l in find_block(f, "DIMENSIONS").lines
+        k = keyword(l, 1)
+        if k == "NUMGNC"
+            numgnc = get_int(l, 2; name = "NUMGNC")
+        elseif k == "NUMALPHAJ"
+            numalphaj = get_int(l, 2; name = "NUMALPHAJ")
+        else
+            input_error(l, "Unknown GNC dimension: $k")
+        end
+    end
+    g1, g2 = grid_dims(dis1), grid_dims(dis2)
+    nd1, nd2 = ncelldim(g1), ncelldim(g2)
+    idom1, idom2 = idomain_user(dis1), idomain_user(dis2)
+    b = find_block(f, "GNCDATA")
+    length(b.lines) == numgnc || input_error(b, "GNCDATA has $(length(b.lines)) records, but NUMGNC is $numgnc")
+    noden = zeros(Int32, numgnc)
+    nodem = zeros(Int32, numgnc)
+    nodesj = zeros(Int32, numalphaj, numgnc)
+    alphasj = zeros(numalphaj, numgnc)
+    ntok = nd1 + nd2 + numalphaj * (nd1 + 1)
+    for (k, l) in enumerate(b.lines)
+        ntokens(l) >= ntok || input_error(l, "Expected $ntok values (cellidn, cellidm, $numalphaj cellidsj and alphasj), found $(ntokens(l))")
+        pos = 0
+        function cid(g, nd, idom, mname; allow_zero = false)
+            c = ntuple(d -> get_int(l, pos + d; name = "cellid"), nd)
+            pos += nd
+            allow_zero && all(==(0), c) && return Int32(0)
+            valid_cellid(g, c) || input_error(l, "Cell is outside the model grid: $(_shape_string(c)) (grid $(_shape_string(g.mshape)))")
+            u = user_node(g, c)
+            idom[u] > 0 || input_error(l, "$(uppercase(mname)) Cell is outside active grid domain: $(_shape_string(c))")
+            return Int32(u)
+        end
+        noden[k] = cid(g1, nd1, idom1, mname1)
+        nodem[k] = cid(g2, nd2, idom2, mname2)
+        for j in 1:numalphaj
+            nodesj[j, k] = cid(g1, nd1, idom1, mname1; allow_zero = true)
+        end
+        for j in 1:numalphaj
+            alphasj[j, k] = get_double(l, pos + j; name = "alphasj")
+        end
+    end
+    return GncSpec(;
+        name, print_input = opts["PRINT_INPUT"], print_flows = opts["PRINT_FLOWS"], explicit = opts["EXPLICIT"],
+        i2kn = opts["I2KN"], numalphaj, noden, nodem, nodesj, alphasj, file = _rel(ld, f.path),
+    )
+end
+
 # TVK6 and TVS6 (T6.12; TvBase.f90 `tvbase_source_options`, gwf-tvs.f90
 # `tvs_source_package_options`, the keystring PERIOD records of Mf6FileKeystring.f90:
 # `cellid  K|K22|K33|SS|SY  value`, the value a number or, with a TS6 file, a series name).
@@ -677,6 +742,7 @@ function _load_gwf(ld::_Loader, fname, mname, np::Integer)
     ic = _load_ic(ld, entry("IC6"), mname, dis)
     oc = isnothing(entry("OC6")) ? nothing : _load_oc(ld, entry("OC6"), mname, np)
     hfb = isnothing(entry("HFB6")) ? nothing : _load_hfb(ld, entry("HFB6"), mname, dis, np)
+    gnc = isnothing(entry("GNC6")) ? nothing : _load_gnc(ld, entry("GNC6").file, entry("GNC6").name, dis, mname)
     obs = String[]
     obsspec = nothing
     for e in entries
@@ -701,7 +767,7 @@ function _load_gwf(ld::_Loader, fname, mname, np::Integer)
         name = mname, list_file = option(o, "list", ""), print_input = option(o, "print_input", false),
         print_flows = option(o, "print_flows", false), save_flows = option(o, "save_flows", false),
         newton, newton_under_relaxation = option(o, "under_relaxation", false), packages = entries,
-        dis, npf, ic, sto, oc, boundaries, obs_files = obs, obs = obsspec, file = _rel(ld, nam.path), hfb,
+        dis, npf, ic, sto, oc, boundaries, obs_files = obs, obs = obsspec, file = _rel(ld, nam.path), hfb, gnc,
     )
 end
 
@@ -713,7 +779,10 @@ function _load_exchange(ld::_Loader, fname, m1::GwfSpec, m2::GwfSpec, id::Intege
     f = _read_package(ld, fname, "GWF6-GWF6", "EXG")
     o = read_options(f, "OPTIONS")
     ld.strict && check_options(o, f.dfn.name, "GWF6-GWF6", "exchange $(m1.name) - $(m2.name)")
-    has_option(o, "gnc6_filename") && unsupported(f.path, "GNC6 on a GWF6-GWF6 exchange")
+    # T6.13: GNC6 (exg-gwfgwf.f90 `source_options`: at most one GNC6 file; `read_gnc`).
+    gnc_files = _filein(ld, o, "gnc6_filename", "GNC6")
+    length(gnc_files) > 1 && input_error(option_line(o, "GNC6"), "Multiple GNC6 keywords detected in OPTIONS block. Only one GNC6 entry allowed.")
+    gnc = isempty(gnc_files) ? nothing : _load_gnc(ld, only(gnc_files), "GNC", m1.dis, m1.name, m2.dis, m2.name)
     has_option(o, "mvr6_filename") && unsupported(f.path, "MVR6 on a GWF6-GWF6 exchange (out of scope)")
     data = read_exchange_data(f, grid_dims(m1.dis), grid_dims(m2.dis))
     # DisConnExchange.f90 source_data: both cells must be active.
@@ -750,7 +819,7 @@ function _load_exchange(ld::_Loader, fname, m1::GwfSpec, m2::GwfSpec, id::Intege
         cell_averaging = _CELL_AVERAGING[option(o, "cell_averaging", "HARMONIC")],
         variablecv = option(o, "variablecv", false), dewatered = option(o, "dewatered", false),
         newton = option(o, "newton", false), xt3d = option(o, "xt3d", false),
-        obs_files, obs, data, file = _rel(ld, f.path),
+        obs_files, obs, data, file = _rel(ld, f.path), gnc,
     )
 end
 

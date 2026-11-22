@@ -24,6 +24,7 @@ const TEST_GROUPS = [
     "arraygrid" => ["unit/arraygrid_test.jl"],
     "hfb" => ["unit/hfb_test.jl"],
     "tv" => ["unit/tv_test.jl"],  # T6.12
+    "gnc" => ["unit/gnc_test.jl"],  # T6.13
     "exchange" => ["parity/exchange_test.jl"],
     "riv_drn_evt" => ["unit/riv_drn_evt_test.jl", "parity/riv_drn_evt_test.jl"],
     "assembly" => ["parity/assembly_test.jl"],

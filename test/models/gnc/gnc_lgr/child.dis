@@ -1,0 +1,24 @@
+BEGIN options
+  LENGTH_UNITS  meters
+  XORIGIN  180.0
+  YORIGIN  180.0
+END options
+
+BEGIN dimensions
+  NLAY  2
+  NROW  9
+  NCOL  9
+END dimensions
+
+BEGIN griddata
+  delr
+    CONSTANT  30.0
+  delc
+    CONSTANT  30.0
+  top
+    CONSTANT  0.0
+  botm  LAYERED
+    CONSTANT  -10.0
+    CONSTANT  -25.0
+
+END griddata
