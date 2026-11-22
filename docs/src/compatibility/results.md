@@ -115,12 +115,13 @@ reference runs. It is not regenerated when the manual is built.
 
 Some features are not used by any of the models above. They are compared with MODFLOW 6
 in the test suite on small models of their own (in `test/models` of the repository, run
-with MODFLOW 6 when the test runs), with the same criteria; these models are not in the
-table above.
+with MODFLOW 6 when the test runs), with the same criteria, on the CPU and ROCm backends
+(ROCm against CPU: at most 9.5e-7 m in `:single`, identical in `:double`); these models are
+not in the table above.
 
 | Feature | Models (test group) | max \|Δh\| (m), `:double` | max \|Δh\| (m), `:single` |
 | :-- | :-- | --: | --: |
-| Horizontal flow barriers (HFB6) | `hfb_vhfb` (MODFLOW 6 autotest `test_gwf_vhfb.py`: vertical barriers between convertible layers) with its `NEWTON` and logarithmic averaging cases; `hfb_disu` (autotest `test_gwf_disu_hfb_idomain.py`: DISU with `IDOMAIN`); `hfb_conv` (convertible DIS, barriers changing between stress periods) and its `NEWTON` case; `ex-gwf-u1disv` with a line of barriers (DISV) (`hfb`) | 2.8e-8 | 8.0e-5 |
+| Horizontal flow barriers (HFB6) | `hfb_vhfb` (MODFLOW 6 autotest `test_gwf_vhfb.py`: vertical barriers between convertible layers) with its `NEWTON` and logarithmic averaging cases; `hfb_disu` (autotest `test_gwf_disu_hfb_idomain.py`: DISU with `IDOMAIN`); `hfb_conv` (convertible DIS, barriers changing between stress periods) and its `NEWTON` case; `ex-gwf-u1disv` with a line of barriers (DISV); `disu_staggered` with barriers on staggered DISU connections, and its `NEWTON` case (`hfb`) | 2.8e-8 | 8.0e-5 |
 
 ## Large models: the Indus basin and the global 5′ model
 
