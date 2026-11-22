@@ -1,0 +1,21 @@
+BEGIN options
+  DISABLE_STORAGE_CHANGE_INTEGRATION
+  PRINT_INPUT
+END options
+
+BEGIN period  2
+  1  1  1  SY  0.005
+END period  2
+
+BEGIN period  3
+  1  1  1  SS  1.0e-5
+END period  3
+
+BEGIN period  4
+  1  1  1  SY  0.02
+END period  4
+
+BEGIN period  5
+  1  1  1  SS  1.0e-6
+  1  1  1  SY  0.01
+END period  5

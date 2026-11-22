@@ -1,0 +1,32 @@
+BEGIN options
+END options
+
+BEGIN dimensions
+  NLAY  1
+  NCPL  3
+  NVERT  8
+END dimensions
+
+BEGIN griddata
+  top
+    CONSTANT  1.0
+  botm
+    CONSTANT  -1.0
+END griddata
+
+BEGIN vertices
+  1  0.0  0.0
+  2  1.0  0.0
+  3  2.0  0.0
+  4  3.0  0.0
+  5  0.0  1.0
+  6  1.0  1.0
+  7  2.0  1.0
+  8  3.0  1.0
+END vertices
+
+BEGIN cell2d
+  1  0.5  0.5  4  5  6  2  1
+  2  1.5  0.5  4  6  7  3  2
+  3  2.5  0.5  4  7  8  4  3
+END cell2d

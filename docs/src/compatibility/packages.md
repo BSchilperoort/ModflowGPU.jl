@@ -194,6 +194,27 @@ Horizontal flow barriers (HFB6) are supported on DIS, DISV and DISU grids, as in
 
 HFB6 with `XT3D`, and in a model of a multi-model solution, is rejected (see below).
 
+Time-varying hydraulic conductivity (TVK6, `TVK6 FILEIN` in the NPF options) and storage
+(TVS6, `TVS6 FILEIN` in the STO options) are supported as in MODFLOW 6:
+
+- each `PERIOD` record sets one property of one cell: `K`, `K22` or `K33` (TVK), `SS` or
+  `SY` (TVS); the value holds from that stress period until a later block sets the same
+  property of the cell again. With `K22OVERK` or `K33OVERK` the value is a ratio,
+  multiplied by the cell's `K` at the time it is set;
+- with a time series (`TS6 FILEIN` in the options and a series name instead of a number)
+  the values are evaluated every time step, as for the stress packages;
+- after a change the saturated conductances of the connections of the changed cells are
+  recomputed (only those) and the storage capacities of the changed cells. In the time step
+  of a change in `SS` or `SY`, the storage terms of the previous heads use the old values,
+  as MODFLOW 6 integrates the change; `DISABLE_STORAGE_CHANGE_INTEGRATION` turns that off;
+- a value at a cell outside the active grid, a `K`, `K22` or `K33` that is not positive, a
+  negative `SS` or `SY`, or `SY` in a model without convertible cells (`ICONVERT` 0 in
+  every cell) are input errors, as in MODFLOW 6;
+- `PRINT_INPUT` is accepted; the changes are not printed to the listing file.
+
+TVK6 with `XT3D` or with HFB6, and TVK6 or TVS6 in a model of a multi-model solution, are
+rejected (see below).
+
 ## Packages and models that are rejected
 
 These file types always give an [`MF6UnsupportedError`](@ref), also when reading with
@@ -231,7 +252,7 @@ input is accepted.
 | More than one solution; several models with convertible cells or `NEWTON` | not planned at the moment |
 | Horizontal flow barriers (HFB6) with `XT3D`, or in a model of a multi-model solution | not planned at the moment |
 | Ghost-node correction (GNC6) | not planned at the moment |
-| Time-varying hydraulic conductivity and storage (TVK6, TVS6) | not planned at the moment |
+| Time-varying hydraulic conductivity (TVK6) with `XT3D` or HFB6; TVK6 or TVS6 in a model of a multi-model solution | not planned at the moment |
 | Adaptive time stepping (ATS6) | not planned at the moment |
 
 The tested models are listed on [Comparing results](results.md).

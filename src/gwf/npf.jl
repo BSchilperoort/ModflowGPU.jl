@@ -26,7 +26,7 @@
 #   (T6.1), and the Newton bottom-node search (T6.2);
 # - XT3D: since T6.5 in src/gwf/xt3d.jl (MF6 does not compute condsat with XT3D; it is
 #   computed here but not used);
-# - VSC/TVK modifications of K (out of scope / T6.x).
+# - VSC modifications of K (out of scope); TVK6 (T6.12) is in src/gwf/tv.jl.
 
 # GwfConductanceUtils.f90 CCOND_* (the ICELLAVG values).
 const CCOND_HMEAN = 0
@@ -420,43 +420,50 @@ function _calc_condsat(p::NpfProperties, conn::Connectivity)
     condsat = Vector{Float64}(undef, conn.njas)
     hyl = Vector{Float64}(undef, conn.njas)
     hyh = Vector{Float64}(undef, conn.njas)
-    top, bot, sat0 = conn.top, conn.bot, p.sat0
     for n in 1:conn.nodes, ii in (conn.ia[n] + 1):(conn.ia[n + 1] - 1)
         m = conn.ja[ii]
         m > n || continue
         jj = conn.jas[ii]
-        ihc = conn.ihc[jj]
-        vg = _connection_normal(conn, n, m, ihc, jj)
-        hyn = hy_eff(p, n, ihc, vg)
-        hym = hy_eff(p, m, ihc, .-vg)
-        hyl[jj], hyh[jj] = hyn, hym
-        topn, botn, topm, botm = top[n], bot[n], top[m], bot[m]
-        satn, satm = sat0[n], sat0[m]
-        if ihc == 0
-            # GwfConductanceUtils.f90 `vcond(1, 1, 1, 1, 0, 1, 1, ...)` with the heads at the
-            # cell bottoms: the partially saturated branch with DEWATERED.
-            if botn > botm
-                satm < 1.0 && (satm = 0.0)
-            else
-                satn < 1.0 && (satn = 0.0)
-            end
-            bovk1 = satn * (topn - botn) * 0.5 / hyn
-            bovk2 = satm * (topm - botm) * 0.5 / hym
-            denom = bovk1 + bovk2
-            condsat[jj] = denom != 0.0 ? conn.hwva[jj] / denom : 0.0
-        else
-            # GwfConductanceUtils.f90 `hcond` → `convertible_standard`.
-            if ihc == 2
-                thksatn = staggered_thkfrac(topn, botn, satn, topm, botm)
-                thksatm = staggered_thkfrac(topm, botm, satm, topn, botn)
-            else
-                thksatn = satn * (topn - botn)
-                thksatm = satm * (topm - botm)
-            end
-            condsat[jj] = condmean(hyn, hym, thksatn, thksatm, conn.cl1[jj], conn.cl2[jj], conn.hwva[jj], p.icellavg)
-        end
+        condsat[jj], hyl[jj], hyh[jj] = _condsat_connection(p, conn, n, m, jj)
     end
     return condsat, hyl, hyh
+end
+
+# The saturated conductance of the symmetric connection `jj` between the reduced nodes
+# `n < m`, and `hy_eff` of `n` towards `m` and of `m` towards `n` (one connection of
+# `calc_condsat`; T6.12: also what TVK6 recomputes for the connections of a changed cell).
+function _condsat_connection(p::NpfProperties, conn::Connectivity, n::Integer, m::Integer, jj::Integer)
+    top, bot, sat0 = conn.top, conn.bot, p.sat0
+    ihc = conn.ihc[jj]
+    vg = _connection_normal(conn, n, m, ihc, jj)
+    hyn = hy_eff(p, n, ihc, vg)
+    hym = hy_eff(p, m, ihc, .-vg)
+    topn, botn, topm, botm = top[n], bot[n], top[m], bot[m]
+    satn, satm = sat0[n], sat0[m]
+    if ihc == 0
+        # GwfConductanceUtils.f90 `vcond(1, 1, 1, 1, 0, 1, 1, ...)` with the heads at the
+        # cell bottoms: the partially saturated branch with DEWATERED.
+        if botn > botm
+            satm < 1.0 && (satm = 0.0)
+        else
+            satn < 1.0 && (satn = 0.0)
+        end
+        bovk1 = satn * (topn - botn) * 0.5 / hyn
+        bovk2 = satm * (topm - botm) * 0.5 / hym
+        denom = bovk1 + bovk2
+        c = denom != 0.0 ? conn.hwva[jj] / denom : 0.0
+    else
+        # GwfConductanceUtils.f90 `hcond` → `convertible_standard`.
+        if ihc == 2
+            thksatn = staggered_thkfrac(topn, botn, satn, topm, botm)
+            thksatm = staggered_thkfrac(topm, botm, satm, topn, botn)
+        else
+            thksatn = satn * (topn - botn)
+            thksatm = satm * (topm - botm)
+        end
+        c = condmean(hyn, hym, thksatn, thksatm, conn.cl1[jj], conn.cl2[jj], conn.hwva[jj], p.icellavg)
+    end
+    return c, hyn, hym
 end
 
 """

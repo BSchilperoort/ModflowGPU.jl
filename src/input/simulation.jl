@@ -300,7 +300,7 @@ _active(dis::AbstractDisSpec) = idomain_user(dis) .> 0
 
 const _CELL_AVERAGING = Dict("LOGARITHMIC" => :logarithmic, "AMT-LMK" => :amt_lmk, "AMT-HMK" => :amt_hmk, "HARMONIC" => :harmonic)
 
-function _load_npf(ld::_Loader, e::PackageEntry, mname, dis::AbstractDisSpec)
+function _load_npf(ld::_Loader, e::PackageEntry, mname, dis::AbstractDisSpec, np::Integer)
     f = _read_package(ld, e.file, e.ftype, "GWF")
     ctx = "model '$mname'"
     o = read_options(f, "OPTIONS")
@@ -317,6 +317,7 @@ function _load_npf(ld::_Loader, e::PackageEntry, mname, dis::AbstractDisSpec)
         any(i -> act[i] && icelltype[i] != 0, eachindex(icelltype)) &&
             check_feature(f.path, :convertible, "convertible cells (NPF6 ICELLTYPE /= 0 in an active cell, $ctx)")
     end
+    tvk_files = _filein(ld, o, "tvk6_filename", "TVK6")
     return NpfSpec(;
         icelltype, k, k22 = _opt_array(arrays, "k22"), k33 = _opt_array(arrays, "k33"),
         angle1 = _opt_array(arrays, "angle1"), angle2 = _opt_array(arrays, "angle2"),
@@ -331,7 +332,7 @@ function _load_npf(ld::_Loader, e::PackageEntry, mname, dis::AbstractDisSpec)
         save_flows = option(o, "save_flows", false), print_flows = option(o, "print_flows", false),
         save_specific_discharge = option(o, "save_specific_discharge", false),
         save_saturation = option(o, "save_saturation", false),
-        tvk_files = _filein(ld, o, "tvk6_filename", "TVK6"), file = _rel(ld, f.path),
+        tvk_files, tvk = _load_tv(ld, tvk_files, "TVK6", f.path, mname, dis, np), file = _rel(ld, f.path),
     )
 end
 
@@ -361,10 +362,12 @@ function _load_sto(ld::_Loader, e::PackageEntry, mname, dis::AbstractDisSpec, np
     (isconv && isnothing(sy)) && throw(MF6InputError(f.path, 0, "Error in GRIDDATA block: SY not found."))
     _check_nonnegative(f, "SS", ss, dis)
     isnothing(sy) || _check_nonnegative(f, "SY", sy, dis)
+    tvs_files = _filein(ld, o, "tvs6_filename", "TVS6")
     sto = StoSpec(;
         iconvert, ss, sy, storagecoefficient = option(o, "storagecoefficient", false),
         ss_confined_only = option(o, "ss_confined_only", false), save_flows = option(o, "save_flows", false),
-        periods = read_sto_periods(f), tvs_files = _filein(ld, o, "tvs6_filename", "TVS6"), file = _rel(ld, f.path),
+        periods = read_sto_periods(f), tvs_files,
+        tvs = _load_tv(ld, tvs_files, "TVS6", f.path, mname, dis, np), file = _rel(ld, f.path),
     )
     if ld.strict && any(i -> act[i] && iconvert[i] != 0, eachindex(iconvert)) && any(k -> is_transient(sto, k), 1:np)
         check_feature(f.path, :convertible_storage, "convertible storage (STO6 ICONVERT /= 0 in an active cell with a transient period, $ctx)")
@@ -555,6 +558,68 @@ function _load_hfb(ld::_Loader, e::PackageEntry, mname, dis::AbstractDisSpec, np
     )
 end
 
+# TVK6 and TVS6 (T6.12; TvBase.f90 `tvbase_source_options`, gwf-tvs.f90
+# `tvs_source_package_options`, the keystring PERIOD records of Mf6FileKeystring.f90:
+# `cellid  K|K22|K33|SS|SY  value`, the value a number or, with a TS6 file, a series name).
+# One file per package (`TVK6_FILENAME`, `TVS6_FILENAME` hold one name). The cells are
+# checked against the grid shape here and against the active domain by the engine.
+const _TV_VARIABLES = Dict(:TVK => (:K, :K22, :K33), :TVS => (:SS, :SY))
+
+function _load_tv(ld::_Loader, files::Vector{String}, ftype::AbstractString, owner::AbstractString, mname, dis::AbstractDisSpec, np::Integer)
+    isempty(files) && return nothing
+    length(files) > 1 && throw(MF6InputError(owner, 0, "Multiple $ftype FILEIN entries; only one is allowed"))
+    f = _periods_upto(_read_package(ld, only(files), ftype, "GWF"), np)
+    kind = Symbol(rstrip(ftype, '6'))
+    o = read_options(f, "OPTIONS")
+    ld.strict && check_options(o, f.dfn.name, ftype, "model '$mname'")
+    ts_files = _filein(ld, o, "ts6_filename", "TS6")
+    tsactive = !isempty(ts_files)
+    g = grid_dims(dis)
+    nd = ncelldim(g)
+    vars = _TV_VARIABLES[kind]
+    blocks = find_blocks(f, "PERIOD")
+    data = TvPeriod[]
+    for b in blocks
+        p = TvPeriod(Int32[], Symbol[], Float64[], Symbol[])
+        for l in b.lines
+            ntokens(l) >= nd + 2 || input_error(l, "Expected a cellid ($nd integers), a $(kind) setting ($(join(vars, ", "))) and a value")
+            cid = ntuple(d -> (v = parse_int(token(l, d)); isnothing(v) && input_error(l, "Expected an integer cellid, found '$(token(l, d))'"); v), nd)
+            valid_cellid(g, cid) || input_error(l, "Cell is outside the model grid: $(_shape_string(cid))")
+            var = Symbol(keyword(l, nd + 1))
+            var in vars || input_error(l, "Unrecognized $(kind) setting '$(token(l, nd + 1))' (expected one of $(join(vars, ", ")))")
+            t = token(l, nd + 2)
+            v = parse_double(t)
+            ts = Symbol("")
+            if isnothing(v)
+                tsactive || input_error(l, "Expected numeric value for $var, but found '$t' (no TS6 file in the OPTIONS block)")
+                ts = Symbol(uppercase(t))
+                v = NaN
+            end
+            push!(p.nodeu, user_node(g, cid))
+            push!(p.var, var)
+            push!(p.value, v)
+            push!(p.ts, ts)
+        end
+        push!(data, p)
+    end
+    # TimeSeriesManager.f90 `add_tsfile` (a file named twice) and `HashBndTimeSeries` (a
+    # later series of the same name replaces the earlier one).
+    allunique(ts_files) || throw(MF6InputError(f.path, 0, "Found duplicate time-series file name: $(first(x for x in ts_files if count(==(x), ts_files) > 1))"))
+    timeseries = Dict{Symbol, TimeSeries}()
+    for fname in ts_files, s in read_time_series_file(_resolve_path(fname, ld.simdir); simdir = ld.simdir)
+        timeseries[s.name] = s
+    end
+    for (k, p) in zip(blocks, data), name in p.ts
+        (name === Symbol("") || haskey(timeseries, name)) ||
+            input_error(k, "PERIOD $(block_number(k)): Error in list input. Expected numeric value or time-series name, but found '$name'.")
+    end
+    return TvSpec(;
+        kind, print_input = option(o, "print_input", false),
+        disable_storage_change_integration = option(o, "disable_storage_change_integration", false),
+        ts_files, timeseries, periods = StressPeriods([block_number(b) for b in blocks], data), file = _rel(ld, f.path),
+    )
+end
+
 # ---------------------------------------------------------------------------------------
 # GWF model
 # ---------------------------------------------------------------------------------------
@@ -607,7 +672,7 @@ function _load_gwf(ld::_Loader, fname, mname, np::Integer)
     end
     entry(ftype) = (i = findfirst(e -> e.ftype == ftype, entries); isnothing(i) ? nothing : entries[i])
     dis = _load_dis(ld, entries[findfirst(e -> startswith(e.ftype, "DIS"), entries)], mname)
-    npf = _load_npf(ld, entry("NPF6"), mname, dis)
+    npf = _load_npf(ld, entry("NPF6"), mname, dis, np)
     sto = isnothing(entry("STO6")) ? nothing : _load_sto(ld, entry("STO6"), mname, dis, np)
     ic = _load_ic(ld, entry("IC6"), mname, dis)
     oc = isnothing(entry("OC6")) ? nothing : _load_oc(ld, entry("OC6"), mname, np)

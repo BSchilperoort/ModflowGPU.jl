@@ -1,0 +1,12 @@
+BEGIN options
+  TVK6  FILEIN  gwf_tvk02_disv.npf.tvk
+END options
+
+BEGIN griddata
+  icelltype
+    CONSTANT  0
+  k
+    CONSTANT  1.0
+  k33
+    CONSTANT  1.0
+END griddata

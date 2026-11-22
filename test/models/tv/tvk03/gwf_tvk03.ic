@@ -1,0 +1,9 @@
+BEGIN options
+END options
+
+BEGIN griddata
+  strt  LAYERED
+    CONSTANT  1.0
+    CONSTANT  1.0
+    CONSTANT  0.0
+END griddata

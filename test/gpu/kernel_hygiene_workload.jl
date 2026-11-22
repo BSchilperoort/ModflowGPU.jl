@@ -165,6 +165,30 @@ function workload(dir)
         isnothing(m.sto) || M.add_terms!(m.sys, m.csr, m.sto, m.hold, m.ibound; h = m.h)
         M.assemble!(m.sys, m.csr, m.npf, m.h, m.ibound)
     end
+    # T6.12: TVK6 and TVS6 (test/models/tv: tv_conv, convertible with TVK and TVS; tvs01,
+    # Newton storage): the scatter kernels, and the formulation, storage and rate kernels in
+    # a step integrating a storage change (`StorageChange`).
+    for name in ("tv_conv", "tvs01")
+        d = joinpath(dir, name)
+        cp(joinpath(MODELS, "tv", name), d)
+        chmod(d, 0o755; recursive = true)
+        M.run(d; backend = BACKEND, precision = :single, outdir = joinpath(dir, "out_$name"))
+        csim = M.load_simulation(d)
+        m = M.GwfModel(BACKEND, T, only(csim.models), M.nper(csim.tdis))
+        steps = M.time_steps(csim.tdis)
+        for i in eachindex(steps)
+            s = steps[i]
+            w = M.time_step_window(steps, i)
+            s.kstp == 1 && M.apply_period!(m, s.kper; window = w)
+            M.advance_time_series!(m, w)
+            M.start_timestep!(m, s.delt)
+            m.sto.tvs.active && break
+        end
+        M.formulate!(m)
+        M.reset_terms!(m.sys)
+        M.add_terms!(m.sys, m.csr, m.sto, m.hold, m.ibound; h = m.h)
+        M.calc_storage_rates!(m.sto, m.h, m.hold, m.ibound)
+    end
     # XT3D (T6.5): the formulation and flow kernels (test/models/xt3d).
     d = joinpath(dir, "xt3d")
     cp(joinpath(MODELS, "xt3d"), d)

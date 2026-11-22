@@ -1,0 +1,21 @@
+BEGIN options
+END options
+
+BEGIN dimensions
+  NLAY  3
+  NROW  3
+  NCOL  3
+END dimensions
+
+BEGIN griddata
+  delr
+    CONSTANT  1.0
+  delc
+    CONSTANT  1.0
+  top
+    CONSTANT  1.0
+  botm  LAYERED
+    CONSTANT  0.0
+    CONSTANT  -1.0
+    CONSTANT  -2.0
+END griddata

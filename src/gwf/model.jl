@@ -36,6 +36,8 @@ A GWF model ready to run on a device in precision `T` (state and assembly):
   connections, or `nothing`).
 - T6.11: `hfb` (the `HfbState` of a model with HFB6, else `nothing`; `apply_period!`
   applies its PERIOD blocks).
+- T6.12: `tvk` (the `TvkState` of a model with TVK6, else `nothing`; `apply_period!` and
+  `advance_time_series!` apply it). TVS6 is part of `sto` (`StoragePackage.tvs`).
 - T6.9: `conversions`, the cell conversions of `wetdry!` since the start of the time step
   (`(kiter, wet, dry)` with reduced nodes in MF6's order, one entry per call that converted
   a cell; the initial call of the constructor has `kiter` 0), for the listing
@@ -79,6 +81,7 @@ mutable struct GwfModel{T <: AbstractFloat, B <: Backend, C <: CsrStructure, N <
     const exgentry::Any
     const conversions::Vector{Tuple{Int, Vector{Int32}, Vector{Int32}}}
     const hfb::Union{Nothing, HfbState}
+    const tvk::Union{Nothing, TvkState}
 end
 
 function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) where {T <: AbstractFloat}
@@ -94,7 +97,8 @@ function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) whe
     scsr = (isnothing(xs) || xs.rhs) ? csr : CsrStructure(backend, xs)
     sys = LinearSystem(backend, T, scsr)
     packages = BoundaryPackage[BoundaryPackage(backend, T, b, conn, spec.dis; icelltype = setup.properties.icelltype) for b in spec.boundaries]
-    sto = isnothing(spec.sto) ? nothing : StoragePackage(backend, T, spec.sto, conn, nper; r = setup.r, newton)
+    sto = isnothing(spec.sto) ? nothing : StoragePackage(backend, T, spec.sto, conn, nper; r = setup.r, newton, dis = spec.dis)
+    tvk = tvk_state(spec, conn, setup)
     z(k = conn.nodes) = KernelAbstractions.zeros(backend, T, k)
     ibh = ones(Int32, conn.nodes)
     h = initial_heads(backend, T, spec.ic, conn, setup.r)
@@ -107,7 +111,7 @@ function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) whe
     m = GwfModel(
         spec, backend, conn, setup, csr, npf, sys, packages, sto, _device_copy(backend, T.(conn.area)),
         _device_copy(backend, ibh), ibh, h, hold, z(), z(), KernelAbstractions.zeros(backend, T, conn.nja), 0,
-        nothing, 0, wd, newton, nurbot, vol, 0.0, xt3d, scsr, nothing, nothing, Tuple{Int, Vector{Int32}, Vector{Int32}}[], hfb,
+        nothing, 0, wd, newton, nurbot, vol, 0.0, xt3d, scsr, nothing, nothing, Tuple{Int, Vector{Int32}, Vector{Int32}}[], hfb, tvk,
     )
     # `preprocess_input`: `wd(0, hnew)` with the starting heads (IBOUND without the
     # constant heads, which `chd_rp` sets later).
@@ -159,6 +163,7 @@ function Adapt.adapt_structure(to, m::GwfModel)
         copy(m.ibound_host), h, adapt(to, m.hold), adapt(to, m.res), adapt(to, m.δ), adapt(to, m.flowja), m.kper,
         nothing, 0, adapt(to, m.wd), m.newton, adapt(to, m.nurbot), adapt(to, m.vol), m.delt, adapt(to, m.xt3d), scsr,
         m.solution, adapt(to, m.exgentry), copy(m.conversions), isnothing(m.hfb) ? nothing : copy(m.hfb),
+        isnothing(m.tvk) ? nothing : copy(m.tvk),
     )
 end
 
@@ -190,7 +195,7 @@ function GwfModel(backend::Backend, ::Type{T}, sol::SolutionSetup, nper::Integer
         spec, backend, conn, setup, csr, npf, sys, packages, sto, _device_copy(backend, T.(conn.area)),
         _device_copy(backend, ibh), ibh, h, hold, z(), z(), KernelAbstractions.zeros(backend, T, conn.nja), 0,
         nothing, 0, nothing, false, z(0), z(0), 0.0, xt3d, scsr, sol, _device_copy(backend, sol.exgentry),
-        Tuple{Int, Vector{Int32}, Vector{Int32}}[], nothing,
+        Tuple{Int, Vector{Int32}, Vector{Int32}}[], nothing, nothing,
     )
 end
 
@@ -223,6 +228,10 @@ function apply_period!(m::GwfModel, kper::Integer; window::Union{Nothing, NTuple
         chd |= st === :structure && boundary_kind(pkg) === :CHD
     end
     isnothing(m.sto) || apply_period!(m.sto, kper)
+    # T6.12: TVK6 and TVS6 without time series: the block of the period (`npf_rp` → `npf_ad`,
+    # `sto_rp`); new saturated conductances make the off-diagonals stale.
+    (!isnothing(m.tvk) && tvk_rp!(m.tvk, m.npf, kper; window)) && (m.offdiag = nothing)
+    isnothing(m.sto) || tvs_rp!(m.sto, kper; window)
     # T6.11: HFB6 after the stress packages (`gwf_rp`: npf, hfb, oc, sto, then the packages;
     # independent of each other). Changed saturated conductances make the off-diagonals stale.
     if !isnothing(m.hfb) && hfb_rp!(m.hfb, m.npf, m.conn, m.setup, kper)
@@ -248,9 +257,13 @@ end
 Evaluate the time series of every stress package for the time step `window = (t0, t1)`
 (`[totimc, totimc + delt]`; `idm_ts_advance` at the end of `Mf6PrepareTimestep`) and send
 the changed `bound` arrays to the device (T6.3). Packages without time series, or already
-evaluated for `window` by `apply_period!`, are skipped.
+evaluated for `window` by `apply_period!`, are skipped. T6.12: TVK6 and TVS6 with a TS6
+file are applied for the step.
 """
 function advance_time_series!(m::GwfModel, window::NTuple{2, Float64})
+    # T6.12: TVK6 and TVS6 with time series (`npf_ad`, `sto_ad` → TvBase.f90 `ad`).
+    (!isnothing(m.tvk) && tvk_ad!(m.tvk, m.npf, window)) && (m.offdiag = nothing)
+    isnothing(m.sto) || tvs_ad!(m.sto, window)
     for pkg in m.packages
         advance_time_series!(pkg, window, m.setup.r)
     end
@@ -308,7 +321,7 @@ function formulate!(m::GwfModel; symmetric::Bool = false, terms::Bool = true, sc
     storage = nothing
     if !isnothing(m.sto) && m.sto.transient
         _check_timestep(m.sto)
-        storage = isnothing(m.sto.conv) ? (m.sto.rho, m.hold) : (m.sto.rho, m.hold, m.sto.conv)
+        storage = storage_args(m.sto, m.hold)
     end
     # Valid while the off-diagonals depend only on the constant `condsat`, `ibound` and
     # `symmetric`. Whatever changes them must set `m.offdiag = nothing`: `apply_period!`

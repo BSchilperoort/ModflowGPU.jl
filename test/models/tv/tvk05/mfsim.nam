@@ -1,0 +1,17 @@
+BEGIN options
+END options
+
+BEGIN timing
+  TDIS6  gwf_tvk05.tdis
+END timing
+
+BEGIN models
+  gwf6  gwf_tvk05.nam  gwf_tvk05
+END models
+
+BEGIN exchanges
+END exchanges
+
+BEGIN solutiongroup  1
+  ims6  gwf_tvk05.ims  gwf_tvk05
+END solutiongroup  1

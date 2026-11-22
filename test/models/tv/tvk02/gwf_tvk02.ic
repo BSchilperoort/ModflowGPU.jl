@@ -1,0 +1,8 @@
+BEGIN options
+END options
+
+BEGIN griddata
+  strt
+    INTERNAL
+      0.0  1.0  1.0
+END griddata

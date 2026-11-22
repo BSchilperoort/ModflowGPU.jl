@@ -1,0 +1,24 @@
+BEGIN options
+  PRINT_INPUT
+END options
+
+BEGIN period  2
+  3  1  1  K33  3.0
+END period  2
+
+BEGIN period  3
+  3  1  1  K33  0.2
+END period  3
+
+BEGIN period  4
+  3  1  1  K33  1.0
+  1  1  1  K33  3.0
+END period  4
+
+BEGIN period  5
+  1  1  1  K33  0.2
+END period  5
+
+BEGIN period  7
+  1  1  1  K33  1.0
+END period  7

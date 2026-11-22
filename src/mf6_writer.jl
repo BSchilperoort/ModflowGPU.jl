@@ -11,7 +11,7 @@
 # Scope ("small specs"): one or more GWF models on DIS, DISV or DISU grids (T6.9) with the
 # packages of `BOUNDARY_KINDS`, STO, OC, OBS6 (T6.9), TDIS, IMS and GWF6-GWF6 exchanges
 # (T6.9, with their OBS6), and the TS6 and TAS6 files of the stress packages (T6.10).
-# Features that need other extra files (TVK, TVS, ATS) are an `ArgumentError`.
+# TVK6 and TVS6 files (T6.12) with their TS6 files. ATS input is an `ArgumentError`.
 
 "Shortest round-trip decimal representation, readable by Fortran (ModflowCoupling `fmt`)."
 function _mf6_fmt(x::Real)
@@ -185,8 +185,9 @@ end
 const _CELL_AVERAGING_WORDS = Dict(:logarithmic => "LOGARITHMIC", :amt_lmk => "AMT-LMK", :amt_hmk => "AMT-HMK")
 
 function _write_npf(io, n::NpfSpec, dis)
-    _check_writable(isempty(n.tvk_files), "NPF TVK6")
+    _check_tv_writable(n.tvk_files, n.tvk, "NPF TVK6")
     _write_block(io, "OPTIONS") do
+        foreach(f -> _put(io, "TVK6 FILEIN", f), n.tvk_files)
         n.cell_averaging === :harmonic || _put(io, "ALTERNATIVE_CELL_AVERAGING", _CELL_AVERAGING_WORDS[n.cell_averaging])
         _bool_options(io, n, (:thickstrt,))
         n.variablecv && _put(io, "VARIABLECV", n.dewatered ? "DEWATERED" : "")
@@ -213,8 +214,11 @@ function _write_ic(io, ic::IcSpec, dis)
 end
 
 function _write_sto(io, s::StoSpec, dis)
-    _check_writable(isempty(s.tvs_files), "STO TVS6")
-    _write_block(() -> _bool_options(io, s, (:storagecoefficient, :ss_confined_only, :save_flows)), io, "OPTIONS")
+    _check_tv_writable(s.tvs_files, s.tvs, "STO TVS6")
+    _write_block(io, "OPTIONS") do
+        _bool_options(io, s, (:storagecoefficient, :ss_confined_only, :save_flows))
+        foreach(f -> _put(io, "TVS6 FILEIN", f), s.tvs_files)
+    end
     _write_block(io, "GRIDDATA") do
         _write_node_array(io, "ICONVERT", s.iconvert, dis)
         _write_node_array(io, "SS", s.ss, dis)
@@ -290,6 +294,38 @@ function _write_list_boundary(io, b::BoundarySpec)
                 _put(io, w...)
             end
         end
+    end
+    return nothing
+end
+
+# T6.12: TVK6 / TVS6 file names come with their input (`NpfSpec.tvk`, `StoSpec.tvs`).
+_check_tv_writable(files, tv, what) = _check_writable(isempty(files) || (length(files) == 1 && !isnothing(tv)), "$what without its input")
+
+# T6.12: TVK6 and TVS6 (Mf6FileKeystring records: cellid, the property, the value or the
+# name of the time series).
+function _write_tv(io, t::TvSpec, dis::AbstractDisSpec)
+    g = grid_dims(dis)
+    _write_block(io, "OPTIONS") do
+        t.disable_storage_change_integration && _put(io, "DISABLE_STORAGE_CHANGE_INTEGRATION")
+        t.print_input && _put(io, "PRINT_INPUT")
+        foreach(f -> _put(io, "TS6 FILEIN", f), t.ts_files)
+    end
+    for (k, p) in zip(t.periods.iper, t.periods.data)
+        _write_block(io, "PERIOD $k") do
+            for r in eachindex(p.nodeu)
+                v = p.ts[r] === Symbol("") ? _mf6_fmt(p.value[r]) : String(p.ts[r])
+                _put(io, string.(cellid(g, p.nodeu[r]))..., String(p.var[r]), v)
+            end
+        end
+    end
+    return nothing
+end
+
+function _write_tv_files(dir, t::TvSpec, file, dis, simdir)
+    _write_file(io -> _write_tv(io, t, dis), dir, file)
+    for f in t.ts_files
+        ss = _series_of_file(t.timeseries, f, simdir, (; name = String(t.kind)), "TS6")
+        _write_file(io -> _write_ts(io, ss), dir, f)
     end
     return nothing
 end
@@ -528,11 +564,12 @@ file under the name in its spec (`file` fields, `PackageEntry`s), as `build_mode
 `build_simulation` set them. `load_simulation(dir)` gives `spec` back
 (`spec_identical(spec, load_simulation(dir); ignore = (:simdir,))`), and mf6 runs it.
 
-Supported: GWF models on DIS, DISV and DISU grids with NPF, IC, STO, OC, OBS6, HFB6 (T6.11), the
+Supported: GWF models on DIS, DISV and DISU grids with NPF, IC, STO, OC, OBS6, HFB6 (T6.11), TVK6
+and TVS6 (T6.12, with their TS6 files), the
 stress packages of `BOUNDARY_KINDS` (lists, and READASARRAYS on DIS and DISV), TDIS, IMS and
 GWF6-GWF6 exchanges (with their OBS6), and the TS6 and TAS6 files of the stress packages
 (T6.10: the series as loaded, SFAC applied; values linked to a series written as its
-name). TVK, TVS and ATS input are an `ArgumentError`. Ported from ModflowCoupling's `write_simulation` (src/mf6_writer.jl
+name). ATS input is an `ArgumentError`. Ported from ModflowCoupling's `write_simulation` (src/mf6_writer.jl
 there).
 
 # Example
@@ -571,6 +608,8 @@ function write_simulation(dir::AbstractString, spec::SimulationSpec)
         isnothing(m.sto) || _write_file(io -> _write_sto(io, m.sto, dis), dir, m.sto.file)
         isnothing(m.oc) || _write_file(io -> _write_oc(io, m.oc), dir, m.oc.file)
         isnothing(m.hfb) || _write_file(io -> _write_hfb(io, m.hfb, dis), dir, m.hfb.file)
+        isnothing(m.npf.tvk) || _write_tv_files(dir, m.npf.tvk, only(m.npf.tvk_files), dis, spec.simdir)
+        (isnothing(m.sto) || isnothing(m.sto.tvs)) || _write_tv_files(dir, m.sto.tvs, only(m.sto.tvs_files), dis, spec.simdir)
         for b in m.boundaries
             b.readasarrays && _check_writable(!(dis isa DisuSpec), "READASARRAYS on DISU (package $(b.name))")
             _write_file(dir, b.file) do io
