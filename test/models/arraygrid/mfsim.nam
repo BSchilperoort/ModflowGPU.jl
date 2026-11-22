@@ -1,0 +1,20 @@
+# Synthetic READARRAYGRID model (T6.18): CHDG, WELG, DRNG, RIVG and GHBG on a 2 x 4 x 5 DIS
+# grid with an inactive last cell; LAYERED, CONSTANT, INTERNAL and OPEN/CLOSE arrays,
+# AUXMULTNAME, blocks that give only some arrays, a missing and an empty PERIOD block.
+BEGIN options
+END options
+
+BEGIN timing
+  TDIS6  ag.tdis
+END timing
+
+BEGIN models
+  gwf6  ag.nam  ag
+END models
+
+BEGIN exchanges
+END exchanges
+
+BEGIN solutiongroup  1
+  ims6  ag.ims  ag
+END solutiongroup  1

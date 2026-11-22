@@ -16,6 +16,9 @@
 # - Mf6FileLayerArray.f90 `LayerArrayLoadType%rp`, `param_load`: READASARRAYS input
 #   (RCHA, EVTA). Arrays not given in a block keep their values (all start at zero); the
 #   layer array IRCH/IEVT starts at 1 (`default_nodelist`, `nlarray_to_nodelist`).
+# - Mf6FileGridArray.f90 `GridArrayLoadType%ainit`, `rp`, `param_load` (T6.18):
+#   READARRAYGRID input (CHDG, WELG, DRNG, RIVG, GHBG), read into the same `PeriodList`s
+#   as list input (`read_arraygrid_periods`).
 # - Mf6FileStoInput.f90 `sto_rp` (STO STEADY-STATE/TRANSIENT) and Mf6FileSetting.f90 with
 #   OutputControl.f90 `oc_rp` and TimeStepSelect.f90 `read` (OC SAVE/PRINT records).
 # - DisConnExchange.f90 `source_data` (GWF-GWF EXCHANGEDATA, static struct array): two
@@ -826,6 +829,102 @@ function read_array_periods(f::InputFile, g::GridDims; simdir::AbstractString = 
 end
 
 # ---------------------------------------------------------------------------------------
+# READARRAYGRID (CHDG, WELG, DRNG, RIVG, GHBG)
+# ---------------------------------------------------------------------------------------
+
+"""
+    read_arraygrid_periods(f::InputFile, g::GridDims; simdir = dirname(f.path))
+        -> (ListSchema, StressPeriods{PeriodList})
+
+Read the PERIOD blocks of a READARRAYGRID stress package (`gwf-chdg`, `gwf-welg`,
+`gwf-drng`, `gwf-rivg`, `gwf-ghbg`; Mf6FileGridArray.f90 `GridArrayLoadType`) into the
+list data of the list form of the package (`gwf-chd`, ...), so that the boundary
+framework sees the same records.
+
+Each line of a block names a PERIOD array (`HEAD`, `Q`, `COND`, ...) or an auxiliary
+variable, optionally followed by `LAYERED`, then the array of NODES (user) values
+(`read_grid_array`). The first array of a block defines the records (`param_load`): one
+per cell whose value is not `DNODATA` (3.0e30), in user node order; more of them than
+MAXBOUND (default: the number of user nodes, `ainit`) is an error. Later arrays of the
+block are taken at those cells, whatever their value. A column (or auxiliary variable)
+not given in a block keeps, record by record, its values of the previous block (zero
+before the first one), as MF6's input memory does. An empty block gives an empty list.
+`NETCDF` arrays are not supported.
+
+The schema is the list schema of the list form (`list_schema`) without boundnames and
+time series (READARRAYGRID has neither) and with the effective MAXBOUND. Records at
+inactive cells are kept here; the loader drops them (`BoundaryPackageExt.f90`
+`nodeu_to_nlist`).
+"""
+function read_arraygrid_periods(f::InputFile, g::GridDims; simdir::AbstractString = dirname(f.path))
+    dfn = f.dfn
+    isnothing(dfn) && throw(ArgumentError("read_arraygrid_periods: $(f.path) was read without a DFN definition"))
+    dfn.name in _ARRAYGRID_PACKAGES || throw(ArgumentError("read_arraygrid_periods: $(dfn.name) is not a READARRAYGRID package"))
+    pb = dfn_block(dfn, "PERIOD")
+    o = package_options(f)
+    nodes = prod(g.mshape)
+    # GridArrayLoadType%ainit: MAXBOUND, when not given, is the number of user nodes.
+    maxbound = o.maxbound > 0 ? o.maxbound : nodes
+    lo = PackageOptions(; auxnames = o.auxnames, maxbound)
+    s = try
+        list_schema(dfn_definition(dfn.name[1:(end - 1)]), g, lo)
+    catch e
+        e isa MF6InputError && throw(MF6InputError(f.path, e.line, e.msg))
+        rethrow()
+    end
+    naux = length(o.auxnames)
+    # The input memory of the package (LoadContext.allocate_arrays: zero), by record.
+    bound = zeros(s.nbound_rows, maxbound)
+    auxvar = zeros(naux, maxbound)
+    nodeulist = zeros(Int32, maxbound)
+    blocks = find_blocks(f, "PERIOD")
+    iper = Int[]
+    data = PeriodList[]
+    for b in blocks
+        push!(iper, block_number(b))
+        nbound = 0  # GridArrayLoadType%reset
+        lines = b.lines
+        k = 1
+        while k <= length(lines)
+            l = lines[k]
+            tag = keyword(l, 1)
+            iaux = findfirst(==(tag), o.auxnames)
+            v = dfn_variable(pb, isnothing(iaux) ? tag : "aux")
+            if isnothing(v) || v.reader !== :readarray || (isnothing(iaux) && v.name == "aux")
+                input_error(l, "\"$tag\" is not a PERIOD array of a $(dfn.name) file (nor an auxiliary variable name)")
+            end
+            kw = keyword(l, 2)
+            kw == "NETCDF" && input_error(l, "NETCDF array input is not supported")
+            kw == "TIMEARRAYSERIES" && input_error(l, "$tag TIMEARRAYSERIES: time-array series are not READARRAYGRID input")
+            dest, row = if isnothing(iaux)
+                c = list_column(s, v.name)
+                isnothing(c) && throw(ArgumentError("$(dfn.name): array $(v.name) is not a column of $(s.package)"))
+                bound, c.first
+            else
+                auxvar, iaux
+            end
+            A, k = read_grid_array(lines, k, v, g; simdir)
+            a = vec(A)
+            if nbound > 0
+                for n in 1:nbound
+                    dest[row, n] = a[nodeulist[n]]
+                end
+            else
+                for n in 1:nodes
+                    a[n] == DNODATA && continue
+                    nbound += 1
+                    nbound > maxbound && input_error(l, "Input error: number of defined (non-DNODATA) cells exceeds MAXBOUND=$maxbound.")
+                    dest[row, nbound] = a[n]
+                    nodeulist[nbound] = n
+                end
+            end
+        end
+        push!(data, PeriodList(nodeulist[1:nbound], bound[:, 1:nbound], auxvar[:, 1:nbound], String[], TsRef[]))
+    end
+    return s, StressPeriods(iper, data)
+end
+
+# ---------------------------------------------------------------------------------------
 # STO and OC period blocks
 # ---------------------------------------------------------------------------------------
 
@@ -1108,6 +1207,7 @@ end
 
 const _LIST_PACKAGES = ("gwf-chd", "gwf-wel", "gwf-drn", "gwf-riv", "gwf-ghb", "gwf-rch", "gwf-evt")
 const _ARRAY_PACKAGES = ("gwf-rcha", "gwf-evta")
+const _ARRAYGRID_PACKAGES = ("gwf-chdg", "gwf-welg", "gwf-drng", "gwf-rivg", "gwf-ghbg")
 
 """
     read_period_data(f::InputFile, g::GridDims; simdir = dirname(f.path))
@@ -1117,16 +1217,18 @@ The period data of a GWF package with PERIOD blocks, by DFN definition:
 - list stress packages (CHD, WEL, DRN, RIV, GHB, RCH, EVT): `(ListSchema,
   StressPeriods{PeriodList})` (`read_list_periods`);
 - READASARRAYS packages (RCHA, EVTA): `StressPeriods{ArrayPeriod}`;
+- READARRAYGRID packages (CHDG, WELG, DRNG, RIVG, GHBG): `(ListSchema,
+  StressPeriods{PeriodList})` of the list form (`read_arraygrid_periods`, T6.18);
 - STO: `StressPeriods{Symbol}`; OC: `StressPeriods{Vector{OcRecord}}`.
 
-Other packages (READARRAYGRID variants, advanced packages) are an error naming the
-package.
+Other packages (advanced packages) are an error naming the package.
 """
 function read_period_data(f::InputFile, g::GridDims; simdir::AbstractString = dirname(f.path))
     isnothing(f.dfn) && throw(ArgumentError("read_period_data: $(f.path) was read without a DFN definition"))
     n = f.dfn.name
     n in _LIST_PACKAGES && return read_list_periods(f, g; simdir)
     n in _ARRAY_PACKAGES && return read_array_periods(f, g; simdir)
+    n in _ARRAYGRID_PACKAGES && return read_arraygrid_periods(f, g; simdir)
     n == "gwf-sto" && return read_sto_periods(f)
     n == "gwf-oc" && return read_oc_periods(f)
     throw(MF6InputError(f.path, 0, "unsupported: period data of package $(f.dfn.subcomponent) ($n)"))

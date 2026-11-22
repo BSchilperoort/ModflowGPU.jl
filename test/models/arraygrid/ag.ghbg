@@ -1,0 +1,25 @@
+# The last BHEAD value is at the inactive cell (layer 2, row 4, column 5): MF6 drops that
+# record (nodeu_to_nlist).
+BEGIN options
+  READARRAYGRID
+  SAVE_FLOWS
+END options
+
+BEGIN dimensions
+  MAXBOUND  3
+END dimensions
+
+BEGIN period  1
+  bhead
+    INTERNAL
+      3.0e30  3.0e30  3.0e30  3.0e30  3.0e30
+      3.0e30  3.0e30  3.0e30  3.0e30  3.0e30
+      3.0e30  3.0e30  3.0e30  3.0e30  3.0e30
+      3.0e30  3.0e30  3.0e30  3.0e30  3.0e30
+      3.0e30  3.0e30  3.0e30  3.0e30  7.0
+      3.0e30  3.0e30  3.0e30  3.0e30  7.5
+      3.0e30  3.0e30  3.0e30  3.0e30  3.0e30
+      3.0e30  3.0e30  3.0e30  3.0e30  6.0
+  cond
+    CONSTANT  50.0
+END period  1

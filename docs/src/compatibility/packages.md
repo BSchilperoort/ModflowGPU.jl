@@ -43,6 +43,14 @@ Notes:
 - In OC, `HEAD` and `BUDGET` stand for `HEAD FILEOUT`, `BUDGET FILEOUT` and
   `HEAD PRINT_FORMAT` (accepted, not applied). The `PERIOD` blocks accept `SAVE` and
   `PRINT` of `HEAD` and `BUDGET` with `ALL`, `FIRST`, `LAST`, `FREQUENCY` and `STEPS`.
+- `READARRAYGRID` (CHD, WEL, DRN, RIV, GHB) gives the stress-period data as arrays with
+  a value per cell, `3.0e30` where the cell has no boundary. As in MODFLOW 6, the first
+  array of a `PERIOD` block selects the cells (in cell order), the other arrays of the
+  block are read at those cells, and an array not given keeps its values from the
+  previous block. Cells that are not active are left out (MODFLOW 6 version 6.8.2 can
+  then shift the values of later cells to other cells). `NETCDF` arrays are not
+  supported.
+- IMS `SCALING_METHOD L2NORM` is applied as in MODFLOW 6.
 - A model can have several packages of one type (for example three RCH packages).
 
 ## Several models and GWF–GWF exchanges
@@ -225,7 +233,5 @@ input is accepted.
 | Ghost-node correction (GNC6) | not planned at the moment |
 | Time-varying hydraulic conductivity and storage (TVK6, TVS6) | not planned at the moment |
 | Adaptive time stepping (ATS6) | not planned at the moment |
-| IMS `SCALING_METHOD L2NORM`, `REORDERING_METHOD RCM` and `MD` | not planned at the moment |
-| `READARRAYGRID` input of list packages | not planned at the moment |
 
 The tested models are listed on [Comparing results](results.md).

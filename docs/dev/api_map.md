@@ -70,6 +70,9 @@ it. Underscore-prefixed helpers are omitted.
   `write_binary_list`. Tests: input_lists.
   T6.11: `list_schema` takes the two cellid columns of HFB6 (`cellid1`, `cellid2`; `ncellid`
   2, `PeriodList.nodeu` holds both cells of each record in turn); binary lists with them.
+  T6.18: `read_arraygrid_periods` (READARRAYGRID CHDG/WELG/DRNG/RIVG/GHBG,
+  Mf6FileGridArray.f90 `param_load`: list schema and `PeriodList`s of the list form;
+  `read_period_data` dispatches to it). Tests: input_lists, arraygrid.
 - **input/timeseries.jl** (T6.3): TS6 and TAS6 files and their evaluation on the host in
   Float64 (TimeSeries.f90, TimeArraySeries.f90). `TimeSeries` / `read_time_series_file`
   (NAME(S), METHOD(S), SFAC(S), several series per file, DNODATA), `ts_value(s, t0, t1)`
@@ -90,6 +93,8 @@ it. Underscore-prefixed helpers are omitted.
   T6.10: NPF SAVE_SATURATION.
   T6.11: HFB6 no longer in `UNSUPPORTED_PACKAGES`; `SUPPORTED_OPTIONS` of `gwf-hfb` (PRINT_INPUT).
   T6.17: OC BUDGETCSV, IMS CSV_OUTER_OUTPUT / CSV_INNER_OUTPUT, WEL AUTO_FLOW_REDUCE_CSV.
+  T6.18: `SUPPORTED_OPTIONS` of the READARRAYGRID variants (`gwf-chdg`, ...); IMS
+  SCALING_METHOD L2NORM accepted; REORDERING_METHOD RCM and MD accepted (no effect).
 
 ## Model description (host specs, plain structs)
 
@@ -126,6 +131,8 @@ it. Underscore-prefixed helpers are omitted.
   T6.6: GWF6-GWF6 options checked with `strict`, the exchange OBS6 file read and its
   exchange numbers / boundary names checked (`gwf_gwf_rp_obs`).
   T6.11: `_load_hfb` (HFB6: MAXHFB, PERIOD blocks; one per model, `_GWF_BASE_FTYPES`).
+  T6.18: READARRAYGRID stress packages read (`read_arraygrid_periods`); records at
+  inactive cells dropped (`nodeu_to_nlist`). Tests: arraygrid.
 
 ## Discretization and connectivity (host)
 

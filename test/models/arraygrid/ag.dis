@@ -1,0 +1,28 @@
+BEGIN options
+  LENGTH_UNITS  meters
+END options
+
+BEGIN dimensions
+  NLAY  2
+  NROW  4
+  NCOL  5
+END dimensions
+
+BEGIN griddata
+  delr
+    CONSTANT  100.0
+  delc
+    CONSTANT  100.0
+  top
+    CONSTANT  10.0
+  botm  LAYERED
+    CONSTANT  0.0
+    CONSTANT  -20.0
+  idomain  LAYERED
+    CONSTANT  1
+    INTERNAL
+      1 1 1 1 1
+      1 1 1 1 1
+      1 1 1 1 1
+      1 1 1 1 0
+END griddata

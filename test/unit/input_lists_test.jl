@@ -332,9 +332,10 @@ lists(dir, name, dfn, text, g) = read_list_periods(pkg(dir, name, dfn, text), g;
             @test occursin("Expected rows=1", input_error_of(() -> read_tdis_perioddata(pkg(dir, "c.tdis", "sim-tdis", bad))).msg)
             bad = replace(tdis, " 1.0 1 1.0" => " 1.0 1.5 1.0")
             @test occursin("nstp", input_error_of(() -> read_tdis_perioddata(pkg(dir, "d.tdis", "sim-tdis", bad))).msg)
-            # Packages without supported period data.
+            # READARRAYGRID (T6.18): the list data of the list form; an empty block, no records.
             f = pkg(dir, "a.chdg", "gwf-chd", "BEGIN OPTIONS\n READARRAYGRID\nEND OPTIONS\nBEGIN PERIOD 1\nEND PERIOD\n")
-            @test occursin("unsupported", input_error_of(() -> read_period_data(f, G)).msg)
+            s, sp = read_period_data(f, G)
+            @test s.package == "gwf-chd" && sp.iper == [1] && isempty(sp.data[1].nodeu)
         end
     end
 end

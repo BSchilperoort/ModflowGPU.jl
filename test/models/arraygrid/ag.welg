@@ -1,0 +1,56 @@
+# Period 1: Q defines wells at nodes 8, 14 and 33; MULT (AUXMULTNAME) is 1 there.
+# Period 2: only MULT, at the same cells: Q keeps its values.
+# Period 3: MULT also at node 20: the records are nodes 8, 14, 20 and 33 and Q keeps its
+# values record by record (MF6's input memory), so node 20 gets -40 and node 33 zero.
+# Period 4: empty block, no wells.
+BEGIN options
+  READARRAYGRID
+  AUXILIARY  MULT
+  AUXMULTNAME  MULT
+  SAVE_FLOWS
+END options
+
+BEGIN period  1
+  q
+    INTERNAL  FACTOR  1.0
+      3.0e30  3.0e30  3.0e30  3.0e30  3.0e30
+      3.0e30  3.0e30  -50.0  3.0e30  3.0e30
+      3.0e30  3.0e30  3.0e30  -30.0  3.0e30
+      3.0e30  3.0e30  3.0e30  3.0e30  3.0e30
+      3.0e30  3.0e30  3.0e30  3.0e30  3.0e30
+      3.0e30  3.0e30  3.0e30  3.0e30  3.0e30
+      3.0e30  3.0e30  -40.0  3.0e30  3.0e30
+      3.0e30  3.0e30  3.0e30  3.0e30  3.0e30
+  mult
+    CONSTANT  1.0
+END period  1
+
+BEGIN period  2
+  mult  LAYERED
+    INTERNAL
+      3.0e30  3.0e30  3.0e30  3.0e30  3.0e30
+      3.0e30  3.0e30  0.5  3.0e30  3.0e30
+      3.0e30  3.0e30  3.0e30  2.0  3.0e30
+      3.0e30  3.0e30  3.0e30  3.0e30  3.0e30
+    INTERNAL
+      3.0e30  3.0e30  3.0e30  3.0e30  3.0e30
+      3.0e30  3.0e30  3.0e30  3.0e30  3.0e30
+      3.0e30  3.0e30  1.0  3.0e30  3.0e30
+      3.0e30  3.0e30  3.0e30  3.0e30  3.0e30
+END period  2
+
+BEGIN period  3
+  mult
+    INTERNAL
+      3.0e30  3.0e30  3.0e30  3.0e30  3.0e30
+      3.0e30  3.0e30  1.0  3.0e30  3.0e30
+      3.0e30  3.0e30  3.0e30  1.0  3.0e30
+      3.0e30  3.0e30  3.0e30  3.0e30  1.0
+      3.0e30  3.0e30  3.0e30  3.0e30  3.0e30
+      3.0e30  3.0e30  3.0e30  3.0e30  3.0e30
+      3.0e30  3.0e30  1.0  3.0e30  3.0e30
+      3.0e30  3.0e30  3.0e30  3.0e30  3.0e30
+END period  3
+
+BEGIN period  4
+END period  4
