@@ -1,0 +1,7 @@
+BEGIN options
+END options
+
+BEGIN griddata
+  strt
+    CONSTANT  0.8
+END griddata

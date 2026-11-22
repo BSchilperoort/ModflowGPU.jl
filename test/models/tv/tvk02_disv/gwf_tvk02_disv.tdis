@@ -1,0 +1,17 @@
+BEGIN options
+  TIME_UNITS  days
+END options
+
+BEGIN dimensions
+  NPER  7
+END dimensions
+
+BEGIN perioddata
+  1.0  1  1.0
+  1.0  1  1.0
+  1.0  1  1.0
+  1.0  1  1.0
+  1.0  1  1.0
+  1.0  1  1.0
+  1.0  1  1.0
+END perioddata

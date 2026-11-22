@@ -119,6 +119,8 @@ function _check_solution(models::Vector{GwfSpec}, setups, exchanges::Vector{Exch
         file = isempty(m.file) ? m.name : m.file
         m.newton && unsupported(file, "NEWTON in model $(m.name) of a multi-model solution (only confined models are supported with exchanges)")
         isnothing(m.hfb) || unsupported(file, "HFB6 in model $(m.name) of a multi-model solution")
+        isempty(m.npf.tvk_files) || unsupported(file, "TVK6 in model $(m.name) of a multi-model solution")
+        (isnothing(m.sto) || isempty(m.sto.tvs_files)) || unsupported(file, "TVS6 in model $(m.name) of a multi-model solution")
         any(!=(0), s.properties.icelltype) &&
             unsupported(file, "convertible cells (ICELLTYPE /= 0) in model $(m.name) of a multi-model solution (only confined models are supported with exchanges)")
         !isnothing(m.sto) && any(!=(0), m.sto.iconvert) &&
@@ -423,7 +425,7 @@ function _merge_sto(models::Vector{GwfSpec})
     for s in stos
         (s.periods.iper == s1.periods.iper && s.periods.data == s1.periods.data) ||
             unsupported(s.file, "STO6 PERIOD blocks (steady state / transient) that differ between the models of a solution")
-        isempty(s.tvs_files) || unsupported(s.file, "TVS6 time-varying storage in STO6 (not implemented)")
+        isempty(s.tvs_files) || unsupported(s.file, "TVS6 in a model of a multi-model solution")
     end
     sc = s1.storagecoefficient
     same = all(s -> s.storagecoefficient == sc, stos)

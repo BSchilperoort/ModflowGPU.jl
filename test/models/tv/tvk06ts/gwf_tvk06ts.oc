@@ -1,0 +1,10 @@
+BEGIN options
+  BUDGET  FILEOUT  gwf_tvk06ts.cbc
+  HEAD  FILEOUT  gwf_tvk06ts.hds
+END options
+
+BEGIN period  1
+  SAVE  HEAD  ALL
+  SAVE  BUDGET  ALL
+  PRINT  BUDGET  ALL
+END period  1

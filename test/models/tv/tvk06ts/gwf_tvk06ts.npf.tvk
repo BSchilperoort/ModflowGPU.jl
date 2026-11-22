@@ -1,0 +1,8 @@
+BEGIN options
+  PRINT_INPUT
+  TS6  FILEIN  gwf_tvk06ts.npf.tvk.ts
+END options
+
+BEGIN period  1
+  3  1  1  K33  k33_series
+END period  1

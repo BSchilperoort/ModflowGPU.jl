@@ -1,0 +1,21 @@
+BEGIN options
+  PRINT_INPUT
+  TS6  FILEIN  gwf_tvs05.ts
+END options
+
+BEGIN period  2
+  1  1  1  SY  syh_series
+END period  2
+
+BEGIN period  3
+  1  1  1  SS  1.0e-5
+END period  3
+
+BEGIN period  4
+  1  1  1  SY  syh_series
+END period  4
+
+BEGIN period  5
+  1  1  1  SS  1.0e-6
+  1  1  1  SY  syh_series
+END period  5

@@ -1,0 +1,12 @@
+BEGIN options
+  SAVE_FLOWS
+END options
+
+BEGIN packages
+  DIS6  gwf_tvk04.dis  dis
+  IC6  gwf_tvk04.ic  ic
+  NPF6  gwf_tvk04.npf  npf
+  CHD6  gwf_tvk04.chd  chd-1
+  GHB6  gwf_tvk04.ghb  ghb-1
+  OC6  gwf_tvk04.oc  oc
+END packages

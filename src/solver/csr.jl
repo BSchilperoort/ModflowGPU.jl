@@ -357,6 +357,19 @@ end
     return d, s, j
 end
 
+# T6.12: `(rho, hold, conv, old)` in a time step that integrates TVS6 changes (`conv` may be
+# `nothing`; `storage_terms` with the `StorageChange`).
+@inline function _add_storage_terms(n, d, s, j, sto::NTuple{4, Any}, ibound, h, jac)
+    rho, hold, conv, old = sto
+    @inbounds if ibound[n] > 0
+        a1, r1, a2, r2 = storage_terms(rho, hold, conv, h, n, jac, old)
+        d = d + a1 + a2
+        s = s + r1 + r2
+        jac && (j += storage_jacobian(rho, conv, h, n))
+    end
+    return d, s, j
+end
+
 @kernel function formulate_kernel!(
         amat, rhs, diag, bdiag, brhs, res, scale, @Const(ia), @Const(ja), @Const(jas), @Const(condsat), @Const(Δr),
         @Const(h), @Const(ibound), pkgs, sto, symmetric::Bool, offdiag::Bool, terms::Bool, tiny, jac::Bool,

@@ -96,8 +96,12 @@ const SUPPORTED_OPTIONS = Dict{Tuple{String, String}, Vector{String}}(
         "HIGHEST_CELL_SATURATION",  # T6.2
         "XT3D", "RHS",  # T6.5
         "SAVE_SATURATION",  # T6.10
+        "TVK6",  # T6.12
     ],
-    ("gwf-sto", "OPTIONS") => ["SAVE_FLOWS", "STORAGECOEFFICIENT", "SS_CONFINED_ONLY"],
+    ("gwf-sto", "OPTIONS") => ["SAVE_FLOWS", "STORAGECOEFFICIENT", "SS_CONFINED_ONLY", "TVS6"],  # T6.12: TVS6
+    # T6.12: time-varying K and storage (PRINT_INPUT is accepted; the settings are not printed).
+    ("utl-tvk", "OPTIONS") => ["PRINT_INPUT", "TS6"],
+    ("utl-tvs", "OPTIONS") => ["DISABLE_STORAGE_CHANGE_INTEGRATION", "PRINT_INPUT", "TS6"],
     ("gwf-ic", "OPTIONS") => String[],
     ("gwf-hfb", "OPTIONS") => ["PRINT_INPUT"],  # T6.11
     ("gwf-oc", "OPTIONS") => ["BUDGET", "HEAD", "BUDGETCSV"],  # T6.17: BUDGETCSV
@@ -166,8 +170,8 @@ T6.4), `:convertible` (NPF ICELLTYPE /= 0 in an active cell) and `:convertible_s
 - `:timeseries`: list values given as TS6 time-series names, or TIMEARRAYSERIES arrays
   (supported since T6.3);
 
-ATS6, TVK6, TVS6 and HPC6 files are options (`ATS6 FILEIN ...`) and are rejected
-through `SUPPORTED_OPTIONS`.
+ATS6 and HPC6 files are options (`ATS6 FILEIN ...`) and are rejected through
+`SUPPORTED_OPTIONS`; TVK6 and TVS6 are supported since T6.12.
 """
 const SUPPORTED_FEATURES = Set{Symbol}([:timeseries, :disv, :disu, :convertible, :convertible_storage, :newton, :multi_model, :exchange])
 

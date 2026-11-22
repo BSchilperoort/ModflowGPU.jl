@@ -9,6 +9,43 @@
 # what the user specified.
 
 """
+    TvPeriod(nodeu, var, value, ts)
+
+The settings of one PERIOD block of TVK6 or TVS6 (T6.12), in input order: the user node
+`nodeu`, the property `var` (`:K`, `:K22`, `:K33` for TVK; `:SS`, `:SY` for TVS), the value
+`value` (`NaN` when linked to a time series) and `ts`, the name of the time series
+(upper case) or `Symbol("")` for a literal value.
+"""
+struct TvPeriod
+    nodeu::Vector{Int32}
+    var::Vector{Symbol}
+    value::Vector{Float64}
+    ts::Vector{Symbol}
+end
+
+"""
+    TvSpec
+
+Time-varying hydraulic conductivity (TVK6, `kind = :TVK`, an option of NPF6) or storage
+(TVS6, `kind = :TVS`, an option of STO6), T6.12 (TvBase.f90, gwf-tvk.f90, gwf-tvs.f90):
+`print_input`, `disable_storage_change_integration` (TVS only), `ts_files` (TS6 FILEIN
+names; with any, every value is re-evaluated each time step, `ts_active`), `timeseries`
+(the series of the TS6 files by name), `periods::StressPeriods{TvPeriod}` and `file`.
+A setting holds from its period until a later block sets the same property of the cell.
+"""
+Base.@kwdef struct TvSpec
+    kind::Symbol
+    print_input::Bool = false
+    disable_storage_change_integration::Bool = false
+    ts_files::Vector{String} = String[]
+    timeseries::Dict{Symbol, TimeSeries} = Dict{Symbol, TimeSeries}()
+    periods::StressPeriods{TvPeriod}
+    file::String = ""
+end
+
+Base.show(io::IO, t::TvSpec) = print(io, "TvSpec(:", t.kind, ", periods ", t.periods.iper, ")")
+
+"""
     NpfSpec
 
 Node property flow (NPF6). Arrays are by user node (`(nodes)`).
@@ -23,7 +60,8 @@ Node property flow (NPF6). Arrays are by user node (`(nodes)`).
   defaults 1.0, 1, 0 when REWET is not given).
 - `xt3d`, `xt3d_rhs` (XT3D [RHS]).
 - `save_flows`, `print_flows`, `save_specific_discharge`, `save_saturation`.
-- `tvk_files`: TVK6 FILEIN names (time-varying K; not parsed here).
+- `tvk_files`: TVK6 FILEIN names (time-varying K); `tvk`: the TVK6 file read (`TvSpec`,
+  T6.12), or `nothing`.
 """
 Base.@kwdef struct NpfSpec
     icelltype::Vector{Int32}
@@ -53,6 +91,7 @@ Base.@kwdef struct NpfSpec
     save_specific_discharge::Bool = false
     save_saturation::Bool = false
     tvk_files::Vector{String} = String[]
+    tvk::Union{Nothing, TvSpec} = nothing
     file::String = ""
 end
 
@@ -65,7 +104,8 @@ Storage (STO6). Arrays are by user node.
 - `storagecoefficient`, `ss_confined_only`, `save_flows`.
 - `periods::StressPeriods{Symbol}`: `:steady_state` / `:transient` from the PERIOD blocks;
   before the first block a model with STO is transient (`is_transient`).
-- `tvs_files`: TVS6 FILEIN names.
+- `tvs_files`: TVS6 FILEIN names; `tvs`: the TVS6 file read (`TvSpec`, T6.12), or
+  `nothing`.
 """
 Base.@kwdef struct StoSpec
     iconvert::Vector{Int32}
@@ -76,6 +116,7 @@ Base.@kwdef struct StoSpec
     save_flows::Bool = false
     periods::StressPeriods{Symbol} = StressPeriods(Int[], Symbol[])
     tvs_files::Vector{String} = String[]
+    tvs::Union{Nothing, TvSpec} = nothing
     file::String = ""
 end
 
