@@ -28,7 +28,7 @@ through the same engine checks.
 
 | Block | Supported | Rejected |
 | --- | --- | --- |
-| OPTIONS | PRINT_OPTION, COMPLEXITY (SIMPLE, MODERATE, COMPLEX presets), NO_PTC [ALL / FIRST] (T6.2: pseudo-transient continuation of Newton steady states) | CSV_OUTER_OUTPUT, CSV_INNER_OUTPUT, ATS_OUTER_MAXIMUM_FRACTION, DEV_PTC* (developer options) |
+| OPTIONS | PRINT_OPTION, COMPLEXITY (SIMPLE, MODERATE, COMPLEX presets), NO_PTC [ALL / FIRST] (T6.2: pseudo-transient continuation of Newton steady states), CSV_OUTER_OUTPUT, CSV_INNER_OUTPUT (T6.17) | ATS_OUTER_MAXIMUM_FRACTION, DEV_PTC* (developer options) |
 | NONLINEAR | OUTER_DVCLOSE, OUTER_MAXIMUM, UNDER_RELAXATION NONE / SIMPLE / COOLEY / DBD (+ THETA, KAPPA, GAMMA, MOMENTUM), BACKTRACKING_NUMBER / _TOLERANCE / _REDUCTION_FACTOR / _RESIDUAL_LIMIT (also COMPLEXITY COMPLEX's; T6.2a, `sln_backtracking`, on DIS, DISV and DISU, confined and convertible cells, every precision preset), LINEAR_SOLVER DEFAULT / LINEAR | other LINEAR_SOLVER values |
 | LINEAR | INNER_MAXIMUM, INNER_DVCLOSE, INNER_RCLOSE (absolute, STRICT, L2NORM_RCLOSE, RELATIVE_RCLOSE), LINEAR_ACCELERATION CG / BICGSTAB, NUMBER_ORTHOGONALIZATIONS, SCALING_METHOD NONE / DIAGONAL / L2NORM (T6.18), REORDERING_METHOD NONE / RCM / MD (T6.18: no effect, an Info) | – |
 
@@ -54,14 +54,14 @@ Accepted with a different behaviour (logged warnings, not errors):
 | NPF6 | ICELLTYPE 0 (confined) and ≠ 0 (convertible, standard formulation, T6.1), THICKSTRT, VARIABLECV [DEWATERED], PERCHED, REWET (WETFCT, IWETIT, IHDWET) with WETDRY (T6.1), K, K22, K33, ANGLE1–3, K22OVERK, K33OVERK (on DISV/DISU the K ellipse uses the connection angles, `anglex`, T6.4; DISU K22 or SAVE_SPECIFIC_DISCHARGE without ANGLDEGX, or with inconsistent ANGLDEGX, is MF6's error), ALTERNATIVE_CELL_AVERAGING (LOGARITHMIC, AMT-LMK, AMT-HMK; harmonic default), SAVE_FLOWS, PRINT_FLOWS, SAVE_SPECIFIC_DISCHARGE, XT3D [RHS] with confined cells (T6.5) | XT3D with convertible cells or NEWTON, TVK6 (T6.x), other options; HIGHEST_CELL_SATURATION is supported with NEWTON (T6.2), PERCHED, VARIABLECV and REWET with NEWTON are MF6's input errors |
 | STO6 | SS, SY, ICONVERT 0 and ≠ 0 (convertible storage, STO-SY, T6.1), STORAGECOEFFICIENT, SS_CONFINED_ONLY, SAVE_FLOWS, STEADY-STATE / TRANSIENT periods | TVS6 (*engine*) |
 | IC6 | STRT | – |
-| OC6 | HEAD and BUDGET FILEOUT, HEAD PRINT_FORMAT; SAVE / PRINT HEAD / BUDGET with ALL, FIRST, LAST, FREQUENCY, STEPS | BUDGETCSV (and other options) |
-| CHD6, WEL6, GHB6, RIV6, DRN6 (lists) | AUXILIARY, AUXMULTNAME, BOUNDNAMES, PRINT_INPUT, PRINT_FLOWS, SAVE_FLOWS, TS6 / OBS6 FILEIN (see below), MAXBOUND, PERIOD blocks (incl. empty blocks); DRN AUXDEPTHNAME; values given as time-series names in any column MF6 allows, auxiliary variables (also the AUXMULTNAME multiplier) included (T6.3) | MOVER (MVR6 out of scope), WEL AUTO_FLOW_REDUCE_CSV, NETCDF arrays and EXPORT_ARRAY_NETCDF of READARRAYGRID input (READARRAYGRID itself is supported since T6.18: `read_arraygrid_periods`); WEL AUTO_FLOW_REDUCE, FLOW_REDUCTION_LENGTH, AUTO_FLOW_REDUCE_AUXNAME are supported (T6.1) |
+| OC6 | HEAD and BUDGET FILEOUT, HEAD PRINT_FORMAT; SAVE / PRINT HEAD / BUDGET with ALL, FIRST, LAST, FREQUENCY, STEPS; BUDGETCSV (T6.17) | other options |
+| CHD6, WEL6, GHB6, RIV6, DRN6 (lists) | AUXILIARY, AUXMULTNAME, BOUNDNAMES, PRINT_INPUT, PRINT_FLOWS, SAVE_FLOWS, TS6 / OBS6 FILEIN (see below), MAXBOUND, PERIOD blocks (incl. empty blocks); DRN AUXDEPTHNAME; values given as time-series names in any column MF6 allows, auxiliary variables (also the AUXMULTNAME multiplier) included (T6.3) | MOVER (MVR6 out of scope), NETCDF arrays and EXPORT_ARRAY_NETCDF of READARRAYGRID input (READARRAYGRID itself is supported since T6.18: `read_arraygrid_periods`); WEL AUTO_FLOW_REDUCE, FLOW_REDUCTION_LENGTH, AUTO_FLOW_REDUCE_AUXNAME are supported (T6.1), AUTO_FLOW_REDUCE_CSV (T6.17) |
 | RCH6 (list and READASARRAYS) | as the lists, plus FIXED_CELL, IRCH; READASARRAYS: TAS6 FILEIN and `RECHARGE` / auxiliary `TIMEARRAYSERIES` (T6.3) | – |
 | EVT6 (list and READASARRAYS) | as the lists, plus FIXED_CELL, SURF_RATE_SPECIFIED, NSEG ≥ 1 (PXDP, PETM, PETM0), IEVT; READASARRAYS: TAS6 FILEIN and `RATE` / auxiliary `TIMEARRAYSERIES` (T6.3) | – |
 | OBS6 | the file must exist; it is read by no one | observations are not evaluated or written until T6.7 (accepted, no output) |
 | TS6 (T6.3) | ATTRIBUTES NAME(S), METHOD(S) STEPWISE / LINEAR / LINEAREND, SFAC(S), AUTODEALLOCATE (no effect); several series per file and several files per package; DNODATA values; evaluated per time step on the host in Float64 (time-weighted average over the step, LINEAREND the value at its end) | a series that ends before a step ends (MF6's error; no extension to the end of the simulation) |
 | TAS6 (T6.3) | ATTRIBUTES NAME, METHOD STEPWISE / LINEAR, SFAC, AUTODEALLOCATE; one `TIME` block per array (CONSTANT, INTERNAL, OPEN/CLOSE, FACTOR); evaluated per time step on the host in Float64 (time-weighted average) | DISU grids (MF6 does not support them either) |
-| Always rejected | – | SFR6, LAK6, MAW6, UZF6, MVR6, CSUB6, BUY6, VSC6, API6 (out of scope), GNC6, HFB6 (not in the plan) |
+| Always rejected | – | SFR6, LAK6, MAW6, UZF6, MVR6, CSUB6, BUY6, VSC6, API6 (out of scope), GNC6 (not in the plan); HFB6 is supported since T6.11 |
 
 ## Engine features
 

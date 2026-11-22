@@ -188,3 +188,72 @@ end
     ModflowGPU.formulate!(m)
     @test m.offdiag_id == id1
 end
+
+# T6.10: DATA-SAT (NPF SAVE_SATURATION; gwf-npf.f90 `sav_sat`) against mf6 6.8.2: the
+# wetting/drying and Newton test models with SAVE_SATURATION added (dry cells: 0; the
+# smoothed Newton saturation), and two THICKSTRT models built here (confined cells with
+# the saturation of STRT: one with only such cells, `cv === nothing`, one mixed).
+const _SAT_MF6 = get(ENV, "MF6", joinpath(REFERENCE_DIR, "mf6.8.2_linux", "bin", "mf6"))
+
+function _thickstrt_model(ict)
+    dis = ModflowGPU.build_dis(; delr = 100.0, delc = 100.0, top = 10.0, botm = zeros(4, 1, 1))
+    chd = ModflowGPU.build_boundary(:CHD, dis; periods = [1 => (; cells = [(1, 1, 1), (1, 1, 4)], values = [6.0, 4.0])])
+    oc = ModflowGPU.build_oc(; head_file = "t.hds", budget_file = "t.cbc", periods = [1 => ["SAVE HEAD ALL", "SAVE BUDGET ALL"]])
+    npf = ModflowGPU.build_npf(dis; k = 2.0, icelltype = ict, thickstrt = true, save_saturation = true, save_flows = true)
+    m = ModflowGPU.build_model("t"; dis, npf, ic = ModflowGPU.build_ic(dis; strt = [6.0, 5.5, 5.0, 4.0]), oc, boundaries = [chd])
+    ims = ModflowGPU.build_ims(; outer_dvclose = 1.0e-9, inner_dvclose = 1.0e-10, inner_rclose = 1.0e-8, linear_acceleration = :bicgstab)
+    return ModflowGPU.build_simulation(m; tdis = ModflowGPU.build_tdis(; perlen = 1.0), ims)
+end
+
+@testset "DATA-SAT (T6.10, sav_sat) vs mf6" begin
+    if !isfile(_SAT_MF6)
+        @info "Skipping the DATA-SAT test: mf6 not found at $_SAT_MF6"
+    else
+        cases = Any[
+            ("wetdry", joinpath(@__DIR__, "..", "models", "wetdry"), "wd.npf", "wd.cbc"),
+            ("newton", joinpath(@__DIR__, "..", "models", "newton"), "nwt.npf", "nwt.cbc"),
+            ("thickstrt", _thickstrt_model(-1), "", "t.cbc"),
+            ("thickstrt-mixed", _thickstrt_model([-1, 1, 1, -1]), "", "t.cbc"),
+        ]
+        for (name, src, npffile, cbc) in cases
+            mktempdir() do dir
+                ref = joinpath(dir, "mf6")
+                if src isa String
+                    cp(src, ref)
+                    f = joinpath(ref, npffile)
+                    write(f, replace(read(f, String), "BEGIN options\n" => "BEGIN options\n  SAVE_SATURATION\n"; count = 1))
+                else
+                    ModflowGPU.write_simulation(ref, src)
+                end
+                out = read(pipeline(Cmd(`$_SAT_MF6`; dir = ref); stderr = devnull), String)
+                @test occursin("Normal termination", out)
+                b = ModflowGPU.open_budget_file(joinpath(ref, cbc))
+                ib = ModflowGPU.find_budget_records(b; text = "DATA-SAT")
+                @test !isempty(ib)
+                spec = ModflowGPU.load_simulation(ref)
+                @test only(spec.models).npf.save_saturation
+                for_each_precision() do p
+                    ours = joinpath(dir, "ours-$(p.preset)")
+                    mkpath(ours)
+                    ModflowGPU.run(spec; backend = TEST_BACKEND, precision = p.preset, outdir = ours)
+                    a = ModflowGPU.open_budget_file(joinpath(ours, cbc))
+                    ia = ModflowGPU.find_budget_records(a; text = "DATA-SAT")
+                    @test length(ia) == length(ib)
+                    # DATA-SAT follows DATA-SPDIS or FLOW-JA-FACE, as in MF6.
+                    @test [strip(r.text) for r in a.records] == [strip(r.text) for r in b.records]
+                    worst = 0.0
+                    for (i, j) in zip(ia, ib)
+                        ra, rb = a.records[i], b.records[j]
+                        @test (ra.kstp, ra.kper, ra.imeth, ra.auxtxt) == (rb.kstp, rb.kper, rb.imeth, rb.auxtxt)
+                        @test (ra.modelnam1, ra.paknam1, ra.modelnam2, ra.paknam2) == (rb.modelnam1, rb.paknam1, rb.modelnam2, rb.paknam2)
+                        qa, qb = ModflowGPU.read_budget(a, i), ModflowGPU.read_budget(b, j)
+                        @test qa.id1 == qb.id1 && qa.id2 == qb.id2 && qa.q == qb.q
+                        worst = max(worst, maximum(abs.(qa.aux .- qb.aux)))
+                    end
+                    @test worst < (p.T === Float64 ? 1.0e-8 : 1.0e-5)
+                    @info "DATA-SAT $name vs mf6, :$(p.preset): max |Δsat| = $(round(worst; sigdigits = 3))"
+                end
+            end
+        end
+    end
+end

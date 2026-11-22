@@ -657,6 +657,66 @@ struct KrylovResult
 end
 
 """
+    InnerTrace(backend, ranges, Ta)
+
+The convergence record of every inner iteration, for IMS `CSV_INNER_OUTPUT` (T6.17;
+ImsLinearBase.f90 `ims_base_cg` / `ims_base_bcgs`: `summary%dvmax`, `locdv`, `rmax`,
+`locr` per model and `CACCEL`), filled by `solve!(...; trace)`. Per inner iteration and
+per model (`ranges`: the rows of each model in the solution) the signed largest change
+of the iteration and the signed largest residual (as the convergence test uses them:
+scaled for CG, unscaled for BiCGSTAB) with their rows (0 when zero), and the step lengths
+`alpha` and `omega` (NaN for CG). Two argmax reductions per model and a host read each per
+inner iteration: only built when the inner CSV file is requested. After an iteration with
+NUMBER_ORTHOGONALIZATIONS' true residual the residual is the recomputed one.
+"""
+struct InnerTrace{R <: Reducer}
+    reducer::R
+    ranges::Vector{UnitRange{Int}}
+    dv::Vector{Float64}
+    ldv::Vector{Int}
+    r::Vector{Float64}
+    lr::Vector{Int}
+    alpha::Vector{Float64}
+    omega::Vector{Float64}
+end
+
+InnerTrace(backend::Backend, ranges::Vector{UnitRange{Int}}, ::Type{Ta}) where {Ta} = InnerTrace(
+    Reducer(backend, maximum(length, ranges; init = 1), Ta), ranges, Float64[], Int[], Float64[], Int[], Float64[], Float64[],
+)
+
+Base.empty!(t::InnerTrace) = (foreach(empty!, (t.dv, t.ldv, t.r, t.lr, t.alpha, t.omega)); t)
+
+const _TRACE_OPS = (_ArgMaxAbsOp(), _SumOp(), _SumOp(), _SumOp())
+
+# The change of the iteration and the residual of row `i + off`, as the update kernels
+# compute them (`_cg_update` / `_cg_update_nf`, `_bcgs_update`).
+@inline _trace_cg_dv(::Type{Ta}, i, off, p, ss) where {Ta} = (@inbounds(Ta(ss[2] * p[i + off])), zero(Ta), zero(Ta), zero(Ta))
+@inline _trace_cg_r(::Type{Ta}, i, off, r) where {Ta} = (@inbounds(Ta(r[i + off])), zero(Ta), zero(Ta), zero(Ta))
+@inline function _trace_bcgs_dv(::Type{Ta}, i, off, phat, qhat, rowfac, ss) where {Ta}
+    @inbounds begin
+        n = i + off
+        tv = ss[2] * phat[n] + ss[3] * qhat[n]
+        return (Ta(tv * rowfac[n]), zero(Ta), zero(Ta), zero(Ta))
+    end
+end
+@inline _trace_bcgs_r(::Type{Ta}, i, off, r, rowfac) where {Ta} = (@inbounds(Ta(r[i + off] / rowfac[i + off])), zero(Ta), zero(Ta), zero(Ta))
+
+function _trace_inner!(t::InnerTrace, backend, fdv, dvargs, fr, rargs, alpha, omega)
+    for rg in t.ranges
+        off = first(rg) - 1
+        (dv, _, _, _), ldv = _mapreduce_loc!(t.reducer, backend, fdv, _TRACE_OPS, length(rg), off, dvargs...)
+        (r, _, _, _), lr = _mapreduce_loc!(t.reducer, backend, fr, _TRACE_OPS, length(rg), off, rargs...)
+        push!(t.dv, dv)
+        push!(t.ldv, ldv == 0 ? 0 : ldv + off)
+        push!(t.r, r)
+        push!(t.lr, lr == 0 ? 0 : lr + off)
+    end
+    push!(t.alpha, alpha)
+    push!(t.omega, omega)
+    return nothing
+end
+
+"""
     KrylovSolver{Ts, Tp, Ta}
 
 Workspace of the inner solver for one CSR structure: `settings::KrylovSettings`, the
@@ -1041,7 +1101,7 @@ const _CG_UPDATE_OPS = (_MaxAbsOp(), _MaxAbsOp(), _SumOp(), _SumOp())
 @inline _safe_div(num::T, d::T) where {T <: AbstractFloat} = num / (d + copysign(max(eps(T) * abs(num), floatmin(T)), d))
 
 """
-    solve!(δ, solver::KrylovSolver, amat, res; kstp = 1, diag = nothing, offdiag_id = 0, newton = false) -> KrylovResult
+    solve!(δ, solver::KrylovSolver, amat, res; kstp = 1, diag = nothing, offdiag_id = 0, newton = false, trace = nothing) -> KrylovResult
 
 Solve the correction system `A·δ = res` (PLAN.md section 3.7, rule 3) with a zero
 initial guess: `amat` is MF6's matrix in the CSR layout of `solver.csr` (a
@@ -1059,8 +1119,14 @@ same id, so the preconditioner may update only what depends on changed diagonal 
 
 T6.2: `newton` (a Newton–Raphson system): BiCGSTAB restarts when `rho` vanishes at the
 rounding level of the vectors (`_solve_bcgs!`); without it there is no restart, as in MF6.
+
+T6.17: `trace` (an `InnerTrace`, for IMS CSV_INNER_OUTPUT) gets the record of every inner
+iteration; `nothing` (the default) changes nothing.
 """
-function solve!(δ, solver::KrylovSolver{Ts}, amat, res; kstp::Integer = 1, diag = nothing, offdiag_id::Integer = 0, newton::Bool = false) where {Ts}
+function solve!(
+        δ, solver::KrylovSolver{Ts}, amat, res; kstp::Integer = 1, diag = nothing, offdiag_id::Integer = 0, newton::Bool = false,
+        trace = nothing,
+    ) where {Ts}
     st = solver.settings
     csr = solver.csr
     backend = get_backend(solver)
@@ -1077,14 +1143,14 @@ function solve!(δ, solver::KrylovSolver{Ts}, amat, res; kstp::Integer = 1, diag
         scaling == 2 && _map!(backend, _setup_l2col, n, solver.colfac, solver.rowfac, amat, csr.ia, csr.ja, csr.isym)
         _precond_setup!(solver.precond, solver, amat, usediag ? diag : nothing, Int(offdiag_id))
     end
-    result = cg ? _solve_cg!(solver, amat, kstp, res) : _solve_bcgs!(solver, amat, kstp, res; newton)
+    result = cg ? _solve_cg!(solver, amat, kstp, res; trace) : _solve_bcgs!(solver, amat, kstp, res; newton, trace)
     _precond_record!(solver.precond, result)
     if !result.converged && _precond_retry!(solver.precond)
         # A preconditioner set up from an earlier matrix (AMG hierarchy reuse): rebuild it
         # and solve again from zero; the iterations of both attempts count.
         @timed_section :precond_setup precond_setup!(solver.precond, solver, amat)
         first = result
-        result = cg ? _solve_cg!(solver, amat, kstp, res) : _solve_bcgs!(solver, amat, kstp, res; newton)
+        result = cg ? _solve_cg!(solver, amat, kstp, res; trace) : _solve_bcgs!(solver, amat, kstp, res; newton, trace)
         _precond_record!(solver.precond, result)
         result = KrylovResult(
             result.converged, first.iterations + result.iterations, result.status, result.dvmax, result.rmax,
@@ -1111,9 +1177,9 @@ end
 # continues after all (it cannot with Float64 reductions, which the host tests unchanged),
 # the application is repeated. The direction update is fused into the SpMV
 # (`_dir_apply_dot`, two direction vectors `p` and `phat`).
-_solve_cg!(s::KrylovSolver, amat, kstp, res) = _solve_cg!(s, amat, kstp, res, _op_factors(s)...)
+_solve_cg!(s::KrylovSolver, amat, kstp, res; trace = nothing) = _solve_cg!(s, amat, kstp, res, _op_factors(s)...; trace)
 
-function _solve_cg!(s::KrylovSolver{Ts}, amat, kstp, res, rf, cf) where {Ts}
+function _solve_cg!(s::KrylovSolver{Ts}, amat, kstp, res, rf, cf; trace = nothing) where {Ts}
     st = s.settings
     csr = s.csr
     backend = get_backend(s)
@@ -1178,6 +1244,8 @@ function _solve_cg!(s::KrylovSolver{Ts}, amat, kstp, res, rf, cf) where {Ts}
         end
         _sync(backend)
         deltax, rmax, l2sq, rz = _reduced(red)
+        # T6.17: CSV_INNER_OUTPUT (alpha from the step-length reduction).
+        isnothing(trace) || _trace_inner!(trace, backend, _trace_cg_dv, (p, ss), _trace_cg_r, (s.r,), _reduced(red2)[2], NaN)
         stopped = !jac && rz != 0
         l2norm = sqrt(l2sq)
         rcnvg = st.icnvgopt >= 2 ? l2norm : rmax
@@ -1199,9 +1267,9 @@ function _solve_cg!(s::KrylovSolver{Ts}, amat, kstp, res, rf, cf) where {Ts}
     return KrylovResult(icnvg == 1, innerit, _status(icnvg, innerit, st.maxiter), abs(deltax), abs(rmax), l2norm0, l2norm)
 end
 
-_solve_bcgs!(s::KrylovSolver, amat, kstp, res; newton::Bool = false) = _solve_bcgs!(s, amat, kstp, res, _op_factors(s)...; newton)
+_solve_bcgs!(s::KrylovSolver, amat, kstp, res; newton::Bool = false, trace = nothing) = _solve_bcgs!(s, amat, kstp, res, _op_factors(s)...; newton, trace)
 
-function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res, rf, cf; newton::Bool = false) where {Ts}
+function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res, rf, cf; newton::Bool = false, trace = nothing) where {Ts}
     st = s.settings
     csr = s.csr
     backend = get_backend(s)
@@ -1267,6 +1335,7 @@ function _solve_bcgs!(s::KrylovSolver{Ts}, amat, kstp, res, rf, cf; newton::Bool
             )
             _sync(backend)
         end
+        isnothing(trace) || _trace_inner!(trace, backend, _trace_bcgs_dv, (s.phat, s.qhat, s.rowfac, ss), _trace_bcgs_r, (s.r, s.rowfac), alpha, omega)
         l2norm = sqrt(l2sq)
         rcnvg = st.icnvgopt >= 2 ? l2norm : rmax
         icnvg = ims_testcnvg(st.icnvgopt, innerit, deltax, rcnvg, l2norm0, epfact, st.dvclose, st.rclose)

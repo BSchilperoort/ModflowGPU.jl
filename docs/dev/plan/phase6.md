@@ -272,7 +272,7 @@ non-affected models bitwise unchanged (parity.toml) and global5m without regress
 Order: T6.10 to T6.13 are independent (‖); T6.14 needs T6.11 and T6.12; T6.15 needs T6.14
 for its XT3D items only.
 
-**T6.10 Small leftovers from T6.9 (S) ‖**
+**T6.10 Small leftovers from T6.9 (S) ‖ (done 2026-11-22)**
 - Depends: T6.9 (merged).
 - Items (WIP commit per item):
   1. NOCHECK: honour `isimcheck` (`gwf_ad`: `bnd_ck` only when `isimcheck > 0`; autotest
@@ -292,7 +292,7 @@ for its XT3D items only.
   explained in `docs/dev/precision.md`; no fix planned.
 - Done when: every item fixed (or item 5 measured), tests in both precisions.
 
-**T6.11 Horizontal flow barriers, HFB6 (S) ‖**
+**T6.11 Horizontal flow barriers, HFB6 (S) ‖ (done 2026-11-22)**
 - Read: `src/Model/GroundWaterFlow/gwf-hfb.f90` (`hfb_ar`, `hfb_rp`, `hfb_fc`,
   `condsat_modify`, `condsat_reset`, `hfb_cq`), and how NPF calls it in `gwf.f90`.
 - Deliver: HFB6 on DIS, DISV and DISU (hydraulic characteristic per connection, stress
@@ -394,7 +394,7 @@ the T6.9 backlog. The test-model rule of the backlog section above applies (mode
 - Docs: packages.md (ATS6 row), `getting_started.md` (the ATS6 rejection example is
   replaced by another unsupported option), stepping.md and bmi.md (time step with ATS).
 
-**T6.17 CSV output (S) ‖**
+**T6.17 CSV output (S) ‖ (done 2026-11-22)**
 - Read: `OutputControl.f90`/`gwf-oc.f90` and `BudgetObject.f90` (`BUDGETCSV`,
   `budgetcsv_write`), `ImsLinearSolver`/`NumericalSolution.f90` (`csv_convergence_summary`,
   `CSV_OUTER_OUTPUT`, `CSV_INNER_OUTPUT`), `gwf-wel.f90` (`AUTO_FLOW_REDUCE_CSV`).

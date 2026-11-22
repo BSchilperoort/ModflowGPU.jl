@@ -1,0 +1,13 @@
+BEGIN options
+  PRINT_INPUT
+END options
+
+BEGIN packages
+  DIS6  vhfb.dis  dis
+  IC6  vhfb.ic  ic
+  NPF6  vhfb.npf  npf
+  WEL6  vhfb.wel  wel-1
+  CHD6  vhfb.chd  chd_0
+  HFB6  vhfb.hfb  hfb_0
+  OC6  vhfb.oc  oc
+END packages

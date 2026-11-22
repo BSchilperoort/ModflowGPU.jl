@@ -402,7 +402,8 @@ edit(name, old, new) = Dict{String, Any}(name => replace(BASE_SIM[name], old => 
                 ),
                 # Newton–Raphson: supported since T6.2 (BASE_SIM uses BICGSTAB).
                 (edit("gwf.nam", "SAVE_FLOWS", "NEWTON UNDER_RELAXATION"), nothing, s -> s.models[1].newton && s.models[1].newton_under_relaxation),
-                (edit("gwf.oc", "BUDGET FILEOUT gwf.cbc", "BUDGETCSV FILEOUT gwf.csv"), "unsupported: OC6 option BUDGETCSV", s -> s.models[1].oc.budgetcsv_file == "gwf.csv"),
+                # BUDGETCSV: supported since T6.17.
+                (edit("gwf.oc", "BUDGET FILEOUT gwf.cbc", "BUDGETCSV FILEOUT gwf.csv"), nothing, s -> s.models[1].oc.budgetcsv_file == "gwf.csv"),
                 (edit("gwf.wel", "BOUNDNAMES", "BOUNDNAMES\n  AUTO_FLOW_REDUCE 0.1"), nothing, s -> s.models[1].boundaries[1].auto_flow_reduce == 0.1),
                 (edit("sim.ims", "RELAXATION_FACTOR 0.97", "SCALING_METHOD L2NORM"), nothing, s -> s.solution_groups[1].solutions[1].scaling_method === :l2norm),
                 # T6.18: REORDERING_METHOD RCM and MD are accepted (no effect, an Info).

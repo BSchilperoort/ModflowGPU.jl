@@ -68,6 +68,8 @@ it. Underscore-prefixed helpers are omitted.
   `read_oc_periods` (`OcRecord`), `read_sto_periods`, `read_tdis_perioddata`,
   `read_records`, `ExchangeData` / `read_exchange_data` / `exchange_schema`,
   `write_binary_list`. Tests: input_lists.
+  T6.11: `list_schema` takes the two cellid columns of HFB6 (`cellid1`, `cellid2`; `ncellid`
+  2, `PeriodList.nodeu` holds both cells of each record in turn); binary lists with them.
   T6.18: `read_arraygrid_periods` (READARRAYGRID CHDG/WELG/DRNG/RIVG/GHBG,
   Mf6FileGridArray.f90 `param_load`: list schema and `PeriodList`s of the list form;
   `read_period_data` dispatches to it). Tests: input_lists, arraygrid.
@@ -88,6 +90,9 @@ it. Underscore-prefixed helpers are omitted.
   AUTO_FLOW_REDUCE). Tests: simulation_loader, input_lists.
   T6.6: `:multi_model` and `:exchange` supported, `:multi_solution` (more than one solution)
   not; `SUPPORTED_OPTIONS` of `exg-gwfgwf`.
+  T6.10: NPF SAVE_SATURATION.
+  T6.11: HFB6 no longer in `UNSUPPORTED_PACKAGES`; `SUPPORTED_OPTIONS` of `gwf-hfb` (PRINT_INPUT).
+  T6.17: OC BUDGETCSV, IMS CSV_OUTER_OUTPUT / CSV_INNER_OUTPUT, WEL AUTO_FLOW_REDUCE_CSV.
   T6.18: `SUPPORTED_OPTIONS` of the READARRAYGRID variants (`gwf-chdg`, ...); IMS
   SCALING_METHOD L2NORM accepted; REORDERING_METHOD RCM and MD accepted (no effect).
 
@@ -111,16 +116,21 @@ it. Underscore-prefixed helpers are omitted.
   dictionaries by name, read by the loader, `_load_time_series` in input/simulation.jl,
   which also checks every name the period data use and, T6.1, rejects a TS6 file named twice), `BOUNDARY_KINDS`. Tests:
   simulation_loader, npf, timeseries.
+- **spec/packages.jl** (T6.11): `HfbPeriod` (barriers of a PERIOD block: user nodes `cell1`,
+  `cell2`, `hydchr`), `HfbSpec` (`maxhfb`, `print_input`, `periods::StressPeriods{HfbPeriod}`).
+  Tests: hfb.
 - **spec/simulation.jl**: simulation-level specs. `TdisSpec` (`nper`), `ImsSpec`
   (`ims_defaults`), `SolutionGroupSpec`, `PackageEntry`, `GwfSpec`, `ExchangeSpec`,
   `SimulationSpec`, `model_spec`. Tests: simulation_loader.
   T6.6: `ExchangeSpec.obs` (the exchange's OBS6 file read, or `nothing`).
+  T6.11: `GwfSpec.hfb` (`HfbSpec` or `nothing`).
 - **input/simulation.jl**: simulation loader, mfsim.nam → `SimulationSpec` (TDIS, IMS,
   GWF name files, DIS/DISV/DISU, IC, NPF, STO, OC, boundaries, exchanges).
   `load_simulation`, `LENMODELNAME`, `LENPACKAGENAME`. Tests: simulation_loader (examples
   need `reference/`).
   T6.6: GWF6-GWF6 options checked with `strict`, the exchange OBS6 file read and its
   exchange numbers / boundary names checked (`gwf_gwf_rp_obs`).
+  T6.11: `_load_hfb` (HFB6: MAXHFB, PERIOD blocks; one per model, `_GWF_BASE_FTYPES`).
   T6.18: READARRAYGRID stress packages read (`read_arraygrid_periods`); records at
   inactive cells dropped (`nodeu_to_nlist`). Tests: arraygrid.
 
@@ -164,7 +174,10 @@ it. Underscore-prefixed helpers are omitted.
   Tests: builder (round trip; mf6 runs the written model, needs `reference/`). T6.9: DISV
   and DISU (`_write_dis` methods, VERTICES/CELL2D, CONNECTIONDATA), OBS6 (`_write_obs`: model,
   package and exchange observations) and GWF6-GWF6 exchanges (`_write_exchange`, mfsim
-  EXCHANGES); time series still rejected.
+  EXCHANGES). T6.11: HFB6 (`_write_hfb`; tests: hfb round trip).
+  T6.10: TS6 and TAS6 files (`_write_ts`, `_write_tas`, `_series_of_file`: the series of a
+  FILEIN name, matched by the path it was read from), their FILEIN options, and linked
+  values written as the series name (list) or `TIMEARRAYSERIES <name>` (arrays).
 
 ## GWF engine
 
@@ -192,6 +205,9 @@ it. Underscore-prefixed helpers are omitted.
   assembly/residual/flow kernel), `_cond_arg`, `npf_cf!` (`npf_sat_kernel!`), `WetDry` (state),
   `npf_rewet_kernel!` (Jacobi passes equal to MF6's sequential loop), `npf_rewet_apply_kernel!`,
   `npf_dry_kernel!`, `wetdry_device!` (T6.9: also returns the rewet flags), `npf_ad!`. Tests: convertible, assembly, run.
+  T6.11: `ConvertibleNpf.hfb` (HYDCHR per connection of the standard-formulation barriers,
+  `ihcx` bit 16; empty without HFB6), `_cv_conductance` → `_cv_npf_conductance` then
+  `_hfb_conductance` (`hfb_fc`); `_convertible_npf(...; hfb)`, `NpfModel(...; hfb)`. Tests: hfb.
   T6.2 (Newton–Raphson; gwf-npf.f90 `fn_default_flow`, `highest_cell_saturation`,
   `sgwf_npf_thksat`; SmoothingFunctions.f90): `ConvertibleNpf.newton`/`ihighcellsat` (`ihcx`
   bit 8: bottoms differ by ≥ 0.01), `newton_saturation`, `newton_saturation_derivative`
@@ -200,6 +216,14 @@ it. Underscore-prefixed helpers are omitted.
   `_newton_jacobian`, `connection_terms(...; jac)` (the Jacobian term of the upstream cell in
   `a`/`dd`/`sb`; `q` unchanged); DEWATERED guard: a saturation below eps(T) is 0 (T6.1
   follow-up). Tests: newton (FD Jacobian), convertible, assembly (libmf6 oracle), run.
+- **gwf/hfb.jl** (T6.11; included after gwf/convertible.jl): HFB6 (gwf-hfb.f90 `source_data`,
+  `check_data`, `hfb_rp`, `condsat_reset`, `condsat_modify`, `hfb_fc`). `HfbBarriers` /
+  `hfb_barriers` (a block's barriers on the grid: reduced nodes, `jas`, static or dynamic;
+  MF6's warning and errors), `hfb_condsat` (`condsat_modify`, host Float64), `HfbState`
+  (`GwfModel.hfb`; `hfb_state(spec)`: XT3D with HFB6 unsupported), `hfb_rp!` (at a period
+  with a block: one `hfb_scatter_kernel!` writes `condsat`, `cv.condsat`, `cv.ihcx` bit 16
+  and `cv.hfb` of the old and new barriers; returns whether `condsat` changed). Tests: hfb
+  (input, device conductances, run parity vs mf6), kernel_hygiene.
 - **gwf/xt3d.jl** (T6.5; included after gwf/convertible.jl): XT3D for confined models
   (Xt3dAlgorithm.f90 `qconds`, `abhats`, `getrot`, `tranvc`, `abwts`; Xt3dInterface.f90
   `xt3d_load`, `xt3d_areas`, `xt3d_ac`, `xt3d_fcpc`/`xt3d_fc`, `xt3d_rhs`, `xt3d_flowja`;
@@ -290,6 +314,8 @@ it. Underscore-prefixed helpers are omitted.
   (`check_records`, as `gwf_ad` → `bnd_ck`); `move_to_highest_active!` restages nothing for
   RCH and only the EVT surface of moved records (`bound_shift_kernel!` by the reference
   difference when written on the device). Tests: timeseries, riv_drn_evt.
+  T6.10: `BoundaryPackage.nocheck` (NOCHECK, set by `initialize`): `_check_records!` skips
+  the `bnd_ck` checks (`_is_bnd_ck`: all but EVT's `check_pxdp`). Tests: riv_drn_evt.
 - **boundaries/chd.jl**: CHD (gwf-chd.f90; see `docs/dev/mf6_notes.md`). `apply_chd_heads!`,
   `calc_chd_rate!`. Tests: boundaries (parity vs MF6 CBC).
   T6.6: `calc_chd_rate!(...; exg)` skips the exchange entries (`_is_exchange`).
@@ -365,6 +391,9 @@ it. Underscore-prefixed helpers are omitted.
   `precond_apply`; CG's `r·z` fused by `_precond_apply_dot!` where the preconditioner
   does); `_precond_record!` / `_precond_retry!` after a solve (a failed solve is repeated
   once after an AMG rebuild); `KrylovSolver(...; colors)` passes a host colouring.
+  T6.17: `InnerTrace` (per inner iteration and model: signed largest change and residual
+  with their rows, alpha, omega; `_trace_inner!`, two argmax reductions per model) filled by
+  `solve!(...; trace)` for IMS CSV_INNER_OUTPUT; `trace = nothing` changes nothing.
   T6.2: in Newton–Raphson solves (`solve!(...; newton = true)`) BiCGSTAB restarts with
   `dhat = r` (`_bcgs_restart`) when `rho` vanishes at the rounding level of the vectors
   (`|rho| <= eps(Ts)·|dhat|·|r|`; ex-gwf-zaidel with the red–black ILU0, nwt-p02a `:single`).
@@ -427,6 +456,8 @@ it. Underscore-prefixed helpers are omitted.
   a `GwfModel` is its own view), `absolute_heads(::ModelView)`.
   T6.9: field `conversions` (the `(kiter, wet, dry)` cell conversions of `wetdry!` in the
   current step, cleared by `start_timestep!`).
+  T6.11: field `hfb` (`HfbState` or `nothing`); `apply_period!` calls `hfb_rp!` and marks the
+  off-diagonals stale when a saturated conductance changed.
 - **solver/underrelax.jl**: `sln_underrelax`. `UnderRelaxation` (SIMPLE, COOLEY host
   scalars, DBD device state), `underrelax!` (`relax_update_kernel!`,
   `dbd_update_kernel!`); Adapt. Tests: picard (vs a host port), run (variants vs MF6).
@@ -459,6 +490,7 @@ it. Underscore-prefixed helpers are omitted.
   OUTER_DVCLOSE floor is at most 1 cm).
   Tests: picard, run, stepping.
   T6.6: the colouring of a merged model is `solution_colors`.
+  T6.17: `OuterState(ps; trace)`, field `trace` (an `InnerTrace` or `nothing`), passed to `solve!`.
 - **budget.jl**: `gwf_cq`/`gwf_bd`. `npf_flowja!` (one work item per entry, T4.5; T6.1 `connection_terms`, STO-SY term), `calc_flows!` (NPF, STO, packages with
   `bnd_cf` + `simvals`, CHD `calc_chd_rate!`, `csr_diagsum`), `BudgetTerm`, `ModelBudget`
   (`total_rate_in`/`_out`, `total_cum_in`/`_out`, `percent_discrepancy`,
@@ -503,6 +535,8 @@ it. Underscore-prefixed helpers are omitted.
   merged model, `_obs_node`, `_obs_ja`).
   T6.9: `ObservationOutput.hostidx`: `_obs_plan!` keeps the plan when a period gives the
   same records and reuses the device index vectors and value buffers of the same length.
+  T6.10: `_obs_open_all` (closes the files already opened when one fails; also used by
+  `ExchangeObservations`); `ObservationOutput` closes its files when `_obs_plan!` throws.
 - **output/oc.jl** (T2.8): output control and run output. `oc_selected` (OC PERIOD
   blocks, ALL/FIRST/LAST/FREQUENCY/STEPS), `ModelOutput` (open HDS/CBC/listing files),
   `write_heads`, `write_budget` (STO-SS, FLOW-JA-FACE, package lists as MF6),
@@ -514,12 +548,21 @@ it. Underscore-prefixed helpers are omitted.
   T6.6: `ModelOutput`, `write_heads`, `write_budget(...; exflows)`, `write_head_listing`
   take a `GwfModel` or a `ModelView`; `model_flowja` (a model's FLOW-JA-FACE; the diagonal
   of a constant-head cell without its exchange flows), `_model_values`.
+  T6.10: DATA-SAT after DATA-SPDIS (`write_sat`); `ModelOutput` closes what it opened when
+  a later step of its construction throws.
 - **output/spdis.jl** (T6.9; included after solution.jl): DATA-SPDIS (gwf-npf.f90
   `calc_spdis`, `sav_spdis`, `set_edge_properties`; GwfConductanceUtils.f90 `thksatnm`;
   exg-gwfgwf.f90 `gwf_gwf_set_flow_to_npf`). `check_spdis` (DISU needs ANGLDEGX and vertices),
   `specific_discharge(m, flowja)` (host Float64, from the model's FLOW-JA-FACE; exchange
   connections as edges), `write_spdis` (from `write_budget`, after FLOW-JA-FACE). Tests: run
   (vs MF6's DATA-SPDIS), disv_disu.
+  T6.10: `cell_saturation(m)` (NPF `sat`: `cv.sat` of the last formulation for convertible
+  cells, `sat0` otherwise) and `write_sat` (DATA-SAT, `sav_sat`). Tests: convertible (vs mf6).
+  T6.10: DATA-SPDIS on the device for a model alone in its solution without convertible
+  cells (`_spdis_on_device`): `SpdisDevice` (per-connection weights from
+  `_spdis_coefficients!`, the weights of the host `_spdis_cell`; areas; per-node `den`; built at
+  the first write and kept in `ModelOutput.spdis`), `spdis_kernel!`, `specific_discharge!`;
+  `write_spdis(...; cache)`. Tests: disv_disu (device vs host), run (vs MF6).
 - **solution.jl** (T6.6; included after output/oc.jl): multi-model solutions at run time
   (exg-gwfgwf.f90 `gwf_gwf_calc_simvals`, `gwf_gwf_bd`, `gwf_gwf_chd_bd`,
   `gwf_gwf_bdsav_model`, `gwf_gwf_rp_obs`, `gwf_gwf_save_simvals`). `ExchangeFlows` /
@@ -534,6 +577,15 @@ it. Underscore-prefixed helpers are omitted.
   (`_exchange_tables` vs MF6's listing), exchange (FLOW-JA-FACE-CHD on exchange cells,
   several solutions without `strict`).
 
+- **output/csv.jl** (T6.17; included after output/spdis.jl): CSV output (Budget.f90
+  `writecsv`/`write_csv_header`; NumericalSolution.f90 `writeCSVHeader`, the outer CSV row
+  of `sln_ca`, `csv_convergence_summary`; gwf-wel.f90 `wel_afr_csv_init`/`wel_afr_csv_write`).
+  `CsvOutput` (files, `InnerTrace`, model numbers/rows/user nodes of the views, `itertot`),
+  `has_csv_output`, `csv_outer_iteration!` (from `solve`), `csv_time_step!` (from
+  `finalize_time_step`: `write_budget_csv`, `write_afr_csv`), `_csv_g0` (MF6's G0),
+  `_csv_g15` (`g15.7`). Tests: csv (mf6 at test time on ex-gwf-fhb, test/models/afr,
+  ex-gwf-u1gwfgwf-s1).
+
 ## Running a simulation
 
 - **run.jl** (T2.8): `run_simulation(simdir or SimulationSpec; backend, precision,
@@ -543,7 +595,7 @@ it. Underscore-prefixed helpers are omitted.
   variants; flopy read-back with MFGPU_FLOPY=1). `_write_step` (step output) copies the
   heads to the host only when OC saves or prints them (T5.2). `run` is a `const` alias
   of `run_simulation` (T8.2). T6.7: `RunResult.obs_files`; `_write_step` writes the
-  observations every step.
+  observations every step. T6.17: `RunResult.csv_files`.
   T6.6: several models: `RunResult.models` (per model `name`, `nodes` (range in `heads`),
   the output files), `heads` and `budgets` of every model; `_listing_header` and
   `_write_step` take a view.
@@ -567,6 +619,8 @@ it. Underscore-prefixed helpers are omitted.
   (T8.5: "addresses documented" checks that `var_addresses` of a model with every stress
   package matches the address table of `docs/src/coupling/stepping.md`; a new address
   needs a row there).
+  T6.17: `Simulation.csv` (`CsvOutput` or `nothing`, in every run); `solve` writes the
+  outer/inner CSV rows, `prepare_solve` passes the `InnerTrace` to the `OuterState`.
   T6.9: `Simulation.obsonly` (the `ObservationOutput`s of a run without `write_output`:
   OBS6 files are written in every run, into `outdir`; `RunResult.obs_files` lists them).
   T6.6: several models in one solution: `Simulation` fields `views`, `models` (names),
@@ -574,6 +628,9 @@ it. Underscore-prefixed helpers are omitted.
   (`solution_setup`) when the simulation has several models or exchanges; addresses of every
   model (`_find_view`, `_find_package(s, model, package)`, `_view_variable`: device X, XOLD,
   IBOUND as views, host NODELIST in the model's numbering).
+  T6.10: `initialize` sets `BoundaryPackage.nocheck` from the simulation's NOCHECK (the
+  device BOUND check then only tests for finite values, `_device_check_kind`), and closes
+  every output file it opened when a later step throws (tests: obs, riv_drn_evt).
 - **bmi.jl** (T3.3, T8.9): BasicModelInterface methods on `Simulation`, all 41 functions
   of the spec. `BMI.initialize(Simulation, config_file)` (no keywords; `_bmi_config`
   reads the TOML configuration file, or takes a directory / mfsim.nam with defaults),
@@ -598,7 +655,7 @@ it. Underscore-prefixed helpers are omitted.
 
 ## Test helpers (`test/`, always loaded)
 
-- **test_groups.jl**: `TEST_GROUPS` (group => files; T6.6: group `exchange`,
+- **test_groups.jl**: `TEST_GROUPS` (group => files; T6.11: group `hfb`; T6.6: group `exchange`,
   test/parity/exchange_test.jl: universal residual and libmf6 oracle of the Tier 7 merged
   models, exchange unit tests, a two-model simulation against mf6). **parallel.jl** (T6.8):
   `run_parallel_tests`, the `MFGPU_TEST_JOBS=N` driver (work units, `GROUP_WEIGHTS`,
@@ -647,6 +704,11 @@ with WEL/RCH only: heads compared after removing the mean difference, `_head_dif
 - **models/xt3d/** (T6.5): synthetic XT3D model (3×6×7 DIS, uneven layers, an IDOMAIN 0 cell,
   K/K22/K33 with ANGLE1–3, CHD, WEL, GHB, RCH, steady + transient STO); `generate.jl` writes
   it; run with mf6 at test time (group xt3d; also the kernel-hygiene workload).
+- **models/hfb_vhfb/**, **models/hfb_disu/**, **models/hfb_conv/** (T6.11): HFB6 models
+  (`generate.jl` in each): MF6 autotests test_gwf_vhfb.py (vertical barriers between
+  convertible layers; K 10) and test_gwf_disu_hfb_idomain.py (DISU, IDOMAIN), and a
+  convertible DIS model with barriers changing between periods; run with mf6 at test time
+  (group hfb; hfb_conv also in the kernel-hygiene workload).
 - **models/ts_tas/** (T6.3, replaces models/fhb_const): synthetic time-series model (1×5×10,
   3 transient periods): TS6 LINEAR/STEPWISE/LINEAREND with SFACS, DNODATA and several series
   per file (CHD heads, WEL rate and AUXMULTNAME multiplier, GHB conductance), TAS6 RCHA

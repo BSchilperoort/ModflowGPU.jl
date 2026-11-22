@@ -303,11 +303,14 @@ function list_schema(dfn::DfnDefinition, g::GridDims, o::PackageOptions)
     cols = ListColumn[]
     nb = 0
     na = 0
+    nc = 0
     for m in rec.members
         v = dfn_variable(pb, m)
         isnothing(v) && throw(ArgumentError("$(dfn.name): record member $m is not a variable"))
-        if m == "cellid"
-            push!(cols, ListColumn(m, :cellid, ncelldim(g), 1, false, false, g))
+        if m in ("cellid", "cellid1", "cellid2")
+            # T6.11: HFB6 records have two cellids (`cellid1`, `cellid2`) on the same grid.
+            nc += 1
+            push!(cols, ListColumn(m, :cellid, ncelldim(g), nc, false, false, g))
         elseif m == "boundname"
             o.boundnames && push!(cols, ListColumn(m, :boundname, 1, 0, false, false))
         elseif v.shape == "(naux)"
@@ -334,7 +337,7 @@ function list_schema(dfn::DfnDefinition, g::GridDims, o::PackageOptions)
     end
     ts_active = !isempty(o.ts_files)
     _mark_optional_last!(cols, pb, ts_active)
-    return ListSchema(dfn.name, g, cols, o.maxbound, copy(o.auxnames), o.boundnames, ts_active, nb, 0, 1)
+    return ListSchema(dfn.name, g, cols, o.maxbound, copy(o.auxnames), o.boundnames, ts_active, nb, 0, max(nc, 1))
 end
 
 # StructArray.read_param: the last column, when it is an optional scalar double (MTYPE_DBL,
@@ -424,7 +427,8 @@ _records(s::ListSchema, n::Int) = _Records(
     s.boundnames ? fill("", n) : String[], TsRef[],
 )
 
-# One cellid column: `vec` of a 1×n matrix shares its memory.
+# One cellid column: `vec` of a 1×n matrix shares its memory. With two (HFB6, T6.11),
+# `nodeu` holds the cellids of each record in turn (`reshape(nodeu, 2, :)`).
 PeriodList(r::_Records) = PeriodList(vec(r.nodes), r.bound, r.auxvar, r.boundname, r.ts)
 
 @noinline _missing_value(l::InputLine, c::ListColumn, irow) =
@@ -585,7 +589,7 @@ function _read_binary_list(l::InputLine, s::ListSchema, simdir)
     path = _resolve_path(fname, simdir)
     isfile(path) || input_error(l, "Specified OPEN/CLOSE file $fname does not exist ($path)")
     nd = ncelldim(s.grid)
-    recsize = 4 * nd + 8 * (s.nbound_rows + length(s.auxnames))
+    recsize = 4 * nd * s.ncellid + 8 * (s.nbound_rows + length(s.auxnames))
     n = min(s.maxbound, div(filesize(path), recsize))
     p = _records(s, n)
     cid = zeros(Int, nd)
@@ -597,7 +601,7 @@ function _read_binary_list(l::InputLine, s::ListSchema, simdir)
                         cid[d] = ltoh(read(io, Int32))
                     end
                     valid_cellid(s.grid, cid) || _cellid_error(l, c, i, cid)
-                    p.nodes[1, i] = user_node(s.grid, cid)
+                    p.nodes[c.first, i] = user_node(s.grid, cid)
                 elseif c.kind === :double
                     for d in 0:(c.width - 1)
                         p.bound[c.first + d, i] = ltoh(read(io, Float64))

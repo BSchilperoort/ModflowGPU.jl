@@ -212,11 +212,12 @@ finite; no further iteration is done), `dvfloor` (Float32: `eps(T)·max|h'|` of 
 outer iteration; 0 before the first), `noise_floor` (Float32: INNER_DVCLOSE is at least
 `dvfloor` for the rest of the step, see `outer_iteration!`), and for backtracking
 `res_prev` (the outgoing residual norm of the last outer iteration) and `backtracking`
-(the `BacktrackRecord`s of the step).
+(the `BacktrackRecord`s of the step). T6.17: `trace`, the `InnerTrace` the inner solves
+record into (IMS CSV_INNER_OUTPUT), or `nothing`.
 
-    OuterState(ps::PicardSolver)
+    OuterState(ps::PicardSolver; trace = nothing)
 """
-mutable struct OuterState{K <: KrylovSolver}
+mutable struct OuterState{K <: KrylovSolver, TR}
     krylov::K
     kiter::Int
     inner::Int
@@ -230,11 +231,12 @@ mutable struct OuterState{K <: KrylovSolver}
     noise_floor::Bool
     res_prev::Float64
     backtracking::Vector{BacktrackRecord}
+    const trace::TR
 end
 
-OuterState(ps::PicardSolver) = OuterState(
+OuterState(ps::PicardSolver; trace = nothing) = OuterState(
     ps.krylov, 0, 0, 0.0, 0, ps.settings.dvclose, ps.settings.krylov.rclose, false, false, 0.0, false, 0.0,
-    BacktrackRecord[],
+    BacktrackRecord[], trace,
 )
 
 OuterResult(s::OuterState) = OuterResult(s.converged, s.kiter, s.inner, s.hncg, s.lrch, s.dvclose, s.rclose, copy(s.backtracking))
@@ -303,7 +305,7 @@ function outer_iteration!(state::OuterState, ps::PicardSolver, m::GwfModel{T}, k
         k = state.krylov
         kdv == k.settings.dvclose || (state.krylov = _with_settings(k, _with(k.settings; dvclose = kdv)))
     end
-    res = @timed_section :linear_solve solve!(m.δ, state.krylov, m.sys.amat, m.res; kstp, diag = m.sys.diag, offdiag_id = m.offdiag_id, newton = m.newton)
+    res = @timed_section :linear_solve solve!(m.δ, state.krylov, m.sys.amat, m.res; kstp, diag = m.sys.diag, offdiag_id = m.offdiag_id, newton = m.newton, trace = state.trace)
     state.inner += res.iterations
     (hncg, hmax, _, _), lrch = @timed_section :outer_reduction _mapreduce_loc!(ps.reducer, backend, _dxmax_term, _DXMAX_OPS, n, m.δ, m.ibound, m.h)
     state.hncg, state.lrch = hncg, lrch

@@ -152,13 +152,12 @@ Float32, which MODFLOW 6 cannot:
 | :-- | :-- | :-- |
 | Head file (`.hds`) | written as OC asks | the same; dry cells have `HDRY` |
 | Budget file (`.cbc`) | written as OC asks | the same records |
-| `DATA-SPDIS` (specific discharge, NPF `SAVE_SPECIFIC_DISCHARGE`) | written | the same (computed on the host from the step's flows) |
-| `DATA-SAT` (NPF `SAVE_SATURATION`) | written | not written |
+| `DATA-SPDIS` (specific discharge, NPF `SAVE_SPECIFIC_DISCHARGE`) | written | the same (computed on the device from the step's flows; on the host for models with convertible cells and for several models in one solution) |
 | Binary grid file (`.dis.grb`, `.disv.grb`, `.disu.grb`) | written unless `NOGRB` | the same file (version 1; a `CRS` option is not written to it) |
 | Model listing file (`.lst`) | full report | a short version, see below |
 | Simulation listing file (`mfsim.lst`) | written | not written |
 | Observation output (OBS6) | written every time step | the same files, CSV or `BINARY`; values as MODFLOW 6 prints them (16 significant digits) |
-| CSV files (`BUDGETCSV`, `CSV_OUTER_OUTPUT`, `CSV_INNER_OUTPUT`, `AUTO_FLOW_REDUCE_CSV`) | written | the options are rejected |
+| CSV files (`BUDGETCSV`, `CSV_OUTER_OUTPUT`, `CSV_INNER_OUTPUT`, `AUTO_FLOW_REDUCE_CSV`) | written | the same files, see below |
 
 ### Listing file
 
@@ -193,6 +192,29 @@ differences:
   start of the period; observations by boundary name are not affected;
 - the observation files of GWF–GWF exchanges are written after those of the models.
 
+### CSV files
+
+The CSV files (`BUDGETCSV`, `CSV_OUTER_OUTPUT`, `CSV_INNER_OUTPUT`,
+`AUTO_FLOW_REDUCE_CSV`) have MODFLOW 6's headers, columns and number format. Their values
+follow from ModflowGPU's solution:
+
+- the budget and well-reduction values match MODFLOW 6's within the budget differences of
+  the run (in `:single`, a well whose reduction is at the Float32 rounding level may have a
+  row in one file and not in the other);
+- the outer-iteration file has the same rows where the outer iterations are the same (in
+  `:double`); its inner-iteration counts, and the whole inner-iteration file, are those of
+  ModflowGPU's linear solver, whose preconditioner differs from MODFLOW 6's (see
+  [The preconditioner is replaced](@ref)): other counts, changes, residuals and step
+  lengths. As in MODFLOW 6 the residual is the scaled one for `CG` and the unscaled one
+  for `BICGSTAB`; after an iteration that recomputes the residual
+  (`NUMBER_ORTHOGONALIZATIONS`) it is the recomputed one;
+- where several cells have the same largest change to the rounding level (a symmetric
+  model), the cell reported may differ;
+- the package column of the outer-iteration file is always empty (no supported package
+  has its own convergence test);
+- `CSV_INNER_OUTPUT` reads two values per model from the device in every inner iteration,
+  which slows down the linear solve, most on a GPU; the other files add no device work.
+
 ## Stepping API and BMI
 
 The stepping API works as libmf6 and its XMI/BMI interface do, with these differences:
@@ -215,7 +237,10 @@ The stepping API works as libmf6 and its XMI/BMI interface do, with these differ
   `NOCHECK`), so it also checks values written through its API; ModflowGPU does not check
   values set with `set_value` or `get_value_ptr`. `BOUND` arrays written on the device
   ([`ModflowGPU.device_bound!`](@ref)) get a reduced check at `prepare_solve`: finite
-  values and, for RIV, stage not below bottom and conductance not negative.
+  values and, for RIV, stage not below bottom and conductance not negative. With the
+  simulation option `NOCHECK` these checks are skipped, as in MODFLOW 6 (the EVT PXDP
+  checks of `NSEG` > 1 still run, and device `BOUND` values are still checked for being
+  finite).
 - There are two BMIs. [`MF6Model`](@ref) returns what libmf6's BMI returns (one grid per
   model, DIS x and y as indices, libmf6's shapes and type strings), with the differences
   listed under [Differences from libmf6](@ref); where libmf6 returns a failure status it

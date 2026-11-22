@@ -21,6 +21,9 @@ What [`run_simulation`](@ref) returns. Fields:
   model's, then the stress packages'), empty without observations or output; read them
   with [`read_observations`](@ref); with several models those of every model, then those
   of the GWF-GWF exchanges;
+- `csv_files`: the paths of the CSV files (T6.17: IMS `CSV_OUTER_OUTPUT` and
+  `CSV_INNER_OUTPUT`, OC `BUDGETCSV`, WEL `AUTO_FLOW_REDUCE_CSV`; written in every run, as
+  MF6 does), empty when the input asks for none;
 - `models`: per model (T6.6; one entry for a single model) a `NamedTuple` with `name`,
   `nodes` (its range in `heads`), `head_file`, `budget_file`, `listing_file`,
   `obs_files` and `grb_file` (T6.9: the binary grid file, `""` with NOGRB or without
@@ -56,6 +59,7 @@ struct RunResult{M <: GwfModel}
     listing_file::String
     obs_files::Vector{String}
     models::Vector{NamedTuple{(:name, :nodes, :head_file, :budget_file, :listing_file, :obs_files, :grb_file), Tuple{String, UnitRange{Int}, String, String, String, Vector{String}, String}}}
+    csv_files::Vector{String}
 end
 
 """
@@ -107,7 +111,8 @@ Keywords:
   directory inside the one named by the environment variable `REFERENCE_DIR` (the MF6
   reference runs of the parity tests) is an `ArgumentError`;
 - `write_output = true`: `false` writes no head, budget, grid or listing files (T6.9:
-  the OBS6 observation files are written in every run, as MF6 does);
+  the OBS6 observation files are written in every run, as MF6 does; T6.17: so are the
+  CSV files);
 - `closures = nothing`: a `NamedTuple` that overrides IMS settings, with any of
   `outer_dvclose`, `outer_maximum`, `inner_dvclose`, `inner_rclose`, `inner_maximum`
   (closures in the model's units); in `:single`, closures below what Float32 can reach
@@ -174,7 +179,8 @@ function run_simulation(
         of = isnothing(oo) ? _obs_paths(o) : copy(oo.paths)
         (; name = _vname(v), nodes = _vrange(v), head_file = f[1], budget_file = f[2], listing_file = f[3], obs_files = of, grb_file = f[4])
     end
-    return RunResult(s.model, s.T, s.Ts, s.Tp, s.results, s.budgets, absolute_heads(s.model), allconv, paths..., obs, models)
+    csv = isnothing(s.csv) ? String[] : copy(s.csv.paths)
+    return RunResult(s.model, s.T, s.Ts, s.Tp, s.results, s.budgets, absolute_heads(s.model), allconv, paths..., obs, models, csv)
 end
 
 """

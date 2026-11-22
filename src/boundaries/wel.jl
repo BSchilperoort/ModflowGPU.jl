@@ -2,7 +2,7 @@
 # in a convertible cell is reduced as the head approaches the cell bottom (`sQSaturation`
 # between the bottom and bot + AUTO_FLOW_REDUCE · thickness, or · 1 with
 # FLOW_REDUCTION_LENGTH; AUTO_FLOW_REDUCE_AUXNAME gives the value per record): the record
-# kind is then a `WelAfr` (`record_kind`). AUTO_FLOW_REDUCE_CSV output is not supported.
+# kind is then a `WelAfr` (`record_kind`). AUTO_FLOW_REDUCE_CSV: src/output/csv.jl (T6.17).
 
 bound_columns(::BoundaryKind{:WEL}) = ("q",)
 

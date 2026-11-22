@@ -1,0 +1,21 @@
+BEGIN options
+  LENGTH_UNITS  feet
+END options
+
+BEGIN dimensions
+  NLAY  2
+  NROW  11
+  NCOL  11
+END dimensions
+
+BEGIN griddata
+  delr
+    CONSTANT  100.0
+  delc
+    CONSTANT  100.0
+  top
+    CONSTANT  100.0
+  botm  LAYERED
+    CONSTANT  50.0
+    CONSTANT  0.0
+END griddata

@@ -58,9 +58,9 @@ unsupported(file::AbstractString, what::AbstractString) =
     UNSUPPORTED_PACKAGES
 
 GWF package file types that are out of scope (PLAN.md section 1: SFR, LAK, MAW, UZF, MVR,
-CSUB, BUY, VSC, API) or not in the plan (GNC, HFB): always an error.
+CSUB, BUY, VSC, API) or not in the plan (GNC): always an error. HFB6 is supported since T6.11.
 """
-const UNSUPPORTED_PACKAGES = ("SFR6", "LAK6", "MAW6", "UZF6", "MVR6", "CSUB6", "BUY6", "VSC6", "API6", "GNC6", "HFB6")
+const UNSUPPORTED_PACKAGES = ("SFR6", "LAK6", "MAW6", "UZF6", "MVR6", "CSUB6", "BUY6", "VSC6", "API6", "GNC6")
 
 """
     UNSUPPORTED_MODELS
@@ -95,12 +95,14 @@ const SUPPORTED_OPTIONS = Dict{Tuple{String, String}, Vector{String}}(
         "THICKSTRT", "VARIABLECV", "DEWATERED", "PERCHED", "REWET", "WETFCT", "IWETIT", "IHDWET",  # T6.1
         "HIGHEST_CELL_SATURATION",  # T6.2
         "XT3D", "RHS",  # T6.5
+        "SAVE_SATURATION",  # T6.10
     ],
     ("gwf-sto", "OPTIONS") => ["SAVE_FLOWS", "STORAGECOEFFICIENT", "SS_CONFINED_ONLY"],
     ("gwf-ic", "OPTIONS") => String[],
-    ("gwf-oc", "OPTIONS") => ["BUDGET", "HEAD"],
+    ("gwf-hfb", "OPTIONS") => ["PRINT_INPUT"],  # T6.11
+    ("gwf-oc", "OPTIONS") => ["BUDGET", "HEAD", "BUDGETCSV"],  # T6.17: BUDGETCSV
     ("gwf-chd", "OPTIONS") => _STRESS_OPTIONS,
-    ("gwf-wel", "OPTIONS") => [_STRESS_OPTIONS; "AUTO_FLOW_REDUCE"; "FLOW_REDUCTION_LENGTH"; "AUTO_FLOW_REDUCE_AUXNAME"],  # T6.1
+    ("gwf-wel", "OPTIONS") => [_STRESS_OPTIONS; "AUTO_FLOW_REDUCE"; "FLOW_REDUCTION_LENGTH"; "AUTO_FLOW_REDUCE_AUXNAME"; "AUTO_FLOW_REDUCE_CSV"],  # T6.1; T6.17: CSV
     ("gwf-ghb", "OPTIONS") => _STRESS_OPTIONS,
     ("gwf-riv", "OPTIONS") => _STRESS_OPTIONS,
     ("gwf-drn", "OPTIONS") => [_STRESS_OPTIONS; "AUXDEPTHNAME"],  # T2.4: DRN smoothing
@@ -120,7 +122,7 @@ const SUPPORTED_OPTIONS = Dict{Tuple{String, String}, Vector{String}}(
         "AUXILIARY", "AUX", "BOUNDNAMES", "PRINT_INPUT", "PRINT_FLOWS", "SAVE_FLOWS", "CELL_AVERAGING", "VARIABLECV", "NEWTON",
         "XT3D", "OBS6", "DEV_INTERFACEMODEL_ON",
     ],
-    ("sln-ims", "OPTIONS") => ["PRINT_OPTION", "COMPLEXITY", "NO_PTC"],  # T6.2: NO_PTC
+    ("sln-ims", "OPTIONS") => ["PRINT_OPTION", "COMPLEXITY", "NO_PTC", "CSV_OUTER_OUTPUT", "CSV_INNER_OUTPUT"],  # T6.2: NO_PTC; T6.17: CSV
     ("sln-ims", "NONLINEAR") => [
         "OUTER_DVCLOSE", "OUTER_MAXIMUM", "UNDER_RELAXATION", "UNDER_RELAXATION_GAMMA",
         "UNDER_RELAXATION_THETA", "UNDER_RELAXATION_KAPPA", "UNDER_RELAXATION_MOMENTUM", "LINEAR_SOLVER",

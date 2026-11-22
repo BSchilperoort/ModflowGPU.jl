@@ -40,6 +40,7 @@ const GROUP_WEIGHTS = Dict{String, Float64}(
     "convertible" => 26,
     "newton" => 22,
     "xt3d" => 60,
+    "hfb" => 85,
     "exchange" => 55,
     "riv_drn_evt" => 35,
     "assembly" => 160,

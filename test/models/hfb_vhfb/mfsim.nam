@@ -1,0 +1,18 @@
+# MF6 autotest test_gwf_vhfb.py, case vhfb00 (T6.11): vertical HFB between convertible layers.
+BEGIN options
+END options
+
+BEGIN timing
+  TDIS6  vhfb.tdis
+END timing
+
+BEGIN models
+  gwf6  vhfb.nam  vhfb
+END models
+
+BEGIN exchanges
+END exchanges
+
+BEGIN solutiongroup  1
+  ims6  vhfb.ims  vhfb
+END solutiongroup  1
