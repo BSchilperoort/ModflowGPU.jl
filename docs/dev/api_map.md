@@ -89,6 +89,7 @@ it. Underscore-prefixed helpers are omitted.
   not; `SUPPORTED_OPTIONS` of `exg-gwfgwf`.
   T6.10: NPF SAVE_SATURATION.
   T6.11: HFB6 no longer in `UNSUPPORTED_PACKAGES`; `SUPPORTED_OPTIONS` of `gwf-hfb` (PRINT_INPUT).
+  T6.17: OC BUDGETCSV, IMS CSV_OUTER_OUTPUT / CSV_INNER_OUTPUT, WEL AUTO_FLOW_REDUCE_CSV.
 
 ## Model description (host specs, plain structs)
 
@@ -383,6 +384,9 @@ it. Underscore-prefixed helpers are omitted.
   `precond_apply`; CG's `r·z` fused by `_precond_apply_dot!` where the preconditioner
   does); `_precond_record!` / `_precond_retry!` after a solve (a failed solve is repeated
   once after an AMG rebuild); `KrylovSolver(...; colors)` passes a host colouring.
+  T6.17: `InnerTrace` (per inner iteration and model: signed largest change and residual
+  with their rows, alpha, omega; `_trace_inner!`, two argmax reductions per model) filled by
+  `solve!(...; trace)` for IMS CSV_INNER_OUTPUT; `trace = nothing` changes nothing.
   T6.2: in Newton–Raphson solves (`solve!(...; newton = true)`) BiCGSTAB restarts with
   `dhat = r` (`_bcgs_restart`) when `rho` vanishes at the rounding level of the vectors
   (`|rho| <= eps(Ts)·|dhat|·|r|`; ex-gwf-zaidel with the red–black ILU0, nwt-p02a `:single`).
@@ -479,6 +483,7 @@ it. Underscore-prefixed helpers are omitted.
   OUTER_DVCLOSE floor is at most 1 cm).
   Tests: picard, run, stepping.
   T6.6: the colouring of a merged model is `solution_colors`.
+  T6.17: `OuterState(ps; trace)`, field `trace` (an `InnerTrace` or `nothing`), passed to `solve!`.
 - **budget.jl**: `gwf_cq`/`gwf_bd`. `npf_flowja!` (one work item per entry, T4.5; T6.1 `connection_terms`, STO-SY term), `calc_flows!` (NPF, STO, packages with
   `bnd_cf` + `simvals`, CHD `calc_chd_rate!`, `csr_diagsum`), `BudgetTerm`, `ModelBudget`
   (`total_rate_in`/`_out`, `total_cum_in`/`_out`, `percent_discrepancy`,
@@ -565,6 +570,15 @@ it. Underscore-prefixed helpers are omitted.
   (`_exchange_tables` vs MF6's listing), exchange (FLOW-JA-FACE-CHD on exchange cells,
   several solutions without `strict`).
 
+- **output/csv.jl** (T6.17; included after output/spdis.jl): CSV output (Budget.f90
+  `writecsv`/`write_csv_header`; NumericalSolution.f90 `writeCSVHeader`, the outer CSV row
+  of `sln_ca`, `csv_convergence_summary`; gwf-wel.f90 `wel_afr_csv_init`/`wel_afr_csv_write`).
+  `CsvOutput` (files, `InnerTrace`, model numbers/rows/user nodes of the views, `itertot`),
+  `has_csv_output`, `csv_outer_iteration!` (from `solve`), `csv_time_step!` (from
+  `finalize_time_step`: `write_budget_csv`, `write_afr_csv`), `_csv_g0` (MF6's G0),
+  `_csv_g15` (`g15.7`). Tests: csv (mf6 at test time on ex-gwf-fhb, test/models/afr,
+  ex-gwf-u1gwfgwf-s1).
+
 ## Running a simulation
 
 - **run.jl** (T2.8): `run_simulation(simdir or SimulationSpec; backend, precision,
@@ -574,7 +588,7 @@ it. Underscore-prefixed helpers are omitted.
   variants; flopy read-back with MFGPU_FLOPY=1). `_write_step` (step output) copies the
   heads to the host only when OC saves or prints them (T5.2). `run` is a `const` alias
   of `run_simulation` (T8.2). T6.7: `RunResult.obs_files`; `_write_step` writes the
-  observations every step.
+  observations every step. T6.17: `RunResult.csv_files`.
   T6.6: several models: `RunResult.models` (per model `name`, `nodes` (range in `heads`),
   the output files), `heads` and `budgets` of every model; `_listing_header` and
   `_write_step` take a view.
@@ -598,6 +612,8 @@ it. Underscore-prefixed helpers are omitted.
   (T8.5: "addresses documented" checks that `var_addresses` of a model with every stress
   package matches the address table of `docs/src/coupling/stepping.md`; a new address
   needs a row there).
+  T6.17: `Simulation.csv` (`CsvOutput` or `nothing`, in every run); `solve` writes the
+  outer/inner CSV rows, `prepare_solve` passes the `InnerTrace` to the `OuterState`.
   T6.9: `Simulation.obsonly` (the `ObservationOutput`s of a run without `write_output`:
   OBS6 files are written in every run, into `outdir`; `RunResult.obs_files` lists them).
   T6.6: several models in one solution: `Simulation` fields `views`, `models` (names),
