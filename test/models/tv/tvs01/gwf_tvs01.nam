@@ -1,5 +1,6 @@
 BEGIN options
   NEWTON  UNDER_RELAXATION
+  SAVE_FLOWS
 END options
 
 BEGIN packages

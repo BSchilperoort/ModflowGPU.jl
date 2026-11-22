@@ -227,8 +227,12 @@ function _budget_difference(ours, mf6, tin; bounds = nothing, bytext = nothing, 
                 end
             end
         end
-        worst = max(worst, maximum(d) / tin[(r.kstp, r.kper)])
-        isnothing(bytext) || (bytext[strip(r.text)] = max(get(bytext, strip(r.text), 0.0), maximum(d) / tin[(r.kstp, r.kper)]))
+        # T6.12: a step with (nearly) no flow at all (tvs01, period 3: the SS release of the
+        # changed capacity cancels in MF6 to 1e-18): relative to at least 1e-6 of the run's
+        # largest total inflow.
+        tr = max(tin[(r.kstp, r.kper)], 1.0e-6 * maximum(values(tin)), floatmin())
+        worst = max(worst, maximum(d) / tr)
+        isnothing(bytext) || (bytext[strip(r.text)] = max(get(bytext, strip(r.text), 0.0), maximum(d) / tr))
     end
     return worst, nrec, btot
 end
@@ -345,7 +349,9 @@ function _listing_difference(ours, mf6; extra = Dict{Tuple{Int, Int}, Float64}()
         for (x, y) in zip(a.terms, b.terms), f in (:rate_in, :rate_out)
             v, w = getfield(x, f), getfield(y, f)
             ex = get(extra, (Int(b.kstp), Int(b.kper)), 0.0)
-            worst = max(worst, max(abs(v - w) - _listing_round(v) - _listing_round(w) - ex, 0.0) / b.total_rate_in)
+            # T6.12: a budget with no flow at all (tvs01, period 1): relative to the smallest
+            # positive number, so only a difference beyond the rounding fails.
+            worst = max(worst, max(abs(v - w) - _listing_round(v) - _listing_round(w) - ex, 0.0) / max(b.total_rate_in, floatmin()))
         end
     end
     return worst, ntab, length(tb)
@@ -616,7 +622,7 @@ function _run_parity(
                 p.T === Float64 && @test cva == cvb
                 (isempty(cva) && isempty(cvb)) || @info "Cell conversions: $name/$(x.name), :$(p.preset): $(length(cva)) blocks (MF6 $(length(cvb))), identical: $(cva == cvb)"
                 # Percent discrepancy beyond the bound of the in − out imbalance (`:single`).
-                pdxk = maximum(b -> max(abs(ModflowGPU.percent_discrepancy(b)) - 100 * get(btot, (b.kstp, b.kper), 0.0) / ModflowGPU.total_rate_in(b), 0.0), budgets)
+                pdxk = maximum(b -> max(abs(ModflowGPU.percent_discrepancy(b)) - 100 * get(btot, (b.kstp, b.kper), 0.0) / max(ModflowGPU.total_rate_in(b), floatmin()), 0.0), budgets)
                 pdk = maximum(b -> abs(ModflowGPU.percent_discrepancy(b)), budgets)
                 p.T === Float32 && @test pdxk < 0.01
                 dq, dl, pd, pdx = max(dq, dqk), max(dl, dlk), max(pd, pdk), max(pdx, pdxk)
