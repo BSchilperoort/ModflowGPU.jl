@@ -130,12 +130,6 @@ function _check_solution(models::Vector{GwfSpec}, setups, exchanges::Vector{Exch
     for (m, s) in zip(models, setups)
         check_gnc(m, s.properties.icelltype)
     end
-    gncs = [g for g in Iterators.flatten(((m.gnc for m in models), (ex.gnc for ex in exchanges))) if !isnothing(g)]
-    if !isempty(gncs)
-        file = isempty(gncs[1].file) ? "GNC" : gncs[1].file
-        (any(m -> m.npf.xt3d, models) || any(ex -> ex.xt3d, exchanges)) && unsupported(file, "GNC6 and XT3D in one solution")
-        allequal(g.explicit for g in gncs) || unsupported(file, "implicit and EXPLICIT GNC6 packages in one solution")
-    end
     rhs = [m.npf.xt3d_rhs for m in models if m.npf.xt3d]
     length(unique(rhs)) <= 1 || unsupported(models[1].file, "XT3D with the RHS option in some models of a solution and without it in others")
     any(rhs) && any(ex -> ex.xt3d, exchanges) && unsupported(models[1].file, "XT3D with the RHS option in a model and XT3D on an exchange")
@@ -144,6 +138,8 @@ function _check_solution(models::Vector{GwfSpec}, setups, exchanges::Vector{Exch
         file = isempty(ex.file) ? "GWF6-GWF6" : ex.file
         name = "GWF-GWF_$id"
         i1, i2 = byname[ex.model1], byname[ex.model2]
+        # T6.13: GNC6 (read_gnc, then validate_exchange).
+        isnothing(ex.gnc) || _check_exchange_gnc(ex, name)
         # exg-gwfgwf.f90 validate_exchange
         ex.xt3d && i1 == i2 && throw(
             MF6InputError(file, 0, "GWF-GWF exchange $name is a periodic boundary condition which cannot be configured with XT3D"),
@@ -176,9 +172,6 @@ function _check_solution(models::Vector{GwfSpec}, setups, exchanges::Vector{Exch
                 ),
             )
         end
-        if !isnothing(ex.gnc)
-            _check_exchange_gnc(ex, name, m1, m2)
-        end
         if ex.xt3d
             # SpatialModelConnection.f90 validateConnection: models without ANGLDEGX.
             for m in (m1, m2)
@@ -188,12 +181,18 @@ function _check_solution(models::Vector{GwfSpec}, setups, exchanges::Vector{Exch
             end
         end
     end
+    gncs = [g for g in Iterators.flatten(((m.gnc for m in models), (ex.gnc for ex in exchanges))) if !isnothing(g)]
+    if !isempty(gncs)
+        file = isempty(gncs[1].file) ? "GNC" : gncs[1].file
+        (any(m -> m.npf.xt3d, models) || any(ex -> ex.xt3d, exchanges)) && unsupported(file, "GNC6 and XT3D in one solution")
+        allequal(g.explicit for g in gncs) || unsupported(file, "implicit and EXPLICIT GNC6 packages in one solution")
+    end
     return nothing
 end
 
 # exg-gwfgwf.f90 `read_gnc` and GwfGwfConnection.f90 `validateGwfExchange`: the checks of
 # an exchange's GNC6 file (T6.13).
-function _check_exchange_gnc(ex::ExchangeSpec, name, m1::GwfSpec, m2::GwfSpec)
+function _check_exchange_gnc(ex::ExchangeSpec, name)
     g = ex.gnc
     file = isempty(g.file) ? "GNC" : g.file
     ex.xt3d && throw(MF6InputError(file, 0, "Ghost node correction not supported combined with XT3D for exchange $name"))

@@ -95,6 +95,7 @@ function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) whe
     npf = NpfModel(backend, T, setup; options = spec.npf, conn, newton, hfb = !isnothing(hfb))
     # T6.5: XT3D (confined models; checked by `npf_setup`).
     # T6.13: GNC6 as flux terms on the XT3D kernels (src/gwf/gnc.jl; XT3D with GNC is an error).
+    check_gnc(spec, setup.properties.icelltype)
     xs = spec.npf.xt3d ? xt3d_setup(conn, setup.properties, setup.r; rhs = spec.npf.xt3d_rhs) : gnc_setup(spec, conn, setup)
     xt3d = isnothing(xs) ? nothing : Xt3dNpf(backend, T, xs)
     scsr = (isnothing(xs) || xs.rhs) ? csr : CsrStructure(backend, xs)
