@@ -147,6 +147,27 @@ vertices and `ANGLDEGX`, as MODFLOW 6 requires):
   error, as in MODFLOW 6;
 - XT3D with convertible cells or with `NEWTON` is rejected (see below).
 
+Horizontal flow barriers (HFB6) are supported on DIS, DISV and DISU grids, as in MODFLOW 6:
+
+- each barrier lies on the connection between two cells (`CELLID1`, `CELLID2`; on DISU the
+  user node numbers) and has a hydraulic characteristic `HYDCHR` (the barrier's hydraulic
+  conductivity divided by its thickness); a zero or negative `HYDCHR` multiplies the
+  conductance of the connection by `-HYDCHR`;
+- the barriers of a `PERIOD` block apply from that stress period on, until the next block
+  replaces them (an empty block removes them);
+- between confined cells, and in every connection with `NEWTON`, the barrier changes the
+  saturated conductance once per stress period; next to a convertible cell (`ICELLTYPE` 1)
+  of the standard formulation the barrier is combined with the head-dependent conductance
+  in every outer iteration, with the saturated thickness of the face, as MODFLOW 6 does
+  (also as in MODFLOW 6, a barrier without `NEWTON` has no effect when neither cell has
+  `ICELLTYPE` 1 and one has `ICELLTYPE` greater than 1);
+- a barrier with a cell outside the active grid is dropped with a warning; a barrier
+  between cells that are not connected, or two barriers on one connection, are input
+  errors, as in MODFLOW 6;
+- HFB6 has no budget term: the barriers change the flows between cells (`FLOW-JA-FACE`).
+
+HFB6 with `XT3D`, and in a model of a multi-model solution, is rejected (see below).
+
 ## Packages and models that are rejected
 
 These file types always give an [`MF6UnsupportedError`](@ref), also when reading with
@@ -182,7 +203,7 @@ input is accepted.
 | :-- | :-- |
 | XT3D with convertible cells (`ICELLTYPE` ≠ 0) or with `NEWTON` | not planned at the moment |
 | More than one solution; several models with convertible cells or `NEWTON` | not planned at the moment |
-| Horizontal flow barriers (HFB6) | not planned at the moment |
+| Horizontal flow barriers (HFB6) with `XT3D`, or in a model of a multi-model solution | not planned at the moment |
 | Ghost-node correction (GNC6) | not planned at the moment |
 | Time-varying hydraulic conductivity and storage (TVK6, TVS6) | not planned at the moment |
 | Adaptive time stepping (ATS6) | not planned at the moment |

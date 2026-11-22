@@ -58,7 +58,7 @@ const LENMODELNAME = 16    # ConstantsModule
 const LENPACKAGENAME = 16
 
 # gwf.f90 GWF_BASEPKG / GWF_MULTIPKG (in scope; the rest is in UNSUPPORTED_PACKAGES).
-const _GWF_BASE_FTYPES = ("DIS6", "DISV6", "DISU6", "NPF6", "STO6", "IC6", "OC6", "OBS6")
+const _GWF_BASE_FTYPES = ("DIS6", "DISV6", "DISU6", "NPF6", "STO6", "IC6", "OC6", "OBS6", "HFB6")
 const _GWF_MULTI_FTYPES = ("WEL6", "DRN6", "RIV6", "GHB6", "RCH6", "EVT6", "CHD6")
 const _GWF_ALL_FTYPES = (
     "DIS6", "DISV6", "DISU6", "NPF6", "BUY6", "VSC6", "GNC6", "HFB6", "STO6", "IC6", "CSUB6",
@@ -514,6 +514,29 @@ function _load_boundary(ld::_Loader, e::PackageEntry, mname, dis::AbstractDisSpe
     )
 end
 
+# HFB6 (T6.11; gwf-hfb.f90 `source_options`, `source_dimensions`; the PERIOD blocks are
+# read here, the cells resolved to reduced nodes by the engine, `hfb_barriers`).
+function _load_hfb(ld::_Loader, e::PackageEntry, mname, dis::AbstractDisSpec, np::Integer)
+    f = _periods_upto(_read_package(ld, e.file, e.ftype, "GWF"), np)
+    o = read_options(f, "OPTIONS")
+    d = read_options(f, "DIMENSIONS")
+    ld.strict && check_options(o, f.dfn.name, e.ftype, "package '$(e.name)', model '$mname'")
+    maxhfb = option(d, "maxhfb", 0)
+    maxhfb > 0 || throw(MF6InputError(f.path, 0, "MAXHFB must be specified with value greater than zero."))
+    s = list_schema(f.dfn, grid_dims(dis), PackageOptions(; maxbound = maxhfb))
+    blocks = find_blocks(f, "PERIOD")
+    data = HfbPeriod[]
+    for b in blocks
+        p = read_list_block(b, s; simdir = ld.simdir)
+        cells = reshape(p.nodeu, 2, :)
+        push!(data, HfbPeriod(cells[1, :], cells[2, :], p.bound[1, :]))
+    end
+    return HfbSpec(;
+        name = e.name, print_input = option(o, "print_input", false), maxhfb,
+        periods = StressPeriods([block_number(b) for b in blocks], data), file = _rel(ld, f.path),
+    )
+end
+
 # ---------------------------------------------------------------------------------------
 # GWF model
 # ---------------------------------------------------------------------------------------
@@ -570,6 +593,7 @@ function _load_gwf(ld::_Loader, fname, mname, np::Integer)
     sto = isnothing(entry("STO6")) ? nothing : _load_sto(ld, entry("STO6"), mname, dis, np)
     ic = _load_ic(ld, entry("IC6"), mname, dis)
     oc = isnothing(entry("OC6")) ? nothing : _load_oc(ld, entry("OC6"), mname, np)
+    hfb = isnothing(entry("HFB6")) ? nothing : _load_hfb(ld, entry("HFB6"), mname, dis, np)
     obs = String[]
     obsspec = nothing
     for e in entries
@@ -594,7 +618,7 @@ function _load_gwf(ld::_Loader, fname, mname, np::Integer)
         name = mname, list_file = option(o, "list", ""), print_input = option(o, "print_input", false),
         print_flows = option(o, "print_flows", false), save_flows = option(o, "save_flows", false),
         newton, newton_under_relaxation = option(o, "under_relaxation", false), packages = entries,
-        dis, npf, ic, sto, oc, boundaries, obs_files = obs, obs = obsspec, file = _rel(ld, nam.path),
+        dis, npf, ic, sto, oc, boundaries, obs_files = obs, obs = obsspec, file = _rel(ld, nam.path), hfb,
     )
 end
 

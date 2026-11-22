@@ -45,6 +45,9 @@ Device data of the saturation-dependent NPF conductances of a model with convert
   T6.2: `newton` (the model's NEWTON option: quadratic saturations, upstream conductances
   and the Jacobian terms) and `ihighcellsat` (HIGHEST_CELL_SATURATION; `ihcx` bit 8: the
   bottoms of the two cells differ by at least 0.01).
+- T6.11 (HFB6, standard formulation): `hfb` `(njas)`, the hydraulic characteristic of the
+  barrier on a connection with a cell of ICELLTYPE 1 (`ihcx` bit 16 set: the barrier is put
+  in series with the conductance in every formulation, `hfb_fc`); empty without HFB6.
 
 Moved to a device with Adapt.
 """
@@ -68,14 +71,19 @@ struct ConvertibleNpf{T <: AbstractFloat, V <: AbstractVector{T}, VI <: Abstract
     icellavg::Int32
     newton::Bool
     ihighcellsat::Bool
+    hfb::V
 end
+
+# Without HFB6 (T6.11): an empty `hfb`.
+ConvertibleNpf(icelltype, topoff, botoff, thk, sat, condsat, Δr, hyl, hyh, cl1, cl2, hwva, ihcx, ivarcv, idewatcv, iperched, icellavg, newton, ihighcellsat) =
+    ConvertibleNpf(icelltype, topoff, botoff, thk, sat, condsat, Δr, hyl, hyh, cl1, cl2, hwva, ihcx, ivarcv, idewatcv, iperched, icellavg, newton, ihighcellsat, similar(thk, 0))
 
 Adapt.@adapt_structure ConvertibleNpf
 
 Base.eltype(::ConvertibleNpf{T}) where {T} = T
 
 # The ConvertibleNpf of a setup, or `nothing` for a confined model (or without options).
-function _convertible_npf(backend, ::Type{T}, s::NpfSetup, options, conn; newton::Bool = false) where {T}
+function _convertible_npf(backend, ::Type{T}, s::NpfSetup, options, conn; newton::Bool = false, hfb::Bool = false) where {T}
     (isnothing(options) || isnothing(conn)) && return nothing
     p = s.properties
     all(==(0), p.icelltype) && return nothing
@@ -93,7 +101,7 @@ function _convertible_npf(backend, ::Type{T}, s::NpfSetup, options, conn; newton
         dev(p.icelltype), dev(T.(top .- r)), dev(T.(bot .- r)), dev(T.(top .- bot)), dev(T.(p.sat0)),
         dev(T.(s.condsat)), dev(T.(s.Δr)), dev(T.(s.hyl)), dev(T.(s.hyh)), dev(T.(conn.cl1)), dev(T.(conn.cl2)),
         dev(T.(conn.hwva)), dev(ihcx), options.variablecv, options.dewatered, options.perched, Int32(p.icellavg), newton,
-        newton && options.highest_cell_saturation,
+        newton && options.highest_cell_saturation, dev(zeros(T, hfb && !newton ? conn.njas : 0)),
     )
 end
 
@@ -149,8 +157,57 @@ end
 
 # Conductance of the symmetric connection `j` between `lo < hi` (`hcond`/`vcond` of
 # GwfConductanceUtils.f90 with the saturations of the last `npf_cf!`), and whether the
-# flow is the PERCHED flow from `lo` (`fc_default_flow`, `sgwf_npf_qcalc`).
+# flow is the PERCHED flow from `lo` (`fc_default_flow`, `sgwf_npf_qcalc`). T6.11: with a
+# barrier of the standard formulation on the connection (`ihcx` bit 16), the conductance
+# with the barrier (`hfb_fc`, `_hfb_conductance`).
 @inline function _cv_conductance(cv::ConvertibleNpf{T}, ibound, h, lo, hi, j) where {T}
+    c, perched = _cv_npf_conductance(cv, ibound, h, lo, hi, j)
+    length(cv.hfb) == 0 && return c, perched
+    return @inbounds begin
+        code = cv.ihcx[j]
+        if (code & Int32(16)) != Int32(0) && ibound[lo] != 0 && ibound[hi] != 0
+            c = _hfb_conductance(cv, h, lo, hi, j, code, c)
+        end
+        c, perched
+    end
+end
+
+# gwf-hfb.f90 `hfb_fc` (standard formulation, a connection with a cell of ICELLTYPE 1): the
+# barrier in series with the NPF conductance `c` of the connection, `c·ch/(c + ch)` with
+# `ch = hydchr·faarea`, or `−hydchr·c` for `hydchr <= 0`. The face area is `hwva` for a
+# vertical connection, else `hwva` times the face height from the cell tops (the head when
+# it is below the top, for ICELLTYPE 1 cells) and bottoms: their overlap for a staggered
+# DISU connection (`ihc` 2), else the mean thickness. Offsets: `hi` in the frame of `lo`.
+@inline function _hfb_conductance(cv::ConvertibleNpf{T}, h, lo, hi, j, code, c) where {T}
+    return @inbounds begin
+        chr = cv.hfb[j]
+        ihc = code & Int32(3)
+        if ihc == Int32(0)
+            faarea = cv.hwva[j]
+        else
+            topn, botn = cv.topoff[lo], cv.botoff[lo]
+            (cv.icelltype[lo] == Int32(1) && h[lo] < topn) && (topn = h[lo])
+            topm, botm = cv.topoff[hi], cv.botoff[hi]
+            (cv.icelltype[hi] == Int32(1) && h[hi] < topm) && (topm = h[hi])
+            if ihc == Int32(2)
+                dr = cv.Δr[j]
+                faheight = min(topn, topm + dr) - max(botn, botm + dr)
+            else
+                faheight = T(0.5) * ((topn - botn) + (topm - botm))
+            end
+            faarea = cv.hwva[j] * faheight
+        end
+        if chr > zero(T)
+            ch = chr * faarea
+            den = c + ch
+            den != zero(T) ? c * ch / den : zero(T)
+        else
+            -(c * chr)
+        end
+    end
+end
+
+@inline function _cv_npf_conductance(cv::ConvertibleNpf{T}, ibound, h, lo, hi, j) where {T}
     return @inbounds begin
         (ibound[lo] == 0 || ibound[hi] == 0) && return zero(T), false
         ictl = cv.icelltype[lo]

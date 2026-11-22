@@ -1,0 +1,18 @@
+# MF6 autotest test_gwf_disu_hfb_idomain.py (T6.11): DISU with IDOMAIN, HFB on user node numbers.
+BEGIN options
+END options
+
+BEGIN timing
+  TDIS6  disuhfb.tdis
+END timing
+
+BEGIN models
+  gwf6  disuhfb.nam  disuhfb
+END models
+
+BEGIN exchanges
+END exchanges
+
+BEGIN solutiongroup  1
+  ims6  disuhfb.ims  disuhfb
+END solutiongroup  1

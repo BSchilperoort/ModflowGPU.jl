@@ -68,6 +68,8 @@ it. Underscore-prefixed helpers are omitted.
   `read_oc_periods` (`OcRecord`), `read_sto_periods`, `read_tdis_perioddata`,
   `read_records`, `ExchangeData` / `read_exchange_data` / `exchange_schema`,
   `write_binary_list`. Tests: input_lists.
+  T6.11: `list_schema` takes the two cellid columns of HFB6 (`cellid1`, `cellid2`; `ncellid`
+  2, `PeriodList.nodeu` holds both cells of each record in turn); binary lists with them.
 - **input/timeseries.jl** (T6.3): TS6 and TAS6 files and their evaluation on the host in
   Float64 (TimeSeries.f90, TimeArraySeries.f90). `TimeSeries` / `read_time_series_file`
   (NAME(S), METHOD(S), SFAC(S), several series per file, DNODATA), `ts_value(s, t0, t1)`
@@ -86,6 +88,7 @@ it. Underscore-prefixed helpers are omitted.
   T6.6: `:multi_model` and `:exchange` supported, `:multi_solution` (more than one solution)
   not; `SUPPORTED_OPTIONS` of `exg-gwfgwf`.
   T6.10: NPF SAVE_SATURATION.
+  T6.11: HFB6 no longer in `UNSUPPORTED_PACKAGES`; `SUPPORTED_OPTIONS` of `gwf-hfb` (PRINT_INPUT).
 
 ## Model description (host specs, plain structs)
 
@@ -107,16 +110,21 @@ it. Underscore-prefixed helpers are omitted.
   dictionaries by name, read by the loader, `_load_time_series` in input/simulation.jl,
   which also checks every name the period data use and, T6.1, rejects a TS6 file named twice), `BOUNDARY_KINDS`. Tests:
   simulation_loader, npf, timeseries.
+- **spec/packages.jl** (T6.11): `HfbPeriod` (barriers of a PERIOD block: user nodes `cell1`,
+  `cell2`, `hydchr`), `HfbSpec` (`maxhfb`, `print_input`, `periods::StressPeriods{HfbPeriod}`).
+  Tests: hfb.
 - **spec/simulation.jl**: simulation-level specs. `TdisSpec` (`nper`), `ImsSpec`
   (`ims_defaults`), `SolutionGroupSpec`, `PackageEntry`, `GwfSpec`, `ExchangeSpec`,
   `SimulationSpec`, `model_spec`. Tests: simulation_loader.
   T6.6: `ExchangeSpec.obs` (the exchange's OBS6 file read, or `nothing`).
+  T6.11: `GwfSpec.hfb` (`HfbSpec` or `nothing`).
 - **input/simulation.jl**: simulation loader, mfsim.nam → `SimulationSpec` (TDIS, IMS,
   GWF name files, DIS/DISV/DISU, IC, NPF, STO, OC, boundaries, exchanges).
   `load_simulation`, `LENMODELNAME`, `LENPACKAGENAME`. Tests: simulation_loader (examples
   need `reference/`).
   T6.6: GWF6-GWF6 options checked with `strict`, the exchange OBS6 file read and its
   exchange numbers / boundary names checked (`gwf_gwf_rp_obs`).
+  T6.11: `_load_hfb` (HFB6: MAXHFB, PERIOD blocks; one per model, `_GWF_BASE_FTYPES`).
 
 ## Discretization and connectivity (host)
 
@@ -158,7 +166,7 @@ it. Underscore-prefixed helpers are omitted.
   Tests: builder (round trip; mf6 runs the written model, needs `reference/`). T6.9: DISV
   and DISU (`_write_dis` methods, VERTICES/CELL2D, CONNECTIONDATA), OBS6 (`_write_obs`: model,
   package and exchange observations) and GWF6-GWF6 exchanges (`_write_exchange`, mfsim
-  EXCHANGES).
+  EXCHANGES). T6.11: HFB6 (`_write_hfb`; tests: hfb round trip).
   T6.10: TS6 and TAS6 files (`_write_ts`, `_write_tas`, `_series_of_file`: the series of a
   FILEIN name, matched by the path it was read from), their FILEIN options, and linked
   values written as the series name (list) or `TIMEARRAYSERIES <name>` (arrays).
@@ -189,6 +197,9 @@ it. Underscore-prefixed helpers are omitted.
   assembly/residual/flow kernel), `_cond_arg`, `npf_cf!` (`npf_sat_kernel!`), `WetDry` (state),
   `npf_rewet_kernel!` (Jacobi passes equal to MF6's sequential loop), `npf_rewet_apply_kernel!`,
   `npf_dry_kernel!`, `wetdry_device!` (T6.9: also returns the rewet flags), `npf_ad!`. Tests: convertible, assembly, run.
+  T6.11: `ConvertibleNpf.hfb` (HYDCHR per connection of the standard-formulation barriers,
+  `ihcx` bit 16; empty without HFB6), `_cv_conductance` → `_cv_npf_conductance` then
+  `_hfb_conductance` (`hfb_fc`); `_convertible_npf(...; hfb)`, `NpfModel(...; hfb)`. Tests: hfb.
   T6.2 (Newton–Raphson; gwf-npf.f90 `fn_default_flow`, `highest_cell_saturation`,
   `sgwf_npf_thksat`; SmoothingFunctions.f90): `ConvertibleNpf.newton`/`ihighcellsat` (`ihcx`
   bit 8: bottoms differ by ≥ 0.01), `newton_saturation`, `newton_saturation_derivative`
@@ -197,6 +208,14 @@ it. Underscore-prefixed helpers are omitted.
   `_newton_jacobian`, `connection_terms(...; jac)` (the Jacobian term of the upstream cell in
   `a`/`dd`/`sb`; `q` unchanged); DEWATERED guard: a saturation below eps(T) is 0 (T6.1
   follow-up). Tests: newton (FD Jacobian), convertible, assembly (libmf6 oracle), run.
+- **gwf/hfb.jl** (T6.11; included after gwf/convertible.jl): HFB6 (gwf-hfb.f90 `source_data`,
+  `check_data`, `hfb_rp`, `condsat_reset`, `condsat_modify`, `hfb_fc`). `HfbBarriers` /
+  `hfb_barriers` (a block's barriers on the grid: reduced nodes, `jas`, static or dynamic;
+  MF6's warning and errors), `hfb_condsat` (`condsat_modify`, host Float64), `HfbState`
+  (`GwfModel.hfb`; `hfb_state(spec)`: XT3D with HFB6 unsupported), `hfb_rp!` (at a period
+  with a block: one `hfb_scatter_kernel!` writes `condsat`, `cv.condsat`, `cv.ihcx` bit 16
+  and `cv.hfb` of the old and new barriers; returns whether `condsat` changed). Tests: hfb
+  (input, device conductances, run parity vs mf6), kernel_hygiene.
 - **gwf/xt3d.jl** (T6.5; included after gwf/convertible.jl): XT3D for confined models
   (Xt3dAlgorithm.f90 `qconds`, `abhats`, `getrot`, `tranvc`, `abwts`; Xt3dInterface.f90
   `xt3d_load`, `xt3d_areas`, `xt3d_ac`, `xt3d_fcpc`/`xt3d_fc`, `xt3d_rhs`, `xt3d_flowja`;
@@ -426,6 +445,8 @@ it. Underscore-prefixed helpers are omitted.
   a `GwfModel` is its own view), `absolute_heads(::ModelView)`.
   T6.9: field `conversions` (the `(kiter, wet, dry)` cell conversions of `wetdry!` in the
   current step, cleared by `start_timestep!`).
+  T6.11: field `hfb` (`HfbState` or `nothing`); `apply_period!` calls `hfb_rp!` and marks the
+  off-diagonals stale when a saturated conductance changed.
 - **solver/underrelax.jl**: `sln_underrelax`. `UnderRelaxation` (SIMPLE, COOLEY host
   scalars, DBD device state), `underrelax!` (`relax_update_kernel!`,
   `dbd_update_kernel!`); Adapt. Tests: picard (vs a host port), run (variants vs MF6).
@@ -611,7 +632,7 @@ it. Underscore-prefixed helpers are omitted.
 
 ## Test helpers (`test/`, always loaded)
 
-- **test_groups.jl**: `TEST_GROUPS` (group => files; T6.6: group `exchange`,
+- **test_groups.jl**: `TEST_GROUPS` (group => files; T6.11: group `hfb`; T6.6: group `exchange`,
   test/parity/exchange_test.jl: universal residual and libmf6 oracle of the Tier 7 merged
   models, exchange unit tests, a two-model simulation against mf6). **parallel.jl** (T6.8):
   `run_parallel_tests`, the `MFGPU_TEST_JOBS=N` driver (work units, `GROUP_WEIGHTS`,
@@ -660,6 +681,11 @@ with WEL/RCH only: heads compared after removing the mean difference, `_head_dif
 - **models/xt3d/** (T6.5): synthetic XT3D model (3×6×7 DIS, uneven layers, an IDOMAIN 0 cell,
   K/K22/K33 with ANGLE1–3, CHD, WEL, GHB, RCH, steady + transient STO); `generate.jl` writes
   it; run with mf6 at test time (group xt3d; also the kernel-hygiene workload).
+- **models/hfb_vhfb/**, **models/hfb_disu/**, **models/hfb_conv/** (T6.11): HFB6 models
+  (`generate.jl` in each): MF6 autotests test_gwf_vhfb.py (vertical barriers between
+  convertible layers; K 10) and test_gwf_disu_hfb_idomain.py (DISU, IDOMAIN), and a
+  convertible DIS model with barriers changing between periods; run with mf6 at test time
+  (group hfb; hfb_conv also in the kernel-hygiene workload).
 - **models/ts_tas/** (T6.3, replaces models/fhb_const): synthetic time-series model (1×5×10,
   3 transient periods): TS6 LINEAR/STEPWISE/LINEAREND with SFACS, DNODATA and several series
   per file (CHD heads, WEL rate and AUXMULTNAME multiplier, GHB conductance), TAS6 RCHA

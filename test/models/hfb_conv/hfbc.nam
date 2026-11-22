@@ -1,0 +1,15 @@
+BEGIN options
+  SAVE_FLOWS
+END options
+
+BEGIN packages
+  DIS6  hfbc.dis  dis
+  NPF6  hfbc.npf  npf
+  IC6  hfbc.ic  ic
+  STO6  hfbc.sto  sto
+  HFB6  hfbc.hfb  hfb
+  CHD6  hfbc.chd  chd
+  WEL6  hfbc.wel  wel
+  RCH6  hfbc.rch  rch
+  OC6  hfbc.oc  oc
+END packages

@@ -156,6 +156,7 @@ One GWF6 model.
 - `obs_files`: OBS6 files of the model (the model-level OBS6 packages; package OBS6
   files are in the package specs); `obs`: the model's OBS6 file read (`ObsSpec`, T6.7),
   or `nothing`.
+- `hfb`: the HFB6 package (`HfbSpec`, T6.11), or `nothing`.
 """
 Base.@kwdef struct GwfSpec
     name::String
@@ -175,6 +176,7 @@ Base.@kwdef struct GwfSpec
     obs_files::Vector{String} = String[]
     obs::Union{Nothing, ObsSpec} = nothing
     file::String = ""
+    hfb::Union{Nothing, HfbSpec} = nothing
 end
 
 Base.show(io::IO, m::GwfSpec) = print(
