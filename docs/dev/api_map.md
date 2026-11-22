@@ -158,7 +158,7 @@ it. Underscore-prefixed helpers are omitted.
   Tests: builder (round trip; mf6 runs the written model, needs `reference/`). T6.9: DISV
   and DISU (`_write_dis` methods, VERTICES/CELL2D, CONNECTIONDATA), OBS6 (`_write_obs`: model,
   package and exchange observations) and GWF6-GWF6 exchanges (`_write_exchange`, mfsim
-  EXCHANGES); time series still rejected.
+  EXCHANGES).
   T6.10: TS6 and TAS6 files (`_write_ts`, `_write_tas`, `_series_of_file`: the series of a
   FILEIN name, matched by the path it was read from), their FILEIN options, and linked
   values written as the series name (list) or `TIMEARRAYSERIES <name>` (arrays).

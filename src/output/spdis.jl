@@ -3,7 +3,9 @@
 # `gwf_gwf_set_flow_to_npf`). Host, Float64, from the FLOW-JA-FACE of the step (the model's
 # `nja` values as written to the budget file) when NPF SAVE_SPECIFIC_DISCHARGE asks for the
 # DATA-SPDIS budget record. Every cell is independent; the work is a loop over the
-# connections, done only for steps whose budget is saved.
+# connections, done only for steps whose budget is saved. T6.10: also on the device
+# (`SpdisDevice`, `spdis_kernel!`) for a model alone in its solution without convertible
+# cells; DATA-SAT (`write_sat`).
 
 # GwfConductanceUtils.f90 `thksatnm`: the saturated thickness of a horizontal connection.
 function _thksatnm(ibn, ibm, ictn, ictm, upstream::Bool, ihc, hn, hm, satn, satm, topn, topm, botn, botm)
