@@ -33,58 +33,58 @@ end
 
 mfsim(name; nper, perioddata, ims = "") = Dict(
     "mfsim.nam" => """
-    BEGIN options
-    END options
+        BEGIN options
+        END options
 
-    BEGIN timing
-      TDIS6  $name.tdis
-    END timing
+        BEGIN timing
+          TDIS6  $name.tdis
+        END timing
 
-    BEGIN models
-      gwf6  $name.nam  $name
-    END models
+        BEGIN models
+          gwf6  $name.nam  $name
+        END models
 
-    BEGIN exchanges
-    END exchanges
+        BEGIN exchanges
+        END exchanges
 
-    BEGIN solutiongroup  1
-      ims6  $name.ims  $name
-    END solutiongroup  1
-    """,
+        BEGIN solutiongroup  1
+          ims6  $name.ims  $name
+        END solutiongroup  1
+        """,
     "$name.tdis" => """
-    BEGIN options
-      TIME_UNITS  days
-    END options
+        BEGIN options
+          TIME_UNITS  days
+        END options
 
-    BEGIN dimensions
-      NPER  $nper
-    END dimensions
+        BEGIN dimensions
+          NPER  $nper
+        END dimensions
 
-    BEGIN perioddata
-    $(join(("  " * p for p in perioddata), "\n"))
-    END perioddata
-    """,
+        BEGIN perioddata
+        $(join(("  " * p for p in perioddata), "\n"))
+        END perioddata
+        """,
     "$name.ims" => isempty(ims) ? """
-    BEGIN options
-      PRINT_OPTION  SUMMARY
-    END options
+        BEGIN options
+          PRINT_OPTION  SUMMARY
+        END options
 
-    BEGIN nonlinear
-      OUTER_DVCLOSE  1.0e-9
-      OUTER_MAXIMUM  100
-      UNDER_RELAXATION  NONE
-    END nonlinear
+        BEGIN nonlinear
+          OUTER_DVCLOSE  1.0e-9
+          OUTER_MAXIMUM  100
+          UNDER_RELAXATION  NONE
+        END nonlinear
 
-    BEGIN linear
-      INNER_MAXIMUM  300
-      INNER_DVCLOSE  1.0e-10
-      INNER_RCLOSE  1.0e-10
-      LINEAR_ACCELERATION  CG
-      SCALING_METHOD  NONE
-      REORDERING_METHOD  NONE
-      RELAXATION_FACTOR  1.0
-    END linear
-    """ : ims,
+        BEGIN linear
+          INNER_MAXIMUM  300
+          INNER_DVCLOSE  1.0e-10
+          INNER_RCLOSE  1.0e-10
+          LINEAR_ACCELERATION  CG
+          SCALING_METHOD  NONE
+          REORDERING_METHOD  NONE
+          RELAXATION_FACTOR  1.0
+        END linear
+        """ : ims,
 )
 
 nam(name, pkgs; options = "SAVE_FLOWS") = """
@@ -191,39 +191,39 @@ for (case, disv) in (("tvk02", false), ("tvk02_disv", true))
     f["$name.nam"] = nam(name, ["$(uppercase(dext))6  $name.$dext  dis", "IC6  $name.ic  ic", "NPF6  $name.npf  npf", "CHD6  $name.chd  chd-1", "OC6  $name.oc  oc"])
     first, last = disv ? ((1, 1), (1, 3)) : ((1, 1, 1), (1, 1, 3))
     f["$name.$dext"] = disv ? """
-    BEGIN options
-    END options
+        BEGIN options
+        END options
 
-    BEGIN dimensions
-      NLAY  1
-      NCPL  3
-      NVERT  8
-    END dimensions
+        BEGIN dimensions
+          NLAY  1
+          NCPL  3
+          NVERT  8
+        END dimensions
 
-    BEGIN griddata
-      top
-        CONSTANT  1.0
-      botm
-        CONSTANT  -1.0
-    END griddata
+        BEGIN griddata
+          top
+            CONSTANT  1.0
+          botm
+            CONSTANT  -1.0
+        END griddata
 
-    BEGIN vertices
-      1  0.0  0.0
-      2  1.0  0.0
-      3  2.0  0.0
-      4  3.0  0.0
-      5  0.0  1.0
-      6  1.0  1.0
-      7  2.0  1.0
-      8  3.0  1.0
-    END vertices
+        BEGIN vertices
+          1  0.0  0.0
+          2  1.0  0.0
+          3  2.0  0.0
+          4  3.0  0.0
+          5  0.0  1.0
+          6  1.0  1.0
+          7  2.0  1.0
+          8  3.0  1.0
+        END vertices
 
-    BEGIN cell2d
-      1  0.5  0.5  4  5  6  2  1
-      2  1.5  0.5  4  6  7  3  2
-      3  2.5  0.5  4  7  8  4  3
-    END cell2d
-    """ : dis(1, 1, 3; top = 1.0, botm = [-1.0])
+        BEGIN cell2d
+          1  0.5  0.5  4  5  6  2  1
+          2  1.5  0.5  4  6  7  3  2
+          3  2.5  0.5  4  7  8  4  3
+        END cell2d
+        """ : dis(1, 1, 3; top = 1.0, botm = [-1.0])
     f["$name.ic"] = ic([0.0, 1.0, 1.0])
     f["$name.npf"] = npf(; k = 1.0, k33 = 1.0, tvk = "$name.npf.tvk")
     f["$name.npf.tvk"] = tv([k => ["$(cid(w == "first" ? first : last))  $v  $x" for (w, v, x) in recs] for (k, recs) in TVK02])
@@ -335,20 +335,20 @@ for (idx, case) in enumerate(("tvs01", "tvs02", "tvs03", "tvs04", "tvs05"))
     f["$name.npf"] = npf(; icelltype = 1, k = 1.0, k33 = 1.0)
     sto_periods = single ? "BEGIN period  1\n  TRANSIENT\nEND period  1\n" : join(("BEGIN period  $k\n  TRANSIENT\nEND period  $k\n" for k in 1:5), "\n")
     f["$name.sto"] = """
-    BEGIN options
-      TVS6  FILEIN  $name.sto.tvs
-    END options
+        BEGIN options
+          TVS6  FILEIN  $name.sto.tvs
+        END options
 
-    BEGIN griddata
-      iconvert
-        CONSTANT  1
-      ss
-        CONSTANT  1.0e-6
-      sy
-        CONSTANT  0.01
-    END griddata
+        BEGIN griddata
+          iconvert
+            CONSTANT  1
+          ss
+            CONSTANT  1.0e-6
+          sy
+            CONSTANT  0.01
+        END griddata
 
-    """ * sto_periods
+        """ * sto_periods
     sy(v) = ts ? "1  1  1  SY  syh_series" : "1  1  1  SY  $v"
     opts = ["PRINT_INPUT"]
     idx == 3 && pushfirst!(opts, "DISABLE_STORAGE_CHANGE_INTEGRATION")

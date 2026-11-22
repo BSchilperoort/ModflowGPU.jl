@@ -122,6 +122,7 @@ not in the table above.
 | Feature | Models (test group) | max \|Δh\| (m), `:double` | max \|Δh\| (m), `:single` |
 | :-- | :-- | --: | --: |
 | Horizontal flow barriers (HFB6) | `hfb_vhfb` (MODFLOW 6 autotest `test_gwf_vhfb.py`: vertical barriers between convertible layers) with its `NEWTON` and logarithmic averaging cases; `hfb_disu` (autotest `test_gwf_disu_hfb_idomain.py`: DISU with `IDOMAIN`); `hfb_conv` (convertible DIS, barriers changing between stress periods) and its `NEWTON` case; `ex-gwf-u1disv` with a line of barriers (DISV); `disu_staggered` with barriers on staggered DISU connections, and its `NEWTON` case (`hfb`) | 2.8e-8 | 8.0e-5 |
+| Time-varying K and storage (TVK6, TVS6) | `tvk01` to `tvk06ts` (MODFLOW 6 autotests `test_gwf_npf_tvk01.py` to `tvk06.py`: `K`, `K33` changes per stress period on DIS and DISV, `K33` not given in NPF, a time series); `tvs01` to `tvs05` (autotest `test_gwf_sto_tvs01.py`: one convertible cell with `NEWTON`, `SS` and `SY` changes, a time series, `DISABLE_STORAGE_CHANGE_INTEGRATION`); `tv_conv` (convertible DIS with transient periods of several steps: TVK with a time series and `K33OVERK`, TVS of confined and convertible cells) with its `NEWTON` and `DISABLE_STORAGE_CHANGE_INTEGRATION` cases (`tv`) | 1.0e-9 | 1.9e-4 (heads of 3000 m in `tvs01`; 1.2e-6 in the others) |
 
 ## Large models: the Indus basin and the global 5′ model
 

@@ -95,6 +95,7 @@ it. Underscore-prefixed helpers are omitted.
   T6.17: OC BUDGETCSV, IMS CSV_OUTER_OUTPUT / CSV_INNER_OUTPUT, WEL AUTO_FLOW_REDUCE_CSV.
   T6.18: `SUPPORTED_OPTIONS` of the READARRAYGRID variants (`gwf-chdg`, ...); IMS
   SCALING_METHOD L2NORM accepted; REORDERING_METHOD RCM and MD accepted (no effect).
+  T6.12: NPF TVK6, STO TVS6; `SUPPORTED_OPTIONS` of `utl-tvk` and `utl-tvs`.
 
 ## Model description (host specs, plain structs)
 
@@ -116,6 +117,10 @@ it. Underscore-prefixed helpers are omitted.
   dictionaries by name, read by the loader, `_load_time_series` in input/simulation.jl,
   which also checks every name the period data use and, T6.1, rejects a TS6 file named twice), `BOUNDARY_KINDS`. Tests:
   simulation_loader, npf, timeseries.
+- **spec/packages.jl** (T6.12): `TvPeriod` (a PERIOD block of TVK6/TVS6: user node, property
+  `:K`/`:K22`/`:K33`/`:SS`/`:SY`, value or series name), `TvSpec` (`kind` `:TVK`/`:TVS`,
+  PRINT_INPUT, DISABLE_STORAGE_CHANGE_INTEGRATION, TS6 files and series, periods);
+  `NpfSpec.tvk`, `StoSpec.tvs`. Tests: tv.
 - **spec/packages.jl** (T6.11): `HfbPeriod` (barriers of a PERIOD block: user nodes `cell1`,
   `cell2`, `hydchr`), `HfbSpec` (`maxhfb`, `print_input`, `periods::StressPeriods{HfbPeriod}`).
   Tests: hfb.
@@ -133,6 +138,8 @@ it. Underscore-prefixed helpers are omitted.
   T6.11: `_load_hfb` (HFB6: MAXHFB, PERIOD blocks; one per model, `_GWF_BASE_FTYPES`).
   T6.18: READARRAYGRID stress packages read (`read_arraygrid_periods`); records at
   inactive cells dropped (`nodeu_to_nlist`). Tests: arraygrid.
+  T6.12: `_load_tv` (TVK6 from NPF, TVS6 from STO: keystring PERIOD records `cellid
+  property value|series`, TS6 files; one file per package). Tests: tv.
 
 ## Discretization and connectivity (host)
 
@@ -175,6 +182,8 @@ it. Underscore-prefixed helpers are omitted.
   and DISU (`_write_dis` methods, VERTICES/CELL2D, CONNECTIONDATA), OBS6 (`_write_obs`: model,
   package and exchange observations) and GWF6-GWF6 exchanges (`_write_exchange`, mfsim
   EXCHANGES). T6.11: HFB6 (`_write_hfb`; tests: hfb round trip).
+  T6.12: TVK6 and TVS6 files with their TS6 files (`_write_tv`, `_write_tv_files`;
+  FILEIN options of NPF and STO). Tests: tv (round trip).
   T6.10: TS6 and TAS6 files (`_write_ts`, `_write_tas`, `_series_of_file`: the series of a
   FILEIN name, matched by the path it was read from), their FILEIN options, and linked
   values written as the series name (list) or `TIMEARRAYSERIES <name>` (arrays).
@@ -186,7 +195,8 @@ it. Underscore-prefixed helpers are omitted.
   `REFERENCE_FALLBACK_MIN_DISTANCE`; clamp for convertible cells), `reference_differences`, `reference_difference` (device-safe),
   `to_offsets` (Float64 head-like values → offsets, per node or per record). Tests: npf,
   boundaries.
-- **gwf/npf.jl**: NPF, confined: saturated conductance per connection (NPF.f90). Device-safe
+- **gwf/npf.jl**: NPF, confined: saturated conductance per connection (NPF.f90). T6.12:
+  `_condsat_connection` (one connection of `calc_condsat`, also used by TVK6). Device-safe
   `logmean`, `condmean`, `staggered_thkfrac`; host `hyeff` / `hy_eff` (anisotropic K),
   `NpfProperties` / `npf_properties`, `check_npf_options`, `calc_condsat`, `NpfSetup` /
   `npf_setup(::GwfSpec)`, device struct `NpfModel{T}` (`NpfModel(backend, T, setup)`, Adapt), `CCOND_*` averaging codes. T6.1:
@@ -255,6 +265,15 @@ it. Underscore-prefixed helpers are omitted.
   connections of its exchange cells), `solution_colors` (per-model red–black made
   consistent across exchanges, else greedy), `ModelView` (one model of the merged model; the
   accessors `_vspec`, `_vconn`, `_vrange`, ... are in gwf/model.jl). Tests: exchange.
+- **gwf/tv.jl** (T6.12; included after gwf/npf.jl): TVK6 and the settings of TVK6/TVS6
+  (TvBase.f90 `rp`/`ad`/`sync_node_changes`, gwf-tvk.f90, gwf-npf.f90 `npf_ad` →
+  `calc_condsat`). `TvSource` (tracked user nodes, per node and property the value or the
+  series name), `tv_rp!` (a period's block; whether to apply now: no TS6), `tv_ts_active`,
+  `tv_value` (series over the step), `TvkState` (`GwfModel.tvk`: current K/K22/K33 in an
+  `NpfProperties` copy, current condsat/hyl/hyh, Float64), `tvk_state(spec, conn, setup)`
+  (XT3D or HFB6 with TVK6: unsupported), `tvk_sync!` (MF6's errors; `_condsat_connection`
+  for the connections of the changed cells; `tvk_scatter_kernel!` writes only the changed
+  ones), `tvk_rp!`, `tvk_ad!`. Tests: tv, kernel_hygiene.
 - **gwf/ic.jl**: IC (gwf-ic.f90 `ic_ar`). `initial_heads` (starting heads per reduced
   node as offsets, Float64 host or device copy in `T`). Tests: sto.
 - **gwf/sto.jl**: storage (gwf-sto.f90 `sto_rp`/`sto_fc`/`sto_cq`/`sto_bd`,
@@ -269,6 +288,15 @@ it. Underscore-prefixed helpers are omitted.
   division), `storage_terms(...; jac)` (Newton: quadratic saturations; with `jac` the SY term
   as `rho2·(thk·sn − thk·snold)` on the right-hand side, without it MF6's `SyTerms`),
   `storage_jacobian` (the diagonal Newton term). Tests: newton, convertible, run.
+  T6.12 (TVS6): `StorageChange` (device `rhoold`, `rho2old`, `sdr`), `TvsStorage`
+  (`StoragePackage.tvs`: settings, current SS/SY, previous capacities, `active`),
+  `storage_terms(..., jac, old)` (`SsTerms`/`SyTerms` with `rho1old`/`rho2old`; confined:
+  `−rhoold·hold' + sdr`), `tvs_sync!`, `tvs_rp!`, `tvs_ad!`, `storage_args` (the storage
+  tuple of `formulate_system!`, a 4-tuple in a step integrating a change),
+  `tv_scatter_kernel!`; `set_timestep!` with TVS (`_tvs_timestep!`: changed cells of `rho`
+  scattered, `rhoold` = `rho` but at the changed cells); `check_storage_spec` accepts TVS6;
+  `storage_add_kernel!`/`storage_rate_kernel!` take the `StorageChange` (or `nothing`).
+  Tests: tv.
 
 ## Boundary packages
 
@@ -458,6 +486,9 @@ it. Underscore-prefixed helpers are omitted.
   current step, cleared by `start_timestep!`).
   T6.11: field `hfb` (`HfbState` or `nothing`); `apply_period!` calls `hfb_rp!` and marks the
   off-diagonals stale when a saturated conductance changed.
+  T6.12: field `tvk` (`TvkState` or `nothing`); `apply_period!` (`tvk_rp!`, `tvs_rp!`) and
+  `advance_time_series!` (`tvk_ad!`, `tvs_ad!`) apply TVK6/TVS6 and mark the off-diagonals
+  stale when a conductance changed; `formulate!` takes `storage_args`.
 - **solver/underrelax.jl**: `sln_underrelax`. `UnderRelaxation` (SIMPLE, COOLEY host
   scalars, DBD device state), `underrelax!` (`relax_update_kernel!`,
   `dbd_update_kernel!`); Adapt. Tests: picard (vs a host port), run (variants vs MF6).
@@ -655,7 +686,7 @@ it. Underscore-prefixed helpers are omitted.
 
 ## Test helpers (`test/`, always loaded)
 
-- **test_groups.jl**: `TEST_GROUPS` (group => files; T6.11: group `hfb`; T6.6: group `exchange`,
+- **test_groups.jl**: `TEST_GROUPS` (group => files; T6.12: group `tv`; T6.11: group `hfb`; T6.6: group `exchange`,
   test/parity/exchange_test.jl: universal residual and libmf6 oracle of the Tier 7 merged
   models, exchange unit tests, a two-model simulation against mf6). **parallel.jl** (T6.8):
   `run_parallel_tests`, the `MFGPU_TEST_JOBS=N` driver (work units, `GROUP_WEIGHTS`,
@@ -683,7 +714,8 @@ it. Underscore-prefixed helpers are omitted.
   CPU; returns the numbers per preset; `single_preconditioner` for `:single`, T6.0; `single_budget_tol` and list records matched by package, T6.4; T6.1: `double_budget_tol`, dry cells compared, `_rounding_bounds` for the `:single` budgets), `_mf6_iterations`, `_head_difference`,
   `_budget_difference`, `_listing_difference`, `RUN_MF6`; T6.5: `_null_space_model` (steady state
 with WEL/RCH only: heads compared after removing the mean difference, `_head_difference(...; shift)`,
-`_maxdiff`). Used by groups run, synthetic.
+`_maxdiff`). Used by groups run, synthetic. T6.12: budget and listing comparisons of
+  steps without flow (relative to at least 1e-6 of the run's largest total inflow).
   T6.9: `_conversion_blocks` (cell-conversion messages of a listing), `_single_budget_replay`
   (`:single` budget vs a `:double` replay of the `:single` heads through the stepping API;
   `_rounding_bounds` also rounds the top/bottom offsets of convertible storage cells; the
@@ -709,6 +741,11 @@ with WEL/RCH only: heads compared after removing the mean difference, `_head_dif
   convertible layers; K 10) and test_gwf_disu_hfb_idomain.py (DISU, IDOMAIN), and a
   convertible DIS model with barriers changing between periods; run with mf6 at test time
   (group hfb; hfb_conv also in the kernel-hygiene workload).
+- **models/tv/** (T6.12): `generate.jl` writes the TVK6/TVS6 models: the MF6 autotests
+  test_gwf_npf_tvk01..06 (`tvk01`, `tvk02`, `tvk02_disv`, `tvk03`, `tvk04`, `tvk05`,
+  `tvk06ts`) and test_gwf_sto_tvs01 (`tvs01`..`tvs05`), and `tv_conv` (convertible DIS, TVK
+  with a LINEAR series and K33OVERK, TVS of confined and convertible cells); run with mf6 at
+  test time (group tv; tv_conv, tvs01 also in the kernel-hygiene workload).
 - **models/ts_tas/** (T6.3, replaces models/fhb_const): synthetic time-series model (1×5×10,
   3 transient periods): TS6 LINEAR/STEPWISE/LINEAREND with SFACS, DNODATA and several series
   per file (CHD heads, WEL rate and AUXMULTNAME multiplier, GHB conductance), TAS6 RCHA
