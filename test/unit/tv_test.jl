@@ -105,6 +105,8 @@ end
         @test e isa MF6UnsupportedError && occursin("TVK6 in model", e.msg)
         e = _tv_error(() -> ModflowGPU.tvk_state(_tv_with(mm; hfb = ModflowGPU.HfbSpec(; maxhfb = 1, periods = ModflowGPU.StressPeriods(Int[], ModflowGPU.HfbPeriod[]))), build_connectivity(mm), npf_setup(mm)))
         @test e isa MF6UnsupportedError && occursin("TVK6 with HFB6", e.msg)
+        e = _tv_error(() -> ModflowGPU.tvk_state(_tv_with(mm; npf = _tv_with(mm.npf; tvk = nothing)), build_connectivity(mm), npf_setup(mm)))
+        @test e isa MF6UnsupportedError && occursin("TVK6 file names without the TVK6 input", e.msg)
     end
     # write_simulation round trip (the TVK6/TVS6 files and their TS6 files).
     for name in ("tvk06ts", "tvs02", "tv_conv", "tvk02_disv")

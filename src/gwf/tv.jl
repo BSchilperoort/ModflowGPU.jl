@@ -122,6 +122,10 @@ HFB6 is an `MF6UnsupportedError`.
 """
 function tvk_state(spec::GwfSpec, conn::Connectivity, setup::NpfSetup)
     t = spec.npf.tvk
+    # As `check_storage_spec` for TVS6: file names without the input (a spec not read by
+    # `load_simulation`) would otherwise run without TVK6.
+    (isnothing(t) && !isempty(spec.npf.tvk_files)) &&
+        unsupported(spec.npf.file, "TVK6 file names without the TVK6 input (`NpfSpec.tvk`)")
     isnothing(t) && return nothing
     file = isempty(t.file) ? "TVK" : t.file
     spec.npf.xt3d && unsupported(file, "TVK6 with the NPF6 option XT3D (model $(spec.name))")
