@@ -272,7 +272,7 @@ non-affected models bitwise unchanged (parity.toml) and global5m without regress
 Order: T6.10 to T6.13 are independent (‖); T6.14 needs T6.11 and T6.12; T6.15 needs T6.14
 for its XT3D items only.
 
-**T6.10 Small leftovers from T6.9 (S) ‖**
+**T6.10 Small leftovers from T6.9 (S) ‖ (done 2026-11-22)**
 - Depends: T6.9 (merged).
 - Items (WIP commit per item):
   1. NOCHECK: honour `isimcheck` (`gwf_ad`: `bnd_ck` only when `isimcheck > 0`; autotest
