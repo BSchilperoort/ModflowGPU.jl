@@ -400,3 +400,63 @@ end
         end
     end
 end
+
+# T6.10: NOCHECK (SimulationCreate.f90 `isimcheck`; gwf.f90 `gwf_ad` calls `bnd_ck` only
+# when `isimcheck > 0`). The model of the MF6 autotest test_gwf_bnd_nocheck.py: two
+# convertible 1×1 cells, CHD 1 in layer 2, a GHB or DRN in layer 1 with its elevation 0.1
+# below the cell bottom. Without NOCHECK the record is rejected (MF6 fails too); with it the
+# run goes on and the boundary flux is −0.55 (the autotest's answer), as mf6 6.8.2 gives.
+const _NOCHECK_MF6 = get(ENV, "MF6", joinpath(REFERENCE_DIR, "mf6.8.2_linux", "bin", "mf6"))
+
+function _nocheck_model(kind, nocheck)
+    dis = ModflowGPU.build_dis(; delr = 1.0, delc = 1.0, top = 1.0, botm = reshape([0.0, -1.0], 1, 1, 2))
+    chd = ModflowGPU.build_boundary(:CHD, dis; periods = [1 => (; cells = [(2, 1, 1)], values = [1.0])])
+    bnd = ModflowGPU.build_boundary(kind, dis; periods = [1 => (; cells = [(1, 1, 1)], values = [-0.1 1.0])])
+    oc = ModflowGPU.build_oc(; head_file = "m.hds", periods = [1 => ["SAVE HEAD ALL"]])
+    m = ModflowGPU.build_model(
+        "m"; dis, npf = ModflowGPU.build_npf(dis; k = 1.0, icelltype = 1), ic = ModflowGPU.build_ic(dis; strt = 1.0),
+        oc, boundaries = [chd, bnd],
+    )
+    ims = ModflowGPU.build_ims(; outer_dvclose = 1.0e-8, outer_maximum = 200, inner_dvclose = 1.0e-9, inner_maximum = 100)
+    return ModflowGPU.build_simulation(m; tdis = ModflowGPU.build_tdis(; perlen = 1.0), ims, nocheck)
+end
+
+@testset "NOCHECK (T6.10, test_gwf_bnd_nocheck)" begin
+    for kind in (:GHB, :DRN)
+        msg = r"BOUNDARY \(1\) (HEAD|ELEVATION) \(-0.1\) IS LESS THAN CELL BOTTOM"
+        @test_throws msg ModflowGPU.run(_nocheck_model(kind, false); backend = TEST_BACKEND, write_output = false)
+        spec = _nocheck_model(kind, true)
+        h6 = nothing
+        if isfile(_NOCHECK_MF6)
+            mktempdir() do dir
+                ModflowGPU.write_simulation(dir, _nocheck_model(kind, false))
+                out = read(pipeline(ignorestatus(Cmd(`$_NOCHECK_MF6`; dir)); stderr = devnull), String)
+                @test !occursin("Normal termination", out)  # MF6 rejects the record too
+            end
+            mktempdir() do dir
+                ModflowGPU.write_simulation(dir, spec)
+                @test occursin("NOCHECK", read(joinpath(dir, "mfsim.nam"), String))
+                out = read(pipeline(Cmd(`$_NOCHECK_MF6`; dir); stderr = devnull), String)
+                @test occursin("Normal termination", out)
+                h6 = vec(ModflowGPU.read_head(ModflowGPU.open_head_file(joinpath(dir, "m.hds")), 1))
+            end
+        else
+            @info "Skipping the NOCHECK mf6 runs: mf6 not found at $_NOCHECK_MF6"
+        end
+        for_each_precision() do p
+            r = ModflowGPU.run(spec; backend = TEST_BACKEND, precision = p.preset, write_output = false)
+            term = only(t for t in only(r.budgets).terms if t.name == String(kind))
+            @test term.rate_out - term.rate_in ≈ 0.55 rtol = (p.T === Float64 ? 1.0e-10 : 1.0e-5)
+            isnothing(h6) || @test maximum(abs.(r.heads .- h6)) < (p.T === Float64 ? 1.0e-9 : 1.0e-4)
+        end
+    end
+    # `initialize` sets `nocheck` on every package; the device BOUND check then tests only
+    # for finite values (a RIV stage below its bottom passes).
+    s = ModflowGPU.initialize(_nocheck_model(:GHB, true); backend = TEST_BACKEND, write_output = false)
+    @test all(pkg -> pkg.nocheck, s.model.packages)
+    @test !ModflowGPU.initialize(_nocheck_model(:GHB, false); backend = TEST_BACKEND, write_output = false).model.packages[1].nocheck
+    rec = [1.0; 1.0; 2.0;;]  # stage 1 below bottom 2
+    @test !ModflowGPU._device_record_ok(ModflowGPU.BoundaryKind{:RIV}(), rec, 1)
+    @test ModflowGPU._device_record_ok(ModflowGPU.BoundaryKind{:NOCHECK}(), rec, 1)
+    @test !ModflowGPU._device_record_ok(ModflowGPU.BoundaryKind{:NOCHECK}(), [NaN;;], 1)
+end

@@ -234,43 +234,48 @@ function initialize(
     T, Ts, Tp = resolve_precision(backend, precision)
     steps = time_steps(sim.tdis)
     m = multi ? GwfModel(backend, T, solution_setup(sim), nper(sim.tdis)) : GwfModel(backend, T, only(sim.models), nper(sim.tdis))
+    # T6.10: NOCHECK (SimulationCreate.f90 `isimcheck = 0`): no `bnd_ck` in `gwf_ad`.
+    for pkg in m.packages
+        pkg.nocheck = sim.nocheck
+    end
     ps = PicardSolver(m, PicardSettings(ims, T; closures, preconditioner, precond_options); Ts, Tp)
     views = model_views(m)
     accs = BudgetAccumulator[BudgetAccumulator(v) for v in views]
     outs = ModelOutput[]
+    obsonly = Any[]
+    exobs = nothing
+    # T6.10: a step that throws closes every output file opened before it (the model
+    # output, the observation files of a run without `write_output`, the exchange
+    # observation files).
     try
         write_output && for v in views
             push!(outs, ModelOutput(v, sim.simdir, outdir))
         end
-    catch
-        foreach(close, outs)
-        rethrow()
-    end
-    out = isempty(outs) ? nothing : first(outs)
-    exflows = multi ? ExchangeFlows(m) : nothing
-    # T6.9: observations are written also without `write_output` (MF6 writes OBS6 output in
-    # every run, e.g. through libmf6), into `outdir`.
-    hasobs = any(v -> _has_obs(_vspec(v)), views) || (multi && any(ex -> !isnothing(ex.spec.obs), m.solution.exchanges))
-    !write_output && hasobs && _check_output_dir(outdir)
-    obsonly = Any[]
-    try
+        out = isempty(outs) ? nothing : first(outs)
+        exflows = multi ? ExchangeFlows(m) : nothing
+        # T6.9: observations are written also without `write_output` (MF6 writes OBS6 output in
+        # every run, e.g. through libmf6), into `outdir`.
+        hasobs = any(v -> _has_obs(_vspec(v)), views) || (multi && any(ex -> !isnothing(ex.spec.obs), m.solution.exchanges))
+        !write_output && hasobs && _check_output_dir(outdir)
         write_output || for v in views
             push!(obsonly, ObservationOutput(v, sim.simdir, outdir))
         end
+        exobs = multi ? ExchangeObservations(m.solution, sim.simdir, outdir) : nothing
+        s = Simulation(
+            sim, m, ps, first(accs), out, T, Ts, Tp, steps, 0, :initialized, OuterState(ps), StepResult[], ModelBudget[],
+            Dict{String, _Mirror}(), Int[], nothing, views, String[_vname(v) for v in views], outs, accs, exflows, exobs,
+            obsonly,
+        )
+        for (v, o) in zip(views, outs)
+            _listing_header(o.listing, v, ps, T, Ts, Tp, backend)
+        end
+        return s
     catch
+        foreach(close, outs)
         foreach(o -> isnothing(o) || close(o), obsonly)
+        isnothing(exobs) || close(exobs)
         rethrow()
     end
-    exobs = multi ? ExchangeObservations(m.solution, sim.simdir, outdir) : nothing
-    s = Simulation(
-        sim, m, ps, first(accs), out, T, Ts, Tp, steps, 0, :initialized, OuterState(ps), StepResult[], ModelBudget[],
-        Dict{String, _Mirror}(), Int[], nothing, views, String[_vname(v) for v in views], outs, accs, exflows, exobs,
-        obsonly,
-    )
-    for (v, o) in zip(views, outs)
-        _listing_header(o.listing, v, ps, T, Ts, Tp, backend)
-    end
-    return s
 end
 
 # T6.2 (from T6.1): output written next to the inputs (the default `outdir`) once overwrote
@@ -599,6 +604,8 @@ end
     return ok
 end
 @inline _device_record_ok(::BoundaryKind, bound, i) = _finite_record(bound, i)
+# With NOCHECK (T6.10) only the finite-value check, which is not an MF6 check.
+_device_check_kind(pkg::BoundaryPackage{K}) where {K} = pkg.nocheck ? BoundaryKind{:NOCHECK}() : BoundaryKind{K}()
 @inline _device_record_ok(::BoundaryKind{:RIV}, bound, i) =
     _finite_record(bound, i) && bound[1, i] >= bound[3, i] && bound[2, i] >= zero(eltype(bound))
 
@@ -626,7 +633,7 @@ function _check_device_writes!(s::Simulation)
         pkg = s.model.packages[ip]
         pkg.nbound > 0 || continue
         isnothing(host) ? fill!(flag, Int32(0)) : (host[1] = Int32(0))
-        device_bound_check_kernel!(backend, _WG)(flag, pkg.bound, BoundaryKind{boundary_kind(pkg)}(); ndrange = pkg.nbound)
+        device_bound_check_kernel!(backend, _WG)(flag, pkg.bound, _device_check_kind(pkg); ndrange = pkg.nbound)
         KernelAbstractions.synchronize(backend)
         bad = isnothing(host) ? Array(flag)[1] : host[1]
         bad == 0 || _device_bound_error(pkg)
@@ -639,7 +646,7 @@ end
 function _device_bound_error(pkg::BoundaryPackage{K}) where {K}
     bound = Array(pkg.bound)
     for i in 1:pkg.nbound
-        _device_record_ok(BoundaryKind{K}(), bound, i) && continue
+        _device_record_ok(_device_check_kind(pkg), bound, i) && continue
         rec = Float64.(bound[:, i])
         reason = !all(isfinite, rec) ? "non-finite value" :
             rec[1] < rec[3] ? "RIVER STAGE IS LESS THAN RIVER BOTTOM" : "CONDUCTANCE IS LESS THAN ZERO"

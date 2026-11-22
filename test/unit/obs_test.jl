@@ -246,3 +246,49 @@ end
     r = run_simulation(joinpath(@__DIR__, "..", "models", "afr"); backend = TEST_BACKEND, precision = :double, write_output = false)
     @test isempty(r.obs_files)
 end
+
+# T6.10: `initialize` closes the files it opened when a later step throws. Two models with
+# a GWF-GWF exchange, observations on model LEFT and on the exchange; the exchange's
+# output file cannot be opened (a directory of that name in `outdir`). Open files are
+# counted in /proc/self/fd (Linux).
+function _obs_exchange_sim(dir)
+    function half(name, x0)
+        d = ModflowGPU.build_dis(; delr = 50.0, delc = 50.0, top = 10.0, botm = fill(0.0, 4, 3, 1), xorigin = x0)
+        chd = ModflowGPU.build_boundary(:CHD, d; periods = [1 => (; cells = [(1, i, x0 == 0 ? 1 : 4) for i in 1:3], values = fill(x0 == 0 ? 5.0 : 2.0, 3))])
+        oc = ModflowGPU.build_oc(; head_file = "$name.hds", budget_file = "$name.cbc", periods = [1 => ["SAVE HEAD ALL"]])
+        return ModflowGPU.build_model(name; dis = d, npf = ModflowGPU.build_npf(d; k = 3.0), ic = ModflowGPU.build_ic(d; strt = 4.0), oc, boundaries = [chd])
+    end
+    left, right = half("left", 0.0), half("right", 200.0)
+    exg = ModflowGPU.build_exchange(left, right; cells1 = [(1, i, 4) for i in 1:3], cells2 = [(1, i, 1) for i in 1:3], ihc = 1, cl1 = 25.0, cl2 = 25.0, hwva = 50.0)
+    ModflowGPU.write_simulation(dir, ModflowGPU.build_simulation([left, right]; tdis = ModflowGPU.build_tdis(; perlen = 1.0), exchanges = [exg]))
+    nam = joinpath(dir, "left.nam")
+    write(nam, replace(read(nam, String), "END PACKAGES" => "  OBS6 left.obs OBS\nEND PACKAGES"))
+    write(joinpath(dir, "left.obs"), "BEGIN CONTINUOUS FILEOUT left.obs.csv\n  h1 HEAD 1 1 1\nEND CONTINUOUS\n")
+    exf = joinpath(dir, "left_right.gwfgwf")
+    write(exf, replace(read(exf, String), "BEGIN OPTIONS\n" => "BEGIN OPTIONS\n  OBS6 FILEIN ex.obs\n"; count = 1))
+    write(joinpath(dir, "ex.obs"), "BEGIN CONTINUOUS FILEOUT ex.obs.csv\n  q1 FLOW-JA-FACE 1\nEND CONTINUOUS\n")
+    return ModflowGPU.load_simulation(dir; strict = true)
+end
+
+@testset "initialize closes its files on an error (T6.10)" begin
+    if !isdir("/proc/self/fd")
+        @info "Skipping the open-file check of initialize: no /proc/self/fd"
+    else
+        mktempdir() do dir
+            spec = _obs_exchange_sim(joinpath(dir, "in"))
+            nfd() = length(readdir("/proc/self/fd"))
+            for write_output in (false, true)
+                out = joinpath(dir, "out-$write_output")
+                mkpath(out)
+                # The set-up works: every file opened is closed by finalize_simulation.
+                ModflowGPU.initialize(spec; backend = TEST_BACKEND, write_output, outdir = out) |> finalize_simulation
+                @test isfile(joinpath(out, "left.obs.csv")) && isfile(joinpath(out, "ex.obs.csv"))
+                n0 = nfd()
+                rm(joinpath(out, "ex.obs.csv"))
+                mkdir(joinpath(out, "ex.obs.csv"))
+                @test_throws SystemError ModflowGPU.initialize(spec; backend = TEST_BACKEND, write_output, outdir = out)
+                @test nfd() == n0
+            end
+        end
+    end
+end

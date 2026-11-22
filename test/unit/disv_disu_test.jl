@@ -255,7 +255,10 @@ end
                 bf = open_budget_file(r.budget_file)
                 sp = [read_budget(bf, i).aux for i in find_budget_records(bf; text = "DATA-SPDIS")]
                 g = read_grb(only(r.models).grb_file)
-                (; sp, g, recs = [strip(x.text) for x in bf.records if x.kstp == 1 && x.kper == 1])
+                # T6.10: DATA-SPDIS is computed on the device (confined model); the host
+                # path on the last step's flows.
+                host = ModflowGPU.specific_discharge(r.model, ModflowGPU.model_flowja(r.model))
+                (; sp, g, recs = [strip(x.text) for x in bf.records if x.kstp == 1 && x.kper == 1], host)
             end
         end
         for_each_precision() do p
@@ -264,6 +267,9 @@ end
             @test length(a.sp) == 4 && a.g.grid == "DIS"
             sc = maximum(maximum(abs, x) for x in a.sp)
             @test sc > 0
+            dh = maximum(abs.(a.sp[end] .- a.host)) / sc
+            @test dh <= (p.T === Float64 ? 1.0e-14 : 1.0e-6)
+            @info "DATA-SPDIS device vs host path, DIS, :$(p.preset): max |Δ| / max |q| = $(round(dh; sigdigits = 3))"
             for (grid, d) in (("DISV", _dis_as_disv(dis)), ("DISU", _dis_as_disu(dis; vertices = true)))
                 b = srun(d, p)
                 @test b.g.grid == grid && b.g["IA"] == a.g["IA"] && b.g["JA"] == a.g["JA"] && b.g["ICELLTYPE"] == a.g["ICELLTYPE"]

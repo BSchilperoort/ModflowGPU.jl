@@ -227,7 +227,11 @@ end
     # T6.9: DISV, DISU, OBS6 and GWF6-GWF6 exchanges in `write_simulation`; exchanges in the
     # builder (`build_exchange`).
     @testset "write → load round trip: DISV, DISU, OBS6, exchanges (reference examples)" begin
-        for ex in ("ex-gwf-u1disv", "ex-gwf-curvilin", "ex-gwf-rad-disu", "ex-gwf-maw-p03c", "ex-gwf-u1gwfgwf-s1", "ex-gwf-u1gwfgwf-s3", "ex-gwf-spbc", "ex-gwf-lgrv-lgr")
+        # T6.10: advtidal and fhb have TS6 files.
+        for ex in (
+                "ex-gwf-u1disv", "ex-gwf-curvilin", "ex-gwf-rad-disu", "ex-gwf-maw-p03c", "ex-gwf-u1gwfgwf-s1", "ex-gwf-u1gwfgwf-s3",
+                "ex-gwf-spbc", "ex-gwf-lgrv-lgr", "ex-gwf-advtidal", "ex-gwf-fhb",
+            )
             src = reference_rundir(ex)
             if isnothing(src)
                 @info "Skipping the $ex round trip: reference/runs/$ex not found"
@@ -247,7 +251,7 @@ end
                 write_simulation(sub2, back)
                 @test all(f -> read(joinpath(sub, f)) == read(joinpath(sub2, f)), readdir(sub))
                 # mf6 runs the written files and gives the reference heads.
-                if isfile(BUILDER_MF6) && ex in ("ex-gwf-u1disv", "ex-gwf-rad-disu", "ex-gwf-u1gwfgwf-s1", "ex-gwf-spbc")
+                if isfile(BUILDER_MF6) && ex in ("ex-gwf-u1disv", "ex-gwf-rad-disu", "ex-gwf-u1gwfgwf-s1", "ex-gwf-spbc", "ex-gwf-advtidal", "ex-gwf-fhb")
                     out = read(pipeline(Cmd(`$BUILDER_MF6`; dir = sub); stderr = devnull), String)
                     @test occursin("Normal termination", out)
                     for m in spec.models
@@ -257,6 +261,38 @@ end
                         @test read_head(a, length(a)) == read_head(b, length(b))
                     end
                 end
+            end
+        end
+    end
+
+    # T6.10: TS6 and TAS6 files (test/models/ts_tas: several series per file, SFAC,
+    # LINEAREND, a MULTIPLIER linked to a series, TAS on RCHA and EVTA); mf6 runs the
+    # original and the written files to the same heads.
+    @testset "write → load round trip: time series (ts_tas)" begin
+        src = joinpath(@__DIR__, "..", "models", "ts_tas")
+        mktempdir() do dir
+            spec = load_simulation(src; strict = true)
+            @test any(b -> !isempty(b.ts_files), only(spec.models).boundaries)
+            @test any(b -> !isempty(b.tas_files), only(spec.models).boundaries)
+            sub = joinpath(dir, "a")
+            write_simulation(sub, spec)
+            back = load_simulation(sub; strict = true)
+            d = spec_difference(spec, back; ignore = (:simdir, :line, :file))
+            isnothing(d) || @info "ts_tas round trip: first difference: $d"
+            @test isnothing(d)
+            sub2 = joinpath(dir, "b")
+            write_simulation(sub2, back)
+            @test all(f -> read(joinpath(sub, f)) == read(joinpath(sub2, f)), readdir(sub))
+            if isfile(BUILDER_MF6)
+                orig = joinpath(dir, "orig")
+                cp(src, orig)
+                for d in (orig, sub)
+                    @test occursin("Normal termination", read(pipeline(Cmd(`$BUILDER_MF6`; dir = d); stderr = devnull), String))
+                end
+                hf = only(spec.models).oc.head_file
+                a, b = open_head_file(joinpath(sub, hf)), open_head_file(joinpath(orig, hf))
+                @test length(a) == length(b) > 1
+                @test read_head(a, length(a)) == read_head(b, length(b))
             end
         end
     end

@@ -15,8 +15,9 @@ files with [`write_simulation`](@ref), which MF6 runs too.
 example from a loaded simulation) are accepted by the other builders and by
 [`write_simulation`](@ref). Several models are connected by GWF6-GWF6 exchanges
 ([`build_exchange`](@ref), passed to [`build_simulation`](@ref) as `exchanges`), solved in
-one IMS solution. [`write_simulation`](@ref) also writes the OBS6 files of a loaded
-simulation; time series (TS6, TAS6) are not written. Units are those of the model: lengths in its length
+one IMS solution. [`write_simulation`](@ref) also writes the OBS6, TS6 and TAS6 files of a loaded
+simulation (the series as read, with `SFAC` applied; a value linked to a series is written
+as the series name). Units are those of the model: lengths in its length
 units (`length_units` of [`build_dis`](@ref)), times in its time units (`time_units` of
 [`build_tdis`](@ref)).
 
