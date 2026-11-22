@@ -394,7 +394,7 @@ the T6.9 backlog. The test-model rule of the backlog section above applies (mode
 - Docs: packages.md (ATS6 row), `getting_started.md` (the ATS6 rejection example is
   replaced by another unsupported option), stepping.md and bmi.md (time step with ATS).
 
-**T6.17 CSV output (S) ‖**
+**T6.17 CSV output (S) ‖ (done 2026-11-22)**
 - Read: `OutputControl.f90`/`gwf-oc.f90` and `BudgetObject.f90` (`BUDGETCSV`,
   `budgetcsv_write`), `ImsLinearSolver`/`NumericalSolution.f90` (`csv_convergence_summary`,
   `CSV_OUTER_OUTPUT`, `CSV_INNER_OUTPUT`), `gwf-wel.f90` (`AUTO_FLOW_REDUCE_CSV`).
