@@ -65,6 +65,19 @@ package `*_ck` routine). Throws `MF6InputError`. The default checks nothing.
 """
 check_records(::BoundaryKind, pkg, bound, n) = nothing
 
+# Whether `check_records` of a kind is MF6's `bnd_ck` (called in `gwf_ad` only when
+# `isimcheck > 0`, i.e. without the simulation option NOCHECK; T6.10). EVT's check is
+# `check_pxdp`, called in `evt_rp` regardless of NOCHECK.
+_is_bnd_ck(::BoundaryKind) = true
+_is_bnd_ck(::BoundaryKind{:EVT}) = false
+
+# `check_records` unless the package has `nocheck` set and the check is a `bnd_ck`.
+function _check_records!(pkg, n)
+    kind = BoundaryKind{boundary_kind(pkg)}()
+    (pkg.nocheck && _is_bnd_ck(kind)) && return nothing
+    return check_records(kind, pkg, _bound_source(pkg), n)
+end
+
 # Column `c` of record `i` before the MULTIPLIER, and the multiplier (1 without) of a
 # `BoundSource` (other matrices: the value, 1).
 _unmultiplied(b, c, i) = b[c, i]
@@ -163,8 +176,11 @@ ICELLTYPE by reduced node for the cell-bottom checks of `*_ck`, empty when not g
 `uoffset` (T6.6: in a multi-model solution, the model's first user node minus one in the
 solution's numbering, keyword `uoffset`; 0 otherwise), `device_written` (T6.9: `bound` was
 written on the device through `device_bound!` since it was last staged in full from the host)
-and `tsscatter` (T6.9: the entries of `bound` linked to time series in the block in force,
-host and device index and value buffers, built on first use; `nothing` otherwise).
+`tsscatter` (T6.9: the entries of `bound` linked to time series in the block in force,
+host and device index and value buffers, built on first use; `nothing` otherwise) and
+`nocheck` (T6.10: the simulation option NOCHECK, set by `initialize`; skips the `bnd_ck`
+checks of `check_records`, i.e. all but EVT's `check_pxdp`, and the RIV part of the
+device BOUND check; `false` on construction).
 `bound_values(pkg, r)` gives the Float64 values of `bound`.
 """
 mutable struct BoundaryPackage{K, T <: AbstractFloat, VI <: AbstractVector{Int32}, VT <: AbstractVector{T}, MT <: AbstractMatrix{T}}
@@ -200,6 +216,7 @@ mutable struct BoundaryPackage{K, T <: AbstractFloat, VI <: AbstractVector{Int32
     const uoffset::Int32
     device_written::Bool
     tsscatter::Any
+    nocheck::Bool
 end
 
 # The staging buffer of `bound` on the host, and the result of `pin_memory!` (kept so the
@@ -228,7 +245,7 @@ function BoundaryPackage{K, T}(
         zeros(Int32, maxbound), zeros(Float64, ncol, maxbound), String[], 0, false, staging, pinned,
         zeros(Int32, conn.nodes + 1), zeros(Int32, maxbound),
         zeros(isempty(head_columns(BoundaryKind{K}())) ? 0 : maxbound), nothing, nothing, (NaN, NaN),
-        Vector{Int32}(icelltype), false, Int32(uoffset), false, nothing,
+        Vector{Int32}(icelltype), false, Int32(uoffset), false, nothing, false,
     )
 end
 
@@ -248,7 +265,7 @@ function Adapt.adapt_structure(to, p::BoundaryPackage)
         p.nbound, p.iblock, copy(p.nodelist_host), copy(p.bound_user), copy(p.boundname), p.bound_version, p.user_stale,
         staging, pinned, copy(p.nodeptr_host), copy(p.noderec_host), copy(p.rrec), p.rrec_for,
         isnothing(p.tsblock) ? nothing : _ts_working_copy(p.tsblock), p.tswindow, p.icelltype, p.moved, p.uoffset,
-        p.device_written, nothing,
+        p.device_written, nothing, p.nocheck,
     )
 end
 
@@ -529,7 +546,7 @@ function advance_time_series!(pkg::BoundaryPackage, window::NTuple{2, Float64}, 
     pkg.tswindow = window
     pkg.user_stale || _ts_to_user!(pkg, blk)
     pkg.bound_version += 1
-    check_records(BoundaryKind{boundary_kind(pkg)}(), pkg, _bound_source(pkg), pkg.nbound)
+    _check_records!(pkg, pkg.nbound)
     _stage_linked!(pkg, r)
     return true
 end
@@ -816,7 +833,7 @@ function _apply_period!(pkg::BoundaryPackage{K, T}, kper::Integer, r::AbstractVe
     pkg.iblock = ib
     pkg.nbound = n
     pkg.user_stale = !isnothing(data)
-    check_records(BoundaryKind{K}(), pkg, _bound_source(pkg), n)
+    _check_records!(pkg, n)
     same || (pkg.moved = false)
     moves && _move_records!(pkg, ibound)
     same || (_upload_structure!(pkg); pkg.rrec_for = nothing)

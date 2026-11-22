@@ -524,8 +524,8 @@ struct NpfModel{T <: AbstractFloat, V <: AbstractVector{T}, C}
     cv::C
 end
 
-NpfModel{T}(s::NpfSetup; options = nothing, conn = nothing, newton::Bool = false) where {T <: AbstractFloat} =
-    NpfModel(T.(s.condsat), T.(s.Δr), _convertible_npf(Array, T, s, options, conn; newton))
+NpfModel{T}(s::NpfSetup; options = nothing, conn = nothing, newton::Bool = false, hfb::Bool = false) where {T <: AbstractFloat} =
+    NpfModel(T.(s.condsat), T.(s.Δr), _convertible_npf(Array, T, s, options, conn; newton, hfb))
 NpfModel(::Type{T}, s::NpfSetup; kw...) where {T <: AbstractFloat} = NpfModel{T}(s; kw...)
 
 """
@@ -533,12 +533,12 @@ NpfModel(::Type{T}, s::NpfSetup; kw...) where {T <: AbstractFloat} = NpfModel{T}
 
 The same on `backend`: `condsat` and `Δr` rounded to `T` on the host, then copied. With
 `options` (the `NpfSpec`) and `conn` given and a cell with ICELLTYPE /= 0, `cv` holds the
-convertible data (`ConvertibleNpf`; T6.2: with the Newton formulation when `newton`);
-otherwise `cv = nothing`.
+convertible data (`ConvertibleNpf`; T6.2: with the Newton formulation when `newton`;
+T6.11: `hfb`, the model has HFB6, sizes `cv.hfb`); otherwise `cv = nothing`.
 """
-function NpfModel(backend::Backend, ::Type{T}, s::NpfSetup; options = nothing, conn = nothing, newton::Bool = false) where {T <: AbstractFloat}
+function NpfModel(backend::Backend, ::Type{T}, s::NpfSetup; options = nothing, conn = nothing, newton::Bool = false, hfb::Bool = false) where {T <: AbstractFloat}
     dev(x) = _device_copy(backend, x)
-    return NpfModel(dev(T.(s.condsat)), dev(T.(s.Δr)), _convertible_npf(backend, T, s, options, conn; newton))
+    return NpfModel(dev(T.(s.condsat)), dev(T.(s.Δr)), _convertible_npf(backend, T, s, options, conn; newton, hfb))
 end
 
 Adapt.@adapt_structure NpfModel

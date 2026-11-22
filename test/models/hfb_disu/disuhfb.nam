@@ -1,0 +1,12 @@
+BEGIN options
+  SAVE_FLOWS
+END options
+
+BEGIN packages
+  DISU6  disuhfb.disu  disu
+  IC6  disuhfb.ic  ic
+  NPF6  disuhfb.npf  npf
+  CHD6  disuhfb.chd  chd_0
+  OC6  disuhfb.oc  oc
+  HFB6  disuhfb.hfb  hfb_0
+END packages

@@ -229,7 +229,7 @@ function ExchangeObservations(sol::SolutionSetup, simdir::AbstractString, outdir
             push!(opens, (o, os.digits, cols))
         end
     end
-    files = _ObsFile[_obs_open(simdir, outdir, o, digits, cols) for (o, digits, cols) in opens]
+    files = _obs_open_all(simdir, outdir, opens)
     return ExchangeObservations(files, [f.path for f in files], exg, idx)
 end
 

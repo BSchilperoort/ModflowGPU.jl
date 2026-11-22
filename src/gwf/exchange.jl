@@ -118,6 +118,7 @@ function _check_solution(models::Vector{GwfSpec}, setups, exchanges::Vector{Exch
     for (m, s) in zip(models, setups)
         file = isempty(m.file) ? m.name : m.file
         m.newton && unsupported(file, "NEWTON in model $(m.name) of a multi-model solution (only confined models are supported with exchanges)")
+        isnothing(m.hfb) || unsupported(file, "HFB6 in model $(m.name) of a multi-model solution")
         any(!=(0), s.properties.icelltype) &&
             unsupported(file, "convertible cells (ICELLTYPE /= 0) in model $(m.name) of a multi-model solution (only confined models are supported with exchanges)")
         !isnothing(m.sto) && any(!=(0), m.sto.iconvert) &&

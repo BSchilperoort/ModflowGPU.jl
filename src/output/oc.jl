@@ -40,7 +40,8 @@ The open output files of a model run: `head` and `budget` (`IO` or `nothing` whe
 names no file), `listing` (`IO`), the `layout` (`OutputLayout`), the paths and `obs`, the
 observation files (`ObservationOutput`, T6.7; `nothing` without OBS6 input). T6.9: the
 binary grid file is written when the output is opened (`dis_ar` → `write_grb`, unless
-NOGRB; `grb_path`, `""` without one).
+NOGRB; `grb_path`, `""` without one). T6.10: `spdis`, the device geometry of DATA-SPDIS
+(`SpdisDevice`, built at the first write; `nothing` before or on the host path).
 
     ModelOutput(m::GwfModel, simdir, outdir)
     ModelOutput(v::ModelView, simdir, outdir)
@@ -57,6 +58,7 @@ struct ModelOutput
     listing_path::String
     obs::Union{Nothing, ObservationOutput}
     grb_path::String
+    spdis::Base.RefValue{Any}
 end
 
 function _output_path(simdir, outdir, name)
@@ -80,17 +82,25 @@ function ModelOutput(m::Union{GwfModel, ModelView}, simdir::AbstractString, outd
     # T6.9: the binary grid file (DiscretizationBase.f90 `dis_ar`: GRB6 FILEOUT, else the
     # DIS input file name + ".grb").
     gp = ""
-    if !spec.dis.nogrb
-        dis = spec.dis
-        ext = dis isa DisSpec ? "dis" : dis isa DisvSpec ? "disv" : "disu"
-        name = !isempty(dis.grb_file) ? dis.grb_file : isempty(dis.file) ? lowercase(spec.name) * ".$ext.grb" : dis.file * ".grb"
-        gp = _output_path(simdir, outdir, name)
-        write_grb(gp, grb_file(dis, _vconn(m), _mf6_icelltype(spec.npf)))
+    head = budget = nothing
+    try  # T6.10: on an error, close what is open
+        if !spec.dis.nogrb
+            dis = spec.dis
+            ext = dis isa DisSpec ? "dis" : dis isa DisvSpec ? "disv" : "disu"
+            name = !isempty(dis.grb_file) ? dis.grb_file : isempty(dis.file) ? lowercase(spec.name) * ".$ext.grb" : dis.file * ".grb"
+            gp = _output_path(simdir, outdir, name)
+            write_grb(gp, grb_file(dis, _vconn(m), _mf6_icelltype(spec.npf)))
+        end
+        head = isempty(hp) ? nothing : open(hp, "w")
+        budget = isempty(bp) ? nothing : open(bp, "w")
+        listing = open(lp, "w")
+        return ModelOutput(head, budget, listing, OutputLayout(spec.dis), hp, bp, lp, obs, gp, Ref{Any}(nothing))
+    catch
+        isnothing(obs) || close(obs)
+        isnothing(head) || close(head)
+        isnothing(budget) || close(budget)
+        rethrow()
     end
-    head = isempty(hp) ? nothing : open(hp, "w")
-    budget = isempty(bp) ? nothing : open(bp, "w")
-    listing = open(lp, "w")
-    return ModelOutput(head, budget, listing, OutputLayout(spec.dis), hp, bp, lp, obs, gp)
 end
 
 function Base.close(o::ModelOutput)
@@ -130,7 +140,8 @@ stress package that saves flows (`q` = `simvals`, the net rate into the model; `
 user node, `id2` the record number; with the package's auxiliary values; records without
 a cell left out). A package saves flows with its own
 SAVE_FLOWS or the model's. T6.9: with NPF SAVE_SPECIFIC_DISCHARGE the DATA-SPDIS list after
-FLOW-JA-FACE (`write_spdis`).
+FLOW-JA-FACE (`write_spdis`); T6.10: with NPF SAVE_SATURATION the DATA-SAT list after
+that (`write_sat`).
 
 T6.6: for a model of a multi-model solution (`ModelView`), the model's own values, then the
 flows of each exchange with SAVE_FLOWS, from the model's side (`write_exchange_budget`, with
@@ -159,7 +170,9 @@ function write_budget(o::ModelOutput, m::Union{GwfModel, ModelView}, step::TimeS
         fja = model_flowja(m)
         write_budget_array(io, "FLOW-JA-FACE", fja; kw..., dims = (Int(conn.nja), 1, 1))
         # T6.9: DATA-SPDIS after FLOW-JA-FACE (`npf_save_model_flows` → `sav_spdis`).
-        spec.npf.save_specific_discharge && write_spdis(io, o.layout, m, fja; kw...)
+        spec.npf.save_specific_discharge && write_spdis(io, o.layout, m, fja; cache = o.spdis, kw...)
+        # T6.10: DATA-SAT after it (`sav_sat`).
+        spec.npf.save_saturation && write_sat(io, o.layout, m; kw...)
     end
     name = uppercase(spec.name)
     for ip in _vpackages(m)

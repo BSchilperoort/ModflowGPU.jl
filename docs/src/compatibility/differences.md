@@ -151,8 +151,7 @@ Float32, which MODFLOW 6 cannot:
 | :-- | :-- | :-- |
 | Head file (`.hds`) | written as OC asks | the same; dry cells have `HDRY` |
 | Budget file (`.cbc`) | written as OC asks | the same records |
-| `DATA-SPDIS` (specific discharge, NPF `SAVE_SPECIFIC_DISCHARGE`) | written | the same (computed on the host from the step's flows) |
-| `DATA-SAT` (NPF `SAVE_SATURATION`) | written | not written |
+| `DATA-SPDIS` (specific discharge, NPF `SAVE_SPECIFIC_DISCHARGE`) | written | the same (computed on the device from the step's flows; on the host for models with convertible cells and for several models in one solution) |
 | Binary grid file (`.dis.grb`, `.disv.grb`, `.disu.grb`) | written unless `NOGRB` | the same file (version 1; a `CRS` option is not written to it) |
 | Model listing file (`.lst`) | full report | a short version, see below |
 | Simulation listing file (`mfsim.lst`) | written | not written |
@@ -237,7 +236,10 @@ The stepping API works as libmf6 and its XMI/BMI interface do, with these differ
   `NOCHECK`), so it also checks values written through its API; ModflowGPU does not check
   values set with `set_value` or `get_value_ptr`. `BOUND` arrays written on the device
   ([`ModflowGPU.device_bound!`](@ref)) get a reduced check at `prepare_solve`: finite
-  values and, for RIV, stage not below bottom and conductance not negative.
+  values and, for RIV, stage not below bottom and conductance not negative. With the
+  simulation option `NOCHECK` these checks are skipped, as in MODFLOW 6 (the EVT PXDP
+  checks of `NSEG` > 1 still run, and device `BOUND` values are still checked for being
+  finite).
 - There are two BMIs. [`MF6Model`](@ref) returns what libmf6's BMI returns (one grid per
   model, DIS x and y as indices, libmf6's shapes and type strings), with the differences
   listed under [Differences from libmf6](@ref); where libmf6 returns a failure status it

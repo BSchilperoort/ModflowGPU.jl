@@ -34,6 +34,8 @@ A GWF model ready to run on a device in precision `T` (state and assembly):
   the host `SolutionSetup`: the model is then the merged model of the solution, see
   src/gwf/exchange.jl) and `exgentry` (device Bool per CSR entry marking the exchange
   connections, or `nothing`).
+- T6.11: `hfb` (the `HfbState` of a model with HFB6, else `nothing`; `apply_period!`
+  applies its PERIOD blocks).
 - T6.9: `conversions`, the cell conversions of `wetdry!` since the start of the time step
   (`(kiter, wet, dry)` with reduced nodes in MF6's order, one entry per call that converted
   a cell; the initial call of the constructor has `kiter` 0), for the listing
@@ -76,6 +78,7 @@ mutable struct GwfModel{T <: AbstractFloat, B <: Backend, C <: CsrStructure, N <
     const solution::Any
     const exgentry::Any
     const conversions::Vector{Tuple{Int, Vector{Int32}, Vector{Int32}}}
+    const hfb::Union{Nothing, HfbState}
 end
 
 function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) where {T <: AbstractFloat}
@@ -83,7 +86,8 @@ function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) whe
     conn = build_connectivity(spec)
     setup = npf_setup(spec, conn)
     csr = CsrStructure(backend, conn)
-    npf = NpfModel(backend, T, setup; options = spec.npf, conn, newton)
+    hfb = hfb_state(spec)
+    npf = NpfModel(backend, T, setup; options = spec.npf, conn, newton, hfb = !isnothing(hfb))
     # T6.5: XT3D (confined models; checked by `npf_setup`).
     xs = spec.npf.xt3d ? xt3d_setup(conn, setup.properties, setup.r; rhs = spec.npf.xt3d_rhs) : nothing
     xt3d = isnothing(xs) ? nothing : Xt3dNpf(backend, T, xs)
@@ -103,7 +107,7 @@ function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) whe
     m = GwfModel(
         spec, backend, conn, setup, csr, npf, sys, packages, sto, _device_copy(backend, T.(conn.area)),
         _device_copy(backend, ibh), ibh, h, hold, z(), z(), KernelAbstractions.zeros(backend, T, conn.nja), 0,
-        nothing, 0, wd, newton, nurbot, vol, 0.0, xt3d, scsr, nothing, nothing, Tuple{Int, Vector{Int32}, Vector{Int32}}[],
+        nothing, 0, wd, newton, nurbot, vol, 0.0, xt3d, scsr, nothing, nothing, Tuple{Int, Vector{Int32}, Vector{Int32}}[], hfb,
     )
     # `preprocess_input`: `wd(0, hnew)` with the starting heads (IBOUND without the
     # constant heads, which `chd_rp` sets later).
@@ -154,7 +158,7 @@ function Adapt.adapt_structure(to, m::GwfModel)
         BoundaryPackage[adapt(to, p) for p in m.packages], adapt(to, m.sto), adapt(to, m.area), adapt(to, m.ibound),
         copy(m.ibound_host), h, adapt(to, m.hold), adapt(to, m.res), adapt(to, m.δ), adapt(to, m.flowja), m.kper,
         nothing, 0, adapt(to, m.wd), m.newton, adapt(to, m.nurbot), adapt(to, m.vol), m.delt, adapt(to, m.xt3d), scsr,
-        m.solution, adapt(to, m.exgentry), copy(m.conversions),
+        m.solution, adapt(to, m.exgentry), copy(m.conversions), isnothing(m.hfb) ? nothing : copy(m.hfb),
     )
 end
 
@@ -186,7 +190,7 @@ function GwfModel(backend::Backend, ::Type{T}, sol::SolutionSetup, nper::Integer
         spec, backend, conn, setup, csr, npf, sys, packages, sto, _device_copy(backend, T.(conn.area)),
         _device_copy(backend, ibh), ibh, h, hold, z(), z(), KernelAbstractions.zeros(backend, T, conn.nja), 0,
         nothing, 0, nothing, false, z(0), z(0), 0.0, xt3d, scsr, sol, _device_copy(backend, sol.exgentry),
-        Tuple{Int, Vector{Int32}, Vector{Int32}}[],
+        Tuple{Int, Vector{Int32}, Vector{Int32}}[], nothing,
     )
 end
 
@@ -202,8 +206,9 @@ end
     apply_period!(m::GwfModel, kper; window = nothing) -> m
 
 Start stress period `kper` (`bnd_rp`, `sto_rp`, `chd_rp`), once per period: the period
-data of every stress package (host, Float64, then copied), the storage setting and the
-IBOUND of the constant heads (copied to the device when it changed). `window = (t0, t1)`
+data of every stress package (host, Float64, then copied), the storage setting, the
+barriers of HFB6 (T6.11, `hfb_rp!`) and the IBOUND of the constant heads (copied to the
+device when it changed). `window = (t0, t1)`
 is the first time step of the period, for packages with time-series values (T6.3).
 """
 function apply_period!(m::GwfModel, kper::Integer; window::Union{Nothing, NTuple{2, Float64}} = nothing)
@@ -218,6 +223,11 @@ function apply_period!(m::GwfModel, kper::Integer; window::Union{Nothing, NTuple
         chd |= st === :structure && boundary_kind(pkg) === :CHD
     end
     isnothing(m.sto) || apply_period!(m.sto, kper)
+    # T6.11: HFB6 after the stress packages (`gwf_rp`: npf, hfb, oc, sto, then the packages;
+    # independent of each other). Changed saturated conductances make the off-diagonals stale.
+    if !isnothing(m.hfb) && hfb_rp!(m.hfb, m.npf, m.conn, m.setup, kper)
+        m.offdiag = nothing
+    end
     if chd
         # chd_rp: the cells of the previous constant heads become active again, dry cells
         # stay dry (T6.1), the new constant-head cells get −1.

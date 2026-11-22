@@ -219,3 +219,34 @@ const EvtSpec = BoundarySpec{:EVT}
 function Base.show(io::IO, b::BoundarySpec{K}) where {K}
     return print(io, "BoundarySpec{:", K, "}(\"", b.name, "\", ", b.readasarrays ? "arrays" : "list", ", periods ", b.periods.iper, ")")
 end
+
+"""
+    HfbPeriod(cell1, cell2, hydchr)
+
+The barriers of one HFB6 PERIOD block (T6.11), in input order: the two cells of each
+barrier as user node numbers (`cell1`, `cell2`, `Int32`) and the hydraulic characteristic
+`hydchr` (barrier K over its width; zero or negative: a multiplier `-hydchr` of the
+conductance, gwf-hfb.f90).
+"""
+struct HfbPeriod
+    cell1::Vector{Int32}
+    cell2::Vector{Int32}
+    hydchr::Vector{Float64}
+end
+
+"""
+    HfbSpec
+
+Horizontal flow barriers (HFB6, T6.11): `name` (package name), `print_input`, `maxhfb`
+(DIMENSIONS MAXHFB), `periods::StressPeriods{HfbPeriod}` (the PERIOD blocks; a block
+replaces the barriers of the previous one, as `hfb_rp`) and `file`.
+"""
+Base.@kwdef struct HfbSpec
+    name::String = "HFB"
+    print_input::Bool = false
+    maxhfb::Int
+    periods::StressPeriods{HfbPeriod}
+    file::String = ""
+end
+
+Base.show(io::IO, h::HfbSpec) = print(io, "HfbSpec(\"", h.name, "\", maxhfb ", h.maxhfb, ", periods ", h.periods.iper, ")")
