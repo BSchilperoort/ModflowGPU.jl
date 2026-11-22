@@ -112,7 +112,7 @@ const SUPPORTED_OPTIONS = Dict{Tuple{String, String}, Vector{String}}(
     ("gwf-evta", "OPTIONS") => [_STRESS_OPTIONS; "FIXED_CELL"; "READASARRAYS"; "TAS6"],  # T6.3: TAS6
     # T6.18: READARRAYGRID variants (no BOUNDNAMES or TS6 in their DFNs).
     ("gwf-chdg", "OPTIONS") => _GRID_OPTIONS,
-    ("gwf-welg", "OPTIONS") => [_GRID_OPTIONS; "AUTO_FLOW_REDUCE"; "FLOW_REDUCTION_LENGTH"],
+    ("gwf-welg", "OPTIONS") => [_GRID_OPTIONS; "AUTO_FLOW_REDUCE"; "FLOW_REDUCTION_LENGTH"; "AUTO_FLOW_REDUCE_CSV"],  # T6.17: CSV
     ("gwf-ghbg", "OPTIONS") => _GRID_OPTIONS,
     ("gwf-rivg", "OPTIONS") => _GRID_OPTIONS,
     ("gwf-drng", "OPTIONS") => [_GRID_OPTIONS; "AUXDEPTHNAME"],

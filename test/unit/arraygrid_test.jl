@@ -218,3 +218,13 @@ end
         end
     end
 end
+
+# WELG AUTO_FLOW_REDUCE_CSV (T6.17's writer, shared with WEL6): accepted with `strict`.
+@testset "READARRAYGRID: WELG AUTO_FLOW_REDUCE_CSV accepted" begin
+    mktempdir() do tmp
+        afr(f, t) = f == "ag.welg" ? replace(t, "SAVE_FLOWS" => "SAVE_FLOWS\n  AUTO_FLOW_REDUCE  0.5\n  AUTO_FLOW_REDUCE_CSV  FILEOUT  ag.afr.csv") : t
+        dir = _ag_copy(AG_MODEL, joinpath(tmp, "afr"); edit = afr)
+        wel = _ag_boundary(load_simulation(dir), :WEL)
+        @test wel.afrcsv_file == "ag.afr.csv" && wel.auto_flow_reduce == 0.5
+    end
+end
