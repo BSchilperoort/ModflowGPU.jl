@@ -515,7 +515,7 @@ function _load_boundary(ld::_Loader, e::PackageEntry, mname, dis::AbstractDisSpe
 end
 
 # HFB6 (T6.11; gwf-hfb.f90 `source_options`, `source_dimensions`; the PERIOD blocks are
-# read here, the cells resolved to reduced nodes by the engine, `hfb_setup`).
+# read here, the cells resolved to reduced nodes by the engine, `hfb_barriers`).
 function _load_hfb(ld::_Loader, e::PackageEntry, mname, dis::AbstractDisSpec, np::Integer)
     f = _periods_upto(_read_package(ld, e.file, e.ftype, "GWF"), np)
     o = read_options(f, "OPTIONS")

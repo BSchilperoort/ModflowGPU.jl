@@ -231,6 +231,8 @@ end
         ("hfb_vhfb", "hfb_vhfb", (f, t) -> t),
         ("hfb_vhfb_newton", "hfb_vhfb", _hfb_newton),
         ("hfb_vhfb_log", "hfb_vhfb", _hfb_logarithmic),
+        # The autotest's K = 100 (see test/models/hfb_vhfb/generate.jl), `:double` only.
+        ("hfb_vhfb_k100", "hfb_vhfb", (f, t) -> endswith(f, ".npf") ? replace(t, "CONSTANT  10.0" => "CONSTANT  100.0") : t),
         ("hfb_disu", "hfb_disu", (f, t) -> t),
         ("hfb_conv", "hfb_conv", (f, t) -> t),
         ("hfb_conv_newton", "hfb_conv", _hfb_newton),
@@ -253,7 +255,7 @@ end
                     out = read(Cmd(`$HFB_MF6`; dir), String)
                     @test occursin("Normal termination", out)
                     @testset "$name" begin
-                        _run_parity(name, dir; presets = TEST_PRESETS)
+                        _run_parity(name, dir; presets = name == "hfb_vhfb_k100" ? (:double,) : TEST_PRESETS)
                     end
                 end
             end

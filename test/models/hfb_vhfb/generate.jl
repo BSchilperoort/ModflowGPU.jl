@@ -8,6 +8,7 @@
 # Float32 rounding of the offset heads moves the `:single` heads of layer 2 by up to 1.0e-3 m
 # (the criterion); with K = 10, 8e-5 m. MF6 does not converge with INNER_RCLOSE 1e-10 here
 # (the inner solves stop at INNER_MAXIMUM at the rounding level of the residual).
+# The group hfb also runs the autotest's K = 100 in `:double` (`hfb_vhfb_k100`).
 #
 #   julia test/models/hfb_vhfb/generate.jl
 const DIR = @__DIR__

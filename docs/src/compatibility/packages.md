@@ -158,7 +158,9 @@ Horizontal flow barriers (HFB6) are supported on DIS, DISV and DISU grids, as in
 - between confined cells, and in every connection with `NEWTON`, the barrier changes the
   saturated conductance once per stress period; next to a convertible cell (`ICELLTYPE` 1)
   of the standard formulation the barrier is combined with the head-dependent conductance
-  in every outer iteration, with the saturated thickness of the face, as MODFLOW 6 does;
+  in every outer iteration, with the saturated thickness of the face, as MODFLOW 6 does
+  (also as in MODFLOW 6, a barrier without `NEWTON` has no effect when neither cell has
+  `ICELLTYPE` 1 and one has `ICELLTYPE` greater than 1);
 - a barrier with a cell outside the active grid is dropped with a warning; a barrier
   between cells that are not connected, or two barriers on one connection, are input
   errors, as in MODFLOW 6;
