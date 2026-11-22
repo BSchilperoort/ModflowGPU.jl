@@ -410,7 +410,7 @@ the T6.9 backlog. The test-model rule of the backlog section above applies (mode
   (inner counts differ from MF6 by design, `differences.md`).
 - Docs: packages.md (CSV row), `differences.md` (CSV row), `api/output.md`.
 
-**T6.18 Grid-array input (READARRAYGRID) and IMS solver options (S) ‖**
+**T6.18 Grid-array input (READARRAYGRID) and IMS solver options (S) ‖ (done 2026-11-22)**
 - Read: the `gwf-welg`, `gwf-drng`, `gwf-rivg`, `gwf-ghbg`, `gwf-chdg` DFNs and their
   loaders (`*_rp` with `readarraygrid`, `DNODATA`), `src/input/dfn/schema.jl`
   (`dfn_name` already selects the variant).

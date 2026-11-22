@@ -516,7 +516,7 @@ marked; their merge commits on `main` hold the card reports.
   - T6.15 Multi-model with convertible cells and Newton; several solutions
   - T6.16 Adaptive time stepping (ATS6)
   - T6.17 CSV output (budget, IMS outer/inner, WEL flow reduction) (done 2026-11-22)
-  - T6.18 Grid-array input (READARRAYGRID) and IMS solver options
+  - T6.18 Grid-array input (READARRAYGRID) and IMS solver options (done 2026-11-22)
 - **Phase 7: beyond MF6 parity (build after Milestone B)**: [docs/dev/plan/phase7.md](docs/dev/plan/phase7.md)
   - T7.1 Longitude wrap-around for global grids (dropped 2026-11-16)
   - T7.2 Spherical geometry
