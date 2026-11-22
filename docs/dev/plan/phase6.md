@@ -292,7 +292,7 @@ for its XT3D items only.
   explained in `docs/dev/precision.md`; no fix planned.
 - Done when: every item fixed (or item 5 measured), tests in both precisions.
 
-**T6.11 Horizontal flow barriers, HFB6 (S) ‖**
+**T6.11 Horizontal flow barriers, HFB6 (S) ‖ (done 2026-11-22)**
 - Read: `src/Model/GroundWaterFlow/gwf-hfb.f90` (`hfb_ar`, `hfb_rp`, `hfb_fc`,
   `condsat_modify`, `condsat_reset`, `hfb_cq`), and how NPF calls it in `gwf.f90`.
 - Deliver: HFB6 on DIS, DISV and DISU (hydraulic characteristic per connection, stress

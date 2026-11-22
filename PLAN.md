@@ -509,7 +509,7 @@ marked; their merge commits on `main` hold the card reports.
   - T6.8 Parallel test runner (done 2026-11-19)
   - T6.9 Phase 6 open issues (done 2026-11-21)
   - T6.10 Small leftovers from T6.9 (NOCHECK, DATA-SAT, write_simulation with time series) (done 2026-11-22)
-  - T6.11 Horizontal flow barriers (HFB6)
+  - T6.11 Horizontal flow barriers (HFB6) (done 2026-11-22)
   - T6.12 Time-varying K and storage (TVK6, TVS6)
   - T6.13 Ghost-node correction (GNC6)
   - T6.14 XT3D with convertible cells, Newton, HFB and TVK
