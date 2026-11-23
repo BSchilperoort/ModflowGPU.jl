@@ -101,10 +101,12 @@ The XT3D coefficients and the matrix of the first solve equal libmf6's (to 1e-15
   active once on the host (again when a cell dries or rewets, or TVK6 changes `K`), and
   scales them on the device with the saturations of the iteration, which is the same
   arithmetic as MODFLOW 6's up to rounding. The outer iteration counts on the test models
-  are the same as MODFLOW 6's or a few lower.
+  are within a few of MODFLOW 6's (mostly the same or lower; one more on the Newton
+  autotest model).
 - **GNC6 with a dry contributing cell.** MODFLOW 6 uses the head of a dry contributing cell
   (`HDRY`) in the matrix and leaves the cell out of the flow; ModflowGPU leaves it out of
-  both.
+  both. With MODFLOW 6 such a correction multiplies `HDRY` (−1e30 by default), so its
+  results are not meaningful in this case.
 - **The matrix couples each cell to the neighbours of its neighbours**, so on a DIS grid
   the multicolour ILU0 preconditioner uses more colours than the red–black ordering of
   the standard formulation.

@@ -735,8 +735,9 @@ function xvar_recompute!(xs::Xt3dVarSetup, x::Xt3dVarNpf, conn::Connectivity, p:
     loads = Dict{Int, Any}()
     load(n) = get!(() -> _xt3d_load(conn, p, xs.ibound, xs.nozee, n), loads, n)
     js = Set{Int32}()
-    tc = copy(xs.tc)
-    xa0, xa1 = copy(xs.xa0), copy(xs.xa1)
+    it, ij0, ij1 = Int32[], Int32[], Int32[]
+    # Host work in proportion to the connections recomputed (not to the model size): only
+    # their own term ranges are compared and scattered.
     for n in nodes, ii in (conn.ia[n] + 1):(conn.ia[n + 1] - 1)
         j = conn.jas[ii]
         j in js && continue
@@ -744,17 +745,18 @@ function xvar_recompute!(xs::Xt3dVarSetup, x::Xt3dVarNpf, conn::Connectivity, p:
         m = conn.ja[ii]
         lo, hi = min(n, m), max(n, m)
         (xs.ibound[lo] == 0 || xs.ibound[hi] == 0) && continue
-        _xvar_xt3d_terms!(tc, xa0, xa1, xs.tptr, conn, load, lo, hi, _xvar_local(conn, lo, hi), j)
+        rng = xs.tptr[j]:(xs.tptr[j + 1] - 1)
+        old, a0, a1 = xs.tc[rng], xs.xa0[j], xs.xa1[j]
+        _xvar_xt3d_terms!(xs.tc, xs.xa0, xs.xa1, xs.tptr, conn, load, lo, hi, _xvar_local(conn, lo, hi), j)
+        for (k, t) in enumerate(rng)
+            xs.tc[t] !== old[k] && push!(it, t)
+        end
+        xs.xa0[j] !== a0 && push!(ij0, j)
+        xs.xa1[j] !== a1 && push!(ij1, j)
     end
-    it = Int32[t for t in eachindex(tc) if tc[t] !== xs.tc[t]]
-    ij0 = Int32[j for j in eachindex(xa0) if xa0[j] !== xs.xa0[j]]
-    ij1 = Int32[j for j in eachindex(xa1) if xa1[j] !== xs.xa1[j]]
-    xs.tc[it] .= tc[it]
-    xs.xa0[ij0] .= xa0[ij0]
-    xs.xa1[ij1] .= xa1[ij1]
-    _xvar_scatter!(x.tc, it, tc[it])
-    _xvar_scatter!(x.xa0, ij0, xa0[ij0])
-    _xvar_scatter!(x.xa1, ij1, xa1[ij1])
+    _xvar_scatter!(x.tc, it, xs.tc[it])
+    _xvar_scatter!(x.xa0, ij0, xs.xa0[ij0])
+    _xvar_scatter!(x.xa1, ij1, xs.xa1[ij1])
     return !(isempty(it) && isempty(ij0) && isempty(ij1))
 end
 
