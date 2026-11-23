@@ -3,7 +3,8 @@
 #
 # 1. Input: the TVK6/TVS6 files into `NpfSpec.tvk` / `StoSpec.tvs` (PERIOD records, TS6
 #    series, DISABLE_STORAGE_CHANGE_INTEGRATION), the reader's errors, write_simulation
-#    round trip, and the combinations that are unsupported (XT3D, HFB6, multi-model).
+#    round trip, and the combinations that are unsupported (HFB6, multi-model; T6.14: XT3D
+#    is supported, group xt3d_var).
 # 2. Engine: MF6's errors when the settings are applied (K <= 0: the autotest tvk02_negk;
 #    SY without convertible cells; a cell outside the active domain); the device
 #    conductances after a change equal those of NPF with the changed K (only the changed
@@ -93,12 +94,11 @@ end
         @test occursin("Cell is outside the model grid: (1,1,4)", input_error_of(() -> load_simulation(dir)).msg)
         w(replace(tvk, "PRINT_INPUT" => "PRINT_INPUT\n  TS6  FILEIN  none.ts"))
         @test input_error_of(() -> load_simulation(dir)) isa MF6InputError
-        # Unsupported combinations: XT3D, HFB6, a multi-model solution.
+        # Unsupported combinations: HFB6, a multi-model solution (T6.14: XT3D is supported).
         w(tvk)
         npf = read(joinpath(dir, "gwf_tvk02.npf"), String)
         write(joinpath(dir, "gwf_tvk02.npf"), replace(npf, "BEGIN options" => "BEGIN options\n  XT3D"))
-        e = _tv_error(() -> GwfModel(CPU(), Float64, only(load_simulation(dir).models), 7))
-        @test e isa MF6UnsupportedError && occursin("TVK6 with the NPF6 option XT3D", e.msg)
+        @test GwfModel(CPU(), Float64, only(load_simulation(dir).models), 7).xvar isa ModflowGPU.Xt3dVarSetup
         write(joinpath(dir, "gwf_tvk02.npf"), npf)
         mm = only(load_simulation(dir).models)
         e = _tv_error(() -> solution_setup([mm, mm], ModflowGPU.ExchangeSpec[]))

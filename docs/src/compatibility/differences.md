@@ -95,6 +95,16 @@ The XT3D coefficients and the matrix of the first solve equal libmf6's (to 1e-15
   than on where the neighbour terms are: ex-gwf-hanix with `XT3D RHS` takes 409 outer
   iterations with the default preconditioner (MC-ILU0), 164 with `preconditioner = :amg`,
   and MODFLOW 6 183 (ILU0).
+- **Convertible cells, `NEWTON`, HFB6 and TVK6.** MODFLOW 6 recomputes the XT3D
+  coefficients of every connection with a convertible cell in every outer iteration.
+  ModflowGPU computes the parts that depend only on the grid, `K` and which neighbours are
+  active once on the host (again when a cell dries or rewets, or TVK6 changes `K`), and
+  scales them on the device with the saturations of the iteration, which is the same
+  arithmetic as MODFLOW 6's up to rounding. The outer iteration counts on the test models
+  are the same as MODFLOW 6's or a few lower.
+- **GNC6 with a dry contributing cell.** MODFLOW 6 uses the head of a dry contributing cell
+  (`HDRY`) in the matrix and leaves the cell out of the flow; ModflowGPU leaves it out of
+  both.
 - **The matrix couples each cell to the neighbours of its neighbours**, so on a DIS grid
   the multicolour ILU0 preconditioner uses more colours than the red–black ordering of
   the standard formulation.

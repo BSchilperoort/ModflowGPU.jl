@@ -27,6 +27,7 @@ const M = ModflowGPU
 const BACKEND = M.select_backend("rocm")
 const T = Float32
 const MODELS = joinpath(@__DIR__, "..", "models")
+include(joinpath(MODELS, "xt3d_var", "variants.jl"))  # T6.14 test cases
 
 # coupling_rde (CHD, WEL, RCHA, RIV, DRN, EVT, EVTA, STO) plus a GHB package, so every
 # boundary kind is formulated.
@@ -194,6 +195,12 @@ function workload(dir)
     cp(joinpath(MODELS, "xt3d"), d)
     chmod(d, 0o755; recursive = true)
     M.run(d; backend = BACKEND, precision = :single, outdir = joinpath(dir, "out_xt3d"))
+    # T6.14: head-dependent XT3D and GNC (src/gwf/xt3d_var.jl): convertible XT3D with drying
+    # and rewetting (the scatter kernel), with NEWTON, with HFB6; GNC6 with NEWTON.
+    for name in ("xt3d_conv", "xt3d_conv_newton", "xt3d_hfb_conv", "gnc_disv_conv_newton")
+        d = xt3d_var_case(name, joinpath(dir, name))
+        M.run(d; backend = BACKEND, precision = :single, outdir = joinpath(dir, "out_$name"))
+    end
     # AMG (T4.3) with several levels: fused and generic finest level, CG and BiCGSTAB.
     for method in (:cg, :bicgstab), fine_degree in (0, 1)
         ims = M.ImsSpec(; linear_acceleration = method, outer_dvclose = 1.0e-5, inner_dvclose = 1.0e-6, inner_rclose = 1.0e-4)

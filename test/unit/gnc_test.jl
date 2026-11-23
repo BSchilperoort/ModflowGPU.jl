@@ -92,18 +92,17 @@ _gnc_write(dir, name, f) = write(joinpath(dir, name), f(read(joinpath(dir, name)
         @test s.gnc.nodesj[1, 1] == 9 && ModflowGPU._gnc_reduced(s.gnc, sconn, sconn)[3][1, 1] == 0
         @test !isnothing(gnc_setup(s, sconn, npf_setup(s, sconn)))
         write(joinpath(dir, "gnc_disv.disv"), disv), write(joinpath(dir, "gnc_disv.rch"), rch)
-        # XT3D with GNC (npf_df); NEWTON, convertible cells: unsupported.
+        # XT3D with GNC (npf_df). T6.14: NEWTON and convertible cells run on the
+        # head-dependent path (group xt3d_var).
         npf = read(joinpath(dir, "gnc_disv.npf"), String)
         write(joinpath(dir, "gnc_disv.npf"), replace(npf, "SAVE_FLOWS" => "SAVE_FLOWS\n  XT3D"))
         e = _gnc_error(() -> GwfModel(CPU(), Float64, only(load_simulation(dir).models), 2))
         @test e isa MF6InputError && occursin("The XT3D option cannot be used with the GNC Package", e.msg)
         write(joinpath(dir, "gnc_disv.npf"), replace(npf, "icelltype\n    CONSTANT  0" => "icelltype\n    CONSTANT  1"))
-        e = _gnc_error(() -> GwfModel(CPU(), Float64, only(load_simulation(dir).models), 2))
-        @test e isa MF6UnsupportedError && occursin("GNC6 with convertible cells", e.msg)
+        @test GwfModel(CPU(), Float64, only(load_simulation(dir).models), 2).xvar.gnc
         write(joinpath(dir, "gnc_disv.npf"), npf)
         _gnc_write(dir, "gnc_disv.nam", t -> replace(t, "SAVE_FLOWS" => "SAVE_FLOWS\n  NEWTON"))
-        e = _gnc_error(() -> GwfModel(CPU(), Float64, only(load_simulation(dir).models), 2))
-        @test e isa MF6UnsupportedError && occursin("GNC6 with the NEWTON formulation", e.msg)
+        @test GwfModel(CPU(), Float64, only(load_simulation(dir).models), 2).xvar.gnc
         _gnc_write(dir, "gnc_disv.nam", t -> replace(t, "\n  NEWTON" => ""))
         # CG with implicit GNC: an asymmetric matrix (sln_ar); EXPLICIT keeps it symmetric.
         _gnc_write(dir, "gnc_disv.ims", t -> replace(t, "BICGSTAB" => "CG"))

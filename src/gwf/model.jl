@@ -51,8 +51,11 @@ A GWF model ready to run on a device in precision `T` (state and assembly):
 With convertible cells IBOUND changes during the outer iterations (`wetdry!`: dry cells get
 0); `ibound_host` follows it.
 
-    GwfModel(backend, T, spec::GwfSpec, nper)
+    GwfModel(backend, T, spec::GwfSpec, nper; variable = nothing)
     GwfModel(backend, T, sol::SolutionSetup, nper)
+
+`variable` (T6.14, for tests): `true`/`false` forces the head-dependent XT3D/GNC path on
+or off for a model with XT3D or GNC6 (default `xt3d_variable`).
 """
 mutable struct GwfModel{T <: AbstractFloat, B <: Backend, C <: CsrStructure, N <: NpfModel{T}, S <: LinearSystem{T}, ST, V <: AbstractVector{T}, VI <: AbstractVector{Int32}, X}
     const spec::GwfSpec
@@ -90,7 +93,7 @@ mutable struct GwfModel{T <: AbstractFloat, B <: Backend, C <: CsrStructure, N <
     const xvar::Union{Nothing, Xt3dVarSetup}
 end
 
-function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) where {T <: AbstractFloat}
+function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer; variable::Union{Nothing, Bool} = nothing) where {T <: AbstractFloat}
     newton = spec.newton
     conn = build_connectivity(spec)
     setup = npf_setup(spec, conn)
@@ -104,7 +107,8 @@ function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) whe
     check_gnc(spec, setup.properties.icelltype)
     xvar = nothing
     xs = nothing
-    if xt3d_variable(spec, setup.properties.icelltype)
+    # `variable` (tests): force the path for a model with XT3D or GNC6.
+    if (spec.npf.xt3d || !isnothing(spec.gnc)) && something(variable, xt3d_variable(spec, setup.properties.icelltype))
         xvar = spec.npf.xt3d ? xt3d_var_setup(conn, setup.properties, setup.r; rhs = spec.npf.xt3d_rhs, newton) :
             gnc_var_setup(spec, conn, setup)
         xt3d = Xt3dVarNpf(backend, T, xvar)

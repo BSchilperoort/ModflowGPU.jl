@@ -240,14 +240,18 @@ it. Underscore-prefixed helpers are omitted.
   `check_data`, `hfb_rp`, `condsat_reset`, `condsat_modify`, `hfb_fc`). `HfbBarriers` /
   `hfb_barriers` (a block's barriers on the grid: reduced nodes, `jas`, static or dynamic;
   MF6's warning and errors), `hfb_condsat` (`condsat_modify`, host Float64), `HfbState`
-  (`GwfModel.hfb`; `hfb_state(spec)`: XT3D with HFB6 unsupported), `hfb_rp!` (at a period
+  (`GwfModel.hfb`; `hfb_state(spec)`), `hfb_rp!` (at a period
   with a block: one `hfb_scatter_kernel!` writes `condsat`, `cv.condsat`, `cv.ihcx` bit 16
   and `cv.hfb` of the old and new barriers; returns whether `condsat` changed). Tests: hfb
   (input, device conductances, run parity vs mf6), kernel_hygiene.
+  T6.14: `HfbState.xt3d`, `xjs`, `xchr` (with XT3D `hfb_rp!` only resolves the barriers;
+  the model applies them with `xvar_hfb!`, src/gwf/xt3d_var.jl).
 - **gwf/xt3d.jl** (T6.5; included after gwf/convertible.jl): XT3D for confined models
   (Xt3dAlgorithm.f90 `qconds`, `abhats`, `getrot`, `tranvc`, `abwts`; Xt3dInterface.f90
   `xt3d_load`, `xt3d_areas`, `xt3d_ac`, `xt3d_fcpc`/`xt3d_fc`, `xt3d_rhs`, `xt3d_flowja`;
-  `connection_vector` of Dis/Disv/Disu.f90). `check_xt3d` (DISU without vertices/ANGLDEGX:
+  `connection_vector` of Dis/Disv/Disu.f90). T6.14: convertible cells, NEWTON, HFB6 and
+  TVK6 with XT3D run on src/gwf/xt3d_var.jl; `check_xt3d` rejects only convertible cells
+  with ANGLE2. `check_xt3d` (DISU without vertices/ANGLDEGX:
   MF6's errors; convertible cells or NEWTON: unsupported), host `Xt3dSetup` / `xt3d_setup`
   (Float64 coefficients as flux terms `c·(h_a − h_b)` per symmetric connection, the
   extended stencil `_xt3d_structure` with neighbours of neighbours, the constant XT3D matrix
@@ -264,10 +268,27 @@ it. Underscore-prefixed helpers are omitted.
   `gnc_mc`, `gnc_fmsav`, `gnc_fc` implicit/explicit, `gnc_cq`/`deltaQgnc`). GNC as flux terms
   `c·(h_n − h_j)`, `c = α_j·condsat(n, m)`, appended to the conductance term of connection
   n–m and run on the XT3D kernels (`GwfModel.xt3d`): `check_gnc` (XT3D with GNC: MF6's
-  error; NEWTON, ICELLTYPE ≠ 0, HFB6, TVK6: unsupported), `_gnc_reduced`,
+  error; T6.14: NEWTON, ICELLTYPE ≠ 0, HFB6, TVK6 run on src/gwf/xt3d_var.jl), `_gnc_reduced`,
   `_conductance_terms`, `_flatten_terms`, `gnc_terms!` (MF6's "GHOST NODE ERROR" for
   unconnected cells), `gnc_setup` (implicit: `structure = :terms`; EXPLICIT: the XT3D RHS
   option). Tests: gnc (input, structure vs libmf6, run parity vs mf6).
+- **gwf/xt3d_var.jl** (T6.14; included after gwf/gnc.jl): XT3D and GNC6 with head-dependent
+  coefficients (Xt3dInterface.f90 `xt3d_fc` with saturations and Newton areas, `xt3d_areas`,
+  `xt3d_fn`, `xt3d_fhfb`, `xt3d_flowjahfb`, `xt3d_load` with inactive neighbours;
+  Xt3dAlgorithm.f90 `qconds` weighting; gwf-hfb.f90 `hfb_fc`/`hfb_cq` XT3D branches;
+  GhostNode.f90 `gnc_fmsav`, `gnc_fc`, `gnc_fn`, `deltaQgnc`). `xt3d_variable(spec,
+  icelltype)` (XT3D or GNC6 with convertible cells, NEWTON, HFB6 or TVK6), host
+  `Xt3dVarSetup` (unscaled terms `tc` + side `tside`, per connection `xa0`/`xa1`/`xA`/
+  `xhw`/`xflag`/`xhyd`, system structure, term positions `kptr`/`posa`/`posb`/`spos`, node
+  offsets, `ibound`), `xt3d_var_setup` (XT3D: fixed term layout, all neighbours),
+  `gnc_var_setup` (GNC: weights α, the conductance applied on the device), device
+  `Xt3dVarNpf{T}` (Adapt), `CsrStructure(backend, ::Xt3dVarSetup)`, `xvar_connection`
+  (device: flow and matrix terms of one connection in a row), `xvar_formulate_system!`
+  (`xvar_formulate_kernel!`), `xvar_flowja!` (`xvar_flowja_kernel!`), host updates
+  `xvar_recompute!` (connections of given nodes, scatter of changed values,
+  `xvar_scatter_kernel!`), `xvar_ibound!` (IBOUND changes), `xvar_hfb!` (barriers).
+  Tests: xt3d_var (factorization vs qconds, forced path on confined models vs T6.5/T6.13,
+  libmf6 oracle, run parity of test/models/xt3d_var/variants.jl), kernel_hygiene.
 - **gwf/exchange.jl** (T6.6; included after gwf/xt3d.jl): multi-model solutions and GWF-GWF
   exchanges, host setup in Float64 (NumericalSolution.f90 `sln_df`/`sln_connect`,
   exg-gwfgwf.f90 `validate_exchange`, `calc_cond_sat`, `condcalc`, `gwf_gwf_fc`; the
@@ -295,9 +316,10 @@ it. Underscore-prefixed helpers are omitted.
   series name), `tv_rp!` (a period's block; whether to apply now: no TS6), `tv_ts_active`,
   `tv_value` (series over the step), `TvkState` (`GwfModel.tvk`: current K/K22/K33 in an
   `NpfProperties` copy, current condsat/hyl/hyh, Float64), `tvk_state(spec, conn, setup)`
-  (XT3D or HFB6 with TVK6: unsupported), `tvk_sync!` (MF6's errors; `_condsat_connection`
+  (HFB6 with TVK6: unsupported), `tvk_sync!` (MF6's errors; `_condsat_connection`
   for the connections of the changed cells; `tvk_scatter_kernel!` writes only the changed
-  ones), `tvk_rp!`, `tvk_ad!`. Tests: tv, kernel_hygiene.
+  ones), `tvk_rp!`, `tvk_ad!`. Tests: tv, kernel_hygiene. T6.14: `TvkState.nodes` (the
+  cells of the last syncs; the model recomputes their XT3D terms and empties it).
 - **gwf/ic.jl**: IC (gwf-ic.f90 `ic_ar`). `initial_heads` (starting heads per reduced
   node as offsets, Float64 host or device copy in `T`). Tests: sto.
 - **gwf/sto.jl**: storage (gwf-sto.f90 `sto_rp`/`sto_fc`/`sto_cq`/`sto_bd`,
@@ -513,6 +535,11 @@ it. Underscore-prefixed helpers are omitted.
   T6.12: field `tvk` (`TvkState` or `nothing`); `apply_period!` (`tvk_rp!`, `tvs_rp!`) and
   `advance_time_series!` (`tvk_ad!`, `tvs_ad!`) apply TVK6/TVS6 and mark the off-diagonals
   stale when a conductance changed; `formulate!` takes `storage_args`.
+  T6.14: field `xvar` (`Xt3dVarSetup` or `nothing`; then `xt3d` is an `Xt3dVarNpf`),
+  `GwfModel(...; variable)` (tests: force the path), `formulate!` calls
+  `xvar_formulate_system!` (with `jac`, off-diagonals every time), `wetdry!` and
+  `apply_period!` call `_xvar_ibound!`, TVK6 `_xvar_tvk!`, HFB6 `xvar_hfb!`;
+  `_current_properties`. budget.jl `calc_flows!`: `xvar_flowja!`.
 - **solver/underrelax.jl**: `sln_underrelax`. `UnderRelaxation` (SIMPLE, COOLEY host
   scalars, DBD device state), `underrelax!` (`relax_update_kernel!`,
   `dbd_update_kernel!`); Adapt. Tests: picard (vs a host port), run (variants vs MF6).
@@ -710,7 +737,7 @@ it. Underscore-prefixed helpers are omitted.
 
 ## Test helpers (`test/`, always loaded)
 
-- **test_groups.jl**: `TEST_GROUPS` (group => files; T6.13: group `gnc`; T6.12: group `tv`; T6.11: group `hfb`; T6.6: group `exchange`,
+- **test_groups.jl**: `TEST_GROUPS` (group => files; T6.14: group `xt3d_var`; T6.13: group `gnc`; T6.12: group `tv`; T6.11: group `hfb`; T6.6: group `exchange`,
   test/parity/exchange_test.jl: universal residual and libmf6 oracle of the Tier 7 merged
   models, exchange unit tests, a two-model simulation against mf6). **parallel.jl** (T6.8):
   `run_parallel_tests`, the `MFGPU_TEST_JOBS=N` driver (work units, `GROUP_WEIGHTS`,
@@ -775,6 +802,12 @@ with WEL/RCH only: heads compared after removing the mean difference, `_head_dif
   coarse–fine connection), `gnc_disu` (the same as DISU) and `gnc_lgr` (parent DIS and child
   DIS models, GNC6 on the GWF6-GWF6 exchange, like ex-gwf-lgrv-lgr); EXPLICIT variants made
   at test time; run with mf6 at test time (group gnc).
+- **models/xt3d_var/** (T6.14): `generate.jl` writes `xt3dnr_cont`, `xt3dnr_conv`,
+  `xt3dnr_conv_std` (MF6 autotest test_gwf_xt3d_newton_upstream.py) and `xt3d_conv`
+  (convertible DIS with drying and rewetting); `variants.jl` (`xt3d_var_cases`,
+  `xt3d_var_case`: the T6.14 cases as edits of these and of models/xt3d, gnc/gnc_disv,
+  hfb_conv, tv/tv_conv: NEWTON, RHS, DISV, HFB6, TVK6, GNC6 with convertible cells); run
+  with mf6 at test time (group xt3d_var; four cases in the kernel-hygiene workload).
 - **models/ts_tas/** (T6.3, replaces models/fhb_const): synthetic time-series model (1×5×10,
   3 transient periods): TS6 LINEAR/STEPWISE/LINEAREND with SFACS, DNODATA and several series
   per file (CHD heads, WEL rate and AUXMULTNAME multiplier, GHB conductance), TAS6 RCHA
