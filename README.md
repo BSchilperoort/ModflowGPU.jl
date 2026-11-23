@@ -1,5 +1,11 @@
 # ModflowGPU.jl
 
+> [!IMPORTANT]  
+> This MODFLOW 6 Julia + GPU port is completely LLM generated.
+> The intention is that it reproduces the results of MODFLOW 6 to high precision,
+> while having the same input data format and coupling interface.
+> No part of this repository has yet been fully verified by a human (expert).
+
 [![Docs (dev)](https://img.shields.io/badge/docs-dev-blue.svg)](https://bschilperoort.github.io/ModflowGPU.jl/dev/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![AI Declaration Format](https://img.shields.io/badge/AI_Declaration_Format-validated-blue)](aidecl.yaml)
