@@ -4,7 +4,8 @@
 #    XT3D reduces to the two-point flux, so `chat01` equals the harmonic-mean conductance
 #    `condsat` of the standard formulation and every other coefficient vanishes; a run with
 #    XT3D gives the heads of the run without it.
-# 2. Options and errors: XT3D with convertible cells or NEWTON is unsupported, CG with XT3D
+# 2. Options and errors: XT3D with ANGLE2 and convertible cells is unsupported (T6.14:
+#    convertible cells and NEWTON otherwise supported, group xt3d_var), CG with XT3D
 #    is MF6's input error, a DISU grid without vertices is MF6's error.
 # 3. For the Tier 6 examples (ex-gwf-hanix, ex-gwf-whirl on DIS; ex-gwf-u1disv-x,
 #    ex-gwf-disvmesh on DISV; reference runs in reference/runs) and ex-gwf-hanix with the
@@ -96,18 +97,18 @@ end
     dis = _dis(; delr = fill(10.0, 3), delc = fill(10.0, 2), top = fill(10.0, 3, 2), botm = fill(0.0, 3, 2, 1))
     conn = build_connectivity(dis)
     base = (; k = ones(6), xt3d = true, file = "t.npf")
+    # T6.14: convertible cells and NEWTON are supported; with ANGLE2 the horizontal
+    # connection vectors of convertible cells depend on the saturation: unsupported.
+    @test npf_properties(ModflowGPU.NpfSpec(; icelltype = Int32[1, 0, 0, 0, 0, 0], base...), dis, conn).icelltype[1] == 1
+    @test npf_properties(ModflowGPU.NpfSpec(; icelltype = zeros(Int32, 6), base...), dis, conn; newton = true) isa ModflowGPU.NpfProperties
+    a = (; angle1 = zeros(6), angle2 = zeros(6), angle3 = zeros(6))
     e = try
-        npf_properties(ModflowGPU.NpfSpec(; icelltype = Int32[1, 0, 0, 0, 0, 0], base...), dis, conn)
+        npf_properties(ModflowGPU.NpfSpec(; icelltype = Int32[1, 0, 0, 0, 0, 0], base..., a...), dis, conn)
     catch err
         err
     end
-    @test e isa MF6UnsupportedError && occursin("XT3D with convertible cells", sprint(showerror, e))
-    e = try
-        npf_properties(ModflowGPU.NpfSpec(; icelltype = zeros(Int32, 6), base...), dis, conn; newton = true)
-    catch err
-        err
-    end
-    @test e isa MF6UnsupportedError && occursin("NEWTON", sprint(showerror, e))
+    @test e isa MF6UnsupportedError && occursin("XT3D with ANGLE2 and convertible cells", sprint(showerror, e))
+    @test npf_properties(ModflowGPU.NpfSpec(; icelltype = zeros(Int32, 6), base..., a...), dis, conn).angle2 == zeros(6)
     # MF6's own option checks still apply.
     e = try
         npf_properties(ModflowGPU.NpfSpec(; icelltype = zeros(Int32, 6), cell_averaging = :logarithmic, base...), dis, conn)

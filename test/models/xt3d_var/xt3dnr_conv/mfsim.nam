@@ -1,0 +1,17 @@
+BEGIN options
+END options
+
+BEGIN timing
+  TDIS6  xt3dnr_conv.tdis
+END timing
+
+BEGIN models
+  gwf6  xt3dnr_conv.nam  xt3dnr_conv
+END models
+
+BEGIN exchanges
+END exchanges
+
+BEGIN solutiongroup  1
+  ims6  xt3dnr_conv.ims  xt3dnr_conv
+END solutiongroup  1

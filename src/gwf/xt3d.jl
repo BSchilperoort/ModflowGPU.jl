@@ -18,8 +18,8 @@
 # constant. So does this port: the coefficients are computed on the host in Float64
 # (`xt3d_setup`, like `calc_condsat`), and every outer iteration formulates per cell in one
 # kernel (`xt3d_formulate_kernel!`): the boundary and storage terms, the constant XT3D matrix
-# row and the flux-form residual. XT3D with convertible cells or with NEWTON (saturation-
-# dependent areas, `xt3d_fn`) is an `MF6UnsupportedError`.
+# row and the flux-form residual. T6.14: XT3D with convertible cells, NEWTON (`xt3d_fn`),
+# HFB6 (`xt3d_fhfb`) or TVK6 runs on the head-dependent path of src/gwf/xt3d_var.jl.
 #
 # Flux of a connection. For the connection between `n < m` MF6 forms (xt3d_flowja)
 #
@@ -45,8 +45,10 @@ const _XT3D_VCTHRESH = 1.0e-10
     check_xt3d(npf::NpfSpec, dis::AbstractDisSpec, icelltype; newton = false)
 
 What XT3D needs (Xt3dInterface.f90 `xt3d_ar`) and what this port supports: a DISU grid
-without vertices or without ANGLDEGX is MF6's error (`MF6InputError`); convertible cells
-(ICELLTYPE /= 0) or the NEWTON formulation with XT3D are an `MF6UnsupportedError`.
+without vertices or without ANGLDEGX is MF6's error (`MF6InputError`). T6.14: convertible
+cells and NEWTON are supported (src/gwf/xt3d_var.jl); convertible cells with ANGLE2 (the
+horizontal connection vectors then depend on the saturation, `connection_vector`) are an
+`MF6UnsupportedError`.
 """
 function check_xt3d(npf::NpfSpec, dis::AbstractDisSpec, icelltype::AbstractVector{<:Integer}; newton::Bool = false)
     npf.xt3d || return nothing
@@ -66,8 +68,8 @@ function check_xt3d(npf::NpfSpec, dis::AbstractDisSpec, icelltype::AbstractVecto
             ),
         )
     end
-    any(!=(0), icelltype) && unsupported(file, "NPF6 option XT3D with convertible cells (ICELLTYPE /= 0)")
-    newton && unsupported(file, "NPF6 option XT3D with the NEWTON formulation")
+    (any(!=(0), icelltype) && !isnothing(npf.angle2)) &&
+        unsupported(file, "NPF6 option XT3D with ANGLE2 and convertible cells (ICELLTYPE /= 0)")
     return nothing
 end
 

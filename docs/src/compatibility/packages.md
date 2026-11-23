@@ -164,21 +164,29 @@ Backtracking with Newton–Raphson works on the system without the Newton terms,
 MODFLOW 6. How the results compare with MODFLOW 6 is on
 [Differences from MODFLOW 6](@ref "Newton–Raphson") and [Comparing results](results.md).
 
-The XT3D formulation of NPF (the NPF option `XT3D`, with or without `RHS`) is supported for
-models whose cells are all confined (`ICELLTYPE` 0), on DIS, DISV and DISU grids (DISU with
-vertices and `ANGLDEGX`, as MODFLOW 6 requires):
+The XT3D formulation of NPF (the NPF option `XT3D`, with or without `RHS`) is supported on
+DIS, DISV and DISU grids (DISU with vertices and `ANGLDEGX`, as MODFLOW 6 requires):
 
 - the flow across each face uses the full conductivity tensor (`K`, `K22`, `K33` and
   `ANGLE1` to `ANGLE3`; `ANGLE1` is 0 when not given) and the heads of the neighbours of
-  both cells, as in MODFLOW 6; the coefficients are computed once, as MODFLOW 6 does for
-  permanently confined cells;
+  both cells, as in MODFLOW 6. In a model whose cells are all confined the coefficients
+  are computed once, as MODFLOW 6 does for permanently confined cells;
+- convertible cells (`ICELLTYPE` ≠ 0): the face areas follow the saturated thickness of
+  each cell in every outer iteration, as in MODFLOW 6; a cell that dries (with `REWET`, or
+  without it) leaves the XT3D stencils of its neighbours until it is wet again;
+- `NEWTON`: the flow across a horizontal face is scaled by the saturation of the cell the
+  flow comes from (from the direction of the XT3D flow, not of the head difference), and
+  the Newton terms are added to the matrix, as in MODFLOW 6;
+- with horizontal flow barriers (HFB6) and time-varying hydraulic conductivity (TVK6), see
+  below;
 - without `RHS` the matrix holds every XT3D term, so a row also has entries for the
   neighbours of the cell's neighbours; with `RHS` the matrix holds only the terms of the
   direct connection and the other terms enter through the residual, which takes more outer
   iterations but gives the same heads;
 - the matrix is not symmetric: IMS must use `LINEAR_ACCELERATION BICGSTAB`; `CG` is an input
   error, as in MODFLOW 6;
-- XT3D with convertible cells or with `NEWTON` is rejected (see below).
+- convertible cells together with `ANGLE2` (a tilted conductivity tensor, which makes the
+  horizontal connections depend on the saturated thickness) are rejected (see below).
 
 Horizontal flow barriers (HFB6) are supported on DIS, DISV and DISU grids, as in MODFLOW 6:
 
@@ -199,7 +207,11 @@ Horizontal flow barriers (HFB6) are supported on DIS, DISV and DISU grids, as in
   errors, as in MODFLOW 6;
 - HFB6 has no budget term: the barriers change the flows between cells (`FLOW-JA-FACE`).
 
-HFB6 with `XT3D`, and in a model of a multi-model solution, is rejected (see below).
+With `XT3D`, a barrier scales all XT3D coefficients of its connection, as MODFLOW 6 does:
+by `1 − C/(C + HYDCHR·A)` (`C` the direct XT3D coefficient of the face, `A` the face area
+from the heads; `HYDCHR` alone with `NEWTON`), and for a zero or negative `HYDCHR` by
+`1 + HYDCHR` (MODFLOW 6's XT3D code takes the negative value this way, unlike the standard
+formulation). HFB6 in a model of a multi-model solution is rejected (see below).
 
 Time-varying hydraulic conductivity (TVK6, `TVK6 FILEIN` in the NPF options) and storage
 (TVS6, `TVS6 FILEIN` in the STO options) are supported as in MODFLOW 6:
@@ -219,8 +231,9 @@ Time-varying hydraulic conductivity (TVK6, `TVK6 FILEIN` in the NPF options) and
   every cell) are input errors, as in MODFLOW 6;
 - `PRINT_INPUT` is accepted; the changes are not printed to the listing file.
 
-TVK6 with `XT3D` or with HFB6, and TVK6 or TVS6 in a model of a multi-model solution, are
-rejected (see below).
+With `XT3D` a change recomputes the XT3D coefficients of the connections of the changed
+cells. TVK6 with HFB6, and TVK6 or TVS6 in a model of a multi-model solution, are rejected
+(see below).
 
 ### Ghost-node correction (GNC6)
 
@@ -246,9 +259,13 @@ these three: DISV, DISU, and two DIS models):
 - `PRINT_INPUT` and `PRINT_FLOWS` are accepted and print nothing (MODFLOW 6's GNC flow table
   is not written); `I2KN` is accepted and, as in MODFLOW 6, has no effect.
 
-GNC6 is supported for **confined models only**: GNC6 with convertible cells (`ICELLTYPE` ≠
-0), with `NEWTON`, with HFB6 or with TVK6 is rejected with an
-[`MF6UnsupportedError`](@ref) (see below).
+GNC6 works with convertible cells (`ICELLTYPE` ≠ 0), with `NEWTON` (the Newton terms of
+the correction, from the upstream cell by head, as in MODFLOW 6), with HFB6 and with TVK6:
+the conductance in the correction is the one of the current outer iteration, with the
+barrier and the current `K`, as MODFLOW 6 takes it from the matrix. A contributing cell
+that is dry is left out of the correction. GNC6 together with `XT3D` in a model of the same
+solution, and implicit and `EXPLICIT` GNC6 packages in one solution, are rejected (see
+below).
 
 ## Packages and models that are rejected
 
@@ -283,11 +300,11 @@ input is accepted.
 
 | Feature | Status |
 | :-- | :-- |
-| XT3D with convertible cells (`ICELLTYPE` ≠ 0) or with `NEWTON` | not planned at the moment |
+| XT3D with convertible cells (`ICELLTYPE` ≠ 0) and `ANGLE2` | not planned at the moment |
 | More than one solution; several models with convertible cells or `NEWTON` | not planned at the moment |
-| Horizontal flow barriers (HFB6) with `XT3D`, or in a model of a multi-model solution | not planned at the moment |
-| Ghost-node correction (GNC6) with convertible cells (`ICELLTYPE` ≠ 0), `NEWTON`, HFB6 or TVK6, or with `XT3D` in a model of the same solution | not planned at the moment |
-| Time-varying hydraulic conductivity (TVK6) with `XT3D` or HFB6; TVK6 or TVS6 in a model of a multi-model solution | not planned at the moment |
+| Horizontal flow barriers (HFB6) in a model of a multi-model solution | not planned at the moment |
+| Ghost-node correction (GNC6) with `XT3D` in a model of the same solution; implicit and `EXPLICIT` GNC6 in one solution | not planned at the moment |
+| Time-varying hydraulic conductivity (TVK6) with HFB6; TVK6 or TVS6 in a model of a multi-model solution | not planned at the moment |
 | Adaptive time stepping (ATS6) | not planned at the moment |
 
 The tested models are listed on [Comparing results](results.md).

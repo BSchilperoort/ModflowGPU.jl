@@ -1,0 +1,12 @@
+BEGIN options
+  SAVE_FLOWS
+
+END options
+
+BEGIN packages
+  DIS6  xt3dnr_conv_std.dis  dis
+  NPF6  xt3dnr_conv_std.npf  npf
+  IC6  xt3dnr_conv_std.ic  ic
+  CHD6  xt3dnr_conv_std.chd  chd
+  OC6  xt3dnr_conv_std.oc  oc
+END packages

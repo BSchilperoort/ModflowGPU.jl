@@ -1,0 +1,24 @@
+BEGIN options
+  LENGTH_UNITS  meters
+END options
+
+BEGIN dimensions
+  NLAY  1
+  NROW  4
+  NCOL  10
+END dimensions
+
+BEGIN griddata
+  delr
+    CONSTANT  100.0
+  delc
+    CONSTANT  100.0
+  top
+    CONSTANT  100.0
+  botm
+    INTERNAL  FACTOR  1.0
+      0.0  0.0  0.0  0.0  0.0  0.0  0.0  0.0  0.0  0.0
+      0.0  0.0  0.0  0.0  0.0  0.0  0.0  0.0  0.0  0.0
+      80.0  80.0  80.0  80.0  80.0  80.0  80.0  80.0  80.0  80.0
+      0.0  0.0  0.0  0.0  0.0  0.0  0.0  0.0  0.0  0.0
+END griddata

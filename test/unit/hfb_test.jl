@@ -2,7 +2,8 @@
 #
 # 1. Input: the HFB6 file into `GwfSpec.hfb` (PERIOD blocks, two cellids per record), MF6's
 #    errors (MAXHFB, unconnected cells, two barriers on one connection), a barrier with an
-#    excluded cell dropped, XT3D with HFB6 and HFB6 in a multi-model solution unsupported.
+#    excluded cell dropped, HFB6 in a multi-model solution unsupported (T6.14: XT3D with HFB6
+#    is supported, group xt3d_var).
 # 2. `condsat_modify` (`hfb_condsat`) on the host, and the device conductances after
 #    `apply_period!` (static barriers in `condsat`, dynamic ones flagged), periods without a
 #    block keeping the barriers and an empty block removing them.
@@ -138,12 +139,14 @@ _hfb_period1(dir) = apply_period!(GwfModel(CPU(), Float64, only(load_simulation(
         _hfb_write(dir, "vhfb.hfb", replace(hfb, "1  1  2  2  1  2  2.0e-5" => "2  1  1  1  1  1  2.0e-5"))
         e = input_error_of(() -> _hfb_period1(dir))
         @test e isa MF6InputError && occursin("HFB no. 1 and HFB no. 2 are both between cells (2,1,1) and (1,1,1)", e.msg)
-        # XT3D with HFB6 stays unsupported (T6.14).
+        # XT3D with HFB6 (T6.14): the barriers go to the XT3D coefficients (`xt3d_fhfb`).
         _hfb_write(dir, "vhfb.hfb", hfb)
         npf = read(joinpath(dir, "vhfb.npf"), String)
         _hfb_write(dir, "vhfb.npf", replace(replace(npf, "SAVE_FLOWS" => "SAVE_FLOWS\n  XT3D"), "CONSTANT  1\n" => "CONSTANT  0\n"))
-        e = _hfb_error(() -> GwfModel(CPU(), Float64, only(load_simulation(dir).models), 1))
-        @test e isa MF6UnsupportedError && occursin("HFB6 with the NPF6 option XT3D", e.msg)
+        xm = GwfModel(CPU(), Float64, only(load_simulation(dir).models), 1)
+        apply_period!(xm, 1)
+        @test xm.hfb.xt3d && !isempty(xm.hfb.xjs) && all(j -> (xm.xvar.xflag[j] & 4) != 0, xm.hfb.xjs)
+        _hfb_write(dir, "vhfb.npf", npf)
         # A barrier with an excluded cell is dropped with a warning (`source_data`).
         ddir = _hfb_variant(joinpath(HFB_MODELS, "hfb_disu"), joinpath(tmp, "d"))
         _hfb_write(ddir, "disuhfb.hfb", replace(read(joinpath(ddir, "disuhfb.hfb"), String), "MAXHFB  1" => "MAXHFB  2", "26  27  1.0e-6" => "26  27  1.0e-6\n  1  2  1.0e-6"))

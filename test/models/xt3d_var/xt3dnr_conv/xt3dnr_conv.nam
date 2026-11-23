@@ -1,0 +1,12 @@
+BEGIN options
+  SAVE_FLOWS
+  NEWTON  UNDER_RELAXATION
+END options
+
+BEGIN packages
+  DIS6  xt3dnr_conv.dis  dis
+  NPF6  xt3dnr_conv.npf  npf
+  IC6  xt3dnr_conv.ic  ic
+  CHD6  xt3dnr_conv.chd  chd
+  OC6  xt3dnr_conv.oc  oc
+END packages
