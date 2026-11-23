@@ -1,0 +1,19 @@
+BEGIN options
+END options
+
+BEGIN timing
+  TDIS6  gnclgr.tdis
+END timing
+
+BEGIN models
+  gwf6  parent.nam  parent
+  gwf6  child.nam  child
+END models
+
+BEGIN exchanges
+  GWF6-GWF6  gnclgr.gwfgwf  parent  child
+END exchanges
+
+BEGIN solutiongroup  1
+  ims6  gnclgr.ims  parent  child
+END solutiongroup  1

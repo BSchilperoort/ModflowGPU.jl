@@ -291,3 +291,31 @@ Base.@kwdef struct HfbSpec
 end
 
 Base.show(io::IO, h::HfbSpec) = print(io, "HfbSpec(\"", h.name, "\", maxhfb ", h.maxhfb, ", periods ", h.periods.iper, ")")
+
+"""
+    GncSpec
+
+Ghost-node correction (GNC6, T6.13; GhostNode.f90): `name` (package name), the options
+`print_input`, `print_flows`, `explicit` (EXPLICIT: the correction on the right-hand side;
+default implicit, in the matrix) and `i2kn` (accepted, unused as in MF6), `numalphaj`
+(DIMENSIONS NUMALPHAJ) and per GNCDATA record `k` (in input order, NUMGNC records) the
+cells as user node numbers: `noden[k]` (the cell holding the ghost node; model 1 of an
+exchange), `nodem[k]` (the connected cell; model 2 of an exchange), the contributing cells
+`nodesj[:, k]` (`numalphaj` of them, in the model of `noden`; 0: none) and their weights
+`alphasj[:, k]`; `file`.
+"""
+Base.@kwdef struct GncSpec
+    name::String = "GNC"
+    print_input::Bool = false
+    print_flows::Bool = false
+    explicit::Bool = false
+    i2kn::Bool = false
+    numalphaj::Int
+    noden::Vector{Int32}
+    nodem::Vector{Int32}
+    nodesj::Matrix{Int32}
+    alphasj::Matrix{Float64}
+    file::String = ""
+end
+
+Base.show(io::IO, g::GncSpec) = print(io, "GncSpec(\"", g.name, "\", ", length(g.noden), " records, ", g.explicit ? "explicit" : "implicit", ")")

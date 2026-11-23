@@ -29,7 +29,9 @@ A GWF model ready to run on a device in precision `T` (state and assembly):
 - T6.5: `xt3d` (the `Xt3dNpf` of a model with the NPF XT3D option, else `nothing`) and
   `scsr`, the CSR structure of the system `sys` and the linear solver: `csr` itself, or with
   XT3D (without its RHS option) the stencil extended with the neighbours of neighbours.
-  `csr` stays the connectivity (flows, `flowja`).
+  `csr` stays the connectivity (flows, `flowja`). T6.13: a model with GNC6 has the flux
+  terms of its connections and ghost-node corrections in `xt3d` (src/gwf/gnc.jl), and with
+  implicit GNC `scsr` is the connectivity plus GNC's entries.
 - T6.6: `solution` (`nothing` for a single model; for the models of a multi-model solution
   the host `SolutionSetup`: the model is then the merged model of the solution, see
   src/gwf/exchange.jl) and `exgentry` (device Bool per CSR entry marking the exchange
@@ -92,7 +94,9 @@ function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) whe
     hfb = hfb_state(spec)
     npf = NpfModel(backend, T, setup; options = spec.npf, conn, newton, hfb = !isnothing(hfb))
     # T6.5: XT3D (confined models; checked by `npf_setup`).
-    xs = spec.npf.xt3d ? xt3d_setup(conn, setup.properties, setup.r; rhs = spec.npf.xt3d_rhs) : nothing
+    # T6.13: GNC6 as flux terms on the XT3D kernels (src/gwf/gnc.jl; XT3D with GNC is an error).
+    check_gnc(spec, setup.properties.icelltype)
+    xs = spec.npf.xt3d ? xt3d_setup(conn, setup.properties, setup.r; rhs = spec.npf.xt3d_rhs) : gnc_setup(spec, conn, setup)
     xt3d = isnothing(xs) ? nothing : Xt3dNpf(backend, T, xs)
     scsr = (isnothing(xs) || xs.rhs) ? csr : CsrStructure(backend, xs)
     sys = LinearSystem(backend, T, scsr)

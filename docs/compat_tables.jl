@@ -73,7 +73,6 @@ const REJECTED = Dict(
     "BUY6" => ("Buoyancy (variable density)", "out of scope"),
     "VSC6" => ("Viscosity", "out of scope"),
     "API6" => ("Application programming interface package", "out of scope"),
-    "GNC6" => ("Ghost-node correction", "not planned at the moment"),
     "GWT6" => ("Groundwater transport model", "out of scope"),
     "GWE6" => ("Groundwater energy transport model", "out of scope"),
     "PRT6" => ("Particle tracking model", "out of scope"),

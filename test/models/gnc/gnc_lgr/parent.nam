@@ -1,0 +1,14 @@
+BEGIN options
+  SAVE_FLOWS
+END options
+
+BEGIN packages
+  DIS6  parent.dis  dis
+  NPF6  parent.npf  npf
+  IC6  parent.ic  ic
+  STO6  parent.sto  sto
+  CHD6  parent.chd  chd
+  RCH6  parent.rch  rch
+  GHB6  parent.ghb  ghb
+  OC6  parent.oc  oc
+END packages

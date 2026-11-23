@@ -1,0 +1,16 @@
+BEGIN options
+  SAVE_FLOWS
+END options
+
+BEGIN packages
+  DISV6  gnc_disv.disv  dis
+  NPF6  gnc_disv.npf  npf
+  IC6  gnc_disv.ic  ic
+  STO6  gnc_disv.sto  sto
+  GNC6  gnc_disv.gnc  gnc
+  CHD6  gnc_disv.chd  chd
+  WEL6  gnc_disv.wel  wel
+  RCH6  gnc_disv.rch  rch
+  GHB6  gnc_disv.ghb  ghb
+  OC6  gnc_disv.oc  oc
+END packages

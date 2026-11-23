@@ -217,19 +217,28 @@ function initialize(
     # NumericalSolution.f90 `sln_ar`: the Newton formulation (T6.2) and XT3D (T6.5, `gwf_get_iasym`;
     # T6.6: also XT3D on an exchange, `gwf_gwf_connection` of the interface model) give a
     # nonsymmetric matrix.
+    # T6.13: implicit GNC6 (`read_options`: `iasym = 1`), in a model or on an exchange.
+    gnc_implicit(g) = !isnothing(g) && !g.explicit
     for spec in sim.models
-        (spec.newton || spec.npf.xt3d) && ims.linear_acceleration === :cg && throw(
+        (spec.newton || spec.npf.xt3d || gnc_implicit(spec.gnc)) && ims.linear_acceleration === :cg && throw(
             MF6InputError(
                 ims.file, 0,
                 "MODEL **$(uppercase(spec.name))** PRODUCES AN ASYMMETRIC COEFFICIENT MATRIX, BUT THE CONJUGATE GRADIENT METHOD WAS SELECTED. USE BICGSTAB INSTEAD.",
             ),
         )
     end
-    for ex in sim.exchanges
+    for (id, ex) in enumerate(sim.exchanges)
         ex.xt3d && ims.linear_acceleration === :cg && throw(
             MF6InputError(
                 ims.file, 0,
                 "MODEL **$(ex.model1)** PRODUCES AN ASYMMETRIC COEFFICIENT MATRIX, BUT THE CONJUGATE GRADIENT METHOD WAS SELECTED. USE BICGSTAB INSTEAD.",
+            ),
+        )
+        # exg-gwfgwf.f90 `gwf_gwf_get_iasym`.
+        gnc_implicit(ex.gnc) && ims.linear_acceleration === :cg && throw(
+            MF6InputError(
+                ims.file, 0,
+                "EXCHANGE **GWF-GWF_$id** PRODUCES AN ASYMMETRIC COEFFICIENT MATRIX, BUT THE CONJUGATE GRADIENT METHOD WAS SELECTED. USE BICGSTAB INSTEAD.",
             ),
         )
     end

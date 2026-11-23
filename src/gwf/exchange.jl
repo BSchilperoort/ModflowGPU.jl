@@ -42,8 +42,8 @@
 # when any XT3D is involved.
 #
 # Scope: confined models (ICELLTYPE 0, STO ICONVERT 0, no NEWTON) in one IMS solution.
-# Convertible cells, NEWTON, GNC6 and MVR6 on exchanges, and more than one solution are an
-# `MF6UnsupportedError`.
+# Convertible cells, NEWTON, MVR6 on exchanges, and more than one solution are an
+# `MF6UnsupportedError`. T6.13: GNC6 in the models and on the exchanges (`_solution_gnc`).
 
 """
     ModelPart
@@ -93,7 +93,7 @@ The host setup of a multi-model solution (`solution_setup`): the `models` (`Mode
 the `exchanges` (`ExchangeSetup`), the merged connectivity `conn` and NPF setup `setup`
 (condsat of the model and exchange connections, reference heads of every model), `exgentry`
 (per merged CSR entry: an exchange connection), `xt3d` (`Xt3dSetup` of the merged model when
-a model or an exchange uses XT3D, else `nothing`), and the merged `ic` and `sto` (`nothing`
+a model or an exchange uses XT3D or GNC6 (T6.13), else `nothing`), and the merged `ic` and `sto` (`nothing`
 when no model has STO).
 """
 struct SolutionSetup
@@ -126,6 +126,10 @@ function _check_solution(models::Vector{GwfSpec}, setups, exchanges::Vector{Exch
         !isnothing(m.sto) && any(!=(0), m.sto.iconvert) &&
             unsupported(file, "STO ICONVERT /= 0 in model $(m.name) of a multi-model solution (only confined storage is supported with exchanges)")
     end
+    # T6.13: GNC6 in a model (`check_gnc`) or on an exchange (`read_gnc`, GwfGwfConnection.f90).
+    for (m, s) in zip(models, setups)
+        check_gnc(m, s.properties.icelltype)
+    end
     rhs = [m.npf.xt3d_rhs for m in models if m.npf.xt3d]
     length(unique(rhs)) <= 1 || unsupported(models[1].file, "XT3D with the RHS option in some models of a solution and without it in others")
     any(rhs) && any(ex -> ex.xt3d, exchanges) && unsupported(models[1].file, "XT3D with the RHS option in a model and XT3D on an exchange")
@@ -134,6 +138,8 @@ function _check_solution(models::Vector{GwfSpec}, setups, exchanges::Vector{Exch
         file = isempty(ex.file) ? "GWF6-GWF6" : ex.file
         name = "GWF-GWF_$id"
         i1, i2 = byname[ex.model1], byname[ex.model2]
+        # T6.13: GNC6 (read_gnc, then validate_exchange).
+        isnothing(ex.gnc) || _check_exchange_gnc(ex, name)
         # exg-gwfgwf.f90 validate_exchange
         ex.xt3d && i1 == i2 && throw(
             MF6InputError(file, 0, "GWF-GWF exchange $name is a periodic boundary condition which cannot be configured with XT3D"),
@@ -175,6 +181,32 @@ function _check_solution(models::Vector{GwfSpec}, setups, exchanges::Vector{Exch
             end
         end
     end
+    gncs = [g for g in Iterators.flatten(((m.gnc for m in models), (ex.gnc for ex in exchanges))) if !isnothing(g)]
+    if !isempty(gncs)
+        file = isempty(gncs[1].file) ? "GNC" : gncs[1].file
+        (any(m -> m.npf.xt3d, models) || any(ex -> ex.xt3d, exchanges)) && unsupported(file, "GNC6 and XT3D in one solution")
+        allequal(g.explicit for g in gncs) || unsupported(file, "implicit and EXPLICIT GNC6 packages in one solution")
+    end
+    return nothing
+end
+
+# exg-gwfgwf.f90 `read_gnc` and GwfGwfConnection.f90 `validateGwfExchange`: the checks of
+# an exchange's GNC6 file (T6.13).
+function _check_exchange_gnc(ex::ExchangeSpec, name)
+    g = ex.gnc
+    file = isempty(g.file) ? "GNC" : g.file
+    ex.xt3d && throw(MF6InputError(file, 0, "Ghost node correction not supported combined with XT3D for exchange $name"))
+    (g.explicit && ex.newton) && throw(
+        MF6InputError(file, 0, "GNC is explicit, but GWF exchange has active newton. Add implicit option to GNC or remove NEWTON from GWF exchange."),
+    )
+    d = ex.data
+    length(d.nodem1) == length(g.noden) || throw(MF6InputError(file, 0, "Number of exchanges does not match number of GNCs"))
+    bad = String[]
+    for i in eachindex(d.nodem1)
+        (d.nodem1[i] == g.noden[i] && d.nodem2[i] == g.nodem[i]) ||
+            push!(bad, "EXCHANGE NODES $(d.nodem1[i]) AND $(d.nodem2[i]) NOT CONSISTENT WITH GNC NODES $(g.noden[i]) AND $(g.nodem[i])")
+    end
+    isempty(bad) || throw(MF6InputError(file, 0, join(bad, "\n")))
     return nothing
 end
 
@@ -506,16 +538,12 @@ end
 # the merged model, then the merged XT3D setup; `nothing` without XT3D in the solution.
 function _solution_xt3d(parts, exchanges, conn::Connectivity, setup::NpfSetup)
     anyx = any(p -> p.spec.npf.xt3d, parts) || any(ex -> ex.spec.xt3d, exchanges)
+    anyg = any(p -> !isnothing(p.spec.gnc), parts) || any(ex -> !isnothing(ex.spec.gnc), exchanges)
+    anyg && return _solution_gnc(parts, exchanges, conn, setup)
     anyx || return nothing
     rhs = any(p -> p.spec.npf.xt3d && p.spec.npf.xt3d_rhs, parts)
-    njas = Int(conn.njas)
-    terms = [Tuple{Int32, Int32, Float64}[] for _ in 1:njas]
     # Standard conductance: one term condsat·(h_m − h_n).
-    for n in 1:conn.nodes, ii in (conn.ia[n] + 1):(conn.ia[n + 1] - 1)
-        m = conn.ja[ii]
-        m > n || continue
-        push!(terms[conn.jas[ii]], (m, Int32(n), setup.condsat[conn.jas[ii]]))
-    end
+    terms = _conductance_terms(conn, setup.condsat)
     # XT3D of each model with the XT3D option, on its own grid.
     for part in parts
         part.spec.npf.xt3d || continue
@@ -534,16 +562,42 @@ function _solution_xt3d(parts, exchanges, conn::Connectivity, setup::NpfSetup)
     # The interface models of the exchanges with XT3D.
     owned = _interface_connections(parts, exchanges, conn)
     any(owned) && _interface_xt3d!(terms, owned, _interface_grid(parts, conn), setup.properties)
-    tptr = Vector{Int32}(undef, njas + 1)
-    tptr[1] = 1
-    ta, tb, tc = Int32[], Int32[], Float64[]
-    for j in 1:njas
-        for (a, b, c) in terms[j]
-            push!(ta, a), push!(tb, b), push!(tc, c)
-        end
-        tptr[j + 1] = length(tc) + 1
-    end
+    tptr, ta, tb, tc = _flatten_terms(terms)
     return xt3d_assemble(conn, tptr, ta, tb, tc, setup.r; rhs)
+end
+
+# T6.13: the flux terms of a solution with GNC6 (src/gwf/gnc.jl; no XT3D: `_check_solution`):
+# the conductance of every connection, the GNC terms of each model's GNC6 package and of
+# each exchange's (`noden` and `nodesj` in model 1, `nodem` in model 2; `cond` the exchange
+# conductance, exg-gwfgwf.f90 `gwf_gwf_fc`).
+function _solution_gnc(parts, exchanges, conn::Connectivity, setup::NpfSetup)
+    terms = _conductance_terms(conn, setup.condsat)
+    shift(j, off) = j == 0 ? j : j + off
+    explicit = Bool[]
+    for part in parts
+        g = part.spec.gnc
+        isnothing(g) && continue
+        n, m, j = _gnc_reduced(g, part.conn, part.conn)
+        off = part.offset
+        gnc_terms!(
+            terms, conn, setup.condsat, n .+ off, m .+ off, shift.(j, off), g.alphasj;
+            file = isempty(g.file) ? "GNC" : g.file, model1 = part.spec.name, user1 = n, user2 = m,
+        )
+        push!(explicit, g.explicit)
+    end
+    for ex in exchanges
+        g = ex.spec.gnc
+        isnothing(g) && continue
+        p1, p2 = parts[ex.m1], parts[ex.m2]
+        n, m, j = _gnc_reduced(g, p1.conn, p2.conn)
+        gnc_terms!(
+            terms, conn, setup.condsat, n .+ p1.offset, m .+ p2.offset, shift.(j, p1.offset), g.alphasj;
+            file = isempty(g.file) ? "GNC" : g.file, model1 = p1.spec.name, model2 = p2.spec.name, user1 = n, user2 = m,
+        )
+        push!(explicit, g.explicit)
+    end
+    tptr, ta, tb, tc = _flatten_terms(terms)
+    return xt3d_assemble(conn, tptr, ta, tb, tc, setup.r; rhs = all(explicit), structure = :terms)
 end
 
 # XT3D on the interface grid `iconn` for the connections in `owned` (Xt3dInterface.f90

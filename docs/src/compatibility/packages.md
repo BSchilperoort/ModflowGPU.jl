@@ -76,7 +76,14 @@ its own variables in the stepping API and BMI (`"<model>/X"`, see
   also next to models with or without XT3D themselves.
 - The models must be confined (`ICELLTYPE` 0, storage without `ICONVERT`, no `NEWTON`) and
   in one solution; models with storage must agree on the steady-state and transient
-  periods. Ghost nodes (`GNC6`) and movers (`MVR6`) on exchanges are not supported.
+  periods. Movers (`MVR6`) on exchanges are not supported.
+- Ghost-node correction on the exchange (`GNC6 FILEIN` in its OPTIONS; MODFLOW 6's
+  `GNC6_FILENAME`): one `GNCDATA` record per exchange connection, in the order of
+  `EXCHANGEDATA`, with the ghost node and its contributing cells in the first model (see
+  [Ghost-node correction (GNC6)](@ref)). As in MODFLOW 6, GNC with `XT3D` on the exchange,
+  and `EXPLICIT` GNC with the exchange's `NEWTON`, are input errors; GNC6 together with
+  `XT3D` in a model of the solution, and implicit and `EXPLICIT` GNC6 packages in one
+  solution, are rejected as unsupported.
 - Exchange observations (`OBS6 FILEIN` in the exchange file) are written as MODFLOW 6 does
   (see [Observations (OBS6)](@ref)).
 
@@ -215,6 +222,34 @@ Time-varying hydraulic conductivity (TVK6, `TVK6 FILEIN` in the NPF options) and
 TVK6 with `XT3D` or with HFB6, and TVK6 or TVS6 in a model of a multi-model solution, are
 rejected (see below).
 
+### Ghost-node correction (GNC6)
+
+Ghost-node correction (GNC6, `GNC6` in the model's name file, or on a GWF–GWF exchange) is
+supported as in MODFLOW 6, typically for a locally refined grid: a nested DISV or DISU
+grid in one model, or a refined child model joined to its parent by an exchange (tested on
+these three: DISV, DISU, and two DIS models):
+
+- each `GNCDATA` record names the cell `CELLIDN` that holds the ghost node, the connected
+  cell `CELLIDM`, and `NUMALPHAJ` contributing cells `CELLIDSJ` with their weights
+  `ALPHASJ` (a contributing cell of all zeros is none). The flow from `m` into `n` is
+  computed with the head at the ghost node, `(1 − Σα)·h_n + Σ α_j·h_j`, instead of `h_n`;
+  `FLOW-JA-FACE` (and the exchange flow) includes the correction;
+- implicit (the default): the correction is in the matrix, which then has entries between
+  the cells and their contributing cells and is not symmetric, so IMS must use
+  `LINEAR_ACCELERATION BICGSTAB` (`CG` is an input error, as in MODFLOW 6). `EXPLICIT`: the
+  correction is computed from the latest heads and added to the right-hand side, which can
+  take more outer iterations but gives the same heads;
+- a cell outside the active grid, two cells that are not connected, or (on an exchange) a
+  number of records that differs from the exchange connections, are input errors (a
+  contributing cell with `IDOMAIN` 0 counts as none, as in MODFLOW 6); `XT3D` with GNC6 is
+  an input error, as in MODFLOW 6;
+- `PRINT_INPUT` and `PRINT_FLOWS` are accepted and print nothing (MODFLOW 6's GNC flow table
+  is not written); `I2KN` is accepted and, as in MODFLOW 6, has no effect.
+
+GNC6 is supported for **confined models only**: GNC6 with convertible cells (`ICELLTYPE` ≠
+0), with `NEWTON`, with HFB6 or with TVK6 is rejected with an
+[`MF6UnsupportedError`](@ref) (see below).
+
 ## Packages and models that are rejected
 
 These file types always give an [`MF6UnsupportedError`](@ref), also when reading with
@@ -251,7 +286,7 @@ input is accepted.
 | XT3D with convertible cells (`ICELLTYPE` ≠ 0) or with `NEWTON` | not planned at the moment |
 | More than one solution; several models with convertible cells or `NEWTON` | not planned at the moment |
 | Horizontal flow barriers (HFB6) with `XT3D`, or in a model of a multi-model solution | not planned at the moment |
-| Ghost-node correction (GNC6) | not planned at the moment |
+| Ghost-node correction (GNC6) with convertible cells (`ICELLTYPE` ≠ 0), `NEWTON`, HFB6 or TVK6, or with `XT3D` in a model of the same solution | not planned at the moment |
 | Time-varying hydraulic conductivity (TVK6) with `XT3D` or HFB6; TVK6 or TVS6 in a model of a multi-model solution | not planned at the moment |
 | Adaptive time stepping (ATS6) | not planned at the moment |
 

@@ -330,6 +330,32 @@ function _write_tv_files(dir, t::TvSpec, file, dis, simdir)
     return nothing
 end
 
+# T6.13: GNC6 (GhostNode.f90 input: cellidn, cellidm, NUMALPHAJ cellidsj and alphasj per
+# record; `dis1` the grid of cellidn and cellidsj, `dis2` that of cellidm).
+function _write_gnc(io, g::GncSpec, dis1::AbstractDisSpec, dis2::AbstractDisSpec = dis1)
+    g1, g2 = grid_dims(dis1), grid_dims(dis2)
+    zero1 = fill("0", ncelldim(g1))
+    _write_block(io, "OPTIONS") do
+        _bool_options(io, g, (:print_input, :print_flows, :explicit))
+        g.i2kn && _put(io, "I2KN")
+    end
+    _write_block(io, "DIMENSIONS") do
+        _put(io, "NUMGNC", length(g.noden))
+        _put(io, "NUMALPHAJ", g.numalphaj)
+    end
+    _write_block(io, "GNCDATA") do
+        for k in eachindex(g.noden)
+            w = String[string.(cellid(g1, g.noden[k]))..., string.(cellid(g2, g.nodem[k]))...]
+            for j in view(g.nodesj, :, k)
+                append!(w, j == 0 ? zero1 : string.(cellid(g1, j)))
+            end
+            append!(w, _mf6_fmt.(view(g.alphasj, :, k)))
+            _put(io, w...)
+        end
+    end
+    return nothing
+end
+
 # T6.11: HFB6 (two cellids and HYDCHR per record).
 function _write_hfb(io, h::HfbSpec, dis::AbstractDisSpec)
     g = grid_dims(dis)
@@ -435,6 +461,7 @@ function _write_exchange(io, e::ExchangeSpec, m1::GwfSpec, m2::GwfSpec)
         e.cell_averaging === :harmonic || _put(io, "CELL_AVERAGING", _CELL_AVERAGING_WORDS[e.cell_averaging])
         e.variablecv && _put(io, "VARIABLECV", e.dewatered ? "DEWATERED" : "")
         _bool_options(io, e, (:newton, :xt3d))
+        isnothing(e.gnc) || _put(io, "GNC6 FILEIN", e.gnc.file)
         foreach(f -> _put(io, "OBS6 FILEIN", f), e.obs_files)
     end
     _write_block(() -> _put(io, "NEXG", length(d.nodem1)), io, "DIMENSIONS")
@@ -565,7 +592,7 @@ file under the name in its spec (`file` fields, `PackageEntry`s), as `build_mode
 (`spec_identical(spec, load_simulation(dir); ignore = (:simdir,))`), and mf6 runs it.
 
 Supported: GWF models on DIS, DISV and DISU grids with NPF, IC, STO, OC, OBS6, HFB6 (T6.11), TVK6
-and TVS6 (T6.12, with their TS6 files), the
+and TVS6 (T6.12, with their TS6 files), GNC6 (T6.13, also on exchanges), the
 stress packages of `BOUNDARY_KINDS` (lists, and READASARRAYS on DIS and DISV), TDIS, IMS and
 GWF6-GWF6 exchanges (with their OBS6), and the TS6 and TAS6 files of the stress packages
 (T6.10: the series as loaded, SFAC applied; values linked to a series written as its
@@ -608,6 +635,7 @@ function write_simulation(dir::AbstractString, spec::SimulationSpec)
         isnothing(m.sto) || _write_file(io -> _write_sto(io, m.sto, dis), dir, m.sto.file)
         isnothing(m.oc) || _write_file(io -> _write_oc(io, m.oc), dir, m.oc.file)
         isnothing(m.hfb) || _write_file(io -> _write_hfb(io, m.hfb, dis), dir, m.hfb.file)
+        isnothing(m.gnc) || _write_file(io -> _write_gnc(io, m.gnc, dis), dir, m.gnc.file)
         isnothing(m.npf.tvk) || _write_tv_files(dir, m.npf.tvk, only(m.npf.tvk_files), dis, spec.simdir)
         (isnothing(m.sto) || isnothing(m.sto.tvs)) || _write_tv_files(dir, m.sto.tvs, only(m.sto.tvs_files), dis, spec.simdir)
         for b in m.boundaries
@@ -630,6 +658,7 @@ function write_simulation(dir::AbstractString, spec::SimulationSpec)
     for e in spec.exchanges
         _write_file(io -> _write_exchange(io, e, byname[e.model1], byname[e.model2]), dir, e.file)
         isnothing(e.obs) || _write_file(io -> _write_obs(io, e.obs), dir, only(e.obs_files))
+        isnothing(e.gnc) || _write_file(io -> _write_gnc(io, e.gnc, byname[e.model1].dis, byname[e.model2].dis), dir, e.gnc.file)
     end
     return dir
 end

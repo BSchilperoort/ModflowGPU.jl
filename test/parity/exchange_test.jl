@@ -411,12 +411,13 @@ end
             err
         end
         @test e isa MF6UnsupportedError && occursin("more than one solution", e.msg)
+        # MVR6 on an exchange is out of scope (GNC6 is supported since T6.13, group gnc).
         e = try
-            load_simulation(_write_two_models(joinpath(tmp, "gnc"); exg_options = "  GNC6 FILEIN sim.gnc"))
+            load_simulation(_write_two_models(joinpath(tmp, "mvr"); exg_options = "  MVR6 FILEIN sim.mvr"))
         catch err
             err
         end
-        @test e isa MF6UnsupportedError
+        @test e isa MF6UnsupportedError && occursin("MVR6", e.msg)
 
         # Against mf6 (run at test time): heads, budgets and listing tables of both models
         # (`_run_parity`), and the exchange observations (by number and by boundary name).

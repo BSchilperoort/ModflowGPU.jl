@@ -58,9 +58,9 @@ unsupported(file::AbstractString, what::AbstractString) =
     UNSUPPORTED_PACKAGES
 
 GWF package file types that are out of scope (PLAN.md section 1: SFR, LAK, MAW, UZF, MVR,
-CSUB, BUY, VSC, API) or not in the plan (GNC): always an error. HFB6 is supported since T6.11.
+CSUB, BUY, VSC, API): always an error. HFB6 is supported since T6.11, GNC6 since T6.13.
 """
-const UNSUPPORTED_PACKAGES = ("SFR6", "LAK6", "MAW6", "UZF6", "MVR6", "CSUB6", "BUY6", "VSC6", "API6", "GNC6")
+const UNSUPPORTED_PACKAGES = ("SFR6", "LAK6", "MAW6", "UZF6", "MVR6", "CSUB6", "BUY6", "VSC6", "API6")
 
 """
     UNSUPPORTED_MODELS
@@ -120,11 +120,11 @@ const SUPPORTED_OPTIONS = Dict{Tuple{String, String}, Vector{String}}(
     ("gwf-ghbg", "OPTIONS") => _GRID_OPTIONS,
     ("gwf-rivg", "OPTIONS") => _GRID_OPTIONS,
     ("gwf-drng", "OPTIONS") => [_GRID_OPTIONS; "AUXDEPTHNAME"],
-    # T6.6: GWF-GWF exchanges (GNC6, MVR6 are rejected by the loader; VARIABLECV, DEWATERED and
+    # T6.6: GWF-GWF exchanges (MVR6 is rejected by the loader; VARIABLECV, DEWATERED and
     # NEWTON change nothing between confined cells, the only ones supported with exchanges).
     ("exg-gwfgwf", "OPTIONS") => [
         "AUXILIARY", "AUX", "BOUNDNAMES", "PRINT_INPUT", "PRINT_FLOWS", "SAVE_FLOWS", "CELL_AVERAGING", "VARIABLECV", "NEWTON",
-        "XT3D", "OBS6", "DEV_INTERFACEMODEL_ON",
+        "XT3D", "OBS6", "DEV_INTERFACEMODEL_ON", "GNC6",  # T6.13: GNC6
     ],
     ("sln-ims", "OPTIONS") => ["PRINT_OPTION", "COMPLEXITY", "NO_PTC", "CSV_OUTER_OUTPUT", "CSV_INNER_OUTPUT"],  # T6.2: NO_PTC; T6.17: CSV
     ("sln-ims", "NONLINEAR") => [

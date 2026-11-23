@@ -157,6 +157,7 @@ One GWF6 model.
   files are in the package specs); `obs`: the model's OBS6 file read (`ObsSpec`, T6.7),
   or `nothing`.
 - `hfb`: the HFB6 package (`HfbSpec`, T6.11), or `nothing`.
+- `gnc`: the GNC6 package (`GncSpec`, T6.13), or `nothing`.
 """
 Base.@kwdef struct GwfSpec
     name::String
@@ -177,6 +178,7 @@ Base.@kwdef struct GwfSpec
     obs::Union{Nothing, ObsSpec} = nothing
     file::String = ""
     hfb::Union{Nothing, HfbSpec} = nothing
+    gnc::Union{Nothing, GncSpec} = nothing
 end
 
 Base.show(io::IO, m::GwfSpec) = print(
@@ -192,7 +194,9 @@ an exchange of a model with itself, such as `ex-gwf-spbc`).
 
 - Options: `auxnames`, `boundnames`, `print_input`, `print_flows`, `save_flows`,
   `cell_averaging` (`:harmonic` (default), `:logarithmic`, `:amt_lmk`), `variablecv`,
-  `dewatered`, `newton`, `xt3d`, `obs_files` (OBS6 FILEIN). GNC6 and MVR6 are rejected.
+  `dewatered`, `newton`, `xt3d`, `obs_files` (OBS6 FILEIN). MVR6 is rejected.
+- `gnc`: the GNC6 file of GNC6_FILENAME (`GncSpec`, T6.13: `noden` and `nodesj` in model 1,
+  `nodem` in model 2), or `nothing`.
 - `obs`: the OBS6 file read (`ObsSpec`, owner `:GWFGWF`: `FLOW-JA-FACE` by exchange number or
   boundary name; T6.6), or `nothing`.
 - `data::ExchangeData`: the EXCHANGEDATA (`read_exchange_data`), cellids as user nodes of
@@ -216,6 +220,7 @@ Base.@kwdef struct ExchangeSpec
     obs::Union{Nothing, ObsSpec} = nothing
     data::ExchangeData
     file::String = ""
+    gnc::Union{Nothing, GncSpec} = nothing
 end
 
 """

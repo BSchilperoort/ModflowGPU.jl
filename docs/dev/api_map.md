@@ -96,6 +96,8 @@ it. Underscore-prefixed helpers are omitted.
   T6.18: `SUPPORTED_OPTIONS` of the READARRAYGRID variants (`gwf-chdg`, ...); IMS
   SCALING_METHOD L2NORM accepted; REORDERING_METHOD RCM and MD accepted (no effect).
   T6.12: NPF TVK6, STO TVS6; `SUPPORTED_OPTIONS` of `utl-tvk` and `utl-tvs`.
+  T6.13: GNC6 no longer in `UNSUPPORTED_PACKAGES`; exchange option GNC6 accepted (the GNC6
+  file itself is hand-parsed by `_load_gnc`, which checks its options).
 
 ## Model description (host specs, plain structs)
 
@@ -124,11 +126,15 @@ it. Underscore-prefixed helpers are omitted.
 - **spec/packages.jl** (T6.11): `HfbPeriod` (barriers of a PERIOD block: user nodes `cell1`,
   `cell2`, `hydchr`), `HfbSpec` (`maxhfb`, `print_input`, `periods::StressPeriods{HfbPeriod}`).
   Tests: hfb.
+- **spec/packages.jl** (T6.13): `GncSpec` (GNC6: `print_input`, `print_flows`, `explicit`,
+  `i2kn`, `numalphaj`; per GNCDATA record user nodes `noden`, `nodem`, `nodesj[:, k]` (0:
+  none) and `alphasj[:, k]`). Tests: gnc.
 - **spec/simulation.jl**: simulation-level specs. `TdisSpec` (`nper`), `ImsSpec`
   (`ims_defaults`), `SolutionGroupSpec`, `PackageEntry`, `GwfSpec`, `ExchangeSpec`,
   `SimulationSpec`, `model_spec`. Tests: simulation_loader.
   T6.6: `ExchangeSpec.obs` (the exchange's OBS6 file read, or `nothing`).
   T6.11: `GwfSpec.hfb` (`HfbSpec` or `nothing`).
+  T6.13: `GwfSpec.gnc`, `ExchangeSpec.gnc` (`GncSpec` or `nothing`).
 - **input/simulation.jl**: simulation loader, mfsim.nam → `SimulationSpec` (TDIS, IMS,
   GWF name files, DIS/DISV/DISU, IC, NPF, STO, OC, boundaries, exchanges).
   `load_simulation`, `LENMODELNAME`, `LENPACKAGENAME`. Tests: simulation_loader (examples
@@ -140,6 +146,9 @@ it. Underscore-prefixed helpers are omitted.
   inactive cells dropped (`nodeu_to_nlist`). Tests: arraygrid.
   T6.12: `_load_tv` (TVK6 from NPF, TVS6 from STO: keystring PERIOD records `cellid
   property value|series`, TS6 files; one file per package). Tests: tv.
+  T6.13: `_load_gnc` (GNC6 of a model, `_GWF_BASE_FTYPES`, and of an exchange,
+  `GNC6_FILENAME`; hand-parsed as GhostNode.f90 `read_options`/`read_dimensions`/`read_data`:
+  user nodes, active-cell check). Tests: gnc.
 
 ## Discretization and connectivity (host)
 
@@ -184,6 +193,7 @@ it. Underscore-prefixed helpers are omitted.
   EXCHANGES). T6.11: HFB6 (`_write_hfb`; tests: hfb round trip).
   T6.12: TVK6 and TVS6 files with their TS6 files (`_write_tv`, `_write_tv_files`;
   FILEIN options of NPF and STO). Tests: tv (round trip).
+  T6.13: GNC6 files of a model and an exchange (`_write_gnc`). Tests: gnc (round trip).
   T6.10: TS6 and TAS6 files (`_write_ts`, `_write_tas`, `_series_of_file`: the series of a
   FILEIN name, matched by the path it was read from), their FILEIN options, and linked
   values written as the series name (list) or `TIMEARRAYSERIES <name>` (arrays).
@@ -248,6 +258,16 @@ it. Underscore-prefixed helpers are omitted.
   universal residual, RHS and test/models/xt3d run parity), run.
   T6.6: `xt3d_assemble` (the structure, matrix and `sb` from flux terms per connection;
   `xt3d_setup` ends with it, and the XT3D of a multi-model solution uses it).
+  T6.13: `xt3d_assemble(...; structure = :terms)` with `_terms_structure` (the connectivity
+  plus the entries the flux terms need, GNC's `gnc_ac`; default `:xt3d` unchanged).
+- **gwf/gnc.jl** (T6.13; included after gwf/xt3d.jl): GNC6 (GhostNode.f90 `gnc_ac`,
+  `gnc_mc`, `gnc_fmsav`, `gnc_fc` implicit/explicit, `gnc_cq`/`deltaQgnc`). GNC as flux terms
+  `c·(h_n − h_j)`, `c = α_j·condsat(n, m)`, appended to the conductance term of connection
+  n–m and run on the XT3D kernels (`GwfModel.xt3d`): `check_gnc` (XT3D with GNC: MF6's
+  error; NEWTON, ICELLTYPE ≠ 0, HFB6, TVK6: unsupported), `_gnc_reduced`,
+  `_conductance_terms`, `_flatten_terms`, `gnc_terms!` (MF6's "GHOST NODE ERROR" for
+  unconnected cells), `gnc_setup` (implicit: `structure = :terms`; EXPLICIT: the XT3D RHS
+  option). Tests: gnc (input, structure vs libmf6, run parity vs mf6).
 - **gwf/exchange.jl** (T6.6; included after gwf/xt3d.jl): multi-model solutions and GWF-GWF
   exchanges, host setup in Float64 (NumericalSolution.f90 `sln_df`/`sln_connect`,
   exg-gwfgwf.f90 `validate_exchange`, `calc_cond_sat`, `condcalc`, `gwf_gwf_fc`; the
@@ -265,6 +285,10 @@ it. Underscore-prefixed helpers are omitted.
   connections of its exchange cells), `solution_colors` (per-model red–black made
   consistent across exchanges, else greedy), `ModelView` (one model of the merged model; the
   accessors `_vspec`, `_vconn`, `_vrange`, ... are in gwf/model.jl). Tests: exchange.
+  T6.13: `_solution_gnc` (the flux terms of the models' and exchanges' GNC6 on the merged
+  model; an exchange record's `cond` is the exchange condsat), `_check_exchange_gnc`
+  (MF6's errors of `read_gnc`/GwfGwfConnection.f90); GNC6 with XT3D in a solution, or
+  implicit and EXPLICIT packages in one solution: unsupported. Tests: gnc.
 - **gwf/tv.jl** (T6.12; included after gwf/npf.jl): TVK6 and the settings of TVK6/TVS6
   (TvBase.f90 `rp`/`ad`/`sync_node_changes`, gwf-tvk.f90, gwf-npf.f90 `npf_ad` →
   `calc_condsat`). `TvSource` (tracked user nodes, per node and property the value or the
@@ -686,7 +710,7 @@ it. Underscore-prefixed helpers are omitted.
 
 ## Test helpers (`test/`, always loaded)
 
-- **test_groups.jl**: `TEST_GROUPS` (group => files; T6.12: group `tv`; T6.11: group `hfb`; T6.6: group `exchange`,
+- **test_groups.jl**: `TEST_GROUPS` (group => files; T6.13: group `gnc`; T6.12: group `tv`; T6.11: group `hfb`; T6.6: group `exchange`,
   test/parity/exchange_test.jl: universal residual and libmf6 oracle of the Tier 7 merged
   models, exchange unit tests, a two-model simulation against mf6). **parallel.jl** (T6.8):
   `run_parallel_tests`, the `MFGPU_TEST_JOBS=N` driver (work units, `GROUP_WEIGHTS`,
@@ -746,6 +770,11 @@ with WEL/RCH only: heads compared after removing the mean difference, `_head_dif
   `tvk06ts`) and test_gwf_sto_tvs01 (`tvs01`..`tvs05`), and `tv_conv` (convertible DIS, TVK
   with a LINEAR series and K33OVERK, TVS of confined and convertible cells); run with mf6 at
   test time (group tv; tv_conv, tvs01 also in the kernel-hygiene workload).
+- **models/gnc/** (T6.13): `generate.jl` writes the GNC6 models: `gnc_disv` (a 2-layer 7 × 7
+  grid of 90 m cells, the centre 3 × 3 block refined 3 × 3, DISV, one GNC record per
+  coarse–fine connection), `gnc_disu` (the same as DISU) and `gnc_lgr` (parent DIS and child
+  DIS models, GNC6 on the GWF6-GWF6 exchange, like ex-gwf-lgrv-lgr); EXPLICIT variants made
+  at test time; run with mf6 at test time (group gnc).
 - **models/ts_tas/** (T6.3, replaces models/fhb_const): synthetic time-series model (1×5×10,
   3 transient periods): TS6 LINEAR/STEPWISE/LINEAREND with SFACS, DNODATA and several series
   per file (CHD heads, WEL rate and AUXMULTNAME multiplier, GHB conductance), TAS6 RCHA
