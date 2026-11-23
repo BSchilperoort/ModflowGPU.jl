@@ -91,7 +91,8 @@ TVK6 of a model on a device (T6.12): the `TvSource`, the grid (`conn`, `dis`), t
 NPF properties (`props`: `NpfProperties` with copies of K, K22, K33 that TVK changes,
 Float64), the K22OVERK/K33OVERK options, and the current saturated conductances and
 effective conductivities per symmetric connection (`condsat`, `hyl`, `hyh`, Float64, as on
-the device).
+the device). T6.14: `nodes`, the cells applied by the last `tvk_sync!` (the XT3D
+coefficients of their connections are recomputed, `xvar_recompute!`; the model empties it).
 """
 struct TvkState
     source::TvSource
@@ -103,6 +104,7 @@ struct TvkState
     condsat::Vector{Float64}
     hyl::Vector{Float64}
     hyh::Vector{Float64}
+    nodes::Vector{Int32}
 end
 
 function Base.copy(s::TvkState)
@@ -111,14 +113,14 @@ function Base.copy(s::TvkState)
         p.icelltype, copy(p.k11), copy(p.k22), copy(p.k33), p.angle1, p.angle2, p.angle3, p.ik22, p.ik33, p.icellavg,
         p.thickstart, p.sat0, p.wetdry,
     )
-    return TvkState(copy(s.source), s.conn, s.dis, props, s.k22overk, s.k33overk, copy(s.condsat), copy(s.hyl), copy(s.hyh))
+    return TvkState(copy(s.source), s.conn, s.dis, props, s.k22overk, s.k33overk, copy(s.condsat), copy(s.hyl), copy(s.hyh), copy(s.nodes))
 end
 
 """
     tvk_state(spec::GwfSpec, conn, setup::NpfSetup) -> Union{TvkState, Nothing}
 
-The `TvkState` of a model with TVK6 (`spec.npf.tvk`), `nothing` without. TVK6 with XT3D or
-HFB6 is an `MF6UnsupportedError`.
+The `TvkState` of a model with TVK6 (`spec.npf.tvk`), `nothing` without. TVK6 with HFB6 is
+an `MF6UnsupportedError` (T6.14: XT3D is supported).
 """
 function tvk_state(spec::GwfSpec, conn::Connectivity, setup::NpfSetup)
     t = spec.npf.tvk
@@ -128,7 +130,6 @@ function tvk_state(spec::GwfSpec, conn::Connectivity, setup::NpfSetup)
         unsupported(spec.npf.file, "TVK6 file names without the TVK6 input (`NpfSpec.tvk`)")
     isnothing(t) && return nothing
     file = isempty(t.file) ? "TVK" : t.file
-    spec.npf.xt3d && unsupported(file, "TVK6 with the NPF6 option XT3D (model $(spec.name))")
     isnothing(spec.hfb) || unsupported(file, "TVK6 with HFB6 (model $(spec.name))")
     p = setup.properties
     props = NpfProperties(
@@ -137,6 +138,7 @@ function tvk_state(spec::GwfSpec, conn::Connectivity, setup::NpfSetup)
     )
     return TvkState(
         TvSource(t), conn, spec.dis, props, spec.npf.k22overk, spec.npf.k33overk, copy(setup.condsat), copy(setup.hyl), copy(setup.hyh),
+        Int32[],
     )
 end
 
@@ -198,6 +200,7 @@ function tvk_sync!(st::TvkState, npf::NpfModel{T}, window) where {T}
         end
     end
     isempty(errors) || throw(MF6InputError(file, 0, join(errors, "\n")))
+    append!(st.nodes, nodes)
     # npf_ad: calc_condsat(n, .false.) for every changed node: all its connections.
     idx = Int32[]
     done = Set{Int32}()

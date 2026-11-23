@@ -1,0 +1,15 @@
+BEGIN options
+  SAVE_FLOWS
+
+END options
+
+BEGIN packages
+  DIS6  xt3d_conv.dis  dis
+  NPF6  xt3d_conv.npf  npf
+  IC6  xt3d_conv.ic  ic
+  STO6  xt3d_conv.sto  sto
+  CHD6  xt3d_conv.chd  chd
+  WEL6  xt3d_conv.wel  wel
+  RCH6  xt3d_conv.rch  rch
+  OC6  xt3d_conv.oc  oc
+END packages

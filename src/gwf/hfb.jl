@@ -24,8 +24,10 @@
 # Flows (`hfb_cq`): MF6 rewrites FLOW-JA-FACE of a dynamic barrier with the conductance of
 # the last formulation; `npf_flowja!` evaluates `connection_terms` with the saturations of
 # the last `npf_cf!` and the barrier at the final heads, the same at convergence. HFB6 has
-# no budget term. Not supported: XT3D (`xt3d_fhfb`, T6.14), VSC6 (out of scope), models of
-# a multi-model solution.
+# no budget term. T6.14: with XT3D every barrier scales the XT3D coefficients of its
+# connection (`xt3d_fhfb`; `hfb_rp!` keeps the barriers in `HfbState.xjs`/`xchr`, and the
+# model writes them to its `Xt3dVarNpf`, src/gwf/xt3d_var.jl). Not supported: VSC6 (out of
+# scope), models of a multi-model solution.
 
 """
     HfbBarriers
@@ -134,6 +136,9 @@ The HFB6 package of a model on a device (T6.11): the spec, the grid and NPF data
 (host), `newton`, `block` (the PERIOD block applied last, 0 before), and the symmetric
 connections whose conductance the current barriers change: `static` (`condsat`) and
 `dynamic` (`ConvertibleNpf.ihcx` bit 16 and `hfb`). `hfb_rp!` applies a new block.
+T6.14: `xt3d` (a model with XT3D: every barrier is applied to the XT3D coefficients,
+`xt3d_fhfb`), with the connections `xjs` and hydraulic characteristics `xchr` of the
+current barriers.
 """
 mutable struct HfbState
     const spec::HfbSpec
@@ -142,21 +147,23 @@ mutable struct HfbState
     block::Int
     static::Vector{Int32}
     dynamic::Vector{Int32}
+    const xt3d::Bool
+    xjs::Vector{Int32}
+    xchr::Vector{Float64}
 end
 
-Base.copy(s::HfbState) = HfbState(s.spec, s.dis, s.newton, s.block, copy(s.static), copy(s.dynamic))
+Base.copy(s::HfbState) = HfbState(s.spec, s.dis, s.newton, s.block, copy(s.static), copy(s.dynamic), s.xt3d, copy(s.xjs), copy(s.xchr))
 
 """
     hfb_state(spec::GwfSpec) -> Union{HfbState, Nothing}
 
-The `HfbState` of a model with HFB6, `nothing` without. XT3D with HFB6 is an
-`MF6UnsupportedError` (MF6's `xt3d_fhfb`; T6.14).
+The `HfbState` of a model with HFB6, `nothing` without (T6.14: also with XT3D,
+`xt3d_fhfb`).
 """
 function hfb_state(spec::GwfSpec)
     h = spec.hfb
     isnothing(h) && return nothing
-    spec.npf.xt3d && unsupported(isempty(h.file) ? "HFB" : h.file, "HFB6 with the NPF6 option XT3D (model $(spec.name))")
-    return HfbState(h, spec.dis, spec.newton, 0, Int32[], Int32[])
+    return HfbState(h, spec.dis, spec.newton, 0, Int32[], Int32[], spec.npf.xt3d, Int32[], Float64[])
 end
 
 # Writes the conductance data of the connections `idx`: `condsat` (and the ConvertibleNpf's
@@ -189,6 +196,14 @@ function hfb_rp!(st::HfbState, npf::NpfModel{T}, conn::Connectivity, setup::NpfS
     b = period_block(sp, kper)
     (b == 0 || sp.iper[b] != kper) && return false
     bar = hfb_barriers(st.spec, b, st.dis, conn, setup.properties.icelltype; newton = st.newton)
+    st.block = b
+    if st.xt3d
+        # T6.14 (`hfb_fc`, XT3D branch): every barrier on the XT3D coefficients; the caller
+        # writes them (`xvar_hfb!`). XT3D does not use `condsat`.
+        st.xjs = bar.jas
+        st.xchr = bar.hydchr
+        return true
+    end
     csat = Dict{Int32, Float64}()
     dyn = Dict{Int32, Float64}()
     for k in eachindex(bar.jas)
@@ -201,7 +216,6 @@ function hfb_rp!(st::HfbState, npf::NpfModel{T}, conn::Connectivity, setup::NpfS
     end
     idx = sort!(unique!(Int32[st.static; st.dynamic; collect(keys(csat)); collect(keys(dyn))]))
     changed = !isempty(st.static) || !isempty(csat)
-    st.block = b
     st.static = sort!(collect(keys(csat)))
     st.dynamic = sort!(collect(keys(dyn)))
     isempty(idx) && return false

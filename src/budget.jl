@@ -86,6 +86,8 @@ function calc_flows!(m::GwfModel)
     csr = m.csr
     if isnothing(m.xt3d)
         npf_flowja!(m.flowja, csr, m.npf, m.h, m.ibound)
+    elseif !isnothing(m.xvar)
+        xvar_flowja!(m.flowja, csr, m.xt3d, m.npf, m.h, m.ibound)
     else
         xt3d_flowja!(m.flowja, csr, m.xt3d, m.h, m.ibound)
     end

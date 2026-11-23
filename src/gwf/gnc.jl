@@ -30,18 +30,18 @@
 # solves this is the same iteration as MF6's.
 #
 # `cond` is the conductance MF6 finds in the matrix at (n, m) after NPF (and HFB, BUY):
-# for confined cells (the scope here) the saturated conductance, constant, so the terms are
-# computed once on the host in Float64. Not supported (`MF6UnsupportedError`): GNC with
-# convertible cells (ICELLTYPE /= 0; the conductance follows the heads), with NEWTON
-# (`gnc_fn`), with HFB6 or TVK6 (they change the conductance), and GNC6 and XT3D in one
-# solution. PRINT_INPUT and PRINT_FLOWS (the `gnc_ot` table) write nothing.
+# for confined cells the saturated conductance, constant, so the terms are computed once on
+# the host in Float64. T6.14: with convertible cells, NEWTON (`gnc_fn`), HFB6 or TVK6 the
+# conductance changes, and the model runs on the head-dependent path of
+# src/gwf/xt3d_var.jl (`gnc_var_setup`). Not supported (`MF6UnsupportedError`): GNC6 and
+# XT3D in one solution. PRINT_INPUT and PRINT_FLOWS (the `gnc_ot` table) write nothing.
 
 """
     check_gnc(spec::GwfSpec, icelltype)
 
 The checks of a model's GNC6 package: XT3D with GNC is MF6's error (`npf_df`,
-`MF6InputError`); NEWTON, convertible cells (ICELLTYPE /= 0), HFB6 and TVK6 with GNC6 are
-an `MF6UnsupportedError`.
+`MF6InputError`). T6.14: NEWTON, convertible cells, HFB6 and TVK6 with GNC6 are supported
+(src/gwf/xt3d_var.jl).
 """
 function check_gnc(spec::GwfSpec, icelltype::AbstractVector{<:Integer})
     g = spec.gnc
@@ -53,10 +53,6 @@ function check_gnc(spec::GwfSpec, icelltype::AbstractVector{<:Integer})
             "Error in model $(spec.name).  The XT3D option cannot be used with the GNC Package.",
         ),
     )
-    spec.newton && unsupported(file, "GNC6 with the NEWTON formulation (model $(spec.name))")
-    any(!=(0), icelltype) && unsupported(file, "GNC6 with convertible cells (ICELLTYPE /= 0) in model $(spec.name)")
-    isnothing(spec.hfb) || unsupported(file, "GNC6 with HFB6 (model $(spec.name))")
-    isempty(spec.npf.tvk_files) || unsupported(file, "GNC6 with TVK6 (model $(spec.name))")
     return nothing
 end
 

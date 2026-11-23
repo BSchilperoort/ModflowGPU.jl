@@ -40,6 +40,9 @@ A GWF model ready to run on a device in precision `T` (state and assembly):
   applies its PERIOD blocks).
 - T6.12: `tvk` (the `TvkState` of a model with TVK6, else `nothing`; `apply_period!` and
   `advance_time_series!` apply it). TVS6 is part of `sto` (`StoragePackage.tvs`).
+- T6.14: `xvar` (the host `Xt3dVarSetup` of a model with XT3D or GNC6 on the head-dependent
+  path, src/gwf/xt3d_var.jl: with convertible cells, NEWTON, HFB6 or TVK6; `xt3d` is then
+  its `Xt3dVarNpf`; else `nothing`).
 - T6.9: `conversions`, the cell conversions of `wetdry!` since the start of the time step
   (`(kiter, wet, dry)` with reduced nodes in MF6's order, one entry per call that converted
   a cell; the initial call of the constructor has `kiter` 0), for the listing
@@ -84,6 +87,7 @@ mutable struct GwfModel{T <: AbstractFloat, B <: Backend, C <: CsrStructure, N <
     const conversions::Vector{Tuple{Int, Vector{Int32}, Vector{Int32}}}
     const hfb::Union{Nothing, HfbState}
     const tvk::Union{Nothing, TvkState}
+    const xvar::Union{Nothing, Xt3dVarSetup}
 end
 
 function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) where {T <: AbstractFloat}
@@ -95,10 +99,21 @@ function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) whe
     npf = NpfModel(backend, T, setup; options = spec.npf, conn, newton, hfb = !isnothing(hfb))
     # T6.5: XT3D (confined models; checked by `npf_setup`).
     # T6.13: GNC6 as flux terms on the XT3D kernels (src/gwf/gnc.jl; XT3D with GNC is an error).
+    # T6.14: with convertible cells, NEWTON, HFB6 or TVK6 the head-dependent path
+    # (src/gwf/xt3d_var.jl).
     check_gnc(spec, setup.properties.icelltype)
-    xs = spec.npf.xt3d ? xt3d_setup(conn, setup.properties, setup.r; rhs = spec.npf.xt3d_rhs) : gnc_setup(spec, conn, setup)
-    xt3d = isnothing(xs) ? nothing : Xt3dNpf(backend, T, xs)
-    scsr = (isnothing(xs) || xs.rhs) ? csr : CsrStructure(backend, xs)
+    xvar = nothing
+    xs = nothing
+    if xt3d_variable(spec, setup.properties.icelltype)
+        xvar = spec.npf.xt3d ? xt3d_var_setup(conn, setup.properties, setup.r; rhs = spec.npf.xt3d_rhs, newton) :
+            gnc_var_setup(spec, conn, setup)
+        xt3d = Xt3dVarNpf(backend, T, xvar)
+    else
+        xs = spec.npf.xt3d ? xt3d_setup(conn, setup.properties, setup.r; rhs = spec.npf.xt3d_rhs) : gnc_setup(spec, conn, setup)
+        xt3d = isnothing(xs) ? nothing : Xt3dNpf(backend, T, xs)
+    end
+    sx = isnothing(xvar) ? xs : xvar
+    scsr = (isnothing(sx) || sx.rhs) ? csr : CsrStructure(backend, sx)
     sys = LinearSystem(backend, T, scsr)
     packages = BoundaryPackage[BoundaryPackage(backend, T, b, conn, spec.dis; icelltype = setup.properties.icelltype) for b in spec.boundaries]
     sto = isnothing(spec.sto) ? nothing : StoragePackage(backend, T, spec.sto, conn, nper; r = setup.r, newton, dis = spec.dis)
@@ -116,6 +131,7 @@ function GwfModel(backend::Backend, ::Type{T}, spec::GwfSpec, nper::Integer) whe
         spec, backend, conn, setup, csr, npf, sys, packages, sto, _device_copy(backend, T.(conn.area)),
         _device_copy(backend, ibh), ibh, h, hold, z(), z(), KernelAbstractions.zeros(backend, T, conn.nja), 0,
         nothing, 0, wd, newton, nurbot, vol, 0.0, xt3d, scsr, nothing, nothing, Tuple{Int, Vector{Int32}, Vector{Int32}}[], hfb, tvk,
+        xvar,
     )
     # `preprocess_input`: `wd(0, hnew)` with the starting heads (IBOUND without the
     # constant heads, which `chd_rp` sets later).
@@ -167,7 +183,7 @@ function Adapt.adapt_structure(to, m::GwfModel)
         copy(m.ibound_host), h, adapt(to, m.hold), adapt(to, m.res), adapt(to, m.δ), adapt(to, m.flowja), m.kper,
         nothing, 0, adapt(to, m.wd), m.newton, adapt(to, m.nurbot), adapt(to, m.vol), m.delt, adapt(to, m.xt3d), scsr,
         m.solution, adapt(to, m.exgentry), copy(m.conversions), isnothing(m.hfb) ? nothing : copy(m.hfb),
-        isnothing(m.tvk) ? nothing : copy(m.tvk),
+        isnothing(m.tvk) ? nothing : copy(m.tvk), deepcopy(m.xvar),
     )
 end
 
@@ -199,7 +215,7 @@ function GwfModel(backend::Backend, ::Type{T}, sol::SolutionSetup, nper::Integer
         spec, backend, conn, setup, csr, npf, sys, packages, sto, _device_copy(backend, T.(conn.area)),
         _device_copy(backend, ibh), ibh, h, hold, z(), z(), KernelAbstractions.zeros(backend, T, conn.nja), 0,
         nothing, 0, nothing, false, z(0), z(0), 0.0, xt3d, scsr, sol, _device_copy(backend, sol.exgentry),
-        Tuple{Int, Vector{Int32}, Vector{Int32}}[], nothing, nothing,
+        Tuple{Int, Vector{Int32}, Vector{Int32}}[], nothing, nothing, nothing,
     )
 end
 
@@ -235,11 +251,17 @@ function apply_period!(m::GwfModel, kper::Integer; window::Union{Nothing, NTuple
     # T6.12: TVK6 and TVS6 without time series: the block of the period (`npf_rp` → `npf_ad`,
     # `sto_rp`); new saturated conductances make the off-diagonals stale.
     (!isnothing(m.tvk) && tvk_rp!(m.tvk, m.npf, kper; window)) && (m.offdiag = nothing)
+    _xvar_tvk!(m)
     isnothing(m.sto) || tvs_rp!(m.sto, kper; window)
     # T6.11: HFB6 after the stress packages (`gwf_rp`: npf, hfb, oc, sto, then the packages;
     # independent of each other). Changed saturated conductances make the off-diagonals stale.
-    if !isnothing(m.hfb) && hfb_rp!(m.hfb, m.npf, m.conn, m.setup, kper)
-        m.offdiag = nothing
+    if !isnothing(m.hfb)
+        old = copy(m.hfb.xjs)
+        if hfb_rp!(m.hfb, m.npf, m.conn, m.setup, kper)
+            m.offdiag = nothing
+            # T6.14: barriers on the XT3D coefficients (`xt3d_fhfb`).
+            m.hfb.xt3d && xvar_hfb!(m.xvar, m.xt3d, old, m.hfb.xjs, m.hfb.xchr)
+        end
     end
     if chd
         # chd_rp: the cells of the previous constant heads become active again, dry cells
@@ -249,6 +271,7 @@ function apply_period!(m::GwfModel, kper::Integer; window::Union{Nothing, NTuple
             m.ibound_host = ib
             copyto!(m.ibound, ib)
             m.offdiag = nothing
+            _xvar_ibound!(m)
         end
     end
     m.kper = kper
@@ -267,6 +290,7 @@ file are applied for the step.
 function advance_time_series!(m::GwfModel, window::NTuple{2, Float64})
     # T6.12: TVK6 and TVS6 with time series (`npf_ad`, `sto_ad` → TvBase.f90 `ad`).
     (!isnothing(m.tvk) && tvk_ad!(m.tvk, m.npf, window)) && (m.offdiag = nothing)
+    _xvar_tvk!(m)
     isnothing(m.sto) || tvs_ad!(m.sto, window)
     for pkg in m.packages
         advance_time_series!(pkg, window, m.setup.r)
@@ -337,10 +361,14 @@ function formulate!(m::GwfModel; symmetric::Bool = false, terms::Bool = true, sc
         npf_cf!(m.npf.cv, m.h, m.ibound)
         m.offdiag = nothing
     end
+    # T6.14: on the head-dependent XT3D/GNC path the matrix is assembled every time.
+    isnothing(m.xvar) || (m.offdiag = nothing)
     offdiag = m.offdiag !== symmetric
     offdiag && (m.offdiag_id = Threads.atomic_add!(_OFFDIAG_IDS, 1) + 1)
     if isnothing(m.xt3d)
         formulate_system!(m.sys, m.res, m.csr, m.npf, m.h, m.ibound, pkgs, storage; symmetric, offdiag, terms, scale, jac = jac && m.newton)
+    elseif !isnothing(m.xvar)
+        xvar_formulate_system!(m.sys, m.res, m.csr, m.scsr, m.xt3d, m.npf, m.h, m.ibound, pkgs, storage; offdiag, terms, scale, jac = jac && m.newton)
     else
         # T6.5: XT3D (no CG, no Newton: `initialize`, `check_xt3d`).
         xt3d_formulate_system!(m.sys, m.res, m.csr, m.scsr, m.xt3d, m.h, m.ibound, pkgs, storage; offdiag, terms, scale)
@@ -392,7 +420,28 @@ function wetdry!(m::GwfModel, kiter::Integer)
     for pkg in m.packages
         boundary_kind(pkg) in (:RCH, :EVT) && move_to_highest_active!(pkg, m.ibound_host, m.setup.r)
     end
+    _xvar_ibound!(m)
     return true
+end
+
+# T6.14: the NPF properties in force (TVK6 changes K).
+_current_properties(m::GwfModel) = isnothing(m.tvk) ? m.setup.properties : m.tvk.props
+
+# T6.14: XT3D terms after IBOUND changed (`xt3d_load`: inactive neighbours leave a stencil).
+function _xvar_ibound!(m::GwfModel)
+    isnothing(m.xvar) && return nothing
+    xvar_ibound!(m.xvar, m.xt3d, m.conn, _current_properties(m), m.ibound_host) && (m.offdiag = nothing)
+    return nothing
+end
+
+# T6.14: XT3D terms of the cells TVK6 changed (`npf_ad` → `xt3d_fcpc`).
+function _xvar_tvk!(m::GwfModel)
+    isnothing(m.tvk) && return nothing
+    if !isnothing(m.xvar) && !isempty(m.tvk.nodes)
+        xvar_recompute!(m.xvar, m.xt3d, m.conn, m.tvk.props, unique(m.tvk.nodes)) && (m.offdiag = nothing)
+    end
+    empty!(m.tvk.nodes)
+    return nothing
 end
 
 # T6.6: a single model is its own view (`ModelView`, src/gwf/exchange.jl).

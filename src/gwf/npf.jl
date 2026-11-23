@@ -207,7 +207,7 @@ The NPF properties by reduced node, after MF6's checks of the NPF input
 (gwf-npf.f90 `prepcheck`, then `check_options`; each throws an `MF6InputError` for
 `npf.file` with MF6's messages, all errors of one routine in one message). With
 `newton = true` the NEWTON option combinations are checked (the model's NEWTON option).
-XT3D with convertible cells or NEWTON is an `MF6UnsupportedError` (`check_xt3d`, T6.5).
+XT3D's checks: `check_xt3d` (T6.5, T6.14).
 """
 function npf_properties(
         npf::NpfSpec, dis::AbstractDisSpec, conn::Connectivity; newton::Bool = false,
