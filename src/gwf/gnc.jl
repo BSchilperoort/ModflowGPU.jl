@@ -61,7 +61,8 @@ function check_gnc(spec::GwfSpec, icelltype::AbstractVector{<:Integer})
 end
 
 # GhostNode.f90 `nodeu_to_noder`: the records' user nodes as reduced nodes (the loader
-# checked IDOMAIN > 0), contributing cells 0 where none.
+# checked IDOMAIN > 0), contributing cells 0 where none (also a contributing cell with
+# IDOMAIN 0, reduced node 0, as in MF6).
 function _gnc_reduced(g::GncSpec, conn1::Connectivity, conn2::Connectivity)
     n = Int32[conn1.nodereduced[u] for u in g.noden]
     m = Int32[conn2.nodereduced[u] for u in g.nodem]

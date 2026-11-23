@@ -562,7 +562,9 @@ end
 # MF6's own parser rules, not IDM. `dis1` is the grid of the ghost-node cells (`cellidn`)
 # and of the contributing cells (`cellidsj`), `dis2` that of `cellidm` (another model's grid
 # for an exchange). A contributing cell of all zeros is none (`allow_zero`). The cells must
-# be active (IDOMAIN > 0): MF6's "Cell is outside active grid domain".
+# be active (IDOMAIN > 0): MF6's "Cell is outside active grid domain"; a contributing cell
+# with IDOMAIN 0 has reduced node 0 in MF6 (`nodeu_to_noder`) and counts as none, only
+# IDOMAIN < 0 is the error there (`nodesj < 0`).
 function _load_gnc(ld::_Loader, fname, name, dis1::AbstractDisSpec, mname1, dis2::AbstractDisSpec = dis1, mname2 = mname1)
     f = _read_package(ld, fname, "GNC6", "GWF")
     opts = Dict{String, Bool}("PRINT_INPUT" => false, "PRINT_FLOWS" => false, "I2KN" => false, "EXPLICIT" => false)
@@ -605,7 +607,8 @@ function _load_gnc(ld::_Loader, fname, name, dis1::AbstractDisSpec, mname1, dis2
             allow_zero && all(==(0), c) && return Int32(0)
             valid_cellid(g, c) || input_error(l, "Cell is outside the model grid: $(_shape_string(c)) (grid $(_shape_string(g.mshape)))")
             u = user_node(g, c)
-            idom[u] > 0 || input_error(l, "$(uppercase(mname)) Cell is outside active grid domain: $(_shape_string(c))")
+            (idom[u] > 0 || (allow_zero && idom[u] == 0)) ||
+                input_error(l, "$(uppercase(mname)) Cell is outside active grid domain: $(_shape_string(c))")
             return Int32(u)
         end
         noden[k] = cid(g1, nd1, idom1, mname1)

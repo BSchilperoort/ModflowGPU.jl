@@ -81,6 +81,17 @@ _gnc_write(dir, name, f) = write(joinpath(dir, name), f(read(joinpath(dir, name)
         e = _gnc_error(() -> GwfModel(CPU(), Float64, only(load_simulation(dir).models), 2))
         @test e isa MF6InputError && occursin("GHOST NODE ERROR.  Cell 1 in model GNC_DISV is not connected to cell 15 in model GNC_DISV", e.msg)
         write(joinpath(dir, "gnc_disv.gnc"), gnc)
+        # A contributing cell with IDOMAIN 0 is none (MF6: reduced node 0, no error; mf6
+        # 6.8.2 runs this variant and the heads agree to 4e-13 m).
+        disv, rch = read(joinpath(dir, "gnc_disv.disv"), String), read(joinpath(dir, "gnc_disv.rch"), String)
+        idom = join([i == 9 ? 0 : 1 for i in 1:121], ' ')
+        write(joinpath(dir, "gnc_disv.disv"), replace(disv, "END griddata" => "  idomain  LAYERED\n    INTERNAL\n      $idom\n    CONSTANT  1\nEND griddata"))
+        write(joinpath(dir, "gnc_disv.rch"), replace(rch, r"\n  1  9  [^\n]*" => ""))
+        s = only(load_simulation(dir).models)
+        sconn = build_connectivity(s)
+        @test s.gnc.nodesj[1, 1] == 9 && ModflowGPU._gnc_reduced(s.gnc, sconn, sconn)[3][1, 1] == 0
+        @test !isnothing(gnc_setup(s, sconn, npf_setup(s, sconn)))
+        write(joinpath(dir, "gnc_disv.disv"), disv), write(joinpath(dir, "gnc_disv.rch"), rch)
         # XT3D with GNC (npf_df); NEWTON, convertible cells: unsupported.
         npf = read(joinpath(dir, "gnc_disv.npf"), String)
         write(joinpath(dir, "gnc_disv.npf"), replace(npf, "SAVE_FLOWS" => "SAVE_FLOWS\n  XT3D"))

@@ -240,8 +240,9 @@ these three: DISV, DISU, and two DIS models):
   correction is computed from the latest heads and added to the right-hand side, which can
   take more outer iterations but gives the same heads;
 - a cell outside the active grid, two cells that are not connected, or (on an exchange) a
-  number of records that differs from the exchange connections, are input errors; `XT3D`
-  with GNC6 is an input error, as in MODFLOW 6;
+  number of records that differs from the exchange connections, are input errors (a
+  contributing cell with `IDOMAIN` 0 counts as none, as in MODFLOW 6); `XT3D` with GNC6 is
+  an input error, as in MODFLOW 6;
 - `PRINT_INPUT` and `PRINT_FLOWS` are accepted and print nothing (MODFLOW 6's GNC flow table
   is not written); `I2KN` is accepted and, as in MODFLOW 6, has no effect.
 
