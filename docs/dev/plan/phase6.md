@@ -343,6 +343,12 @@ for its XT3D items only.
   DISV, and XT3D with HFB and with TVK.
 - Done when: those pass parity; the existing Tier 6 examples bitwise unchanged.
 - Docs: packages.md (XT3D row), differences.md if outer counts differ.
+- Open issue from T6.13 (owner to decide whether it belongs here or in a separate card):
+  GNC6 is supported for confined models only; GNC with convertible cells, NEWTON (`gnc_fn`),
+  HFB6 or TVK6 is rejected as unsupported (`check_gnc`). GNC runs on the XT3D term kernels,
+  so the per-iteration conductance updates built here would carry over. Also rejected:
+  GNC with XT3D in one solution, implicit and EXPLICIT GNC in one solution. A model with
+  GNC has not been benchmarked at large size.
 
 **T6.15 Multi-model with convertible cells and Newton; several solutions (L)**
 - Depends: T6.6, T6.2 (merged); T6.14 for the XT3D-exchange-with-Newton item only.
